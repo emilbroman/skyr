@@ -1,0 +1,8 @@
+services:
+  couchdb:
+    image: couchdb:3.5
+    environment:
+      COUCHDB_USER: skyr
+      COUCHDB_PASSWORD: password123
+    ports:
+      - 5984:5984
