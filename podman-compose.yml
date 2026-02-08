@@ -6,3 +6,8 @@ services:
       COUCHDB_PASSWORD: password123
     ports:
       - 5984:5984
+
+  redis:
+    image: redis:8.4
+    ports:
+      - 6379:6379

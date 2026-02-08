@@ -5,6 +5,6 @@ function (doc) {
     name: doc.name,
     hash: doc.hash || null,
     symbolic_target: doc.symbolic_target || null,
-    action: doc.action,
+    rollout: doc.rollout,
   });
 }

@@ -28,14 +28,30 @@ type latestByNameRecord struct {
 	Name           plumbing.ReferenceName `json:"name"`
 	Hash           string                 `json:"hash,omitempty"`
 	SymbolicTarget plumbing.ReferenceName `json:"symbolic_target,omitempty"`
-	Action         confsrv.RefAction      `json:"action"`
+	Rollout        confsrv.Rollout        `json:"rollout"`
 }
 
-func NewRefsRepo(ctx context.Context, db *kivik.DB) (*RefsRepo, error) {
-	err := PutDesignDoc(ctx, db, "names", map[string]View{
+//go:embed by_name_map.js
+var byNameMap string
+
+type byNameRecord struct {
+	Timestamp int    `json:"timestamp"`
+	DocID     string `json:"doc_id"`
+}
+
+func NewRefsRepo(ctx context.Context, client *kivik.Client, repo string) (*RefsRepo, error) {
+	db, err := createDatabaseIfNotExists(client, fmt.Sprintf("refs/%s", repo))
+	if err != nil {
+		return nil, err
+	}
+
+	err = PutDesignDoc(ctx, db, "names", map[string]View{
 		"latest_by_name": {
 			Map:    latestByNameMap,
 			Reduce: latestByNameReduce,
+		},
+		"by_name": {
+			Map: byNameMap,
 		},
 	})
 	if err != nil {
@@ -44,7 +60,36 @@ func NewRefsRepo(ctx context.Context, db *kivik.DB) (*RefsRepo, error) {
 	return &RefsRepo{db}, nil
 }
 
-func (r *RefsRepo) ListCurrent(ctx context.Context) (storer.ReferenceIter, error) {
+func (r *RefsRepo) RefHistory(ctx context.Context, name plumbing.ReferenceName, ch chan<- *confsrv.RefDoc) error {
+	defer close(ch)
+	rs := r.db.Query(ctx, "names", "by_name", kivik.Param("key", name.String()), kivik.Param("descending", "true"))
+	for rs.Next() {
+		var rec byNameRecord
+		err := rs.ScanValue(&rec)
+		if err != nil {
+			rs.Close()
+			return err
+		}
+
+		d := r.db.Get(ctx, rec.DocID)
+		if d.Err() != nil {
+			rs.Close()
+			return d.Err()
+		}
+
+		var rd confsrv.RefDoc
+		err = d.ScanDoc(&rd)
+		if err != nil {
+			rs.Close()
+			return err
+		}
+
+		ch <- &rd
+	}
+	return nil
+}
+
+func (r *RefsRepo) ListDesired(ctx context.Context) (storer.ReferenceIter, error) {
 	slog.Debug("iterating references")
 
 	rs := r.db.Query(ctx, "names", "latest_by_name", kivik.Param("group", true))
@@ -54,14 +99,14 @@ func (r *RefsRepo) ListCurrent(ctx context.Context) (storer.ReferenceIter, error
 	}
 
 	filter := func(r *latestByNameRecord) bool {
-		return r.Action == confsrv.RefActionSet
+		return r.Rollout == confsrv.RolloutDesired || r.Rollout == confsrv.RolloutUp
 	}
 
 	return resultSetRefIter{rs, filter}, nil
 }
 
 func (r *RefsRepo) ListAll(ctx context.Context) (storer.ReferenceIter, error) {
-	rs := r.db.Query(ctx, "names", "latest_by_name")
+	rs := r.db.Query(ctx, "names", "latest_by_name", kivik.Param("group", true))
 
 	if rs.Err() != nil {
 		return nil, rs.Err()
@@ -101,26 +146,48 @@ func (r *RefsRepo) Get(ctx context.Context, name plumbing.ReferenceName) (*confs
 }
 
 func (r *RefsRepo) Set(ctx context.Context, ref *plumbing.Reference) (*confsrv.RefDoc, error) {
-	slog.Debug("setting ref", slog.Any("ref", ref))
-	doc := confsrv.CreateSetRefDoc(ref)
-	docID, rev, err := r.db.CreateDoc(ctx, doc)
+	doc := confsrv.CreateRefDoc(ref)
+
+	prev, err := r.Get(ctx, ref.Name())
+	if err != nil {
+		return nil, fmt.Errorf("failed to lookup previous ref: %w", err)
+	}
+
+	if prev != nil {
+		prev.Rollout = confsrv.RolloutLinger
+		prev.SupercededBy = doc.ID
+		prev.Rev, err = r.db.Put(ctx, prev.ID, prev)
+		if err != nil {
+			return nil, fmt.Errorf("failed to supercede prev: %w", err)
+		}
+	}
+
+	rev, err := r.db.Put(ctx, doc.ID, doc)
 	if err != nil {
 		return nil, fmt.Errorf("failed to set ref: %w", err)
 	}
-	doc.ID = docID
 	doc.Rev = rev
+
 	return doc, nil
 }
 
 func (r *RefsRepo) Unset(ctx context.Context, ref *plumbing.Reference) (*confsrv.RefDoc, error) {
-	slog.Debug("unsetting ref", slog.Any("ref", ref))
-	doc := confsrv.CreateUnsetRefDoc(ref)
-	docID, rev, err := r.db.CreateDoc(ctx, doc)
+	doc, err := r.Get(ctx, ref.Name())
 	if err != nil {
-		return nil, fmt.Errorf("failed to unset ref: %w", err)
+		return nil, fmt.Errorf("failed to lookup previous ref: %w", err)
 	}
-	doc.ID = docID
-	doc.Rev = rev
+
+	if doc == nil {
+		return nil, nil
+	}
+
+	doc.Rollout = confsrv.RolloutUndesired
+
+	doc.Rev, err = r.db.Put(ctx, doc.ID, doc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update prev: %w", err)
+	}
+
 	return doc, nil
 }
 
