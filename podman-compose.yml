@@ -1,13 +1,11 @@
 services:
-  couchdb:
-    image: couchdb:3.5
-    environment:
-      COUCHDB_USER: skyr
-      COUCHDB_PASSWORD: password123
+  cassandra:
+    image: cassandra:5
     ports:
-      - 5984:5984
+      - 9042:9042
 
-  redis:
-    image: redis:8.4
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
     ports:
-      - 6379:6379
+      - 15672:15672
+      - 5672:5672

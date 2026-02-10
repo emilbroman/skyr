@@ -13,9 +13,11 @@
     in {
       devShell = pkgs.mkShell {
         packages = with pkgs; [
-          go
+          rustup
+          cargo
         ];
         shellHook = ''
+          rustup install nightly
         '';
       };
     });

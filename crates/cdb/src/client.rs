@@ -1,0 +1,305 @@
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+use crate::repository_name::{InvalidRepositoryName, RepositoryName};
+use crate::{
+    DeploymentId,
+    deployment::{Deployment, InvalidDeploymentState},
+};
+use chrono::{DateTime, Utc};
+use futures_util::{Stream, StreamExt, TryStreamExt};
+use gix_hash::ObjectId;
+use gix_object::{Blob, Commit, Tree};
+use scylla::{
+    client::{session::Session, session_builder::SessionBuilder},
+    errors::{NewSessionError, NextRowError, PagerExecutionError, TypeCheckError},
+};
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ConnectError {
+    #[error("failed to create session: {0}")]
+    Scylla(#[from] NewSessionError),
+}
+
+#[derive(Default)]
+pub struct ClientBuilder {
+    inner: SessionBuilder,
+}
+
+impl ClientBuilder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn known_node(mut self, hostname: impl AsRef<str>) -> Self {
+        self.inner = self.inner.known_node(hostname);
+        self
+    }
+
+    pub async fn build(&self) -> Result<Client, ConnectError> {
+        let session = Arc::new(self.inner.build().await?);
+
+        Ok(Client { session })
+    }
+}
+
+#[derive(Clone)]
+pub struct Client {
+    session: Arc<Session>,
+}
+
+impl Client {
+    pub fn repo(&self, name: RepositoryName) -> RepositoryClient {
+        RepositoryClient {
+            client: self.clone(),
+            name,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct RepositoryClient {
+    client: Client,
+    name: RepositoryName,
+}
+
+impl RepositoryClient {
+    pub fn deployment(&self, id: DeploymentId) -> DeploymentClient {
+        DeploymentClient {
+            repo: self.clone(),
+            id,
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum LoadObjectError {
+    #[error("not found")]
+    NotFound,
+
+    #[error("failed to execute: {0}")]
+    ScyllaPager(#[from] PagerExecutionError),
+
+    #[error("failed to parse row: {0}")]
+    ScyllaTypeCheck(#[from] TypeCheckError),
+
+    #[error("failed to load row: {0}")]
+    ScyllaNextRow(#[from] NextRowError),
+}
+
+impl RepositoryClient {
+    async fn read_object(&self, hash: ObjectId) -> Result<Vec<u8>, LoadObjectError> {
+        let pager = self
+            .client
+            .session
+            .query_iter(
+                "SELECT contents FROM cdb.objects WHERE repository = ? AND hash = ?",
+                (self.name.to_string(), hash.as_bytes()),
+            )
+            .await?;
+
+        match pager.rows_stream::<(Vec<u8>,)>()?.try_next().await? {
+            None => Err(LoadObjectError::NotFound),
+            Some((contents,)) => Ok(contents),
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ReadObjectError {
+    #[error("read failed: {0}")]
+    Read(#[from] LoadObjectError),
+
+    #[error("decode failed: {0}")]
+    Decode(#[from] gix_object::decode::Error),
+}
+
+impl RepositoryClient {
+    pub async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
+        let data = self.read_object(hash).await?;
+        let commit = gix_object::CommitRef::from_bytes(&data)?;
+        Ok(commit.into_owned()?)
+    }
+
+    pub async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
+        let data = self.read_object(hash).await?;
+        let tree = gix_object::TreeRef::from_bytes(&data)?;
+        Ok(tree.into_owned())
+    }
+
+    pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
+        let data = self.read_object(hash).await?;
+        let blob = gix_object::BlobRef::from_bytes(&data).unwrap(); // infallible
+        Ok(blob.into_owned())
+    }
+}
+
+#[derive(Clone)]
+pub struct DeploymentClient {
+    repo: RepositoryClient,
+    id: DeploymentId,
+}
+
+impl DeploymentClient {
+    pub fn fqid(&self) -> String {
+        format!("{}/{}", self.repo.name, self.id)
+    }
+
+    pub async fn get(&self) -> Result<Deployment, DeploymentQueryError> {
+        self.repo.client.deployment(&self.repo.name, &self.id).await
+    }
+
+    pub async fn read_dir(&self, path: Option<impl AsRef<Path>>) -> Result<Tree, FileError> {
+        let commit = self.repo.read_commit(self.id.commit_hash).await?;
+        let mut tree = self.repo.read_tree(commit.tree).await?;
+
+        let mut result_buf = PathBuf::new();
+
+        let mut ancestors = vec![];
+        if let Some(path) = path {
+            for segment in path.as_ref() {
+                if segment == "." {
+                    continue;
+                }
+
+                if segment == ".." {
+                    tree = ancestors.pop().unwrap_or(tree);
+                }
+
+                result_buf.push(segment);
+
+                match tree
+                    .entries
+                    .iter()
+                    .find(|e| e.filename.as_slice() == segment.as_encoded_bytes())
+                {
+                    None => return Err(FileError::NotFound(result_buf)),
+                    Some(entry) => {
+                        if !entry.mode.is_tree() {
+                            return Err(FileError::NotADirectory(result_buf));
+                        }
+
+                        ancestors.push(tree.clone());
+                        tree = self.repo.read_tree(entry.oid).await?;
+                    }
+                }
+            }
+        }
+
+        Ok(tree)
+    }
+
+    pub async fn read_file(&self, path: impl AsRef<Path>) -> Result<Vec<u8>, FileError> {
+        let path = path.as_ref();
+        let filename = path
+            .file_name()
+            .ok_or(FileError::NotFound(path.to_path_buf()))?;
+        let dir = self.read_dir(path.parent()).await?;
+
+        let entry = dir
+            .entries
+            .iter()
+            .find(|e| e.filename.as_slice() == filename.as_encoded_bytes())
+            .ok_or(FileError::NotFound(path.to_path_buf()))?;
+
+        if !entry.mode.is_blob() {
+            return Err(FileError::NotAFile(path.to_path_buf()));
+        }
+
+        Ok(self.repo.read_blob(entry.oid).await?.data)
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum FileError {
+    #[error("failed to read")]
+    Read(#[from] ReadObjectError),
+
+    #[error("may not be an absolute path")]
+    AbsolutePath,
+
+    #[error("not found: {0}")]
+    NotFound(PathBuf),
+
+    #[error("not a directory: {0}")]
+    NotADirectory(PathBuf),
+
+    #[error("not a file: {0}")]
+    NotAFile(PathBuf),
+}
+
+impl Client {
+    pub async fn deployment(
+        &self,
+        repo: &RepositoryName,
+        deployment_id: &DeploymentId,
+    ) -> Result<Deployment, DeploymentQueryError> {
+        let pager = self.session.query_iter(
+            "SELECT created_at, state FROM cdb.deployments WHERE repository = ? AND ref_name = ? AND commit_hash = ?",
+            (repo.to_string(), &deployment_id.ref_name, deployment_id.commit_hash.as_slice())
+        ).await?;
+
+        match pager.rows_stream::<(DateTime<Utc>, String)>()?.next().await {
+            None => Err(DeploymentQueryError::NotFound),
+            Some(Err(e)) => Err(e.into()),
+            Some(Ok((created_at, state))) => Ok(Deployment {
+                repository: repo.clone(),
+                id: deployment_id.clone(),
+                created_at,
+                state: state.parse()?,
+            }),
+        }
+    }
+
+    pub async fn active_deployments(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Deployment, DeploymentQueryError>>, DeploymentQueryError>
+    {
+        let pager = self
+            .session
+            .query_iter(
+                "SELECT repository, ref_name, commit_hash, created_at, state FROM cdb.active_deployments",
+                (),
+            )
+            .await?;
+
+        Ok(pager
+            .rows_stream::<(String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .map(move |r| {
+                let (repository, ref_name, commit_hash, created_at, state) = r?;
+                Ok::<_, DeploymentQueryError>(Deployment {
+                    repository: repository.parse()?,
+                    id: DeploymentId {
+                        ref_name,
+                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
+                    },
+                    created_at,
+                    state: state.parse()?,
+                })
+            }))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum DeploymentQueryError {
+    #[error("failed to execute: {0}")]
+    ScyllaPager(#[from] PagerExecutionError),
+
+    #[error("failed to parse row: {0}")]
+    ScyllaTypeCheck(#[from] TypeCheckError),
+
+    #[error("failed to load row: {0}")]
+    ScyllaNextRow(#[from] NextRowError),
+
+    #[error("{0}")]
+    InvalidState(#[from] InvalidDeploymentState),
+
+    #[error("{0}")]
+    InvalidRepositoryName(#[from] InvalidRepositoryName),
+
+    #[error("deployment not found")]
+    NotFound,
+}
