@@ -1,13 +1,15 @@
 use std::{
-    hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use crate::repository_name::{InvalidRepositoryName, RepositoryName};
 use crate::{
     DeploymentId,
     deployment::{Deployment, InvalidDeploymentState},
+};
+use crate::{
+    DeploymentState,
+    repository_name::{InvalidRepositoryName, RepositoryName},
 };
 use chrono::{DateTime, Utc};
 use futures_util::{Stream, StreamExt, TryStreamExt};
@@ -200,6 +202,19 @@ impl DeploymentClient {
         self.repo.client.deployment(&self.repo.name, &self.id).await
     }
 
+    pub async fn set(&self, state: DeploymentState) -> Result<(), SetDeploymentError> {
+        let deployment = Deployment {
+            repository: self.repo.name.clone(),
+            id: self.id.clone(),
+            created_at: Utc::now(),
+            state,
+        };
+
+        self.repo.client.set_deployment(deployment).await?;
+
+        Ok(())
+    }
+
     pub async fn read_dir(&self, path: Option<impl AsRef<Path>>) -> Result<Tree, FileError> {
         let commit = self.repo.read_commit(self.id.commit_hash).await?;
         let mut tree = self.repo.read_tree(commit.tree).await?;
@@ -350,4 +365,34 @@ pub enum DeploymentQueryError {
 
     #[error("deployment not found")]
     NotFound,
+}
+
+impl Client {
+    pub async fn set_deployment(&self, deployment: Deployment) -> Result<(), SetDeploymentError> {
+        let stmt = self.session.prepare("UPDATE cdb.deployments SET created_at = ?, state = ? WHERE repository = ? AND ref_name = ? AND commit_hash = ?").await?;
+
+        self.session
+            .execute_unpaged(
+                &stmt,
+                (
+                    deployment.created_at,
+                    deployment.state.to_string(),
+                    deployment.repository.to_string(),
+                    deployment.id.ref_name,
+                    deployment.id.commit_hash.as_slice(),
+                ),
+            )
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum SetDeploymentError {
+    #[error("failed to prepare statement: {0}")]
+    Prepare(#[from] PrepareError),
+
+    #[error("failed to execute statement: {0}")]
+    Execute(#[from] ExecutionError),
 }
