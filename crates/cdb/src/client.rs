@@ -1,4 +1,5 @@
 use std::{
+    hash::Hash,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -11,10 +12,13 @@ use crate::{
 use chrono::{DateTime, Utc};
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use gix_hash::ObjectId;
-use gix_object::{Blob, Commit, Tree};
+use gix_object::{Blob, Commit, Object, Tree, WriteTo};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
-    errors::{NewSessionError, NextRowError, PagerExecutionError, TypeCheckError},
+    errors::{
+        ExecutionError, NewSessionError, NextRowError, PagerExecutionError, PrepareError,
+        TypeCheckError,
+    },
 };
 use thiserror::Error;
 
@@ -118,16 +122,60 @@ pub enum ReadObjectError {
 }
 
 impl RepositoryClient {
+    pub async fn write_object(&self, id: ObjectId, object: Object) -> Result<(), WriteObjectError> {
+        let stmt = self
+            .client
+            .session
+            .prepare("INSERT INTO cdb.objects (repository, hash, contents) VALUES (?, ?, ?)")
+            .await?;
+
+        let mut data = vec![];
+        object.write_to(&mut data)?;
+
+        self.client
+            .session
+            .execute_unpaged(&stmt, (self.name.to_string(), id.as_slice(), data))
+            .await?;
+
+        Ok(())
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum WriteObjectError {
+    #[error("failed to prepare statement: {0}")]
+    Prepare(#[from] PrepareError),
+
+    #[error("failed to execute statement: {0}")]
+    Execute(#[from] ExecutionError),
+
+    #[error("{0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl RepositoryClient {
+    pub async fn write_commit(&self, id: ObjectId, object: Commit) -> Result<(), WriteObjectError> {
+        self.write_object(id, Object::Commit(object)).await
+    }
+
     pub async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
         let data = self.read_object(hash).await?;
         let commit = gix_object::CommitRef::from_bytes(&data)?;
         Ok(commit.into_owned()?)
     }
 
+    pub async fn write_tree(&self, id: ObjectId, object: Tree) -> Result<(), WriteObjectError> {
+        self.write_object(id, Object::Tree(object)).await
+    }
+
     pub async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
         let data = self.read_object(hash).await?;
         let tree = gix_object::TreeRef::from_bytes(&data)?;
         Ok(tree.into_owned())
+    }
+
+    pub async fn write_blob(&self, id: ObjectId, object: Blob) -> Result<(), WriteObjectError> {
+        self.write_object(id, Object::Blob(object)).await
     }
 
     pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {

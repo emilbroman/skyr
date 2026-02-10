@@ -23,6 +23,11 @@ impl FromStr for RepositoryName {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let mut parts: Vec<_> = s.split('/').collect();
+
+        if parts.first() == Some(&"") {
+            parts.remove(0);
+        }
+
         if parts.len() != 2 {
             return Err(InvalidRepositoryName(s.to_string()));
         }
