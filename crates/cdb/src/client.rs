@@ -141,6 +141,10 @@ impl RepositoryClient {
 
         Ok(())
     }
+
+    pub async fn read_raw_object(&self, hash: ObjectId) -> Result<Vec<u8>, LoadObjectError> {
+        self.read_object(hash).await
+    }
 }
 
 #[derive(Error, Debug)]
@@ -335,6 +339,68 @@ impl Client {
                 let (repository, ref_name, commit_hash, created_at, state) = r?;
                 Ok::<_, DeploymentQueryError>(Deployment {
                     repository: repository.parse()?,
+                    id: DeploymentId {
+                        ref_name,
+                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
+                    },
+                    created_at,
+                    state: state.parse()?,
+                })
+            }))
+    }
+}
+
+impl RepositoryClient {
+    pub async fn active_deployments(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Deployment, DeploymentQueryError>>, DeploymentQueryError>
+    {
+        let pager = self
+            .client
+            .session
+            .query_iter(
+                "SELECT ref_name, commit_hash, created_at, state FROM cdb.active_deployments WHERE repository = ? ALLOW FILTERING",
+                (self.name.to_string(),),
+            )
+            .await?;
+
+        let repo = self.name.clone();
+        Ok(pager
+            .rows_stream::<(String, Vec<u8>, DateTime<Utc>, String)>()?
+            .map(move |r| {
+                let (ref_name, commit_hash, created_at, state) = r?;
+                Ok::<_, DeploymentQueryError>(Deployment {
+                    repository: repo.clone(),
+                    id: DeploymentId {
+                        ref_name,
+                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
+                    },
+                    created_at,
+                    state: state.parse()?,
+                })
+            }))
+    }
+
+    pub async fn deployments(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Deployment, DeploymentQueryError>>, DeploymentQueryError>
+    {
+        let pager = self
+            .client
+            .session
+            .query_iter(
+                "SELECT ref_name, commit_hash, created_at, state FROM cdb.deployments WHERE repository = ?",
+                (self.name.to_string(),),
+            )
+            .await?;
+
+        let repo = self.name.clone();
+        Ok(pager
+            .rows_stream::<(String, Vec<u8>, DateTime<Utc>, String)>()?
+            .map(move |r| {
+                let (ref_name, commit_hash, created_at, state) = r?;
+                Ok::<_, DeploymentQueryError>(Deployment {
+                    repository: repo.clone(),
                     id: DeploymentId {
                         ref_name,
                         commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),

@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -229,7 +229,189 @@ struct CommandHandler<'a> {
 
 impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
-        todo!()
+        let refs = self.collect_refs().await?;
+
+        self.advertise_refs(
+            b"",
+            futures_util::stream::iter(refs.into_iter()),
+        )
+        .await?;
+
+        let mut r = self.channel.make_reader();
+        let wants = {
+            let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
+                r.compat(),
+                &[gix_packetline::PacketLineRef::Flush],
+                false,
+            );
+            let mut wants = Vec::new();
+            while let Some(line) = pkt.read_line().await {
+                let line = line??;
+                let gix_packetline::PacketLineRef::Data(data) = line else {
+                    continue;
+                };
+                let mut data: &[u8] = data;
+                if let Some(trimmed) = data.strip_suffix(b"\n") {
+                    data = trimmed;
+                }
+                if let Some(nul_pos) = data.iter().position(|&b| b == 0) {
+                    data = &data[..nul_pos];
+                }
+                if data.starts_with(b"want ") {
+                    let hex = data[5..].split(|b| *b == b' ').next().unwrap_or_default();
+                    let oid = gix_hash::ObjectId::from_hex(hex)?;
+                    wants.push(oid);
+                }
+            }
+            r = pkt.into_inner().into_inner();
+            wants
+        };
+
+        if wants.is_empty() {
+            return Ok(());
+        }
+
+        {
+            let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
+                r.compat(),
+                &[gix_packetline::PacketLineRef::Flush],
+                false,
+            );
+            while let Some(line) = pkt.read_line().await {
+                let line = line??;
+                if let gix_packetline::PacketLineRef::Data(data) = line {
+                    let mut data: &[u8] = data;
+                    if let Some(trimmed) = data.strip_suffix(b"\n") {
+                        data = trimmed;
+                    }
+                    if data == b"done" {
+                        break;
+                    }
+                }
+            }
+            r = pkt.into_inner().into_inner();
+        }
+
+        #[derive(Clone)]
+        struct PackObject {
+            id: gix_hash::ObjectId,
+            kind: gix_object::Kind,
+            data: Vec<u8>,
+        }
+
+        fn encode_pack_header(kind: gix_object::Kind, mut size: u64) -> Vec<u8> {
+            let type_id = match kind {
+                gix_object::Kind::Commit => 1u8,
+                gix_object::Kind::Tree => 2u8,
+                gix_object::Kind::Blob => 3u8,
+                gix_object::Kind::Tag => 4u8,
+            };
+            let mut out = Vec::new();
+            let mut byte = (type_id << 4) | ((size as u8) & 0x0f);
+            size >>= 4;
+            if size > 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            while size > 0 {
+                let mut b = (size as u8) & 0x7f;
+                size >>= 7;
+                if size > 0 {
+                    b |= 0x80;
+                }
+                out.push(b);
+            }
+            out
+        }
+
+        async fn collect_objects(
+            client: &cdb::RepositoryClient,
+            wants: Vec<gix_hash::ObjectId>,
+        ) -> anyhow::Result<Vec<PackObject>> {
+            let mut stack = wants;
+            let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
+            let mut out = Vec::new();
+
+            while let Some(oid) = stack.pop() {
+                if !seen.insert(oid) {
+                    continue;
+                }
+                let raw = client.read_raw_object(oid).await?;
+                let (kind, size, offset) = gix_object::decode::loose_header(&raw)?;
+                let size: usize = size
+                    .try_into()
+                    .map_err(|_| anyhow!("object too large to fit into memory"))?;
+                let body = raw
+                    .get(offset..)
+                    .and_then(|s| s.get(..size))
+                    .ok_or_else(|| anyhow!("object body truncated"))?;
+
+                out.push(PackObject {
+                    id: oid,
+                    kind,
+                    data: body.to_vec(),
+                });
+
+                match kind {
+                    gix_object::Kind::Commit => {
+                        let mut iter = gix_object::CommitRefIter::from_bytes(body);
+                        let tree = iter.tree_id()?;
+                        stack.push(tree);
+                        for parent in iter.parent_ids() {
+                            stack.push(parent);
+                        }
+                    }
+                    gix_object::Kind::Tree => {
+                        for entry in gix_object::TreeRefIter::from_bytes(body) {
+                            let entry = entry?;
+                            stack.push(entry.oid.to_owned());
+                        }
+                    }
+                    gix_object::Kind::Tag => {
+                        let target = gix_object::TagRefIter::from_bytes(body).target_id()?;
+                        stack.push(target);
+                    }
+                    gix_object::Kind::Blob => {}
+                }
+            }
+
+            Ok(out)
+        }
+
+        let objects = collect_objects(&self.client, wants).await?;
+
+        let mut pack = Vec::new();
+        pack.extend_from_slice(b"PACK");
+        pack.extend_from_slice(&2u32.to_be_bytes());
+        pack.extend_from_slice(&(objects.len() as u32).to_be_bytes());
+
+        for obj in objects {
+            pack.extend_from_slice(&encode_pack_header(obj.kind, obj.data.len() as u64));
+            let mut compressor = gix_features::zlib::stream::deflate::Write::new(Vec::new());
+            use std::io::Write as _;
+            compressor.write_all(&obj.data)?;
+            compressor.flush()?;
+            let compressed = compressor.into_inner();
+            pack.extend_from_slice(&compressed);
+        }
+
+        let mut hasher = gix_hash::hasher(gix_hash::Kind::Sha1);
+        hasher.update(&pack);
+        let digest = hasher.try_finalize()?;
+        pack.extend_from_slice(digest.as_slice());
+
+        drop(r);
+
+        let mut out = self.channel.make_writer().compat_write();
+        gix_packetline::async_io::encode::write_packet_line(
+            &gix_packetline::PacketLineRef::Data(b"NAK\n"),
+            &mut out,
+        )
+        .await?;
+        out.write_all(&pack).await?;
+        out.flush().await?;
+
+        Ok(())
     }
 
     async fn advertise_refs(
@@ -277,7 +459,9 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn receive_pack(self) -> anyhow::Result<()> {
-        self.advertise_refs(b"report-status", futures_util::stream::empty())
+        let refs = self.collect_refs().await?;
+
+        self.advertise_refs(b"report-status", futures_util::stream::iter(refs.into_iter()))
             .await?;
 
         let mut r = self.channel.make_reader();
@@ -744,5 +928,47 @@ impl<'a> CommandHandler<'a> {
         pkt.flush().await?;
 
         Ok(())
+    }
+
+    async fn collect_refs(&self) -> anyhow::Result<Vec<Reference>> {
+        let mut refs_by_name: HashMap<String, (gix_hash::ObjectId, i64)> = HashMap::new();
+
+        let mut deployments = self.client.active_deployments().await?;
+        while let Some(deployment) = deployments.next().await {
+            let deployment = deployment?;
+            let created_at = deployment.created_at.timestamp_millis();
+            let entry = refs_by_name
+                .entry(deployment.id.ref_name.clone())
+                .or_insert((deployment.id.commit_hash, created_at));
+            if created_at > entry.1 {
+                *entry = (deployment.id.commit_hash, created_at);
+            }
+        }
+
+        if refs_by_name.is_empty() {
+            let mut deployments = self.client.deployments().await?;
+            while let Some(deployment) = deployments.next().await {
+                let deployment = deployment?;
+                let created_at = deployment.created_at.timestamp_millis();
+                let entry = refs_by_name
+                    .entry(deployment.id.ref_name.clone())
+                    .or_insert((deployment.id.commit_hash, created_at));
+                if created_at > entry.1 {
+                    *entry = (deployment.id.commit_hash, created_at);
+                }
+            }
+        }
+
+        let mut refs = Vec::with_capacity(refs_by_name.len());
+        for (name, (commit_hash, _)) in refs_by_name {
+            let name = gix_ref::FullName::try_from(name.as_str())?;
+            refs.push(Reference {
+                name,
+                target: gix_ref::Target::Object(commit_hash),
+                peeled: None,
+            });
+        }
+
+        Ok(refs)
     }
 }
