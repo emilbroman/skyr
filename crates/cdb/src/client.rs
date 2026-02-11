@@ -21,6 +21,7 @@ use scylla::{
         ExecutionError, NewSessionError, NextRowError, PagerExecutionError, PrepareError,
         TypeCheckError,
     },
+    statement::prepared::PreparedStatement,
 };
 use thiserror::Error;
 
@@ -28,6 +29,116 @@ use thiserror::Error;
 pub enum ConnectError {
     #[error("failed to create session: {0}")]
     Scylla(#[from] NewSessionError),
+
+    #[error("failed to prepare statement: {0}")]
+    Prepare(#[from] PrepareError),
+
+    #[error("failed to create tables: {0}")]
+    CreateTables(#[from] ExecutionError),
+}
+
+macro_rules! prepared_statements {
+    ($($struct_name:ident { $($name:ident = $statement:expr,)* })+) => {
+        $(
+            #[derive(Clone)]
+            struct $struct_name {
+                $($name: PreparedStatement,)*
+            }
+
+            impl $struct_name {
+                async fn new(session: &Session) -> Result<Self, PrepareError> {
+                    let ($($name,)*) = futures::join!(
+                        $(session.prepare($statement)),*
+                    );
+
+                    Ok(Self {
+                        $($name: $name?,)*
+                    })
+                }
+            }
+        )+
+    }
+}
+
+prepared_statements! {
+    TableStatements {
+        create_deployments_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.deployments (
+                repository TEXT,
+                ref_name TEXT,
+                commit_hash BLOB,
+                created_at TIMESTAMP,
+                state TEXT,
+                PRIMARY KEY ((repository), ref_name, commit_hash)
+            )
+        "#,
+
+        create_active_deployments_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.active_deployments (
+                repository TEXT,
+                ref_name TEXT,
+                commit_hash BLOB,
+                created_at TIMESTAMP,
+                state TEXT,
+                PRIMARY KEY ((repository), ref_name, commit_hash)
+            )
+        "#,
+
+        create_objects_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.objects (
+                repository TEXT,
+                hash BLOB,
+                contents BLOB,
+                PRIMARY KEY ((repository), hash)
+            )
+        "#,
+    }
+
+    PreparedStatements {
+        read_object = r#"
+            SELECT contents FROM cdb.objects
+            WHERE repository = ?
+            AND hash = ?
+        "#,
+
+        write_object = r#"
+            INSERT INTO cdb.objects (repository, hash, contents)
+            VALUES (?, ?, ?)
+        "#,
+
+        find_deployment = r#"
+            SELECT created_at, state FROM cdb.deployments
+            WHERE repository = ?
+            AND ref_name = ?
+            AND commit_hash = ?
+        "#,
+
+        list_deployments_by_repo = r#"
+            SELECT ref_name, commit_hash, created_at, state
+            FROM cdb.deployments
+            WHERE repository = ?
+        "#,
+
+        list_active_deployments = r#"
+            SELECT repository, ref_name, commit_hash, created_at, state
+            FROM cdb.active_deployments
+        "#,
+
+        list_active_deployments_by_repo = r#"
+            SELECT ref_name, commit_hash, created_at, state
+            FROM cdb.active_deployments
+            WHERE repository = ?
+        "#,
+
+        set_deployment = r#"
+            UPDATE cdb.deployments
+            SET created_at = ?,
+                state = ?
+            WHERE repository = ?
+            AND ref_name = ?
+            AND commit_hash = ?
+        "#,
+    }
 }
 
 #[derive(Default)]
@@ -48,13 +159,30 @@ impl ClientBuilder {
     pub async fn build(&self) -> Result<Client, ConnectError> {
         let session = Arc::new(self.inner.build().await?);
 
-        Ok(Client { session })
+        let statements = TableStatements::new(&session).await?;
+
+        let (r1, r2, r3) = futures::join!(
+            session.execute_unpaged(&statements.create_deployments_table, ()),
+            session.execute_unpaged(&statements.create_active_deployments_table, ()),
+            session.execute_unpaged(&statements.create_objects_table, ()),
+        );
+        r1?;
+        r2?;
+        r3?;
+
+        let statements = PreparedStatements::new(&session).await?;
+
+        Ok(Client {
+            session,
+            statements,
+        })
     }
 }
 
 #[derive(Clone)]
 pub struct Client {
     session: Arc<Session>,
+    statements: PreparedStatements,
 }
 
 impl Client {
@@ -101,8 +229,8 @@ impl RepositoryClient {
         let pager = self
             .client
             .session
-            .query_iter(
-                "SELECT contents FROM cdb.objects WHERE repository = ? AND hash = ?",
+            .execute_iter(
+                self.client.statements.read_object.clone(),
                 (self.name.to_string(), hash.as_bytes()),
             )
             .await?;
@@ -125,18 +253,15 @@ pub enum ReadObjectError {
 
 impl RepositoryClient {
     pub async fn write_object(&self, id: ObjectId, object: Object) -> Result<(), WriteObjectError> {
-        let stmt = self
-            .client
-            .session
-            .prepare("INSERT INTO cdb.objects (repository, hash, contents) VALUES (?, ?, ?)")
-            .await?;
-
         let mut data = vec![];
         object.write_to(&mut data)?;
 
         self.client
             .session
-            .execute_unpaged(&stmt, (self.name.to_string(), id.as_slice(), data))
+            .execute_unpaged(
+                &self.client.statements.write_object,
+                (self.name.to_string(), id.as_slice(), data),
+            )
             .await?;
 
         Ok(())
@@ -149,9 +274,6 @@ impl RepositoryClient {
 
 #[derive(Error, Debug)]
 pub enum WriteObjectError {
-    #[error("failed to prepare statement: {0}")]
-    Prepare(#[from] PrepareError),
-
     #[error("failed to execute statement: {0}")]
     Execute(#[from] ExecutionError),
 
@@ -304,10 +426,17 @@ impl Client {
         repo: &RepositoryName,
         deployment_id: &DeploymentId,
     ) -> Result<Deployment, DeploymentQueryError> {
-        let pager = self.session.query_iter(
-            "SELECT created_at, state FROM cdb.deployments WHERE repository = ? AND ref_name = ? AND commit_hash = ?",
-            (repo.to_string(), &deployment_id.ref_name, deployment_id.commit_hash.as_slice())
-        ).await?;
+        let pager = self
+            .session
+            .execute_iter(
+                self.statements.find_deployment.clone(),
+                (
+                    repo.to_string(),
+                    &deployment_id.ref_name,
+                    deployment_id.commit_hash.as_slice(),
+                ),
+            )
+            .await?;
 
         match pager.rows_stream::<(DateTime<Utc>, String)>()?.next().await {
             None => Err(DeploymentQueryError::NotFound),
@@ -327,10 +456,7 @@ impl Client {
     {
         let pager = self
             .session
-            .query_iter(
-                "SELECT repository, ref_name, commit_hash, created_at, state FROM cdb.active_deployments",
-                (),
-            )
+            .execute_iter(self.statements.list_active_deployments.clone(), ())
             .await?;
 
         Ok(pager
@@ -358,8 +484,11 @@ impl RepositoryClient {
         let pager = self
             .client
             .session
-            .query_iter(
-                "SELECT ref_name, commit_hash, created_at, state FROM cdb.active_deployments WHERE repository = ? ALLOW FILTERING",
+            .execute_iter(
+                self.client
+                    .statements
+                    .list_active_deployments_by_repo
+                    .clone(),
                 (self.name.to_string(),),
             )
             .await?;
@@ -388,8 +517,8 @@ impl RepositoryClient {
         let pager = self
             .client
             .session
-            .query_iter(
-                "SELECT ref_name, commit_hash, created_at, state FROM cdb.deployments WHERE repository = ?",
+            .execute_iter(
+                self.client.statements.list_deployments_by_repo.clone(),
                 (self.name.to_string(),),
             )
             .await?;
@@ -435,11 +564,9 @@ pub enum DeploymentQueryError {
 
 impl Client {
     pub async fn set_deployment(&self, deployment: Deployment) -> Result<(), SetDeploymentError> {
-        let stmt = self.session.prepare("UPDATE cdb.deployments SET created_at = ?, state = ? WHERE repository = ? AND ref_name = ? AND commit_hash = ?").await?;
-
         self.session
             .execute_unpaged(
-                &stmt,
+                &self.statements.set_deployment,
                 (
                     deployment.created_at,
                     deployment.state.to_string(),
@@ -456,9 +583,6 @@ impl Client {
 
 #[derive(Error, Debug)]
 pub enum SetDeploymentError {
-    #[error("failed to prepare statement: {0}")]
-    Prepare(#[from] PrepareError),
-
     #[error("failed to execute statement: {0}")]
     Execute(#[from] ExecutionError),
 }

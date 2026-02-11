@@ -18,6 +18,7 @@
         ];
         shellHook = ''
           rustup install nightly
+          rustup component add rust-analyzer
         '';
       };
     });

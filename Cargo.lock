@@ -311,6 +311,7 @@ name = "cdb"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "futures",
  "futures-util",
  "gix-hash",
  "gix-object",
