@@ -231,11 +231,8 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(
-            b"",
-            futures_util::stream::iter(refs.into_iter()),
-        )
-        .await?;
+        self.advertise_refs(b"", futures_util::stream::iter(refs.into_iter()))
+            .await?;
 
         let mut r = self.channel.make_reader();
         let wants = {
@@ -294,7 +291,6 @@ impl<'a> CommandHandler<'a> {
 
         #[derive(Clone)]
         struct PackObject {
-            id: gix_hash::ObjectId,
             kind: gix_object::Kind,
             data: Vec<u8>,
         }
@@ -347,7 +343,6 @@ impl<'a> CommandHandler<'a> {
                     .ok_or_else(|| anyhow!("object body truncated"))?;
 
                 out.push(PackObject {
-                    id: oid,
                     kind,
                     data: body.to_vec(),
                 });
@@ -461,8 +456,11 @@ impl<'a> CommandHandler<'a> {
     async fn receive_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"report-status", futures_util::stream::iter(refs.into_iter()))
-            .await?;
+        self.advertise_refs(
+            b"report-status delete-refs",
+            futures_util::stream::iter(refs.into_iter()),
+        )
+        .await?;
 
         let mut r = self.channel.make_reader();
 
@@ -902,7 +900,12 @@ impl<'a> CommandHandler<'a> {
                     ref_name: update.name.clone(),
                     commit_hash: update.old,
                 });
-                deployment.set(state).await?;
+                let (r1, r2) = futures::join!(
+                    deployment.set(state),
+                    deployment.mark_superceded_by(update.new),
+                );
+                r1?;
+                r2?;
             }
 
             results.push((update.name.clone(), None::<String>));
@@ -931,40 +934,19 @@ impl<'a> CommandHandler<'a> {
     }
 
     async fn collect_refs(&self) -> anyhow::Result<Vec<Reference>> {
-        let mut refs_by_name: HashMap<String, (gix_hash::ObjectId, i64)> = HashMap::new();
+        let mut refs = vec![];
 
         let mut deployments = self.client.active_deployments().await?;
         while let Some(deployment) = deployments.next().await {
             let deployment = deployment?;
-            let created_at = deployment.created_at.timestamp_millis();
-            let entry = refs_by_name
-                .entry(deployment.id.ref_name.clone())
-                .or_insert((deployment.id.commit_hash, created_at));
-            if created_at > entry.1 {
-                *entry = (deployment.id.commit_hash, created_at);
-            }
-        }
 
-        if refs_by_name.is_empty() {
-            let mut deployments = self.client.deployments().await?;
-            while let Some(deployment) = deployments.next().await {
-                let deployment = deployment?;
-                let created_at = deployment.created_at.timestamp_millis();
-                let entry = refs_by_name
-                    .entry(deployment.id.ref_name.clone())
-                    .or_insert((deployment.id.commit_hash, created_at));
-                if created_at > entry.1 {
-                    *entry = (deployment.id.commit_hash, created_at);
-                }
+            if deployment.state == DeploymentState::Undesired {
+                continue;
             }
-        }
 
-        let mut refs = Vec::with_capacity(refs_by_name.len());
-        for (name, (commit_hash, _)) in refs_by_name {
-            let name = gix_ref::FullName::try_from(name.as_str())?;
             refs.push(Reference {
-                name,
-                target: gix_ref::Target::Object(commit_hash),
+                name: gix_ref::FullName::try_from(deployment.id.ref_name.as_str())?,
+                target: gix_ref::Target::Object(deployment.id.commit_hash),
                 peeled: None,
             });
         }

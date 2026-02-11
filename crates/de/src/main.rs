@@ -136,18 +136,27 @@ impl Worker {
             }
 
             DeploymentState::Desired => {
-                info!(&self.log, "rolling out");
+                // TODO: resource management
+
+                info!(&self.log, "reconciling");
 
                 let program = sclc::compile(self.client.clone()).await?;
                 debug!(&self.log, "{program:?}");
+
+                if let Some(superceded) = self.client.get_superceded().await? {
+                    superceded.set(DeploymentState::Undesired).await?;
+                }
+
                 Ok(())
             }
 
             DeploymentState::Undesired => {
                 info!(&self.log, "tearing down");
 
-                let program = sclc::compile(self.client.clone()).await?;
-                debug!(&self.log, "{program:?}");
+                // TODO: delete any resources
+
+                info!(&self.log, "no more resources, setting state to DOWN");
+                self.client.set(DeploymentState::Down).await?;
                 Ok(())
             }
 

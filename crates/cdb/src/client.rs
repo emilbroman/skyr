@@ -18,8 +18,8 @@ use gix_object::{Blob, Commit, Object, Tree, WriteTo};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
-        ExecutionError, NewSessionError, NextRowError, PagerExecutionError, PrepareError,
-        TypeCheckError,
+        ExecutionError, IntoRowsResultError, NewSessionError, NextRowError, PagerExecutionError,
+        PrepareError, SingleRowError, TypeCheckError,
     },
     statement::prepared::PreparedStatement,
 };
@@ -69,7 +69,7 @@ prepared_statements! {
                 commit_hash BLOB,
                 created_at TIMESTAMP,
                 state TEXT,
-                PRIMARY KEY ((repository), ref_name, commit_hash)
+                PRIMARY KEY ((repository), ref_name, commit_hash, created_at)
             )
         "#,
 
@@ -80,7 +80,7 @@ prepared_statements! {
                 commit_hash BLOB,
                 created_at TIMESTAMP,
                 state TEXT,
-                PRIMARY KEY ((repository), ref_name, commit_hash)
+                PRIMARY KEY ((repository), ref_name, commit_hash, created_at)
             )
         "#,
 
@@ -90,6 +90,16 @@ prepared_statements! {
                 hash BLOB,
                 contents BLOB,
                 PRIMARY KEY ((repository), hash)
+            )
+        "#,
+
+        create_supercessions_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.supercessions (
+                repository TEXT,
+                ref_name TEXT,
+                superceded_commit_hash BLOB,
+                superceding_commit_hash BLOB,
+                PRIMARY KEY ((repository), ref_name, superceded_commit_hash)
             )
         "#,
     }
@@ -132,11 +142,44 @@ prepared_statements! {
 
         set_deployment = r#"
             UPDATE cdb.deployments
-            SET created_at = ?,
-                state = ?
+            SET state = ?
             WHERE repository = ?
             AND ref_name = ?
             AND commit_hash = ?
+            AND created_at = ?
+        "#,
+
+        set_active_deployment = r#"
+            UPDATE cdb.active_deployments
+            SET state = ?
+            WHERE repository = ?
+            AND ref_name = ?
+            AND commit_hash = ?
+            AND created_at = ?
+        "#,
+
+        unset_active_deployment = r#"
+            DELETE FROM cdb.active_deployments
+            WHERE repository = ?
+            AND ref_name = ?
+            AND commit_hash = ?
+        "#,
+
+        create_supercession = r#"
+            UPDATE cdb.supercessions
+            SET superceding_commit_hash = ?
+            WHERE repository = ?
+            AND ref_name = ?
+            AND superceded_commit_hash = ?
+        "#,
+
+        get_superceded_commit = r#"
+            SELECT superceded_commit_hash
+            FROM cdb.supercessions
+            WHERE repository = ?
+            AND ref_name = ?
+            AND superceding_commit_hash = ?
+            ALLOW FILTERING
         "#,
     }
 }
@@ -161,14 +204,16 @@ impl ClientBuilder {
 
         let statements = TableStatements::new(&session).await?;
 
-        let (r1, r2, r3) = futures::join!(
+        let (r1, r2, r3, r4) = futures::join!(
             session.execute_unpaged(&statements.create_deployments_table, ()),
             session.execute_unpaged(&statements.create_active_deployments_table, ()),
             session.execute_unpaged(&statements.create_objects_table, ()),
+            session.execute_unpaged(&statements.create_supercessions_table, ()),
         );
         r1?;
         r2?;
         r3?;
+        r4?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -329,10 +374,27 @@ impl DeploymentClient {
     }
 
     pub async fn set(&self, state: DeploymentState) -> Result<(), SetDeploymentError> {
+        let prev_state = self.get().await.ok();
+
+        if let (
+            Some(Deployment {
+                state: DeploymentState::Down,
+                ..
+            }),
+            DeploymentState::Undesired,
+        ) = (&prev_state, state)
+        {
+            // Don't set DOWN state to UNDESIRED
+            return Ok(());
+        }
+
         let deployment = Deployment {
             repository: self.repo.name.clone(),
             id: self.id.clone(),
-            created_at: Utc::now(),
+            created_at: prev_state
+                .as_ref()
+                .map(|s| s.created_at.clone())
+                .unwrap_or_else(|| Utc::now()),
             state,
         };
 
@@ -546,11 +608,20 @@ pub enum DeploymentQueryError {
     #[error("failed to execute: {0}")]
     ScyllaPager(#[from] PagerExecutionError),
 
+    #[error("failed to execute: {0}")]
+    ScyllaExecution(#[from] ExecutionError),
+
     #[error("failed to parse row: {0}")]
     ScyllaTypeCheck(#[from] TypeCheckError),
 
     #[error("failed to load row: {0}")]
     ScyllaNextRow(#[from] NextRowError),
+
+    #[error("failed to load row: {0}")]
+    ScyllaIntoRows(#[from] IntoRowsResultError),
+
+    #[error("failed to load single row: {0}")]
+    ScyllaSingleRow(#[from] SingleRowError),
 
     #[error("{0}")]
     InvalidState(#[from] InvalidDeploymentState),
@@ -564,18 +635,48 @@ pub enum DeploymentQueryError {
 
 impl Client {
     pub async fn set_deployment(&self, deployment: Deployment) -> Result<(), SetDeploymentError> {
-        self.session
-            .execute_unpaged(
+        let (dep, active_dep) = futures::join!(
+            self.session.execute_unpaged(
                 &self.statements.set_deployment,
                 (
-                    deployment.created_at,
                     deployment.state.to_string(),
                     deployment.repository.to_string(),
-                    deployment.id.ref_name,
+                    &deployment.id.ref_name,
                     deployment.id.commit_hash.as_slice(),
+                    deployment.created_at,
                 ),
-            )
-            .await?;
+            ),
+            async {
+                if deployment.state == DeploymentState::Down {
+                    self.session
+                        .execute_unpaged(
+                            &self.statements.unset_active_deployment,
+                            (
+                                deployment.repository.to_string(),
+                                &deployment.id.ref_name,
+                                deployment.id.commit_hash.as_slice(),
+                            ),
+                        )
+                        .await
+                } else {
+                    self.session
+                        .execute_unpaged(
+                            &self.statements.set_active_deployment,
+                            (
+                                deployment.state.to_string(),
+                                deployment.repository.to_string(),
+                                &deployment.id.ref_name,
+                                deployment.id.commit_hash.as_slice(),
+                                deployment.created_at,
+                            ),
+                        )
+                        .await
+                }
+            }
+        );
+
+        dep?;
+        active_dep?;
 
         Ok(())
     }
@@ -585,4 +686,55 @@ impl Client {
 pub enum SetDeploymentError {
     #[error("failed to execute statement: {0}")]
     Execute(#[from] ExecutionError),
+
+    #[error("failed to query: {0}")]
+    Query(#[from] DeploymentQueryError),
+}
+
+impl DeploymentClient {
+    pub async fn mark_superceded_by(
+        &self,
+        commit_hash: ObjectId,
+    ) -> Result<(), SetDeploymentError> {
+        self.repo
+            .client
+            .session
+            .execute_unpaged(
+                &self.repo.client.statements.create_supercession,
+                (
+                    commit_hash.as_bytes(),
+                    self.repo.name.to_string(),
+                    &self.id.ref_name,
+                    self.id.commit_hash.as_bytes(),
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn get_superceded(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
+        let r = self
+            .repo
+            .client
+            .session
+            .execute_unpaged(
+                &self.repo.client.statements.get_superceded_commit,
+                (
+                    self.repo.name.to_string(),
+                    &self.id.ref_name,
+                    self.id.commit_hash.as_bytes(),
+                ),
+            )
+            .await?;
+
+        Ok(r.into_rows_result()?
+            .single_row::<(Vec<u8>,)>()
+            .ok()
+            .map(|(superceded,)| {
+                self.repo.deployment(DeploymentId {
+                    ref_name: self.id.ref_name.clone(),
+                    commit_hash: ObjectId::from_bytes_or_panic(&superceded),
+                })
+            }))
+    }
 }
