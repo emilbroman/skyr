@@ -2539,6 +2539,9 @@ dependencies = [
 name = "rdb"
 version = "0.1.0"
 dependencies = [
+ "futures",
+ "sclc",
+ "scylla",
  "thiserror 2.0.18",
 ]
 
@@ -2743,6 +2746,7 @@ name = "sclc"
 version = "0.1.0"
 dependencies = [
  "cdb",
+ "serde",
  "thiserror 2.0.18",
 ]
 
