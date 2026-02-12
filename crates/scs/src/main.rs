@@ -940,7 +940,10 @@ impl<'a> CommandHandler<'a> {
         while let Some(deployment) = deployments.next().await {
             let deployment = deployment?;
 
-            if deployment.state == DeploymentState::Undesired {
+            if matches!(
+                deployment.state,
+                DeploymentState::Undesired | DeploymentState::Lingering
+            ) {
                 continue;
             }
 

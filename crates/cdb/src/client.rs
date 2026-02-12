@@ -62,12 +62,14 @@ macro_rules! prepared_statements {
 }
 
 prepared_statements! {
-    TableStatements {
+    KeyspaceStatements {
         create_keyspace = r#"
             CREATE KEYSPACE IF NOT EXISTS cdb
             WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
         "#,
+    }
 
+    TableStatements {
         create_deployments_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.deployments (
                 repository TEXT,
@@ -228,10 +230,13 @@ impl ClientBuilder {
     pub async fn build(&self) -> Result<Client, ConnectError> {
         let session = Arc::new(self.inner.build().await?);
 
+        let statements = KeyspaceStatements::new(&session).await?;
+
+        session.execute_unpaged(&statements.create_keyspace, ()).await?;
+
         let statements = TableStatements::new(&session).await?;
 
-        let (r0, r1, r2, r3, r4, r5) = futures::join!(
-            session.execute_unpaged(&statements.create_keyspace, ()),
+        let (r0, r1, r2, r3, r4) = futures::join!(
             session.execute_unpaged(&statements.create_deployments_table, ()),
             session.execute_unpaged(&statements.create_active_deployments_table, ()),
             session.execute_unpaged(&statements.create_deployments_by_id_table, ()),
@@ -243,7 +248,6 @@ impl ClientBuilder {
         r2?;
         r3?;
         r4?;
-        r5?;
 
         let statements = PreparedStatements::new(&session).await?;
 

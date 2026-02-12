@@ -100,6 +100,13 @@ Not implemented yet (high impact):
 - Keep deployment state transitions coherent across `scs` and `de`.
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
 
+## Running Locally (Quick Test)
+
+- Run `podman compose up` to start Cassandra and RabbitMQ.
+- Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222`.
+- Start the `scs` program with `daemon --address 127.0.0.1:2222` so it matches the `test-repo/` remote.
+- Start the deployment engine with `cargo run -p de -- daemon` to process deployments.
+
 ## Environment Notes
 
 - `AGENTS.md` was empty before this update.
