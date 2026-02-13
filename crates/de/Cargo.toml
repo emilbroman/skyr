@@ -11,5 +11,7 @@ slog-async = "2.8.0"
 slog-term = "2.9.2"
 tokio = { version = "1.49.0", features = ["full"] }
 cdb = { path = "../cdb" }
+rdb = { path = "../rdb" }
 sclc = { path = "../sclc" }
+rtq = { path = "../rtq" }
 futures-util = "0.3.31"

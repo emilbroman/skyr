@@ -5,7 +5,7 @@ use std::{
 
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt, future};
 use slog::{Drain, Logger, debug, error, info, o};
 use tokio::{
     sync::oneshot::{self, error::TryRecvError},
@@ -18,6 +18,9 @@ enum Program {
     Daemon {
         #[clap(long = "db-hostname", default_value = "localhost")]
         db_hostname: String,
+
+        #[clap(long = "mq-hostname", default_value = "localhost")]
+        mq_hostname: String,
     },
 }
 
@@ -30,12 +33,25 @@ async fn main() -> anyhow::Result<()> {
     let log = slog::Logger::root(drain, o!());
 
     match Program::parse() {
-        Program::Daemon { db_hostname } => {
+        Program::Daemon {
+            db_hostname,
+            mq_hostname,
+        } => {
             info!(log, "starting deployment engine daemon");
 
-            let client = cdb::ClientBuilder::new()
-                .known_node(db_hostname)
+            let cdb_client = cdb::ClientBuilder::new()
+                .known_node(&db_hostname)
                 .build()
+                .await?;
+
+            let rdb_client = rdb::ClientBuilder::new()
+                .known_node(&db_hostname)
+                .build()
+                .await?;
+
+            let rtq_publisher = rtq::ClientBuilder::new()
+                .uri(format!("amqp://{}:5672/%2f", mq_hostname))
+                .build_publisher()
                 .await?;
 
             let mut workers = BTreeMap::new();
@@ -43,7 +59,15 @@ async fn main() -> anyhow::Result<()> {
             loop {
                 let next_loop = Instant::now() + Duration::from_secs(20);
 
-                if let Err(e) = process(log.clone(), client.clone(), &mut workers).await {
+                if let Err(e) = process(
+                    log.clone(),
+                    cdb_client.clone(),
+                    rdb_client.clone(),
+                    rtq_publisher.clone(),
+                    &mut workers,
+                )
+                .await
+                {
                     error!(log, "{e}")
                 }
 
@@ -61,6 +85,8 @@ async fn main() -> anyhow::Result<()> {
 async fn process(
     log: Logger,
     client: cdb::Client,
+    rdb_client: rdb::Client,
+    rtq_publisher: rtq::Publisher,
     workers: &mut BTreeMap<String, oneshot::Sender<()>>,
 ) -> anyhow::Result<()> {
     let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
@@ -75,10 +101,13 @@ async fn process(
             debug!(log, "new deployment to process: {}", deployment.fqid());
 
             let (tx, rx) = oneshot::channel();
+            let namespace = format!("{}/{}", deployment.repository, deployment.id.ref_name);
 
             let worker = Worker {
                 log: log.new(o!("dep" => deployment.fqid())),
                 client: client.repo(deployment.repository).deployment(deployment.id),
+                namespace: rdb_client.namespace(namespace),
+                rtq_publisher: rtq_publisher.clone(),
             };
 
             task::spawn(worker.run_loop(rx));
@@ -98,6 +127,8 @@ async fn process(
 struct Worker {
     log: Logger,
     client: DeploymentClient,
+    namespace: rdb::NamespaceClient,
+    rtq_publisher: rtq::Publisher,
 }
 
 impl Worker {
@@ -153,7 +184,40 @@ impl Worker {
             DeploymentState::Undesired => {
                 info!(&self.log, "tearing down");
 
-                // TODO: delete any resources
+                let owner = deployment.id.commit_hash.to_string();
+                let owner_for_filter = owner.clone();
+                let mut emitted = 0usize;
+                let mut resources =
+                    self.namespace
+                        .list_resources()
+                        .await?
+                        .try_filter(move |resource| {
+                            future::ready(
+                                resource.owner.as_deref() == Some(owner_for_filter.as_str()),
+                            )
+                        });
+                while let Some(resource) = resources.try_next().await? {
+                    let message = rtq::Message::Destroy(rtq::DestroyMessage {
+                        resource: rtq::ResourceRef {
+                            resource_type: resource.resource_type.clone(),
+                            resource_id: resource.id.clone(),
+                        },
+                        owner_deployment_id: owner.clone(),
+                    });
+                    self.rtq_publisher.enqueue(&message).await?;
+                    emitted += 1;
+
+                    info!(&self.log, "queued destroy";
+                        "type" => resource.resource_type,
+                        "id" => resource.id,
+                        "owner" => resource.owner
+                    );
+                }
+
+                if emitted > 0 {
+                    info!(&self.log, "queued {} destroy messages", emitted);
+                    return Ok(());
+                }
 
                 info!(&self.log, "no more resources, setting state to DOWN");
                 self.client.set(DeploymentState::Down).await?;
