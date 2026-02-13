@@ -18,7 +18,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - `crates/cdb`: Cassandra-backed API for repositories, objects, deployments, active deployments, supercession links.
 - `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
 - `crates/sclc`: Minimal compiler surface; currently reads `Main.scl` from a deployment and returns raw code.
-- `crates/rdb`: Cassandra schema for resources exists, but resource CRUD API is mostly TODO.
+- `crates/rdb`: Cassandra schema for resources plus basic ResourceClient CRUD for get/set/delete of inputs/outputs.
 - `crates/rte`: Daemon shell only; no RTQ consumption or transition logic.
 - `crates/rtq`: Placeholder crate (`src/lib.rs` is effectively empty).
 
@@ -37,7 +37,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Marks replaced refs as `LINGERING` (or `UNDESIRED` on delete).
   - Writes supercession relationship.
 - On fetch:
-  - Advertises active non-`UNDESIRED` deployments as refs.
+  - Advertises active deployments that are not `UNDESIRED` or `LINGERING` as refs.
   - Streams a generated packfile from stored objects.
 
 ### CDB (`crates/cdb`)
@@ -71,7 +71,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 - `rdb`:
   - Cassandra table definitions exist (`rdb.resources`).
-  - `ResourceClient::{get,set_input}` are `todo!()`.
+  - `ResourceClient` supports `get`, `set_input`, `set_output`, and `delete`.
 - `rtq`: no queue client implementation yet.
 - `rte`: daemon loop exists but does no work.
 
@@ -109,6 +109,5 @@ Not implemented yet (high impact):
 
 ## Environment Notes
 
-- `AGENTS.md` was empty before this update.
 - `cargo` is not available in the current shell session by default.
 - `flake.nix` defines a dev shell including `rustup` and `cargo`; use that shell before Rust builds/checks if needed.
