@@ -9,3 +9,52 @@ services:
     ports:
       - 15672:15672
       - 5672:5672
+
+  scs:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/scs"]
+    command:
+      [
+        "daemon",
+        "--address",
+        "0.0.0.0:2222",
+        "--key",
+        "/host.pem",
+        "--db-hostname",
+        "cassandra",
+      ]
+    depends_on:
+      - cassandra
+    restart: unless-stopped
+    ports:
+      - 2222:2222
+    volumes:
+      - ./host.pem:/host.pem:ro
+    profiles:
+      - full
+
+  de:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/de"]
+    command: ["daemon", "--db-hostname", "cassandra"]
+    depends_on:
+      - cassandra
+    restart: unless-stopped
+    profiles:
+      - full
+
+  rte:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    entrypoint: ["/rte"]
+    command: ["daemon"]
+    depends_on:
+      - rabbitmq
+    restart: unless-stopped
+    profiles:
+      - full
