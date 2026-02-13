@@ -3,17 +3,29 @@ services:
     image: cassandra:5
     ports:
       - 9042:9042
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
     ports:
       - 15672:15672
       - 5672:5672
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
 
   scs:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: skyr:latest
     entrypoint: ["/scs"]
     command:
       [
@@ -25,36 +37,60 @@ services:
         "--db-hostname",
         "cassandra",
       ]
-    depends_on:
-      - cassandra
     restart: unless-stopped
     ports:
       - 2222:2222
     volumes:
       - ./host.pem:/host.pem:ro
-    profiles:
-      - full
 
   de:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: skyr:latest
     entrypoint: ["/de"]
-    command: ["daemon", "--db-hostname", "cassandra"]
-    depends_on:
-      - cassandra
+    command:
+      ["daemon", "--db-hostname", "cassandra", "--mq-hostname", "rabbitmq"]
     restart: unless-stopped
-    profiles:
-      - full
 
-  rte:
-    build:
-      context: .
-      dockerfile: Dockerfile
+  rte-0:
+    image: skyr:latest
     entrypoint: ["/rte"]
-    command: ["daemon"]
-    depends_on:
-      - rabbitmq
+    command:
+      [
+        "daemon",
+        "--mq-hostname",
+        "rabbitmq",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "3",
+      ]
     restart: unless-stopped
-    profiles:
-      - full
+
+  rte-1:
+    image: skyr:latest
+    entrypoint: ["/rte"]
+    command:
+      [
+        "daemon",
+        "--mq-hostname",
+        "rabbitmq",
+        "--worker-index",
+        "1",
+        "--worker-count",
+        "3",
+      ]
+    restart: unless-stopped
+
+  rte-2:
+    image: skyr:latest
+    entrypoint: ["/rte"]
+    command:
+      [
+        "daemon",
+        "--mq-hostname",
+        "rabbitmq",
+        "--worker-index",
+        "2",
+        "--worker-count",
+        "3",
+      ]
+    restart: unless-stopped
