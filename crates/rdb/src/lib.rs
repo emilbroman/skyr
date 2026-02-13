@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use futures::TryStreamExt;
+use futures::{Stream, StreamExt, TryStreamExt};
 use sclc::Record;
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
@@ -64,15 +64,6 @@ prepared_statements! {
                 PRIMARY KEY ((namespace), resource_type, id)
             )
         "#,
-        create_resources_by_owner_table = r#"
-            CREATE TABLE IF NOT EXISTS rdb.resources_by_owner (
-                namespace TEXT,
-                owner TEXT,
-                resource_type TEXT,
-                id TEXT,
-                PRIMARY KEY ((namespace, owner), resource_type, id)
-            )
-        "#,
     }
 
     PreparedStatements {
@@ -83,15 +74,10 @@ prepared_statements! {
             AND resource_type = ?
             AND id = ?
         "#,
-        list_resources_by_owner = r#"
-            SELECT resource_type, id
-            FROM rdb.resources_by_owner
+        list_resources = r#"
+            SELECT resource_type, id, inputs_json, outputs_json, owner
+            FROM rdb.resources
             WHERE namespace = ?
-            AND owner = ?
-        "#,
-        upsert_resource_by_owner = r#"
-            INSERT INTO rdb.resources_by_owner (namespace, owner, resource_type, id)
-            VALUES (?, ?, ?, ?)
         "#,
         set_resource_input = r#"
             UPDATE rdb.resources
@@ -105,13 +91,6 @@ prepared_statements! {
             UPDATE rdb.resources
             SET outputs_json = ?
             WHERE namespace = ?
-            AND resource_type = ?
-            AND id = ?
-        "#,
-        delete_resource_by_owner = r#"
-            DELETE FROM rdb.resources_by_owner
-            WHERE namespace = ?
-            AND owner = ?
             AND resource_type = ?
             AND id = ?
         "#,
@@ -144,14 +123,12 @@ impl ClientBuilder {
 
         let statements = TableStatements::new(&session).await?;
 
-        let (r0, r1, r2) = futures::join!(
+        let (r0, r1) = futures::join!(
             session.execute_unpaged(&statements.create_keyspace, ()),
             session.execute_unpaged(&statements.create_resources_table, ()),
-            session.execute_unpaged(&statements.create_resources_by_owner_table, ()),
         );
         r0?;
         r1?;
-        r2?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -192,30 +169,32 @@ impl NamespaceClient {
         }
     }
 
-    pub async fn list_resources_by_owner(
+    pub async fn list_resources(
         &self,
-        owner: String,
-    ) -> Result<Vec<ResourceClient>, ResourceError> {
+    ) -> Result<impl Stream<Item = Result<Resource, ResourceError>>, ResourceError> {
         let pager = self
             .client
             .session
             .execute_iter(
-                self.client.statements.list_resources_by_owner.clone(),
-                (self.namespace.as_str(), owner.as_str()),
+                self.client.statements.list_resources.clone(),
+                (self.namespace.as_str(),),
             )
             .await?;
 
-        let mut rows = pager.rows_stream::<(String, String)>()?;
-        let mut resources = Vec::new();
-        while let Some((resource_type, id)) = rows.try_next().await? {
-            resources.push(ResourceClient {
-                namespace: self.clone(),
-                resource_type,
-                id,
-            });
-        }
-
-        Ok(resources)
+        let namespace = self.namespace.clone();
+        Ok(pager
+            .rows_stream::<(String, String, Option<String>, Option<String>, Option<String>)>()?
+            .map(move |row| {
+                let (resource_type, id, inputs_json, outputs_json, owner) = row?;
+                Ok::<_, ResourceError>(Resource {
+                    namespace: namespace.clone(),
+                    resource_type,
+                    id,
+                    inputs: decode_record(inputs_json)?,
+                    outputs: decode_record(outputs_json)?,
+                    owner,
+                })
+            }))
     }
 }
 
@@ -264,29 +243,20 @@ impl ResourceClient {
     pub async fn set_input(&self, inputs: Record, owner: String) -> Result<Resource, ResourceError> {
         let inputs_json = encode_record(&inputs)?;
 
-        let (r0, r1) = futures::join!(
-            self.namespace.client.session.execute_unpaged(
+        self.namespace
+            .client
+            .session
+            .execute_unpaged(
                 &self.namespace.client.statements.set_resource_input,
                 (
                     inputs_json,
-                    owner.clone(),
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
-            ),
-            self.namespace.client.session.execute_unpaged(
-                &self.namespace.client.statements.upsert_resource_by_owner,
-                (
-                    self.namespace.namespace.as_str(),
                     owner.as_str(),
+                    self.namespace.namespace.as_str(),
                     self.resource_type.as_str(),
                     self.id.as_str(),
                 ),
-            ),
-        );
-        r0?;
-        r1?;
+            )
+            .await?;
 
         self.get().await
     }
@@ -312,12 +282,6 @@ impl ResourceClient {
     }
 
     pub async fn delete(&self) -> Result<(), ResourceError> {
-        let owner = match self.get().await {
-            Ok(resource) => resource.owner,
-            Err(ResourceError::NotFound) => None,
-            Err(err) => return Err(err),
-        };
-
         self.namespace
             .client
             .session
@@ -330,22 +294,6 @@ impl ResourceClient {
                 ),
             )
             .await?;
-
-        if let Some(owner) = owner {
-            self.namespace
-                .client
-                .session
-                .execute_unpaged(
-                    &self.namespace.client.statements.delete_resource_by_owner,
-                    (
-                        self.namespace.namespace.as_str(),
-                        owner.as_str(),
-                        self.resource_type.as_str(),
-                        self.id.as_str(),
-                    ),
-                )
-                .await?;
-        }
 
         Ok(())
     }
