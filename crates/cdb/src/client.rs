@@ -232,7 +232,9 @@ impl ClientBuilder {
 
         let statements = KeyspaceStatements::new(&session).await?;
 
-        session.execute_unpaged(&statements.create_keyspace, ()).await?;
+        session
+            .execute_unpaged(&statements.create_keyspace, ())
+            .await?;
 
         let statements = TableStatements::new(&session).await?;
 
@@ -399,6 +401,10 @@ pub struct DeploymentClient {
 }
 
 impl DeploymentClient {
+    pub fn repository_name(&self) -> &RepositoryName {
+        &self.repo.name
+    }
+
     pub fn fqid(&self) -> String {
         format!("{}/{}", self.repo.name, self.id)
     }
