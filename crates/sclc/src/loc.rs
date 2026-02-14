@@ -33,6 +33,11 @@ impl Position {
     pub fn next_char(&mut self) {
         self.character += 1;
     }
+
+    pub fn next_line(&mut self) {
+        self.line += 1;
+        self.character = 1;
+    }
 }
 
 impl Default for Position {

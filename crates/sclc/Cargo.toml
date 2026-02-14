@@ -8,3 +8,4 @@ thiserror = "2.0.18"
 cdb = { path = "../cdb" }
 serde = { version = "1.0.228", features = ["derive"] }
 unicode-segmentation = "1.12.0"
+peg = "0.8.4"
