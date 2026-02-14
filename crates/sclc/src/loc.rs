@@ -29,6 +29,10 @@ impl Position {
     pub const fn character(self) -> u32 {
         self.character
     }
+
+    pub fn next_char(&mut self) {
+        self.character += 1;
+    }
 }
 
 impl Default for Position {
