@@ -7,6 +7,8 @@ use crate::{Loc, Position, Span};
 pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
+    Slash,
+    ImportKeyword,
     Symbol(&'a str),
     Whitepace(&'a str),
     Unknown(&'a str),
@@ -82,7 +84,11 @@ impl<'a> Iterator for Lexer<'a> {
             }
 
             let symbol = &self.source[symbol_start..symbol_end];
-            Token::Symbol(symbol)
+            if symbol == "import" {
+                Token::ImportKeyword
+            } else {
+                Token::Symbol(symbol)
+            }
         } else if Self::is_whitespace_grapheme(grapheme) {
             let whitespace_start = grapheme_index;
             let mut whitespace_end = grapheme_index + grapheme.len();
@@ -103,6 +109,7 @@ impl<'a> Iterator for Lexer<'a> {
             match grapheme {
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
+                "/" => Token::Slash,
                 _ => Token::Unknown(grapheme),
             }
         };

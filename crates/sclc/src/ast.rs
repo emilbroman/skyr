@@ -5,6 +5,7 @@ pub struct FileMod {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModStmt {
+    Import(ImportStmt),
     Expr(Expr),
 }
 
@@ -16,4 +17,9 @@ pub enum Expr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Var {
     pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportStmt {
+    pub vars: Vec<Var>,
 }
