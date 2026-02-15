@@ -9,6 +9,7 @@ pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, &'a ast::Expr>>,
     locals: HashMap<&'a str, Value>,
+    stack_depth: u32,
 }
 
 impl<'a> EvalEnv<'a> {
@@ -17,6 +18,7 @@ impl<'a> EvalEnv<'a> {
             module_id: None,
             globals: None,
             locals: HashMap::new(),
+            stack_depth: 0,
         }
     }
 
@@ -25,6 +27,7 @@ impl<'a> EvalEnv<'a> {
             module_id: self.module_id,
             globals: self.globals,
             locals: self.locals.clone(),
+            stack_depth: self.stack_depth,
         }
     }
 
@@ -33,6 +36,7 @@ impl<'a> EvalEnv<'a> {
             module_id: self.module_id,
             globals: Some(globals),
             locals: HashMap::new(),
+            stack_depth: self.stack_depth,
         }
     }
 
@@ -41,6 +45,7 @@ impl<'a> EvalEnv<'a> {
             module_id: Some(module_id),
             globals: self.globals,
             locals: self.locals.clone(),
+            stack_depth: self.stack_depth,
         }
     }
 
@@ -55,7 +60,18 @@ impl<'a> EvalEnv<'a> {
             module_id: self.module_id,
             globals: self.globals,
             locals: HashMap::new(),
+            stack_depth: self.stack_depth,
         }
+    }
+
+    pub fn with_stack_frame(&self) -> Result<Self, EvalError> {
+        if self.stack_depth >= 50 {
+            return Err(EvalError::StackOverflow);
+        }
+
+        let mut env = self.inner();
+        env.stack_depth += 1;
+        Ok(env)
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&Value> {
@@ -83,6 +99,9 @@ pub enum EvalError {
 
     #[error("failed to emit effect: {0:?}")]
     EmitEffect(Effect),
+
+    #[error("stack overflow")]
+    StackOverflow,
 }
 
 impl Eval {
@@ -103,7 +122,7 @@ impl Eval {
                     return Ok(local_value.clone());
                 }
                 if let Some(global_expr) = env.lookup_global(var.name.as_str()) {
-                    let global_env = env.without_locals();
+                    let global_env = env.without_locals().with_stack_frame()?;
                     return self.eval_expr(&global_env, global_expr);
                 }
                 Ok(Value::Nil)

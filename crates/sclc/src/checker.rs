@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{DiagList, Diagnosed, Package, Program, RecordType, Type, ast};
 use thiserror::Error;
@@ -74,6 +75,12 @@ impl<'a> TypeEnv<'a> {
 }
 
 pub struct TypeChecker;
+
+static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(0);
+
+fn next_type_id() -> usize {
+    NEXT_TYPE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Error, Debug)]
 #[error("undefined variable: {name}")]
@@ -155,7 +162,15 @@ impl TypeChecker {
         let mut diags = DiagList::new();
 
         for statement in &file_mod.statements {
-            self.check_stmt(&env, statement)?.unpack(&mut diags);
+            match statement {
+                ast::ModStmt::Let(let_bind) => {
+                    self.check_global_let_bind(&env, let_bind)?
+                        .unpack(&mut diags);
+                }
+                _ => {
+                    self.check_stmt(&env, statement)?.unpack(&mut diags);
+                }
+            }
         }
 
         Ok(Diagnosed::new((), diags))
@@ -174,7 +189,8 @@ impl TypeChecker {
             }
             ast::ModStmt::Let(let_bind) => {
                 let mut diags = DiagList::new();
-                self.check_expr(env, &let_bind.expr)?.unpack(&mut diags);
+                self.check_global_let_bind(env, let_bind)?
+                    .unpack(&mut diags);
                 Ok(Diagnosed::new((), diags))
             }
             ast::ModStmt::Print(print_stmt) => {
@@ -209,8 +225,18 @@ impl TypeChecker {
                     return Ok(Diagnosed::new(local_ty.clone(), DiagList::new()));
                 }
                 if let Some(global_expr) = env.lookup_global(var.name.as_str()) {
-                    let global_env = env.without_locals();
-                    return self.check_expr(&global_env, global_expr);
+                    let mut diags = DiagList::new();
+                    let type_id = next_type_id();
+                    let global_env = env
+                        .without_locals()
+                        .with_local(var.name.as_str(), Type::Var(type_id));
+                    let resolved_ty = self
+                        .check_expr(&global_env, global_expr)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(
+                        Type::IsoRec(type_id, Box::new(resolved_ty)),
+                        diags,
+                    ));
                 }
                 let mut diags = DiagList::new();
                 diags.push(UndefinedVariable {
@@ -254,6 +280,21 @@ impl TypeChecker {
                 Ok(Diagnosed::new(Type::Never, diags))
             }
         }
+    }
+
+    fn check_global_let_bind(
+        &self,
+        env: &TypeEnv<'_>,
+        let_bind: &ast::LetBind,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        let mut diags = DiagList::new();
+        let type_id = next_type_id();
+        let env = env.with_local(let_bind.var.name.as_str(), Type::Var(type_id));
+        let resolved_ty = self.check_expr(&env, &let_bind.expr)?.unpack(&mut diags);
+        Ok(Diagnosed::new(
+            Type::IsoRec(type_id, Box::new(resolved_ty)),
+            diags,
+        ))
     }
 }
 

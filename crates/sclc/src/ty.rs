@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 pub enum Type {
     Int,
     Record(RecordType),
+    IsoRec(usize, Box<Type>),
+    Var(usize),
     Never,
 }
 
@@ -27,6 +29,8 @@ impl std::fmt::Display for Type {
         match self {
             Type::Int => write!(f, "Int"),
             Type::Record(record) => write!(f, "{record}"),
+            Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
+            Type::Var(id) => write!(f, "Var({id})"),
             Type::Never => write!(f, "Never"),
         }
     }

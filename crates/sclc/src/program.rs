@@ -184,7 +184,7 @@ impl<S: SourceRepo> Program<S> {
         &mut self,
         module_id: &ModuleId,
         effects: tokio::sync::mpsc::UnboundedSender<crate::Effect>,
-    ) -> Result<crate::Value, EvaluateError> {
+    ) -> Result<(), EvaluateError> {
         let Some(package_name) = self.package_name_for_import(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
         };
@@ -213,6 +213,7 @@ impl<S: SourceRepo> Program<S> {
         let mut eval = crate::Eval::new(effects);
         let env = crate::EvalEnv::new().with_module_id(module_id);
         eval.eval_file_mod(&env, file_mod)
-            .map_err(|err| EvaluateError::Eval(module_id.clone(), err))
+            .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
+        Ok(())
     }
 }
