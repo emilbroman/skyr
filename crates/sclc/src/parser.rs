@@ -1,9 +1,26 @@
+use std::collections::HashSet;
+
 use peg::{Parse, ParseElem, RuleResult};
+use thiserror::Error;
 
 use crate::{
-    Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc, ModStmt, Position, PrintStmt,
-    ReplLine, Span, Token, Var,
+    Diag, DiagList, Diagnosed, Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc,
+    ModStmt, ModuleId, Position, PrintStmt, RecordExpr, RecordField, ReplLine, Span, Token, Var,
 };
+
+#[derive(Error, Debug)]
+#[error("duplicate record field: {name}")]
+pub struct DuplicateRecordField {
+    pub module_id: ModuleId,
+    pub name: String,
+    pub span: Span,
+}
+
+impl Diag for DuplicateRecordField {
+    fn locate(&self) -> (ModuleId, Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
 
 pub struct TokenStream<'a> {
     tokens: Vec<crate::Loc<Token<'a>>>,
@@ -57,7 +74,7 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>() for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = statements:mod_stmt()* eof() { FileMod { statements } }
 
@@ -74,8 +91,28 @@ peg::parser! {
 
         rule expr() -> Expr
             = let_expr:let_expr() { Expr::Let(let_expr) }
+            / record_expr:record_expr() { Expr::Record(record_expr) }
             / int:int() { Expr::Int(int.into_inner()) }
             / var:var() { Expr::Var(var) }
+
+        rule record_expr() -> RecordExpr
+            = open_curly() close_curly() { RecordExpr { fields: vec![] } }
+            / open_curly() fields:(record_field() ++ comma()) comma()? close_curly() {
+                let mut seen_fields = HashSet::new();
+                for field in &fields {
+                    if !seen_fields.insert(field.var.name.clone()) {
+                        diags.push(DuplicateRecordField {
+                            module_id: module_id.clone(),
+                            name: field.var.name.clone(),
+                            span: field.var.span(),
+                        });
+                    }
+                }
+                RecordExpr { fields }
+            }
+
+        rule record_field() -> RecordField
+            = var:var() colon() expr:expr() { RecordField { var, expr } }
 
         rule let_expr() -> LetExpr
             = bind:let_bind() semicolon() expr:expr() { LetExpr { bind, expr: Box::new(expr) } }
@@ -116,6 +153,14 @@ peg::parser! {
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 
+        rule open_curly() = [token if matches!(token.as_ref(), Token::OpenCurly)]
+
+        rule close_curly() = [token if matches!(token.as_ref(), Token::CloseCurly)]
+
+        rule colon() = [token if matches!(token.as_ref(), Token::Colon)]
+
+        rule comma() = [token if matches!(token.as_ref(), Token::Comma)]
+
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
                 Token::Symbol(name) => Ok(Loc::new(Var { name: name.to_owned() }, token.span())),
@@ -133,23 +178,64 @@ peg::parser! {
     }
 }
 
-pub fn parse_file_mod(source: &str) -> Result<FileMod, peg::error::ParseError<Position>> {
-    grammar::file_mod(&TokenStream::new(source))
+pub fn parse_file_mod(
+    source: &str,
+    module_id: &ModuleId,
+) -> Result<Diagnosed<FileMod>, peg::error::ParseError<Position>> {
+    let mut diags = DiagList::new();
+    let file_mod = grammar::file_mod(&TokenStream::new(source), &mut diags, module_id)?;
+    Ok(Diagnosed::new(file_mod, diags))
 }
 
-pub fn parse_repl_line(source: &str) -> Result<ReplLine, peg::error::ParseError<Position>> {
-    grammar::repl_line(&TokenStream::new(source))
+pub fn parse_repl_line(
+    source: &str,
+    module_id: &ModuleId,
+) -> Result<Diagnosed<ReplLine>, peg::error::ParseError<Position>> {
+    let mut diags = DiagList::new();
+    let repl_line = grammar::repl_line(&TokenStream::new(source), &mut diags, module_id)?;
+    Ok(Diagnosed::new(repl_line, diags))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_file_mod;
+    use crate::ModuleId;
+
+    use super::{parse_file_mod, parse_repl_line};
 
     #[test]
     fn parse_error_uses_position_repr() {
-        let err = parse_file_mod("{x").expect_err("expected parse failure");
+        let err = parse_file_mod("{x", &ModuleId::default()).expect_err("expected parse failure");
         eprintln!("{err}");
         assert_eq!(err.location.line(), 1);
-        assert_eq!(err.location.character(), 1);
+        assert_eq!(err.location.character(), 3);
+    }
+
+    #[test]
+    fn parses_record_with_trailing_comma() {
+        let line = parse_repl_line("{ a: 1, b: 2, }", &ModuleId::default())
+            .expect("record should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(crate::Expr::Record(record)) = line.statement else {
+            panic!("expected record expression");
+        };
+        assert_eq!(record.fields.len(), 2);
+        assert_eq!(record.fields[0].var.name, "a");
+        assert_eq!(record.fields[1].var.name, "b");
+    }
+
+    #[test]
+    fn duplicate_record_fields_emit_diagnostic() {
+        let module_id = ["Org".to_owned(), "Pkg".to_owned(), "Main".to_owned()]
+            .into_iter()
+            .collect::<ModuleId>();
+        let diagnosed = parse_repl_line("{ a: 1, a: 2 }", &module_id).expect("record should parse");
+        assert!(diagnosed.diags().has_errors());
+        let first_diag = diagnosed
+            .diags()
+            .iter()
+            .next()
+            .expect("expected diagnostic");
+        let (diag_module_id, _) = first_diag.locate();
+        assert_eq!(diag_module_id, module_id);
     }
 }

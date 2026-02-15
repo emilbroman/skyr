@@ -7,6 +7,8 @@ use crate::{Loc, Position, Span};
 pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
+    Colon,
+    Comma,
     Equals,
     Semicolon,
     Slash,
@@ -147,6 +149,8 @@ impl<'a> Iterator for Lexer<'a> {
             match grapheme {
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
+                ":" => Token::Colon,
+                "," => Token::Comma,
                 "=" => Token::Equals,
                 ";" => Token::Semicolon,
                 "/" => Token::Slash,

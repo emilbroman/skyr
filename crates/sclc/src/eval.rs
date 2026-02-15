@@ -108,6 +108,14 @@ impl Eval {
                 }
                 Ok(Value::Nil)
             }
+            ast::Expr::Record(record_expr) => {
+                let mut record = Record::default();
+                for field in &record_expr.fields {
+                    let value = self.eval_expr(env, &field.expr)?;
+                    record.insert(field.var.name.clone(), value);
+                }
+                Ok(Value::Record(record))
+            }
         }
     }
 

@@ -13,6 +13,12 @@ pub struct Record {
     fields: BTreeMap<String, Value>,
 }
 
+impl Record {
+    pub fn insert(&mut self, name: String, value: Value) {
+        self.fields.insert(name, value);
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

@@ -39,6 +39,7 @@ pub enum Expr {
     Int(Int),
     Let(LetExpr),
     Var(Loc<Var>),
+    Record(RecordExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,4 +72,15 @@ pub struct LetBind {
 pub struct LetExpr {
     pub bind: LetBind,
     pub expr: Box<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordExpr {
+    pub fields: Vec<RecordField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordField {
+    pub var: Loc<Var>,
+    pub expr: Expr,
 }

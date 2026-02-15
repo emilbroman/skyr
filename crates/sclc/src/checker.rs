@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
 
-use crate::{DiagList, Diagnosed, Package, Program, Type, ast};
+use crate::{DiagList, Diagnosed, Package, Program, RecordType, Type, ast};
 use thiserror::Error;
 
 pub struct TypeEnv<'a> {
@@ -206,6 +206,17 @@ impl TypeChecker {
                     var: var.clone(),
                 });
                 Ok(Diagnosed::new(Type::Never, diags))
+            }
+            ast::Expr::Record(record_expr) => {
+                let mut diags = DiagList::new();
+                let mut record_ty = RecordType::default();
+
+                for field in &record_expr.fields {
+                    let field_ty = self.check_expr(env, &field.expr)?.unpack(&mut diags);
+                    record_ty.insert(field.var.name.clone(), field_ty);
+                }
+
+                Ok(Diagnosed::new(Type::Record(record_ty), diags))
             }
         }
     }

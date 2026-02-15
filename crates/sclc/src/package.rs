@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path};
 use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
@@ -72,7 +72,26 @@ impl<S: SourceRepo> Package<S> {
             .map_err(|err| OpenError::Source(Box::new(err)))?
             .ok_or_else(|| OpenError::NotFound(path.clone()))?;
         let source = String::from_utf8(source_data)?;
-        let file_mod = parse_file_mod(&source)?;
+        let package_id = self.package_id();
+        let module_id = module_id_for_path(&package_id, &path);
+        let file_mod = parse_file_mod(&source, &module_id)?.into_inner();
         Ok(self.files.entry(path.clone()).or_insert(file_mod))
     }
+}
+
+fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::ModuleId {
+    let mut segments = package_id.as_slice().to_vec();
+    if let Some(parent) = path.parent() {
+        for segment in parent.components() {
+            if let Component::Normal(part) = segment {
+                segments.push(part.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    if let Some(stem) = path.file_stem() {
+        segments.push(stem.to_string_lossy().into_owned());
+    }
+
+    segments.into_iter().collect()
 }
