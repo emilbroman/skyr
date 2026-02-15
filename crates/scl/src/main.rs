@@ -66,10 +66,12 @@ async fn run_repl() -> anyhow::Result<()> {
                     number: line_number,
                     history: history.clone(),
                 };
-                let package = program.open_package(source).await;
-                let module = package.open("Main.scl").await?;
-
-                println!("{module:?}");
+                let _ = program.open_package(source).await;
+                let module_id = [format!("Repl{}", line_number), String::from("Main")]
+                    .into_iter()
+                    .collect::<sclc::ModuleId>();
+                let value = program.evaluate(&module_id).await?;
+                println!("{value:?}");
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
