@@ -1,6 +1,8 @@
 use thiserror::Error;
 
-use crate::{DiagList, Diagnosed, OpenError, Program, ResolveImportError, SourceRepo};
+use crate::{
+    DiagList, Diagnosed, OpenError, Program, ResolveImportError, SourceRepo, TypeCheckError,
+};
 
 #[derive(Error, Debug)]
 pub enum CompileError {
@@ -9,6 +11,9 @@ pub enum CompileError {
 
     #[error("failed to resolve imports: {0}")]
     ResolveImports(#[from] ResolveImportError),
+
+    #[error("failed to type check program: {0}")]
+    TypeCheck(#[from] TypeCheckError),
 }
 
 pub async fn compile<S: SourceRepo>(source: S) -> Result<Diagnosed<Program<S>>, CompileError> {
@@ -18,6 +23,7 @@ pub async fn compile<S: SourceRepo>(source: S) -> Result<Diagnosed<Program<S>>, 
     let _ = package.open("Main.scl").await?;
 
     program.resolve_imports().await?.unpack(&mut diags);
+    program.check_types()?.unpack(&mut diags);
 
     Ok(Diagnosed::new(program, diags))
 }

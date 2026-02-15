@@ -47,6 +47,10 @@ impl<S> Package<S> {
                 })
         })
     }
+
+    pub fn modules(&self) -> impl Iterator<Item = (&PathBuf, &FileMod)> {
+        self.files.iter()
+    }
 }
 
 impl<S: SourceRepo> Package<S> {

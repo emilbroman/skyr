@@ -1,4 +1,5 @@
 mod ast;
+mod checker;
 mod compile;
 mod diag;
 mod eval;
@@ -9,9 +10,11 @@ mod package;
 mod parser;
 mod program;
 mod source_repo;
+mod ty;
 mod value;
 
 pub use ast::*;
+pub use checker::*;
 pub use compile::*;
 pub use diag::*;
 pub use eval::*;
@@ -22,4 +25,5 @@ pub use package::*;
 pub use parser::*;
 pub use program::*;
 pub use source_repo::*;
+pub use ty::*;
 pub use value::*;

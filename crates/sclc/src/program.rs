@@ -12,6 +12,17 @@ pub struct Program<S> {
     packages: HashMap<ModuleId, Package<S>>,
 }
 
+impl<S> Program<S> {
+    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package<S>)> {
+        self.packages.iter()
+    }
+
+    pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError> {
+        let checker = crate::TypeChecker;
+        checker.check_program(self)
+    }
+}
+
 #[derive(Error, Debug)]
 pub enum ResolveImportError {
     #[error("failed to open import {import_path} from package {package_name}: {source}")]
