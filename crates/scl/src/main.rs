@@ -21,9 +21,7 @@ impl Repl {
     fn process(&mut self, line: &str) -> anyhow::Result<()> {
         self.line_number += 1;
 
-        let module_id = [format!("Repl{}", self.line_number), String::from("Main")]
-            .into_iter()
-            .collect::<sclc::ModuleId>();
+        let module_id = [format!("Repl{}", self.line_number)].into();
         let Some(repl_line) = Self::report(sclc::parse_repl_line(line, &module_id)?) else {
             return Ok(());
         };

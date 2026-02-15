@@ -48,6 +48,18 @@ impl FromIterator<String> for ModuleId {
     }
 }
 
+impl<I> From<I> for ModuleId
+where
+    I: IntoIterator,
+    I::Item: Into<String>,
+{
+    fn from(value: I) -> Self {
+        Self {
+            segments: value.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
 impl std::fmt::Display for ModuleId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.segments.join("/"))
