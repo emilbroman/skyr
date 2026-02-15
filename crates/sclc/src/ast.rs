@@ -7,6 +7,11 @@ pub struct FileMod {
     pub statements: Vec<ModStmt>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplLine {
+    pub statement: ModStmt,
+}
+
 impl FileMod {
     pub fn find_globals(&self) -> HashMap<&str, &Expr> {
         let mut globals = HashMap::new();

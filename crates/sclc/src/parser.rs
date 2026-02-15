@@ -2,7 +2,7 @@ use peg::{Parse, ParseElem, RuleResult};
 
 use crate::{
     Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc, ModStmt, Position, PrintStmt,
-    Span, Token, Var,
+    ReplLine, Span, Token, Var,
 };
 
 pub struct TokenStream<'a> {
@@ -60,6 +60,9 @@ peg::parser! {
     grammar grammar<'tok>() for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = statements:mod_stmt()* eof() { FileMod { statements } }
+
+        pub rule repl_line() -> ReplLine
+            = statement:mod_stmt() eof() { ReplLine { statement } }
 
         rule eof() = ![_]
 
@@ -132,6 +135,10 @@ peg::parser! {
 
 pub fn parse_file_mod(source: &str) -> Result<FileMod, peg::error::ParseError<Position>> {
     grammar::file_mod(&TokenStream::new(source))
+}
+
+pub fn parse_repl_line(source: &str) -> Result<ReplLine, peg::error::ParseError<Position>> {
+    grammar::repl_line(&TokenStream::new(source))
 }
 
 #[cfg(test)]
