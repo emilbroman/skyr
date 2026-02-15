@@ -1,7 +1,29 @@
 use clap::Parser;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use tokio::task;
+
+struct FsSource {
+    root: PathBuf,
+    package_id: sclc::ModuleId,
+}
+
+impl sclc::SourceRepo for FsSource {
+    type Err = std::io::Error;
+
+    fn package_id(&self) -> sclc::ModuleId {
+        self.package_id.clone()
+    }
+
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+        match tokio::fs::read(self.root.join(path)).await {
+            Ok(data) => Ok(Some(data)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(err) => Err(err),
+        }
+    }
+}
 
 struct Repl {
     line_number: usize,
@@ -107,6 +129,12 @@ impl Repl {
 #[derive(Parser)]
 enum Program {
     Repl,
+    Run {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "Local")]
+        package: String,
+    },
 }
 
 #[tokio::main]
@@ -114,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
     match Program::parse() {
         Program::Repl => {
             run_repl().await?;
+        }
+        Program::Run { root, package } => {
+            run_program(root, package).await?;
         }
     }
 
@@ -149,4 +180,53 @@ async fn run_repl() -> anyhow::Result<()> {
     effects_task.await?;
 
     Ok(())
+}
+
+async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
+    let package_id = package
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect::<sclc::ModuleId>();
+    let source = FsSource {
+        root,
+        package_id: package_id.clone(),
+    };
+    let Some(mut program) = report(sclc::compile(source).await?) else {
+        return Ok(());
+    };
+
+    let module_id = package_id
+        .as_slice()
+        .iter()
+        .cloned()
+        .chain(std::iter::once(String::from("Main")))
+        .collect::<sclc::ModuleId>();
+
+    let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
+    let effects_task = task::spawn(async move {
+        while let Some(effect) = effects_rx.recv().await {
+            match effect {
+                sclc::Effect::Print(value) => println!("{value}"),
+            }
+        }
+    });
+
+    program.evaluate(&module_id, effects_tx).await?;
+
+    effects_task.await?;
+    Ok(())
+}
+
+fn report<T>(diagnosed: sclc::Diagnosed<T>) -> Option<T> {
+    for diag in diagnosed.diags().iter() {
+        let (module_id, span) = diag.locate();
+        println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
+    }
+
+    if diagnosed.diags().has_errors() {
+        return None;
+    }
+
+    Some(diagnosed.into_inner())
 }
