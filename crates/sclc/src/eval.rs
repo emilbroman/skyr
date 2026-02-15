@@ -36,7 +36,6 @@ impl Eval {
     pub fn eval_file_mod(&mut self, file_mod: &ast::FileMod) -> Result<Value, EvalError> {
         for statement in &file_mod.statements {
             match statement {
-                ast::ModStmt::Import(_) => continue,
                 ast::ModStmt::Print(print_stmt) => {
                     let value = self.eval_expr(print_stmt.expr.clone())?;
                     self._effects
@@ -46,6 +45,7 @@ impl Eval {
                 ast::ModStmt::Expr(expr) => {
                     let _ = self.eval_expr(expr.clone())?;
                 }
+                _ => continue,
             }
         }
 

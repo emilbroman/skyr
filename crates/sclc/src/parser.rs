@@ -1,7 +1,8 @@
 use peg::{Parse, ParseElem, RuleResult};
 
 use crate::{
-    Expr, FileMod, ImportStmt, Int, Lexer, Loc, ModStmt, Position, PrintStmt, Span, Token, Var,
+    Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc, ModStmt, Position, PrintStmt,
+    Span, Token, Var,
 };
 
 pub struct TokenStream<'a> {
@@ -66,10 +67,18 @@ peg::parser! {
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
             / print_stmt:print_stmt() { ModStmt::Print(print_stmt) }
             / expr:expr() { ModStmt::Expr(expr) }
+            / let_bind:let_bind() { ModStmt::Let(let_bind) }
 
         rule expr() -> Expr
-            = int:int() { Expr::Int(int.into_inner()) }
+            = let_expr:let_expr() { Expr::Let(let_expr) }
+            / int:int() { Expr::Int(int.into_inner()) }
             / var:var() { Expr::Var(var.into_inner()) }
+
+        rule let_expr() -> LetExpr
+            = bind:let_bind() semicolon() expr:expr() { LetExpr { bind, expr: Box::new(expr) } }
+
+        rule let_bind() -> LetBind
+            = let_keyword() var:var() equals() expr:expr() { LetBind { var: var.into_inner(), expr: Box::new(expr) } }
 
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {
@@ -95,7 +104,13 @@ peg::parser! {
         rule import_keyword_span() -> Span
             = [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
 
+        rule let_keyword() = [token if matches!(token.as_ref(), Token::LetKeyword)]
+
         rule print_keyword() = [token if matches!(token.as_ref(), Token::PrintKeyword)]
+
+        rule equals() = [token if matches!(token.as_ref(), Token::Equals)]
+
+        rule semicolon() = [token if matches!(token.as_ref(), Token::Semicolon)]
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 

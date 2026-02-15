@@ -8,6 +8,7 @@ pub struct FileMod {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModStmt {
     Import(Loc<ImportStmt>),
+    Let(LetBind),
     Print(PrintStmt),
     Expr(Expr),
 }
@@ -15,6 +16,7 @@ pub enum ModStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Int(Int),
+    Let(LetExpr),
     Var(Var),
 }
 
@@ -36,4 +38,16 @@ pub struct ImportStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PrintStmt {
     pub expr: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LetBind {
+    pub var: Var,
+    pub expr: Box<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LetExpr {
+    pub bind: LetBind,
+    pub expr: Box<Expr>,
 }

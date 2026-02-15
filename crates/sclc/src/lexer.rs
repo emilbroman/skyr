@@ -7,8 +7,11 @@ use crate::{Loc, Position, Span};
 pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
+    Equals,
+    Semicolon,
     Slash,
     ImportKeyword,
+    LetKeyword,
     PrintKeyword,
     Int(&'a str),
     Symbol(&'a str),
@@ -102,6 +105,8 @@ impl<'a> Iterator for Lexer<'a> {
             let symbol = &self.source[symbol_start..symbol_end];
             if symbol == "import" {
                 Token::ImportKeyword
+            } else if symbol == "let" {
+                Token::LetKeyword
             } else if symbol == "print" {
                 Token::PrintKeyword
             } else {
@@ -142,6 +147,8 @@ impl<'a> Iterator for Lexer<'a> {
             match grapheme {
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
+                "=" => Token::Equals,
+                ";" => Token::Semicolon,
                 "/" => Token::Slash,
                 _ => Token::Unknown(grapheme),
             }
