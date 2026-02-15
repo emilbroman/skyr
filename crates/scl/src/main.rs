@@ -2,6 +2,7 @@ use std::{convert::Infallible, path::Path};
 
 use clap::Parser;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use tokio::task;
 
 struct ReplSource {
     number: usize,
@@ -46,6 +47,14 @@ async fn run_repl() -> anyhow::Result<()> {
     let mut history = String::new();
     let mut line_number = 0usize;
     let mut program = sclc::Program::<ReplSource>::new();
+    let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
+    let effects_task = task::spawn(async move {
+        while let Some(effect) = effects_rx.recv().await {
+            match effect {
+                sclc::Effect::Print(value) => println!("{value}"),
+            }
+        }
+    });
     let mut editor = DefaultEditor::new()?;
 
     loop {
@@ -70,13 +79,16 @@ async fn run_repl() -> anyhow::Result<()> {
                 let module_id = [format!("Repl{}", line_number), String::from("Main")]
                     .into_iter()
                     .collect::<sclc::ModuleId>();
-                let value = program.evaluate(&module_id).await?;
+                let value = program.evaluate(&module_id, effects_tx.clone()).await?;
                 println!("{value:?}");
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
         }
     }
+
+    drop(effects_tx);
+    effects_task.await?;
 
     Ok(())
 }
