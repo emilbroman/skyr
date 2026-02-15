@@ -128,7 +128,7 @@ async fn run_repl() -> anyhow::Result<()> {
             }
         }
     });
-    let mut repl = Repl::new(effects_tx.clone());
+    let mut repl = Repl::new(effects_tx);
     let mut editor = DefaultEditor::new()?;
 
     loop {
@@ -143,7 +143,7 @@ async fn run_repl() -> anyhow::Result<()> {
         }
     }
 
-    drop(effects_tx);
+    drop(repl);
     effects_task.await?;
 
     Ok(())
