@@ -7,6 +7,7 @@ mod module_id;
 mod package;
 mod parser;
 mod program;
+mod source_repo;
 mod value;
 
 pub use ast::*;
@@ -18,4 +19,5 @@ pub use module_id::*;
 pub use package::*;
 pub use parser::*;
 pub use program::*;
+pub use source_repo::*;
 pub use value::*;

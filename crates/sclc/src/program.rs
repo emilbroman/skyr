@@ -5,11 +5,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package};
+use crate::{Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package, SourceRepo};
 
 #[derive(Clone, Default)]
-pub struct Program {
-    packages: HashMap<ModuleId, Package>,
+pub struct Program<S> {
+    packages: HashMap<ModuleId, Package<S>>,
 }
 
 #[derive(Error, Debug)]
@@ -37,24 +37,18 @@ impl Diag for InvalidImport {
     }
 }
 
-impl Program {
+impl<S: SourceRepo> Program<S> {
     pub fn new() -> Self {
         Self {
             packages: HashMap::new(),
         }
     }
 
-    pub async fn open_package(&mut self, deployment: cdb::DeploymentClient) -> &mut Package {
-        let repository_name = deployment.repository_name();
-        let name = [
-            repository_name.organization.clone(),
-            repository_name.repository.clone(),
-        ]
-        .into_iter()
-        .collect::<ModuleId>();
+    pub async fn open_package(&mut self, source: S) -> &mut Package<S> {
+        let name = SourceRepo::package_id(&source);
         self.packages
             .entry(name)
-            .or_insert_with(|| Package::new(deployment))
+            .or_insert_with(|| Package::new(source))
     }
 
     pub async fn resolve_imports(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
@@ -126,7 +120,7 @@ impl Program {
 
                 if let Err(source) = package.open(&module_path).await {
                     match source {
-                        OpenError::File(cdb::FileError::NotFound(_)) => {
+                        OpenError::NotFound(_) => {
                             diags.push(InvalidImport {
                                 module_id: import_path,
                                 import: import_stmt,
