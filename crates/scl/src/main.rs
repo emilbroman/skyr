@@ -1,29 +1,103 @@
-use std::{convert::Infallible, path::Path};
-
 use clap::Parser;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use std::collections::HashMap;
 use tokio::task;
 
-struct ReplSource {
-    number: usize,
-    line: String,
+struct Repl {
+    line_number: usize,
+    bindings: HashMap<String, (sclc::Type, sclc::Value)>,
+    effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>,
 }
 
-impl sclc::SourceRepo for ReplSource {
-    type Err = Infallible;
-
-    fn package_id(&self) -> sclc::ModuleId {
-        [format!("Repl{}", self.number)]
-            .into_iter()
-            .collect::<sclc::ModuleId>()
+impl Repl {
+    fn new(effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>) -> Self {
+        Self {
+            line_number: 0,
+            bindings: HashMap::new(),
+            effects_tx,
+        }
     }
 
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
-        if path == Path::new("Main.scl") {
-            return Ok(Some(self.line.as_bytes().to_vec()));
+    fn process(&mut self, line: &str) -> anyhow::Result<()> {
+        self.line_number += 1;
+
+        let module_id = [format!("Repl{}", self.line_number), String::from("Main")]
+            .into_iter()
+            .collect::<sclc::ModuleId>();
+        let repl_line = sclc::parse_repl_line(line)?;
+
+        let type_env = self.type_env(&module_id);
+        let checker = sclc::TypeChecker;
+        let pending_binding = match &repl_line.statement {
+            sclc::ModStmt::Let(let_bind) => {
+                let diagnosed = checker.check_expr(&type_env, &let_bind.expr)?;
+                let Some(ty) = Self::report(diagnosed) else {
+                    return Ok(());
+                };
+
+                let eval_env = self.eval_env(&module_id);
+                let mut eval = sclc::Eval::new(self.effects_tx.clone());
+                let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
+                println!("{} : {}", let_bind.var.name, ty);
+                Some((let_bind.var.name.clone(), (ty, value)))
+            }
+            sclc::ModStmt::Expr(expr) => {
+                let diagnosed = checker.check_stmt(&type_env, &repl_line.statement)?;
+                let Some(()) = Self::report(diagnosed) else {
+                    return Ok(());
+                };
+
+                let eval_env = self.eval_env(&module_id);
+                let mut eval = sclc::Eval::new(self.effects_tx.clone());
+                let value = eval.eval_expr(&eval_env, expr)?;
+                println!("{value}");
+                None
+            }
+            stmt => {
+                let diagnosed = checker.check_stmt(&type_env, stmt)?;
+                let Some(()) = Self::report(diagnosed) else {
+                    return Ok(());
+                };
+
+                let eval_env = self.eval_env(&module_id);
+                let mut eval = sclc::Eval::new(self.effects_tx.clone());
+                eval.eval_stmt(&eval_env, stmt)?;
+                None
+            }
+        };
+
+        if let Some((name, binding)) = pending_binding {
+            self.bindings.insert(name, binding);
         }
 
-        Ok(None)
+        Ok(())
+    }
+
+    fn report<T>(diagnosed: sclc::Diagnosed<T>) -> Option<T> {
+        for diag in diagnosed.diags().iter() {
+            let (module_id, span) = diag.locate();
+            println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
+        }
+
+        if diagnosed.diags().has_errors() {
+            return None;
+        }
+
+        Some(diagnosed.into_inner())
+    }
+
+    fn type_env<'a>(&'a self, module_id: &'a sclc::ModuleId) -> sclc::TypeEnv<'a> {
+        self.bindings.iter().fold(
+            sclc::TypeEnv::new().with_module_id(module_id),
+            |env, (name, (ty, _))| env.with_local(name.as_str(), ty.clone()),
+        )
+    }
+
+    fn eval_env<'a>(&'a self, module_id: &'a sclc::ModuleId) -> sclc::EvalEnv<'a> {
+        self.bindings.iter().fold(
+            sclc::EvalEnv::new().with_module_id(module_id),
+            |env, (name, (_, value))| env.with_local(name.as_str(), value.clone()),
+        )
     }
 }
 
@@ -44,7 +118,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_repl() -> anyhow::Result<()> {
-    let mut line_number = 0usize;
     let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
@@ -53,39 +126,15 @@ async fn run_repl() -> anyhow::Result<()> {
             }
         }
     });
+    let mut repl = Repl::new(effects_tx.clone());
     let mut editor = DefaultEditor::new()?;
 
     loop {
         match editor.readline("scl> ") {
             Ok(line) => {
-                let input = line.trim();
-                if matches!(input, "exit" | "quit") {
-                    break;
-                }
-
                 editor.add_history_entry(&line)?;
 
-                line_number += 1;
-
-                let source = ReplSource {
-                    number: line_number,
-                    line: line.clone(),
-                };
-                let diagnosed = sclc::compile(source).await?;
-                for diag in diagnosed.diags().iter() {
-                    let (module_id, span) = diag.locate();
-                    println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
-                }
-                if diagnosed.diags().has_errors() {
-                    continue;
-                }
-
-                let mut program = diagnosed.into_inner();
-                let module_id = [format!("Repl{}", line_number), String::from("Main")]
-                    .into_iter()
-                    .collect::<sclc::ModuleId>();
-                let value = program.evaluate(&module_id, effects_tx.clone()).await?;
-                println!("{value:?}");
+                repl.process(&line)?;
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
