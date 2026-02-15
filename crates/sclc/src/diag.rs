@@ -2,8 +2,17 @@ use std::error::Error;
 
 use crate::{ModuleId, Span};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DiagLevel {
+    Error,
+}
+
 pub trait Diag: Error + Send + Sync {
     fn locate(&self) -> (ModuleId, Span);
+
+    fn level(&self) -> DiagLevel {
+        DiagLevel::Error
+    }
 }
 
 #[derive(Default)]
@@ -34,6 +43,12 @@ impl DiagList {
 
     pub fn is_empty(&self) -> bool {
         self.diags.is_empty()
+    }
+
+    pub fn has_errors(&self) -> bool {
+        self.diags
+            .iter()
+            .any(|diag| diag.level() == DiagLevel::Error)
     }
 
     pub fn extend(&mut self, other: Self) {
