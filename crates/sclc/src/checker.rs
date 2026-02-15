@@ -89,9 +89,6 @@ impl crate::Diag for UndefinedVariable {
 
 #[derive(Error, Debug)]
 pub enum TypeCheckError {
-    #[error("type checking not implemented for expression: {0:?}")]
-    UnimplementedExpr(ast::Expr),
-
     #[error("type checking not implemented for statement: {0:?}")]
     UnimplementedStmt(ast::ModStmt),
 
@@ -159,6 +156,11 @@ impl TypeChecker {
                 self.check_expr(env, expr)?.unpack(&mut diags);
                 Ok(Diagnosed::new((), diags))
             }
+            ast::ModStmt::Let(let_bind) => {
+                let mut diags = DiagList::new();
+                self.check_expr(env, &let_bind.expr)?.unpack(&mut diags);
+                Ok(Diagnosed::new((), diags))
+            }
             ast::ModStmt::Print(print_stmt) => {
                 let mut diags = DiagList::new();
                 self.check_expr(env, &print_stmt.expr)?.unpack(&mut diags);
@@ -205,7 +207,6 @@ impl TypeChecker {
                 });
                 Ok(Diagnosed::new(Type::Never, diags))
             }
-            expr => Err(TypeCheckError::UnimplementedExpr(expr.clone())),
         }
     }
 }
