@@ -8,6 +8,7 @@ pub struct FileMod {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModStmt {
     Import(Loc<ImportStmt>),
+    Print(PrintStmt),
     Expr(Expr),
 }
 
@@ -30,4 +31,9 @@ pub struct Int {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportStmt {
     pub vars: Vec<Var>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrintStmt {
+    pub expr: Expr,
 }

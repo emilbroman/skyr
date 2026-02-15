@@ -166,7 +166,11 @@ impl<S: SourceRepo> Program<S> {
             .cloned()
     }
 
-    pub async fn evaluate(&mut self, module_id: &ModuleId) -> Result<crate::Value, EvaluateError> {
+    pub async fn evaluate(
+        &mut self,
+        module_id: &ModuleId,
+        effects: tokio::sync::mpsc::UnboundedSender<crate::Effect>,
+    ) -> Result<crate::Value, EvaluateError> {
         let Some(package_name) = self.package_name_for_import(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
         };
@@ -192,7 +196,7 @@ impl<S: SourceRepo> Program<S> {
             .await
             .map_err(|err| EvaluateError::Open(module_id.clone(), err))?;
 
-        let mut eval = crate::Eval;
+        let mut eval = crate::Eval::new(effects);
         eval.eval_file_mod(file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))
     }

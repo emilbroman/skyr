@@ -1,6 +1,8 @@
 use peg::{Parse, ParseElem, RuleResult};
 
-use crate::{Expr, FileMod, ImportStmt, Int, Lexer, Loc, ModStmt, Position, Span, Token, Var};
+use crate::{
+    Expr, FileMod, ImportStmt, Int, Lexer, Loc, ModStmt, Position, PrintStmt, Span, Token, Var,
+};
 
 pub struct TokenStream<'a> {
     tokens: Vec<crate::Loc<Token<'a>>>,
@@ -62,6 +64,7 @@ peg::parser! {
 
         rule mod_stmt() -> ModStmt
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
+            / print_stmt:print_stmt() { ModStmt::Print(print_stmt) }
             / expr:expr() { ModStmt::Expr(expr) }
 
         rule expr() -> Expr
@@ -79,6 +82,9 @@ peg::parser! {
                 Loc::new(ImportStmt { vars }, span)
             }
 
+        rule print_stmt() -> PrintStmt
+            = print_keyword() expr:expr() { PrintStmt { expr } }
+
         rule import_path() -> Vec<Loc<Var>>
             = first:var() rest:(slash() var:var() { var })* {
                 let mut vars = vec![first];
@@ -88,6 +94,8 @@ peg::parser! {
 
         rule import_keyword_span() -> Span
             = [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
+
+        rule print_keyword() = [token if matches!(token.as_ref(), Token::PrintKeyword)]
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 

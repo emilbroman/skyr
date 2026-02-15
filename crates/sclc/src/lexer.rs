@@ -9,6 +9,7 @@ pub enum Token<'a> {
     CloseCurly,
     Slash,
     ImportKeyword,
+    PrintKeyword,
     Int(&'a str),
     Symbol(&'a str),
     Whitepace(&'a str),
@@ -101,6 +102,8 @@ impl<'a> Iterator for Lexer<'a> {
             let symbol = &self.source[symbol_start..symbol_end];
             if symbol == "import" {
                 Token::ImportKeyword
+            } else if symbol == "print" {
+                Token::PrintKeyword
             } else {
                 Token::Symbol(symbol)
             }
