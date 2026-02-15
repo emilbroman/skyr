@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId {
     segments: Vec<String>,
 }
@@ -45,5 +45,17 @@ impl FromIterator<String> for ModuleId {
         Self {
             segments: iter.into_iter().collect(),
         }
+    }
+}
+
+impl std::fmt::Display for ModuleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.segments.join("/"))
+    }
+}
+
+impl std::fmt::Debug for ModuleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ModuleId(\"{}\")", self)
     }
 }

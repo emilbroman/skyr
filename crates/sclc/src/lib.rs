@@ -1,6 +1,7 @@
 mod ast;
 mod compile;
 mod diag;
+mod eval;
 mod lexer;
 mod loc;
 mod module_id;
@@ -13,6 +14,7 @@ mod value;
 pub use ast::*;
 pub use compile::*;
 pub use diag::*;
+pub use eval::*;
 pub use lexer::*;
 pub use loc::*;
 pub use module_id::*;

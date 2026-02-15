@@ -14,7 +14,7 @@ pub struct Program<S> {
 
 #[derive(Error, Debug)]
 pub enum ResolveImportError {
-    #[error("failed to open import {import_path:?} from package {package_name:?}: {source}")]
+    #[error("failed to open import {import_path} from package {package_name}: {source}")]
     Open {
         import_path: ModuleId,
         package_name: ModuleId,
@@ -25,7 +25,22 @@ pub enum ResolveImportError {
 }
 
 #[derive(Error, Debug)]
-#[error("invalid import path: {module_id:?}")]
+pub enum EvaluateError {
+    #[error("module id has no module path after package: {0}")]
+    MissingModulePath(ModuleId),
+
+    #[error("module not loaded: {0}")]
+    ModuleNotLoaded(ModuleId),
+
+    #[error("failed to open module {0}: {1}")]
+    Open(ModuleId, #[source] OpenError),
+
+    #[error("failed to evaluate module {0}: {1}")]
+    Eval(ModuleId, #[source] crate::EvalError),
+}
+
+#[derive(Error, Debug)]
+#[error("invalid import path: {module_id}")]
 pub struct InvalidImport {
     pub module_id: ModuleId,
     pub import: Loc<ImportStmt>,
@@ -149,5 +164,36 @@ impl<S: SourceRepo> Program<S> {
             .filter(|package_name| import_path.starts_with(package_name))
             .max_by_key(|package_name| package_name.len())
             .cloned()
+    }
+
+    pub async fn evaluate(&mut self, module_id: &ModuleId) -> Result<crate::Value, EvaluateError> {
+        let Some(package_name) = self.package_name_for_import(module_id) else {
+            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+        };
+
+        let Some(module_segments) = module_id.suffix_after(&package_name) else {
+            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+        };
+        if module_segments.is_empty() {
+            return Err(EvaluateError::MissingModulePath(module_id.clone()));
+        }
+
+        let module_path = module_segments
+            .iter()
+            .cloned()
+            .collect::<ModuleId>()
+            .to_path_buf_with_extension("scl");
+
+        let Some(package) = self.packages.get_mut(&package_name) else {
+            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+        };
+        let file_mod = package
+            .open(&module_path)
+            .await
+            .map_err(|err| EvaluateError::Open(module_id.clone(), err))?;
+
+        let mut eval = crate::Eval;
+        eval.eval_file_mod(file_mod)
+            .map_err(|err| EvaluateError::Eval(module_id.clone(), err))
     }
 }
