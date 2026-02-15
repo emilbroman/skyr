@@ -6,7 +6,7 @@ use tokio::task;
 
 struct ReplSource {
     number: usize,
-    history: String,
+    line: String,
 }
 
 impl sclc::SourceRepo for ReplSource {
@@ -20,7 +20,7 @@ impl sclc::SourceRepo for ReplSource {
 
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
         if path == Path::new("Main.scl") {
-            return Ok(Some(self.history.as_bytes().to_vec()));
+            return Ok(Some(self.line.as_bytes().to_vec()));
         }
 
         Ok(None)
@@ -44,9 +44,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run_repl() -> anyhow::Result<()> {
-    let mut history = String::new();
     let mut line_number = 0usize;
-    let mut program = sclc::Program::<ReplSource>::new();
     let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
@@ -68,14 +66,12 @@ async fn run_repl() -> anyhow::Result<()> {
                 editor.add_history_entry(&line)?;
 
                 line_number += 1;
-                history.push_str(&line);
-                history.push('\n');
 
                 let source = ReplSource {
                     number: line_number,
-                    history: history.clone(),
+                    line: line.clone(),
                 };
-                let _ = program.open_package(source).await;
+                let mut program = sclc::compile(source).await?;
                 let module_id = [format!("Repl{}", line_number), String::from("Main")]
                     .into_iter()
                     .collect::<sclc::ModuleId>();
