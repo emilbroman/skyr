@@ -24,7 +24,9 @@ impl Repl {
         let module_id = [format!("Repl{}", self.line_number), String::from("Main")]
             .into_iter()
             .collect::<sclc::ModuleId>();
-        let repl_line = sclc::parse_repl_line(line)?;
+        let Some(repl_line) = Self::report(sclc::parse_repl_line(line, &module_id)?) else {
+            return Ok(());
+        };
 
         let type_env = self.type_env(&module_id);
         let checker = sclc::TypeChecker;
