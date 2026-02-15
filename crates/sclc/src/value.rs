@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Value {
+    Int(i64),
     Record(Record),
 }
 

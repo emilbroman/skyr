@@ -13,12 +13,18 @@ pub enum ModStmt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
+    Int(Int),
     Var(Var),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Var {
     pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Int {
+    pub value: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -12,7 +12,10 @@ pub enum EvalError {
 
 impl Eval {
     pub fn eval_expr(&mut self, expr: ast::Expr) -> Result<Value, EvalError> {
-        Err(EvalError::NotImplemented(expr))
+        match expr {
+            ast::Expr::Int(int) => Ok(Value::Int(int.value)),
+            expr => Err(EvalError::NotImplemented(expr)),
+        }
     }
 
     pub fn eval_file_mod(&mut self, file_mod: &ast::FileMod) -> Result<Value, EvalError> {

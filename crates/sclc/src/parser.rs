@@ -1,6 +1,6 @@
 use peg::{Parse, ParseElem, RuleResult};
 
-use crate::{Expr, FileMod, ImportStmt, Lexer, Loc, ModStmt, Position, Span, Token, Var};
+use crate::{Expr, FileMod, ImportStmt, Int, Lexer, Loc, ModStmt, Position, Span, Token, Var};
 
 pub struct TokenStream<'a> {
     tokens: Vec<crate::Loc<Token<'a>>>,
@@ -65,7 +65,8 @@ peg::parser! {
             / expr:expr() { ModStmt::Expr(expr) }
 
         rule expr() -> Expr
-            = var:var() { Expr::Var(var.into_inner()) }
+            = int:int() { Expr::Int(int.into_inner()) }
+            / var:var() { Expr::Var(var.into_inner()) }
 
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {
@@ -94,6 +95,15 @@ peg::parser! {
             = [token] {? match *token.as_ref() {
                 Token::Symbol(name) => Ok(Loc::new(Var { name: name.to_owned() }, token.span())),
                 _ => Err("symbol"),
+            } }
+
+        rule int() -> Loc<Int>
+            = [token] {? match *token.as_ref() {
+                Token::Int(value) => match value.parse::<i64>() {
+                    Ok(parsed) => Ok(Loc::new(Int { value: parsed }, token.span())),
+                    Err(_) => Err("integer"),
+                },
+                _ => Err("integer"),
             } }
     }
 }

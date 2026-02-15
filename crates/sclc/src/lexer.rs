@@ -9,6 +9,7 @@ pub enum Token<'a> {
     CloseCurly,
     Slash,
     ImportKeyword,
+    Int(&'a str),
     Symbol(&'a str),
     Whitepace(&'a str),
     Unknown(&'a str),
@@ -45,6 +46,20 @@ impl<'a> Lexer<'a> {
 
     fn is_whitespace_grapheme(grapheme: &str) -> bool {
         !grapheme.is_empty() && grapheme.chars().all(char::is_whitespace)
+    }
+
+    fn is_non_zero_ascii_digit_grapheme(grapheme: &str) -> bool {
+        grapheme
+            .chars()
+            .next()
+            .is_some_and(|character| matches!(character, '1'..='9'))
+    }
+
+    fn is_ascii_digit_grapheme(grapheme: &str) -> bool {
+        grapheme
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_ascii_digit())
     }
 
     fn advance_position_for_grapheme(&mut self, grapheme: &str) {
@@ -89,6 +104,21 @@ impl<'a> Iterator for Lexer<'a> {
             } else {
                 Token::Symbol(symbol)
             }
+        } else if Self::is_non_zero_ascii_digit_grapheme(grapheme) {
+            let int_start = grapheme_index;
+            let mut int_end = grapheme_index + grapheme.len();
+
+            while let Some((_, next_grapheme)) = self.graphemes.peek().copied() {
+                if !Self::is_ascii_digit_grapheme(next_grapheme) {
+                    break;
+                }
+
+                let (next_index, next_grapheme, _) =
+                    self.next_grapheme().expect("peek returned Some");
+                int_end = next_index + next_grapheme.len();
+            }
+
+            Token::Int(&self.source[int_start..int_end])
         } else if Self::is_whitespace_grapheme(grapheme) {
             let whitespace_start = grapheme_index;
             let mut whitespace_end = grapheme_index + grapheme.len();
