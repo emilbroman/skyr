@@ -54,6 +54,10 @@ impl<S> Package<S> {
 }
 
 impl<S: SourceRepo> Package<S> {
+    pub fn package_id(&self) -> crate::ModuleId {
+        SourceRepo::package_id(&self.source)
+    }
+
     pub async fn open(&mut self, path: impl AsRef<Path>) -> Result<&FileMod, OpenError> {
         let path = path.as_ref().to_path_buf();
         if self.files.contains_key(&path) {

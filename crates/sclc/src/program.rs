@@ -17,7 +17,10 @@ impl<S> Program<S> {
         self.packages.iter()
     }
 
-    pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError> {
+    pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError>
+    where
+        S: SourceRepo,
+    {
         let checker = crate::TypeChecker;
         checker.check_program(self)
     }
@@ -91,7 +94,7 @@ impl<S: SourceRepo> Program<S> {
                         .as_ref()
                         .vars
                         .iter()
-                        .map(|var| var.name.clone())
+                        .map(|var| var.as_ref().name.clone())
                         .collect::<ModuleId>();
                     (import_path, import_stmt.clone())
                 })
@@ -208,7 +211,8 @@ impl<S: SourceRepo> Program<S> {
             .map_err(|err| EvaluateError::Open(module_id.clone(), err))?;
 
         let mut eval = crate::Eval::new(effects);
-        eval.eval_file_mod(file_mod)
+        let env = crate::EvalEnv::new().with_module_id(module_id);
+        eval.eval_file_mod(&env, file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))
     }
 }

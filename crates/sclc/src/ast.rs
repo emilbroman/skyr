@@ -1,8 +1,24 @@
+use std::collections::HashMap;
+
 use crate::Loc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileMod {
     pub statements: Vec<ModStmt>,
+}
+
+impl FileMod {
+    pub fn find_globals(&self) -> HashMap<&str, &Expr> {
+        let mut globals = HashMap::new();
+
+        for statement in &self.statements {
+            if let ModStmt::Let(let_bind) = statement {
+                globals.insert(let_bind.var.name.as_str(), let_bind.expr.as_ref());
+            }
+        }
+
+        globals
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,7 +33,7 @@ pub enum ModStmt {
 pub enum Expr {
     Int(Int),
     Let(LetExpr),
-    Var(Var),
+    Var(Loc<Var>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -32,7 +48,7 @@ pub struct Int {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportStmt {
-    pub vars: Vec<Var>,
+    pub vars: Vec<Loc<Var>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,7 +58,7 @@ pub struct PrintStmt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetBind {
-    pub var: Var,
+    pub var: Loc<Var>,
     pub expr: Box<Expr>,
 }
 

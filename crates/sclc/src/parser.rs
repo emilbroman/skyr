@@ -72,13 +72,13 @@ peg::parser! {
         rule expr() -> Expr
             = let_expr:let_expr() { Expr::Let(let_expr) }
             / int:int() { Expr::Int(int.into_inner()) }
-            / var:var() { Expr::Var(var.into_inner()) }
+            / var:var() { Expr::Var(var) }
 
         rule let_expr() -> LetExpr
             = bind:let_bind() semicolon() expr:expr() { LetExpr { bind, expr: Box::new(expr) } }
 
         rule let_bind() -> LetBind
-            = let_keyword() var:var() equals() expr:expr() { LetBind { var: var.into_inner(), expr: Box::new(expr) } }
+            = let_keyword() var:var() equals() expr:expr() { LetBind { var, expr: Box::new(expr) } }
 
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {
@@ -87,7 +87,6 @@ peg::parser! {
                     .map(|var| var.span().end())
                     .unwrap_or_else(|| keyword_span.end());
                 let span = Span::new(keyword_span.start(), end);
-                let vars = vars.into_iter().map(Loc::into_inner).collect();
                 Loc::new(ImportStmt { vars }, span)
             }
 

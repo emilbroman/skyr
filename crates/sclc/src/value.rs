@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Value {
+    Nil,
     Int(i64),
     Record(Record),
 }
@@ -15,6 +16,7 @@ pub struct Record {
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Value::Nil => write!(f, "nil"),
             Value::Int(value) => write!(f, "{value}"),
             Value::Record(record) => write!(f, "{record}"),
         }
