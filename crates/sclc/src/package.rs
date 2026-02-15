@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::{FileMod, ImportStmt, ModStmt, Position, parse_file_mod};
+use crate::{FileMod, ImportStmt, Loc, ModStmt, Position, parse_file_mod};
 
 #[derive(Clone)]
 pub struct Package {
@@ -45,7 +45,7 @@ impl Package {
         Ok(self.files.entry(path.clone()).or_insert(file_mod))
     }
 
-    pub fn imports(&self) -> impl Iterator<Item = &ImportStmt> {
+    pub fn imports(&self) -> impl Iterator<Item = &Loc<ImportStmt>> {
         self.files.values().flat_map(|file_mod| {
             file_mod
                 .statements

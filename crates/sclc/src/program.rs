@@ -5,29 +5,36 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{OpenError, Package};
+use crate::{Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package};
 
 #[derive(Clone, Default)]
 pub struct Program {
-    packages: HashMap<Vec<String>, Package>,
+    packages: HashMap<ModuleId, Package>,
 }
 
 #[derive(Error, Debug)]
 pub enum ResolveImportError {
-    #[error("no package found for import path: {import_path:?}")]
-    MissingPackage { import_path: Vec<String> },
-
-    #[error("import path has no module suffix after package: {import_path:?}")]
-    MissingModulePath { import_path: Vec<String> },
-
     #[error("failed to open import {import_path:?} from package {package_name:?}: {source}")]
     Open {
-        import_path: Vec<String>,
-        package_name: Vec<String>,
+        import_path: ModuleId,
+        package_name: ModuleId,
         module_path: PathBuf,
         #[source]
         source: OpenError,
     },
+}
+
+#[derive(Error, Debug)]
+#[error("invalid import path: {module_id:?}")]
+pub struct InvalidImport {
+    pub module_id: ModuleId,
+    pub import: Loc<ImportStmt>,
+}
+
+impl Diag for InvalidImport {
+    fn locate(&self) -> (ModuleId, crate::Span) {
+        (self.module_id.clone(), self.import.span())
+    }
 }
 
 impl Program {
@@ -39,83 +46,113 @@ impl Program {
 
     pub async fn open_package(&mut self, deployment: cdb::DeploymentClient) -> &mut Package {
         let repository_name = deployment.repository_name();
-        let name = vec![
+        let name = [
             repository_name.organization.clone(),
             repository_name.repository.clone(),
-        ];
+        ]
+        .into_iter()
+        .collect::<ModuleId>();
         self.packages
             .entry(name)
             .or_insert_with(|| Package::new(deployment))
     }
 
-    pub async fn resolve_imports(&mut self) -> Vec<ResolveImportError> {
-        let mut errors = Vec::new();
-        let mut seen_import_paths = HashSet::<Vec<String>>::new();
+    pub async fn resolve_imports(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
+        let mut diags = DiagList::new();
+        let mut seen_import_paths = HashSet::<ModuleId>::new();
 
         loop {
-            let discovered_import_paths = self
+            let discovered_imports = self
                 .packages
                 .values()
                 .flat_map(|package| package.imports())
                 .map(|import_stmt| {
-                    import_stmt
+                    let import_path = import_stmt
+                        .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.name.clone())
-                        .collect::<Vec<_>>()
+                        .collect::<ModuleId>();
+                    (import_path, import_stmt.clone())
                 })
                 .collect::<Vec<_>>();
 
-            let pending_import_paths = discovered_import_paths
+            let pending_imports = discovered_imports
                 .into_iter()
-                .filter(|import_path| seen_import_paths.insert(import_path.clone()))
+                .filter(|(import_path, _)| seen_import_paths.insert(import_path.clone()))
                 .collect::<Vec<_>>();
 
-            if pending_import_paths.is_empty() {
+            if pending_imports.is_empty() {
                 break;
             }
 
-            for import_path in pending_import_paths {
+            for (import_path, import_stmt) in pending_imports {
                 let Some(package_name) = self.package_name_for_import(&import_path) else {
-                    errors.push(ResolveImportError::MissingPackage { import_path });
+                    diags.push(InvalidImport {
+                        module_id: import_path,
+                        import: import_stmt,
+                    });
                     continue;
                 };
 
-                let module_segments = &import_path[package_name.len()..];
+                let Some(module_segments) = import_path.suffix_after(&package_name) else {
+                    diags.push(InvalidImport {
+                        module_id: import_path,
+                        import: import_stmt,
+                    });
+                    continue;
+                };
                 if module_segments.is_empty() {
-                    errors.push(ResolveImportError::MissingModulePath { import_path });
+                    diags.push(InvalidImport {
+                        module_id: import_path,
+                        import: import_stmt,
+                    });
                     continue;
                 }
 
-                let mut module_path = PathBuf::new();
-                for segment in module_segments {
-                    module_path.push(segment);
-                }
-                module_path.set_extension("scl");
+                let module_path = module_segments
+                    .iter()
+                    .cloned()
+                    .collect::<ModuleId>()
+                    .to_path_buf_with_extension("scl");
 
                 let Some(package) = self.packages.get_mut(&package_name) else {
-                    errors.push(ResolveImportError::MissingPackage { import_path });
+                    diags.push(InvalidImport {
+                        module_id: import_path,
+                        import: import_stmt,
+                    });
                     continue;
                 };
 
                 if let Err(source) = package.open(&module_path).await {
-                    errors.push(ResolveImportError::Open {
-                        import_path,
-                        package_name,
-                        module_path,
-                        source,
-                    });
+                    match source {
+                        OpenError::File(cdb::FileError::NotFound(_)) => {
+                            diags.push(InvalidImport {
+                                module_id: import_path,
+                                import: import_stmt,
+                            });
+                            continue;
+                        }
+                        source => {
+                            return Err(ResolveImportError::Open {
+                                import_path,
+                                package_name,
+                                module_path,
+                                source,
+                            });
+                        }
+                    }
                 }
             }
         }
 
-        errors
+        Ok(Diagnosed::new((), diags))
     }
 
-    fn package_name_for_import(&self, import_path: &[String]) -> Option<Vec<String>> {
+    fn package_name_for_import(&self, import_path: &ModuleId) -> Option<ModuleId> {
         self.packages
             .keys()
-            .filter(|package_name| import_path.starts_with(package_name.as_slice()))
+            .filter(|package_name| import_path.starts_with(package_name))
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }

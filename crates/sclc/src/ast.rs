@@ -1,3 +1,5 @@
+use crate::Loc;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileMod {
     pub statements: Vec<ModStmt>,
@@ -5,7 +7,7 @@ pub struct FileMod {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModStmt {
-    Import(ImportStmt),
+    Import(Loc<ImportStmt>),
     Expr(Expr),
 }
 

@@ -1,7 +1,9 @@
 mod ast;
 mod compile;
+mod diag;
 mod lexer;
 mod loc;
+mod module_id;
 mod package;
 mod parser;
 mod program;
@@ -9,8 +11,10 @@ mod value;
 
 pub use ast::*;
 pub use compile::*;
+pub use diag::*;
 pub use lexer::*;
 pub use loc::*;
+pub use module_id::*;
 pub use package::*;
 pub use parser::*;
 pub use program::*;

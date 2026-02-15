@@ -11,7 +11,7 @@ pub struct Span {
     end: Position,
 }
 
-#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Loc<T> {
     value: T,
     span: Span,

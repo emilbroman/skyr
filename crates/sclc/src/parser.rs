@@ -1,6 +1,6 @@
 use peg::{Parse, ParseElem, RuleResult};
 
-use crate::{Expr, FileMod, ImportStmt, Lexer, ModStmt, Position, Token, Var};
+use crate::{Expr, FileMod, ImportStmt, Lexer, Loc, ModStmt, Position, Span, Token, Var};
 
 pub struct TokenStream<'a> {
     tokens: Vec<crate::Loc<Token<'a>>>,
@@ -43,11 +43,11 @@ impl<'a> Parse for TokenStream<'a> {
 }
 
 impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
-    type Element = Token<'a>;
+    type Element = Loc<Token<'a>>;
 
     fn parse_elem(&'input self, pos: usize) -> RuleResult<Self::Element> {
         match self.tokens.get(pos) {
-            Some(token) => RuleResult::Matched(pos + 1, *token.as_ref()),
+            Some(token) => RuleResult::Matched(pos + 1, *token),
             None => RuleResult::Failed,
         }
     }
@@ -65,24 +65,36 @@ peg::parser! {
             / expr:expr() { ModStmt::Expr(expr) }
 
         rule expr() -> Expr
-            = var:var() { Expr::Var(var) }
+            = var:var() { Expr::Var(var.into_inner()) }
 
-        rule import_stmt() -> ImportStmt
-            = import_keyword() vars:import_path() { ImportStmt { vars } }
+        rule import_stmt() -> Loc<ImportStmt>
+            = keyword_span:import_keyword_span() vars:import_path() {
+                let end = vars
+                    .last()
+                    .map(|var| var.span().end())
+                    .unwrap_or_else(|| keyword_span.end());
+                let span = Span::new(keyword_span.start(), end);
+                let vars = vars.into_iter().map(Loc::into_inner).collect();
+                Loc::new(ImportStmt { vars }, span)
+            }
 
-        rule import_path() -> Vec<Var>
+        rule import_path() -> Vec<Loc<Var>>
             = first:var() rest:(slash() var:var() { var })* {
                 let mut vars = vec![first];
                 vars.extend(rest);
                 vars
             }
 
-        rule import_keyword() = [Token::ImportKeyword]
+        rule import_keyword_span() -> Span
+            = [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
 
-        rule slash() = [Token::Slash]
+        rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 
-        rule var() -> Var
-            = [Token::Symbol(name)] { Var { name: name.to_owned() } }
+        rule var() -> Loc<Var>
+            = [token] {? match *token.as_ref() {
+                Token::Symbol(name) => Ok(Loc::new(Var { name: name.to_owned() }, token.span())),
+                _ => Err("symbol"),
+            } }
     }
 }
 
