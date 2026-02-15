@@ -6,15 +6,15 @@ use tokio::task;
 struct Repl {
     line_number: usize,
     bindings: HashMap<String, (sclc::Type, sclc::Value)>,
-    effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>,
+    eval: sclc::Eval,
 }
 
 impl Repl {
-    fn new(effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>) -> Self {
+    fn new(eval: sclc::Eval) -> Self {
         Self {
             line_number: 0,
             bindings: HashMap::new(),
-            effects_tx,
+            eval,
         }
     }
 
@@ -28,7 +28,7 @@ impl Repl {
             return Ok(());
         };
 
-        let type_env = self.type_env(&module_id);
+        let type_env = Self::type_env(&self.bindings, &module_id);
         let checker = sclc::TypeChecker;
         let pending_binding = match &repl_line.statement {
             sclc::ModStmt::Let(let_bind) => {
@@ -37,9 +37,8 @@ impl Repl {
                     return Ok(());
                 };
 
-                let eval_env = self.eval_env(&module_id);
-                let mut eval = sclc::Eval::new(self.effects_tx.clone());
-                let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
+                let eval_env = Self::eval_env(&self.bindings, &module_id);
+                let value = self.eval.eval_expr(&eval_env, &let_bind.expr)?;
                 println!("{} : {}", let_bind.var.name, ty);
                 Some((let_bind.var.name.clone(), (ty, value)))
             }
@@ -49,9 +48,8 @@ impl Repl {
                     return Ok(());
                 };
 
-                let eval_env = self.eval_env(&module_id);
-                let mut eval = sclc::Eval::new(self.effects_tx.clone());
-                let value = eval.eval_expr(&eval_env, expr)?;
+                let eval_env = Self::eval_env(&self.bindings, &module_id);
+                let value = self.eval.eval_expr(&eval_env, expr)?;
                 println!("{value}");
                 None
             }
@@ -61,9 +59,8 @@ impl Repl {
                     return Ok(());
                 };
 
-                let eval_env = self.eval_env(&module_id);
-                let mut eval = sclc::Eval::new(self.effects_tx.clone());
-                eval.eval_stmt(&eval_env, stmt)?;
+                let eval_env = Self::eval_env(&self.bindings, &module_id);
+                self.eval.eval_stmt(&eval_env, stmt)?;
                 None
             }
         };
@@ -88,15 +85,21 @@ impl Repl {
         Some(diagnosed.into_inner())
     }
 
-    fn type_env<'a>(&'a self, module_id: &'a sclc::ModuleId) -> sclc::TypeEnv<'a> {
-        self.bindings.iter().fold(
+    fn type_env<'a>(
+        bindings: &'a HashMap<String, (sclc::Type, sclc::Value)>,
+        module_id: &'a sclc::ModuleId,
+    ) -> sclc::TypeEnv<'a> {
+        bindings.iter().fold(
             sclc::TypeEnv::new().with_module_id(module_id),
             |env, (name, (ty, _))| env.with_local(name.as_str(), ty.clone()),
         )
     }
 
-    fn eval_env<'a>(&'a self, module_id: &'a sclc::ModuleId) -> sclc::EvalEnv<'a> {
-        self.bindings.iter().fold(
+    fn eval_env<'a>(
+        bindings: &'a HashMap<String, (sclc::Type, sclc::Value)>,
+        module_id: &'a sclc::ModuleId,
+    ) -> sclc::EvalEnv<'a> {
+        bindings.iter().fold(
             sclc::EvalEnv::new().with_module_id(module_id),
             |env, (name, (_, value))| env.with_local(name.as_str(), value.clone()),
         )
@@ -128,7 +131,8 @@ async fn run_repl() -> anyhow::Result<()> {
             }
         }
     });
-    let mut repl = Repl::new(effects_tx);
+    let eval = sclc::Eval::new(effects_tx);
+    let mut repl = Repl::new(eval);
     let mut editor = DefaultEditor::new()?;
 
     loop {
