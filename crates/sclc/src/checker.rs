@@ -66,8 +66,10 @@ impl<'a> TypeEnv<'a> {
         self.globals.and_then(|globals| globals.get(name).copied())
     }
 
-    pub fn module_id(&self) -> Option<&crate::ModuleId> {
+    pub fn module_id(&self) -> Result<crate::ModuleId, TypeCheckError> {
         self.module_id
+            .cloned()
+            .ok_or(TypeCheckError::ModuleIdMissing)
     }
 }
 
@@ -88,12 +90,26 @@ impl crate::Diag for UndefinedVariable {
 }
 
 #[derive(Error, Debug)]
+#[error("undefined member: {name}")]
+pub struct UndefinedMember {
+    pub module_id: crate::ModuleId,
+    pub name: String,
+    pub property: crate::Loc<ast::Var>,
+}
+
+impl crate::Diag for UndefinedMember {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.property.span())
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("type checking not implemented for statement: {0:?}")]
     UnimplementedStmt(ast::ModStmt),
 
-    #[error("module id missing when reporting undefined variable: {0:?}")]
-    ModuleIdMissing(crate::Loc<ast::Var>),
+    #[error("module id missing during type checking")]
+    ModuleIdMissing,
 }
 
 impl TypeChecker {
@@ -196,12 +212,9 @@ impl TypeChecker {
                     let global_env = env.without_locals();
                     return self.check_expr(&global_env, global_expr);
                 }
-                let Some(module_id) = env.module_id() else {
-                    return Err(TypeCheckError::ModuleIdMissing(var.clone()));
-                };
                 let mut diags = DiagList::new();
                 diags.push(UndefinedVariable {
-                    module_id: module_id.clone(),
+                    module_id: env.module_id()?,
                     name: var.name.clone(),
                     var: var.clone(),
                 });
@@ -217,6 +230,28 @@ impl TypeChecker {
                 }
 
                 Ok(Diagnosed::new(Type::Record(record_ty), diags))
+            }
+            ast::Expr::PropertyAccess(property_access) => {
+                let mut diags = DiagList::new();
+                let lhs_ty = self
+                    .check_expr(env, &property_access.expr)?
+                    .unpack(&mut diags);
+                let member_ty = match lhs_ty {
+                    Type::Record(record_ty) => record_ty
+                        .get(property_access.property.name.as_str())
+                        .cloned(),
+                    _ => None,
+                };
+                if let Some(member_ty) = member_ty {
+                    return Ok(Diagnosed::new(member_ty, diags));
+                }
+
+                diags.push(UndefinedMember {
+                    module_id: env.module_id()?,
+                    name: property_access.property.name.clone(),
+                    property: property_access.property.clone(),
+                });
+                Ok(Diagnosed::new(Type::Never, diags))
             }
         }
     }

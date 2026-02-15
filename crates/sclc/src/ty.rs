@@ -16,6 +16,10 @@ impl RecordType {
     pub fn insert(&mut self, name: String, ty: Type) {
         self.fields.insert(name, ty);
     }
+
+    pub fn get(&self, name: &str) -> Option<&Type> {
+        self.fields.get(name)
+    }
 }
 
 impl std::fmt::Display for Type {

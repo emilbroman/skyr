@@ -116,6 +116,16 @@ impl Eval {
                 }
                 Ok(Value::Record(record))
             }
+            ast::Expr::PropertyAccess(property_access) => {
+                let value = self.eval_expr(env, &property_access.expr)?;
+                match value {
+                    Value::Record(record) => Ok(record
+                        .get(property_access.property.name.as_str())
+                        .cloned()
+                        .unwrap_or(Value::Nil)),
+                    _ => Ok(Value::Nil),
+                }
+            }
         }
     }
 

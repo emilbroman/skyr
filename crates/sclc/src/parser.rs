@@ -5,7 +5,8 @@ use thiserror::Error;
 
 use crate::{
     Diag, DiagList, Diagnosed, Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc,
-    ModStmt, ModuleId, Position, PrintStmt, RecordExpr, RecordField, ReplLine, Span, Token, Var,
+    ModStmt, ModuleId, Position, PrintStmt, PropertyAccessExpr, RecordExpr, RecordField, ReplLine,
+    Span, Token, Var,
 };
 
 #[derive(Error, Debug)]
@@ -91,7 +92,22 @@ peg::parser! {
 
         rule expr() -> Expr
             = let_expr:let_expr() { Expr::Let(let_expr) }
-            / record_expr:record_expr() { Expr::Record(record_expr) }
+            / property_expr()
+
+        rule property_expr() -> Expr
+            = head:atom_expr() accessors:(dot() property:var() { property })* {
+                let mut expr = head;
+                for property in accessors {
+                    expr = Expr::PropertyAccess(PropertyAccessExpr {
+                        expr: Box::new(expr),
+                        property,
+                    });
+                }
+                expr
+            }
+
+        rule atom_expr() -> Expr
+            = record_expr:record_expr() { Expr::Record(record_expr) }
             / int:int() { Expr::Int(int.into_inner()) }
             / var:var() { Expr::Var(var) }
 
@@ -160,6 +176,8 @@ peg::parser! {
         rule colon() = [token if matches!(token.as_ref(), Token::Colon)]
 
         rule comma() = [token if matches!(token.as_ref(), Token::Comma)]
+
+        rule dot() = [token if matches!(token.as_ref(), Token::Dot)]
 
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
@@ -237,5 +255,24 @@ mod tests {
             .expect("expected diagnostic");
         let (diag_module_id, _) = first_diag.locate();
         assert_eq!(diag_module_id, module_id);
+    }
+
+    #[test]
+    fn property_access_is_left_associative() {
+        let line = parse_repl_line("a.b.c", &ModuleId::default())
+            .expect("property access should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(crate::Expr::PropertyAccess(level2)) = line.statement else {
+            panic!("expected property access expression");
+        };
+        assert_eq!(level2.property.name, "c");
+        let crate::Expr::PropertyAccess(level1) = *level2.expr else {
+            panic!("expected nested property access");
+        };
+        assert_eq!(level1.property.name, "b");
+        let crate::Expr::Var(root) = *level1.expr else {
+            panic!("expected root var");
+        };
+        assert_eq!(root.name, "a");
     }
 }

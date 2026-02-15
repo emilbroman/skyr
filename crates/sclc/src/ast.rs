@@ -40,6 +40,7 @@ pub enum Expr {
     Let(LetExpr),
     Var(Loc<Var>),
     Record(RecordExpr),
+    PropertyAccess(PropertyAccessExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,4 +84,10 @@ pub struct RecordExpr {
 pub struct RecordField {
     pub var: Loc<Var>,
     pub expr: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PropertyAccessExpr {
+    pub expr: Box<Expr>,
+    pub property: Loc<Var>,
 }

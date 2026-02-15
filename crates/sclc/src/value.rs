@@ -17,6 +17,10 @@ impl Record {
     pub fn insert(&mut self, name: String, value: Value) {
         self.fields.insert(name, value);
     }
+
+    pub fn get(&self, name: &str) -> Option<&Value> {
+        self.fields.get(name)
+    }
 }
 
 impl std::fmt::Display for Value {
