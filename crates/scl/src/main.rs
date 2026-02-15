@@ -71,7 +71,16 @@ async fn run_repl() -> anyhow::Result<()> {
                     number: line_number,
                     line: line.clone(),
                 };
-                let mut program = sclc::compile(source).await?;
+                let diagnosed = sclc::compile(source).await?;
+                for diag in diagnosed.diags().iter() {
+                    let (module_id, span) = diag.locate();
+                    println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
+                }
+                if diagnosed.diags().has_errors() {
+                    continue;
+                }
+
+                let mut program = diagnosed.into_inner();
                 let module_id = [format!("Repl{}", line_number), String::from("Main")]
                     .into_iter()
                     .collect::<sclc::ModuleId>();
