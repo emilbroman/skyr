@@ -49,7 +49,8 @@ impl Repl {
         };
 
         let type_env = Self::type_env(&self.bindings, &module_id);
-        let checker = sclc::TypeChecker;
+        let empty_program = sclc::Program::<FsSource>::new();
+        let checker = sclc::TypeChecker::new(&empty_program);
         let pending_binding = match &repl_line.statement {
             sclc::ModStmt::Let(let_bind) => {
                 let diagnosed = checker.check_expr(&type_env, &let_bind.expr)?;
@@ -64,7 +65,7 @@ impl Repl {
             }
             sclc::ModStmt::Expr(expr) => {
                 let diagnosed = checker.check_stmt(&type_env, &repl_line.statement)?;
-                let Some(()) = Self::report(diagnosed) else {
+                let Some(_) = Self::report(diagnosed) else {
                     return Ok(());
                 };
 
@@ -75,7 +76,7 @@ impl Repl {
             }
             stmt => {
                 let diagnosed = checker.check_stmt(&type_env, stmt)?;
-                let Some(()) = Self::report(diagnosed) else {
+                let Some(_) = Self::report(diagnosed) else {
                     return Ok(());
                 };
 
