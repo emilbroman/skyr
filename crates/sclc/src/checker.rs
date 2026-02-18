@@ -139,9 +139,6 @@ impl crate::Diag for UndefinedMember {
 
 #[derive(Error, Debug)]
 pub enum TypeCheckError {
-    #[error("type checking not implemented for statement: {0:?}")]
-    UnimplementedStmt(ast::ModStmt),
-
     #[error("module id missing during type checking")]
     ModuleIdMissing,
 }

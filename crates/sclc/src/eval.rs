@@ -119,9 +119,6 @@ pub enum Effect {
 
 #[derive(Error, Debug)]
 pub enum EvalError {
-    #[error("evaluation is not implemented yet for statement: {0:?}")]
-    UnimplementedStmt(ast::ModStmt),
-
     #[error("failed to emit effect: {0:?}")]
     EmitEffect(Effect),
 
@@ -201,7 +198,6 @@ impl Eval {
                 let _ = self.eval_expr(env, expr)?;
                 Ok(None)
             }
-            s => Err(EvalError::UnimplementedStmt(s.clone())),
         }
     }
 
