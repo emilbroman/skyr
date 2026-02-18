@@ -1,4 +1,4 @@
-.PHONY: image compose-full compose-deps wait-deps
+.PHONY: image deps compose
 
 image:
 	podman build -t skyr:latest -t localhost/skyr:latest .

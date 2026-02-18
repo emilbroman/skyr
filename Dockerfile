@@ -9,15 +9,17 @@ COPY crates/de/Cargo.toml crates/de/Cargo.toml
 COPY crates/rdb/Cargo.toml crates/rdb/Cargo.toml
 COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
 COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
+COPY crates/scl/Cargo.toml crates/scl/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
 COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/cdb/src crates/de/src crates/rdb/src crates/rte/src crates/rtq/src crates/sclc/src crates/scs/src; \
+    mkdir -p crates/cdb/src crates/de/src crates/rdb/src crates/rte/src crates/rtq/src crates/scl/src crates/sclc/src crates/scs/src; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/de/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/rte/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/scl/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
     printf 'fn main() {}\n' > crates/scs/src/main.rs
 RUN cargo chef prepare --recipe-path recipe.json
