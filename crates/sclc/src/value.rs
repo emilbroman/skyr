@@ -1,6 +1,7 @@
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Value {
     Nil,
     Int(i64),
@@ -60,13 +61,53 @@ impl PartialEq for ExternFnValue {
 
 impl Eq for ExternFnValue {}
 
+impl Serialize for ExternFnValue {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom("cannot serialize function value"))
+    }
+}
+
+impl<'de> Deserialize<'de> for ExternFnValue {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "cannot deserialize function value",
+        ))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnValue {
     pub env: crate::FnEnv,
     pub body: crate::Loc<crate::ast::Expr>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+impl Serialize for FnValue {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom("cannot serialize function value"))
+    }
+}
+
+impl<'de> Deserialize<'de> for FnValue {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "cannot deserialize function value",
+        ))
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
     fields: BTreeMap<String, Value>,
 }
