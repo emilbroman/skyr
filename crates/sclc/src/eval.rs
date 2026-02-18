@@ -171,6 +171,7 @@ impl Eval {
     ) -> Result<Value, EvalError> {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
+            ast::Expr::Str(str) => Ok(Value::Str(str.value.clone())),
             ast::Expr::Let(let_expr) => {
                 let bind_value = self.eval_expr(env, let_expr.bind.expr.as_ref())?;
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_value);
@@ -216,6 +217,13 @@ impl Eval {
                     record.insert(field.var.name.clone(), value);
                 }
                 Ok(Value::Record(record))
+            }
+            ast::Expr::Interp(interp_expr) => {
+                let mut out = String::new();
+                for part in &interp_expr.parts {
+                    out.push_str(&self.eval_expr(env, part)?.to_string());
+                }
+                Ok(Value::Str(out))
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let value = self.eval_expr(env, property_access.expr.as_ref())?;

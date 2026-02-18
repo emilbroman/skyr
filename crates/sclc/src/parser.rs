@@ -4,9 +4,9 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int, LetBind,
-    LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PrintStmt, PropertyAccessExpr, RecordExpr,
-    RecordField, ReplLine, Span, Token, TypeExpr, Var,
+    CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
+    InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PrintStmt,
+    PropertyAccessExpr, RecordExpr, RecordField, ReplLine, Span, StrExpr, Token, TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -26,6 +26,33 @@ impl Diag for DuplicateRecordField {
 enum Postfix {
     Property(Loc<Var>),
     Call(Vec<Loc<Expr>>, Span),
+}
+
+fn decode_string(raw: &str) -> String {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+
+        match chars.next() {
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some('{') => out.push('{'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+
+    out
 }
 
 pub struct TokenStream<'a> {
@@ -159,6 +186,7 @@ peg::parser! {
             = open_paren_span:open_paren() expr:expr() close_paren_span:close_paren() {
                 Loc::new(expr.into_inner(), Span::new(open_paren_span.start(), close_paren_span.end()))
             }
+            / string_expr:string_expr() { string_expr }
             / record_expr:record_expr() { record_expr }
             / int:int() {
                 let span = int.span();
@@ -167,6 +195,23 @@ peg::parser! {
             / var:var() {
                 let span = var.span();
                 Loc::new(Expr::Var(var), span)
+            }
+
+        rule string_expr() -> Loc<Expr>
+            = simple:str_simple() {
+                Loc::new(Expr::Str(StrExpr { value: simple.0 }), simple.1)
+            }
+            / begin:str_begin() first:expr() rest:(cont:str_cont() expr:expr() { (cont, expr) })* end:str_end() {
+                let mut parts = Vec::new();
+                parts.push(Loc::new(Expr::Str(StrExpr { value: begin.0 }), begin.1));
+                parts.push(first);
+                for (cont, expr) in rest {
+                    parts.push(Loc::new(Expr::Str(StrExpr { value: cont.0 }), cont.1));
+                    parts.push(expr);
+                }
+                parts.push(Loc::new(Expr::Str(StrExpr { value: end.0 }), end.1));
+                let span = Span::new(begin.1.start(), end.1.end());
+                Loc::new(Expr::Interp(InterpExpr { parts }), span)
             }
 
         rule record_expr() -> Loc<Expr>
@@ -281,6 +326,30 @@ peg::parser! {
                     Err(_) => Err("integer"),
                 },
                 _ => Err("integer"),
+            } }
+
+        rule str_simple() -> (String, Span)
+            = [token] {? match *token.as_ref() {
+                Token::StrSimple(raw) => Ok((decode_string(raw), token.span())),
+                _ => Err("string"),
+            } }
+
+        rule str_begin() -> (String, Span)
+            = [token] {? match *token.as_ref() {
+                Token::StrBegin(raw) => Ok((decode_string(raw), token.span())),
+                _ => Err("string interpolation begin"),
+            } }
+
+        rule str_cont() -> (String, Span)
+            = [token] {? match *token.as_ref() {
+                Token::StrCont(raw) => Ok((decode_string(raw), token.span())),
+                _ => Err("string interpolation continue"),
+            } }
+
+        rule str_end() -> (String, Span)
+            = [token] {? match *token.as_ref() {
+                Token::StrEnd(raw) => Ok((decode_string(raw), token.span())),
+                _ => Err("string interpolation end"),
             } }
     }
 }
@@ -439,5 +508,39 @@ mod tests {
         };
         assert_eq!(callee.name, "f");
         assert_eq!(call.args.len(), 2);
+    }
+
+    #[test]
+    fn parses_simple_string_expr() {
+        let line = parse_repl_line("\"hello\\nworld\"", &ModuleId::default())
+            .expect("string should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Str(string) = expr.into_inner() else {
+            panic!("expected string expression");
+        };
+        assert_eq!(string.value, "hello\nworld");
+    }
+
+    #[test]
+    fn parses_interpolated_string_expr() {
+        let line = parse_repl_line("\"value: {x.y}\"", &ModuleId::default())
+            .expect("interpolated string should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Interp(interp) = expr.into_inner() else {
+            panic!("expected interpolation expression");
+        };
+        assert_eq!(interp.parts.len(), 3);
+        assert!(matches!(interp.parts[0].as_ref(), crate::Expr::Str(_)));
+        assert!(matches!(
+            interp.parts[1].as_ref(),
+            crate::Expr::PropertyAccess(_)
+        ));
+        assert!(matches!(interp.parts[2].as_ref(), crate::Expr::Str(_)));
     }
 }

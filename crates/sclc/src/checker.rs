@@ -295,6 +295,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match expr.as_ref() {
             ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
+            ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self
@@ -421,6 +422,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
 
                 Ok(Diagnosed::new(Type::Record(record_ty), diags))
+            }
+            ast::Expr::Interp(interp_expr) => {
+                let mut diags = DiagList::new();
+                for part in &interp_expr.parts {
+                    self.check_expr(env, part)?.unpack(&mut diags);
+                }
+                Ok(Diagnosed::new(Type::Str, diags))
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();

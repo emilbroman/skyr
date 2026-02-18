@@ -33,6 +33,7 @@ impl Expr {
     pub fn free_vars(&self) -> HashSet<&str> {
         match self {
             Expr::Int(_) => HashSet::new(),
+            Expr::Str(_) => HashSet::new(),
             Expr::Var(var) => HashSet::from([var.name.as_str()]),
             Expr::Let(let_expr) => {
                 let mut vars = let_expr.bind.expr.as_ref().free_vars();
@@ -62,6 +63,13 @@ impl Expr {
                 }
                 vars
             }
+            Expr::Interp(interp_expr) => {
+                let mut vars = HashSet::new();
+                for part in &interp_expr.parts {
+                    vars.extend(part.as_ref().free_vars());
+                }
+                vars
+            }
             Expr::PropertyAccess(property_access) => property_access.expr.as_ref().free_vars(),
         }
     }
@@ -79,11 +87,13 @@ pub enum ModStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Int(Int),
+    Str(StrExpr),
     Let(LetExpr),
     Fn(FnExpr),
     Call(CallExpr),
     Var(Loc<Var>),
     Record(RecordExpr),
+    Interp(InterpExpr),
     PropertyAccess(PropertyAccessExpr),
 }
 
@@ -101,6 +111,11 @@ impl std::fmt::Debug for Var {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Int {
     pub value: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StrExpr {
+    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -163,6 +178,11 @@ pub enum TypeExpr {
 pub struct CallExpr {
     pub callee: Box<Loc<Expr>>,
     pub args: Vec<Loc<Expr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterpExpr {
+    pub parts: Vec<Loc<Expr>>,
 }
 
 #[cfg(test)]

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 pub enum Value {
     Nil,
     Int(i64),
+    Str(String),
     Fn(FnValue),
     Record(Record),
 }
@@ -34,6 +35,7 @@ impl std::fmt::Display for Value {
         match self {
             Value::Nil => write!(f, "nil"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::Str(value) => write!(f, "{value}"),
             Value::Fn(function) => write!(f, "{function}"),
             Value::Record(record) => write!(f, "{record}"),
         }
