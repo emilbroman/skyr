@@ -107,7 +107,8 @@ peg::parser! {
             }
 
         rule atom_expr() -> Expr
-            = record_expr:record_expr() { Expr::Record(record_expr) }
+            = open_paren() expr:expr() close_paren() { expr }
+            / record_expr:record_expr() { Expr::Record(record_expr) }
             / int:int() { Expr::Int(int.into_inner()) }
             / var:var() { Expr::Var(var) }
 
@@ -178,6 +179,10 @@ peg::parser! {
         rule comma() = [token if matches!(token.as_ref(), Token::Comma)]
 
         rule dot() = [token if matches!(token.as_ref(), Token::Dot)]
+
+        rule open_paren() = [token if matches!(token.as_ref(), Token::OpenParen)]
+
+        rule close_paren() = [token if matches!(token.as_ref(), Token::CloseParen)]
 
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
@@ -274,5 +279,19 @@ mod tests {
             panic!("expected root var");
         };
         assert_eq!(root.name, "a");
+    }
+
+    #[test]
+    fn parenthesized_expr_takes_precedence_in_property_access() {
+        let line = parse_repl_line("({ a: 1 }).a", &ModuleId::default())
+            .expect("parenthesized property access should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(crate::Expr::PropertyAccess(access)) = line.statement else {
+            panic!("expected property access expression");
+        };
+        assert_eq!(access.property.name, "a");
+        let crate::Expr::Record(_) = *access.expr else {
+            panic!("expected parenthesized inner record expression");
+        };
     }
 }
