@@ -81,7 +81,7 @@ impl Repl {
                 };
 
                 let eval_env = Self::eval_env(&self.bindings, &module_id);
-                self.eval.eval_stmt(&eval_env, stmt)?;
+                let _ = self.eval.eval_stmt(&eval_env, stmt)?;
                 None
             }
         };
