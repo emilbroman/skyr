@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{Record, Value, ast};
+use crate::{FnValue, Record, Value, ast};
 
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, &'a ast::Expr>>,
+    globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, Value>,
     stack_depth: u32,
@@ -34,7 +34,7 @@ impl<'a> EvalEnv<'a> {
         }
     }
 
-    pub fn with_globals(&self, globals: &'a HashMap<&'a str, &'a ast::Expr>) -> Self {
+    pub fn with_globals(&self, globals: &'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>) -> Self {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
@@ -97,7 +97,11 @@ impl<'a> EvalEnv<'a> {
         self.locals.get(name)
     }
 
-    pub fn lookup_global(&self, name: &str) -> Option<&ast::Expr> {
+    pub fn locals(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.locals.iter().map(|(name, value)| (*name, value))
+    }
+
+    pub fn lookup_global(&self, name: &str) -> Option<&crate::Loc<ast::Expr>> {
         self.globals.and_then(|globals| globals.get(name).copied())
     }
 
@@ -105,6 +109,32 @@ impl<'a> EvalEnv<'a> {
         self.imports
             .and_then(|imports| imports.get(name))
             .map(|(module_id, file_mod)| (module_id.clone(), *file_mod))
+    }
+
+    pub fn module_id(&self) -> Result<crate::ModuleId, EvalError> {
+        self.module_id.cloned().ok_or(EvalError::ModuleIdMissing)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnEnv {
+    pub module_id: crate::ModuleId,
+    pub captures: HashMap<String, Value>,
+    pub parameters: Vec<String>,
+}
+
+impl FnEnv {
+    pub fn as_eval_env<'a>(&'a self, args: &[Value]) -> EvalEnv<'a> {
+        let mut env = EvalEnv::new().with_module_id(&self.module_id);
+
+        for (name, value) in &self.captures {
+            env = env.with_local(name.as_str(), value.clone());
+        }
+        for (name, value) in self.parameters.iter().zip(args.iter()) {
+            env = env.with_local(name.as_str(), value.clone());
+        }
+
+        env
     }
 }
 
@@ -124,6 +154,9 @@ pub enum EvalError {
 
     #[error("stack overflow")]
     StackOverflow,
+
+    #[error("module id missing during evaluation")]
+    ModuleIdMissing,
 }
 
 impl Eval {
@@ -131,30 +164,51 @@ impl Eval {
         Self { _effects: effects }
     }
 
-    pub fn eval_expr(&mut self, env: &EvalEnv<'_>, expr: &ast::Expr) -> Result<Value, EvalError> {
-        match expr {
+    pub fn eval_expr(
+        &mut self,
+        env: &EvalEnv<'_>,
+        expr: &crate::Loc<ast::Expr>,
+    ) -> Result<Value, EvalError> {
+        match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
             ast::Expr::Let(let_expr) => {
-                let bind_value = self.eval_expr(env, &let_expr.bind.expr)?;
+                let bind_value = self.eval_expr(env, let_expr.bind.expr.as_ref())?;
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_value);
-                self.eval_expr(&inner_env, &let_expr.expr)
+                self.eval_expr(&inner_env, let_expr.expr.as_ref())
             }
-            ast::Expr::Var(var) => {
-                if let Some(local_value) = env.lookup_local(var.name.as_str()) {
-                    return Ok(local_value.clone());
+            ast::Expr::Fn(fn_expr) => {
+                let mut captures = HashMap::new();
+                for name in expr.as_ref().free_vars() {
+                    captures.insert(name.to_owned(), self.eval_var_name(env, name)?);
                 }
-                if let Some(global_expr) = env.lookup_global(var.name.as_str()) {
-                    let global_env = env.without_locals().with_stack_frame()?;
-                    return self.eval_expr(&global_env, global_expr);
-                }
-                if let Some((target_module_id, import_file_mod)) =
-                    env.lookup_import(var.name.as_str())
-                {
-                    let import_env = EvalEnv::new().with_module_id(&target_module_id);
-                    return self.eval_file_mod(&import_env, import_file_mod);
-                }
-                Ok(Value::Nil)
+                Ok(Value::Fn(FnValue {
+                    env: FnEnv {
+                        module_id: env.module_id()?,
+                        captures,
+                        parameters: fn_expr
+                            .params
+                            .iter()
+                            .map(|param| param.var.name.clone())
+                            .collect(),
+                    },
+                    body: *fn_expr.body.clone(),
+                }))
             }
+            ast::Expr::Call(call_expr) => {
+                let args = call_expr
+                    .args
+                    .iter()
+                    .map(|arg| self.eval_expr(env, arg))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let callee = self.eval_expr(env, call_expr.callee.as_ref())?;
+
+                let Value::Fn(function) = callee else {
+                    return Ok(Value::Nil);
+                };
+                let call_env = function.env.as_eval_env(&args);
+                self.eval_expr(&call_env, &function.body)
+            }
+            ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
             ast::Expr::Record(record_expr) => {
                 let mut record = Record::default();
                 for field in &record_expr.fields {
@@ -164,7 +218,7 @@ impl Eval {
                 Ok(Value::Record(record))
             }
             ast::Expr::PropertyAccess(property_access) => {
-                let value = self.eval_expr(env, &property_access.expr)?;
+                let value = self.eval_expr(env, property_access.expr.as_ref())?;
                 match value {
                     Value::Record(record) => Ok(record
                         .get(property_access.property.name.as_str())
@@ -174,6 +228,21 @@ impl Eval {
                 }
             }
         }
+    }
+
+    fn eval_var_name(&mut self, env: &EvalEnv<'_>, name: &str) -> Result<Value, EvalError> {
+        if let Some(local_value) = env.lookup_local(name) {
+            return Ok(local_value.clone());
+        }
+        if let Some(global_expr) = env.lookup_global(name) {
+            let global_env = env.without_locals().with_stack_frame()?;
+            return self.eval_expr(&global_env, global_expr);
+        }
+        if let Some((target_module_id, import_file_mod)) = env.lookup_import(name) {
+            let import_env = EvalEnv::new().with_module_id(&target_module_id);
+            return self.eval_file_mod(&import_env, import_file_mod);
+        }
+        Ok(Value::Nil)
     }
 
     pub fn eval_stmt(
@@ -191,7 +260,7 @@ impl Eval {
             }
             ast::ModStmt::Let(_) | ast::ModStmt::Import(_) => Ok(None),
             ast::ModStmt::Export(let_bind) => {
-                let value = self.eval_expr(env, &let_bind.expr)?;
+                let value = self.eval_expr(env, let_bind.expr.as_ref())?;
                 Ok(Some((let_bind.var.name.clone(), value)))
             }
             ast::ModStmt::Expr(expr) => {

@@ -1,14 +1,20 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Value {
     Nil,
     Int(i64),
+    Fn(FnValue),
     Record(Record),
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnValue {
+    pub env: crate::FnEnv,
+    pub body: crate::Loc<crate::ast::Expr>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Record {
     fields: BTreeMap<String, Value>,
 }
@@ -28,8 +34,25 @@ impl std::fmt::Display for Value {
         match self {
             Value::Nil => write!(f, "nil"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::Fn(function) => write!(f, "{function}"),
             Value::Record(record) => write!(f, "{record}"),
         }
+    }
+}
+
+impl std::fmt::Display for FnValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fn(")?;
+
+        let mut params = self.env.parameters.iter().peekable();
+        while let Some(param) = params.next() {
+            write!(f, "{param}")?;
+            if params.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, ")>")
     }
 }
 

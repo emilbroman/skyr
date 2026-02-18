@@ -3,12 +3,12 @@ use std::path::Component;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{DiagList, Diagnosed, Package, Program, RecordType, Type, ast};
+use crate::{DiagList, Diagnosed, FnType, Package, Program, RecordType, Type, ast};
 use thiserror::Error;
 
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, &'a ast::Expr>>,
+    globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     locals: HashMap<&'a str, Type>,
 }
@@ -32,7 +32,7 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
-    pub fn with_globals(&self, globals: &'a HashMap<&'a str, &'a ast::Expr>) -> Self {
+    pub fn with_globals(&self, globals: &'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>) -> Self {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
@@ -81,7 +81,7 @@ impl<'a> TypeEnv<'a> {
         self.locals.get(name)
     }
 
-    pub fn lookup_global(&self, name: &str) -> Option<&ast::Expr> {
+    pub fn lookup_global(&self, name: &str) -> Option<&crate::Loc<ast::Expr>> {
         self.globals.and_then(|globals| globals.get(name).copied())
     }
 
@@ -134,6 +134,64 @@ pub struct UndefinedMember {
 impl crate::Diag for UndefinedMember {
     fn locate(&self) -> (crate::ModuleId, crate::Span) {
         (self.module_id.clone(), self.property.span())
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("not a function: {ty}")]
+pub struct NotAFunction {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for NotAFunction {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("missing arguments: expected {expected}, got {got}")]
+pub struct MissingArguments {
+    pub module_id: crate::ModuleId,
+    pub expected: usize,
+    pub got: usize,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for MissingArguments {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("extraneous argument at index {index}")]
+pub struct ExtraneousArgument {
+    pub module_id: crate::ModuleId,
+    pub index: usize,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for ExtraneousArgument {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("type mismatch: expected {expected}, got {actual}")]
+pub struct TypeMismatch {
+    pub module_id: crate::ModuleId,
+    pub expected: Type,
+    pub actual: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for TypeMismatch {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
     }
 }
 
@@ -233,20 +291,89 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     pub fn check_expr(
         &self,
         env: &TypeEnv<'_>,
-        expr: &ast::Expr,
+        expr: &crate::Loc<ast::Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        match expr {
+        match expr.as_ref() {
             ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self
-                    .check_expr(env, &let_expr.bind.expr)?
+                    .check_expr(env, let_expr.bind.expr.as_ref())?
                     .unpack(&mut diags);
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_ty);
                 let body_ty = self
-                    .check_expr(&inner_env, &let_expr.expr)?
+                    .check_expr(&inner_env, let_expr.expr.as_ref())?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(body_ty, diags))
+            }
+            ast::Expr::Fn(fn_expr) => {
+                let mut diags = DiagList::new();
+                let mut fn_env = env.inner();
+                let mut params = Vec::with_capacity(fn_expr.params.len());
+
+                for param in &fn_expr.params {
+                    let param_ty = self.resolve_type_expr(&param.ty);
+                    fn_env = fn_env.with_local(param.var.name.as_str(), param_ty.clone());
+                    params.push(param_ty);
+                }
+
+                let ret = self
+                    .check_expr(&fn_env, fn_expr.body.as_ref())?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(
+                    Type::Fn(FnType {
+                        params,
+                        ret: Box::new(ret),
+                    }),
+                    diags,
+                ))
+            }
+            ast::Expr::Call(call_expr) => {
+                let mut diags = DiagList::new();
+                let callee_ty = self
+                    .check_expr(env, call_expr.callee.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+                let Type::Fn(fn_ty) = callee_ty else {
+                    diags.push(NotAFunction {
+                        module_id: env.module_id()?,
+                        ty: callee_ty,
+                        span: call_expr.callee.span(),
+                    });
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                };
+
+                if call_expr.args.len() < fn_ty.params.len() {
+                    diags.push(MissingArguments {
+                        module_id: env.module_id()?,
+                        expected: fn_ty.params.len(),
+                        got: call_expr.args.len(),
+                        span: call_expr.callee.span(),
+                    });
+                }
+
+                for (index, arg) in call_expr.args.iter().enumerate() {
+                    let arg_ty = self.check_expr(env, arg)?.unpack(&mut diags);
+                    let Some(param_ty) = fn_ty.params.get(index) else {
+                        diags.push(ExtraneousArgument {
+                            module_id: env.module_id()?,
+                            index,
+                            span: arg.span(),
+                        });
+                        continue;
+                    };
+
+                    if &arg_ty != param_ty {
+                        diags.push(TypeMismatch {
+                            module_id: env.module_id()?,
+                            expected: param_ty.clone(),
+                            actual: arg_ty,
+                            span: arg.span(),
+                        });
+                    }
+                }
+
+                Ok(Diagnosed::new(*fn_ty.ret, diags))
             }
             ast::Expr::Var(var) => {
                 if let Some(local_ty) = env.lookup_local(var.name.as_str()) {
@@ -298,7 +425,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
                 let lhs_ty = self
-                    .check_expr(env, &property_access.expr)?
+                    .check_expr(env, property_access.expr.as_ref())?
                     .unpack(&mut diags)
                     .unfold();
                 if matches!(lhs_ty, Type::Never) {
@@ -333,11 +460,20 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let mut diags = DiagList::new();
         let type_id = next_type_id();
         let env = env.with_local(let_bind.var.name.as_str(), Type::Var(type_id));
-        let resolved_ty = self.check_expr(&env, &let_bind.expr)?.unpack(&mut diags);
+        let resolved_ty = self
+            .check_expr(&env, let_bind.expr.as_ref())?
+            .unpack(&mut diags);
         Ok(Diagnosed::new(
             Type::IsoRec(type_id, Box::new(resolved_ty)),
             diags,
         ))
+    }
+
+    fn resolve_type_expr(&self, type_expr: &ast::TypeExpr) -> Type {
+        match type_expr {
+            ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
+            ast::TypeExpr::Var(_) => Type::Never,
+        }
     }
 
     fn find_imports<'a>(

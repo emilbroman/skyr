@@ -3,10 +3,17 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Int,
+    Fn(FnType),
     Record(RecordType),
     IsoRec(usize, Box<Type>),
     Var(usize),
     Never,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnType {
+    pub params: Vec<Type>,
+    pub ret: Box<Type>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -41,6 +48,14 @@ impl Type {
     fn unfold_inner(&self, replacement: Option<(usize, &Type)>) -> Self {
         match self {
             Type::Int => Type::Int,
+            Type::Fn(fn_ty) => Type::Fn(FnType {
+                params: fn_ty
+                    .params
+                    .iter()
+                    .map(|param| param.unfold_inner(replacement))
+                    .collect(),
+                ret: Box::new(fn_ty.ret.unfold_inner(replacement)),
+            }),
             Type::Never => Type::Never,
             Type::Var(id) => {
                 if let Some((target_id, replacement_ty)) = replacement {
@@ -65,11 +80,28 @@ impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Type::Int => write!(f, "Int"),
+            Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
             Type::Record(record) => write!(f, "{record}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
             Type::Var(id) => write!(f, "Var({id})"),
             Type::Never => write!(f, "Never"),
         }
+    }
+}
+
+impl std::fmt::Display for FnType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "fn(")?;
+
+        let mut params = self.params.iter().peekable();
+        while let Some(param) = params.next() {
+            write!(f, "{param}")?;
+            if params.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, ") {}", self.ret)
     }
 }
 

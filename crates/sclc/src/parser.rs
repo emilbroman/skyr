@@ -4,9 +4,9 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    Diag, DiagList, Diagnosed, Expr, FileMod, ImportStmt, Int, LetBind, LetExpr, Lexer, Loc,
-    ModStmt, ModuleId, Position, PrintStmt, PropertyAccessExpr, RecordExpr, RecordField, ReplLine,
-    Span, Token, Var,
+    CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int, LetBind,
+    LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PrintStmt, PropertyAccessExpr, RecordExpr,
+    RecordField, ReplLine, Span, Token, TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -21,6 +21,11 @@ impl Diag for DuplicateRecordField {
     fn locate(&self) -> (ModuleId, Span) {
         (self.module_id.clone(), self.span)
     }
+}
+
+enum Postfix {
+    Property(Loc<Var>),
+    Call(Vec<Loc<Expr>>, Span),
 }
 
 pub struct TokenStream<'a> {
@@ -91,31 +96,84 @@ peg::parser! {
             / expr:expr() { ModStmt::Expr(expr) }
             / let_bind:let_bind() { ModStmt::Let(let_bind) }
 
-        rule expr() -> Expr
-            = let_expr:let_expr() { Expr::Let(let_expr) }
+        rule expr() -> Loc<Expr>
+            = let_expr:let_expr() { let_expr }
+            / fn_expr:fn_expr() { fn_expr }
             / property_expr()
 
-        rule property_expr() -> Expr
-            = head:atom_expr() accessors:(dot() property:var() { property })* {
+        // fn expressions are right-associative because the body is parsed as a full Expr.
+        rule fn_expr() -> Loc<Expr>
+            = fn_kw_span:fn_keyword() open_paren() params:fn_params() close_paren() body:expr() {
+                let end = body.span().end();
+                Loc::new(Expr::Fn(FnExpr {
+                    params,
+                    body: Box::new(body),
+                }), Span::new(fn_kw_span.start(), end))
+            }
+
+        rule fn_params() -> Vec<FnParam>
+            = params:(fn_param() ++ comma()) comma()? { params }
+            / { vec![] }
+
+        rule fn_param() -> FnParam
+            = var:var() colon() ty:type_expr() { FnParam { var, ty } }
+
+        rule type_expr() -> TypeExpr
+            = var:var() { TypeExpr::Var(var) }
+
+        rule property_expr() -> Loc<Expr>
+            = head:atom_expr() suffixes:postfix_suffix()* {
                 let mut expr = head;
-                for property in accessors {
-                    expr = Expr::PropertyAccess(PropertyAccessExpr {
-                        expr: Box::new(expr),
-                        property,
-                    });
+                for suffix in suffixes {
+                    expr = match suffix {
+                        Postfix::Property(property) => {
+                            let start = expr.span().start();
+                            let end = property.span().end();
+                            Loc::new(Expr::PropertyAccess(PropertyAccessExpr {
+                                expr: Box::new(expr),
+                                property,
+                            }), Span::new(start, end))
+                        }
+                        Postfix::Call(args, close_paren_span) => {
+                            let start = expr.span().start();
+                            let end = close_paren_span.end();
+                            Loc::new(Expr::Call(CallExpr {
+                                callee: Box::new(expr),
+                                args,
+                            }), Span::new(start, end))
+                        }
+                    };
                 }
                 expr
             }
 
-        rule atom_expr() -> Expr
-            = open_paren() expr:expr() close_paren() { expr }
-            / record_expr:record_expr() { Expr::Record(record_expr) }
-            / int:int() { Expr::Int(int.into_inner()) }
-            / var:var() { Expr::Var(var) }
+        rule postfix_suffix() -> Postfix
+            = dot() property:var() { Postfix::Property(property) }
+            / open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(args, close_paren_span) }
 
-        rule record_expr() -> RecordExpr
-            = open_curly() close_curly() { RecordExpr { fields: vec![] } }
-            / open_curly() fields:(record_field() ++ comma()) comma()? close_curly() {
+        rule call_args() -> Vec<Loc<Expr>>
+            = args:(expr() ++ comma()) comma()? { args }
+            / { vec![] }
+
+        rule atom_expr() -> Loc<Expr>
+            = open_paren_span:open_paren() expr:expr() close_paren_span:close_paren() {
+                Loc::new(expr.into_inner(), Span::new(open_paren_span.start(), close_paren_span.end()))
+            }
+            / record_expr:record_expr() { record_expr }
+            / int:int() {
+                let span = int.span();
+                Loc::new(Expr::Int(int.into_inner()), span)
+            }
+            / var:var() {
+                let span = var.span();
+                Loc::new(Expr::Var(var), span)
+            }
+
+        rule record_expr() -> Loc<Expr>
+            = open_curly_span:open_curly() close_curly_span:close_curly() {
+                Loc::new(Expr::Record(RecordExpr { fields: vec![] }), Span::new(open_curly_span.start(), close_curly_span.end()))
+            }
+            / open_curly_span:open_curly() fields:(record_field() ++ comma()) comma()? close_curly_span:close_curly() {
                 let mut seen_fields = HashSet::new();
                 for field in &fields {
                     if !seen_fields.insert(field.var.name.clone()) {
@@ -126,17 +184,22 @@ peg::parser! {
                         });
                     }
                 }
-                RecordExpr { fields }
+                Loc::new(Expr::Record(RecordExpr { fields }), Span::new(open_curly_span.start(), close_curly_span.end()))
             }
 
         rule record_field() -> RecordField
             = var:var() colon() expr:expr() { RecordField { var, expr } }
 
-        rule let_expr() -> LetExpr
-            = bind:let_bind() semicolon() expr:expr() { LetExpr { bind, expr: Box::new(expr) } }
+        rule let_expr() -> Loc<Expr>
+            = bind:let_bind() semicolon() expr:expr() {
+                let span = Span::new(bind.var.span().start(), expr.span().end());
+                Loc::new(Expr::Let(LetExpr { bind, expr: Box::new(expr) }), span)
+            }
 
         rule let_bind() -> LetBind
-            = let_keyword() var:var() equals() expr:expr() { LetBind { var, expr: Box::new(expr) } }
+            = let_keyword() var:var() equals() expr:expr() {
+                LetBind { var, expr: Box::new(expr) }
+            }
 
         rule export_let_bind() -> LetBind
             = export_keyword() let_bind:let_bind() { let_bind }
@@ -164,31 +227,46 @@ peg::parser! {
         rule import_keyword_span() -> Span
             = [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
 
-        rule let_keyword() = [token if matches!(token.as_ref(), Token::LetKeyword)]
+        rule let_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::LetKeyword)] { token.span() }
 
-        rule print_keyword() = [token if matches!(token.as_ref(), Token::PrintKeyword)]
+        rule print_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::PrintKeyword)] { token.span() }
 
-        rule export_keyword() = [token if matches!(token.as_ref(), Token::ExportKeyword)]
+        rule export_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::ExportKeyword)] { token.span() }
 
-        rule equals() = [token if matches!(token.as_ref(), Token::Equals)]
+        rule fn_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::FnKeyword)] { token.span() }
 
-        rule semicolon() = [token if matches!(token.as_ref(), Token::Semicolon)]
+        rule equals() -> Span
+            = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
+
+        rule semicolon() -> Span
+            = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 
-        rule open_curly() = [token if matches!(token.as_ref(), Token::OpenCurly)]
+        rule open_curly() -> Span
+            = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
 
-        rule close_curly() = [token if matches!(token.as_ref(), Token::CloseCurly)]
+        rule close_curly() -> Span
+            = [token if matches!(token.as_ref(), Token::CloseCurly)] { token.span() }
 
-        rule colon() = [token if matches!(token.as_ref(), Token::Colon)]
+        rule colon() -> Span
+            = [token if matches!(token.as_ref(), Token::Colon)] { token.span() }
 
-        rule comma() = [token if matches!(token.as_ref(), Token::Comma)]
+        rule comma() -> Span
+            = [token if matches!(token.as_ref(), Token::Comma)] { token.span() }
 
-        rule dot() = [token if matches!(token.as_ref(), Token::Dot)]
+        rule dot() -> Span
+            = [token if matches!(token.as_ref(), Token::Dot)] { token.span() }
 
-        rule open_paren() = [token if matches!(token.as_ref(), Token::OpenParen)]
+        rule open_paren() -> Span
+            = [token if matches!(token.as_ref(), Token::OpenParen)] { token.span() }
 
-        rule close_paren() = [token if matches!(token.as_ref(), Token::CloseParen)]
+        rule close_paren() -> Span
+            = [token if matches!(token.as_ref(), Token::CloseParen)] { token.span() }
 
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
@@ -244,7 +322,10 @@ mod tests {
         let line = parse_repl_line("{ a: 1, b: 2, }", &ModuleId::default())
             .expect("record should parse")
             .into_inner();
-        let crate::ModStmt::Expr(crate::Expr::Record(record)) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Record(record) = expr.into_inner() else {
             panic!("expected record expression");
         };
         assert_eq!(record.fields.len(), 2);
@@ -273,15 +354,18 @@ mod tests {
         let line = parse_repl_line("a.b.c", &ModuleId::default())
             .expect("property access should parse")
             .into_inner();
-        let crate::ModStmt::Expr(crate::Expr::PropertyAccess(level2)) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::PropertyAccess(level2) = expr.into_inner() else {
             panic!("expected property access expression");
         };
         assert_eq!(level2.property.name, "c");
-        let crate::Expr::PropertyAccess(level1) = *level2.expr else {
+        let crate::Expr::PropertyAccess(level1) = level2.expr.into_inner() else {
             panic!("expected nested property access");
         };
         assert_eq!(level1.property.name, "b");
-        let crate::Expr::Var(root) = *level1.expr else {
+        let crate::Expr::Var(root) = level1.expr.into_inner() else {
             panic!("expected root var");
         };
         assert_eq!(root.name, "a");
@@ -292,12 +376,68 @@ mod tests {
         let line = parse_repl_line("({ a: 1 }).a", &ModuleId::default())
             .expect("parenthesized property access should parse")
             .into_inner();
-        let crate::ModStmt::Expr(crate::Expr::PropertyAccess(access)) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::PropertyAccess(access) = expr.into_inner() else {
             panic!("expected property access expression");
         };
         assert_eq!(access.property.name, "a");
-        let crate::Expr::Record(_) = *access.expr else {
+        let crate::Expr::Record(_) = access.expr.into_inner() else {
             panic!("expected parenthesized inner record expression");
         };
+    }
+
+    #[test]
+    fn parses_fn_with_optional_trailing_param_comma() {
+        let line = parse_repl_line("fn(a: A, b: B,) a", &ModuleId::default())
+            .expect("fn expression should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Fn(fn_expr) = expr.into_inner() else {
+            panic!("expected fn expression");
+        };
+        assert_eq!(fn_expr.params.len(), 2);
+        assert_eq!(fn_expr.params[0].var.name, "a");
+        assert_eq!(fn_expr.params[1].var.name, "b");
+    }
+
+    #[test]
+    fn fn_body_is_right_associative() {
+        let line = parse_repl_line("fn(a: A) fn(b: B) b", &ModuleId::default())
+            .expect("nested fn expression should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Fn(outer) = expr.into_inner() else {
+            panic!("expected outer fn expression");
+        };
+        let crate::Expr::Fn(inner) = outer.body.into_inner() else {
+            panic!("expected inner fn expression as body");
+        };
+        assert_eq!(outer.params.len(), 1);
+        assert_eq!(inner.params.len(), 1);
+        assert_eq!(inner.params[0].var.name, "b");
+    }
+
+    #[test]
+    fn parses_call_with_optional_trailing_comma() {
+        let line = parse_repl_line("f(a, b,)", &ModuleId::default())
+            .expect("call expression should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Call(call) = expr.into_inner() else {
+            panic!("expected call expression");
+        };
+        let crate::Expr::Var(callee) = &**call.callee else {
+            panic!("expected var callee");
+        };
+        assert_eq!(callee.name, "f");
+        assert_eq!(call.args.len(), 2);
     }
 }

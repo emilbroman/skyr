@@ -17,6 +17,7 @@ pub enum Token<'a> {
     Slash,
     ImportKeyword,
     LetKeyword,
+    FnKeyword,
     ExportKeyword,
     PrintKeyword,
     Int(&'a str),
@@ -113,6 +114,8 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::ImportKeyword
             } else if symbol == "let" {
                 Token::LetKeyword
+            } else if symbol == "fn" {
+                Token::FnKeyword
             } else if symbol == "export" {
                 Token::ExportKeyword
             } else if symbol == "print" {
