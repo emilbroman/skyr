@@ -10,9 +10,7 @@ pub trait SourceRepo {
     fn package_id(&self) -> ModuleId;
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err>;
 
-    fn register_extern(_eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
-        Ok(())
-    }
+    fn register_extern(_eval: &mut crate::Eval) {}
 }
 
 #[derive(Clone)]
@@ -44,10 +42,9 @@ impl<S: SourceRepo> SourceRepo for AnySource<S> {
         }
     }
 
-    fn register_extern(eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
-        S::register_extern(eval)?;
-        StdSourceRepo::register_extern(eval)?;
-        Ok(())
+    fn register_extern(eval: &mut crate::Eval) {
+        S::register_extern(eval);
+        StdSourceRepo::register_extern(eval);
     }
 }
 

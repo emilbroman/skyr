@@ -113,66 +113,53 @@ impl<S: SourceRepo> Program<S> {
             }
 
             for (import_path, import_stmt) in pending_imports {
-                let Some(package_name) = self.package_name_for_import(&import_path) else {
+                if self.resolve_import(&import_path).await?.is_none() {
                     diags.push(InvalidImport {
                         module_id: import_path,
                         import: import_stmt,
                     });
-                    continue;
-                };
-
-                let Some(module_segments) = import_path.suffix_after(&package_name) else {
-                    diags.push(InvalidImport {
-                        module_id: import_path,
-                        import: import_stmt,
-                    });
-                    continue;
-                };
-                if module_segments.is_empty() {
-                    diags.push(InvalidImport {
-                        module_id: import_path,
-                        import: import_stmt,
-                    });
-                    continue;
-                }
-
-                let module_path = module_segments
-                    .iter()
-                    .cloned()
-                    .collect::<ModuleId>()
-                    .to_path_buf_with_extension("scl");
-
-                let Some(package) = self.packages.get_mut(&package_name) else {
-                    diags.push(InvalidImport {
-                        module_id: import_path,
-                        import: import_stmt,
-                    });
-                    continue;
-                };
-
-                if let Err(source) = package.open(&module_path).await {
-                    match source {
-                        OpenError::NotFound(_) => {
-                            diags.push(InvalidImport {
-                                module_id: import_path,
-                                import: import_stmt,
-                            });
-                            continue;
-                        }
-                        source => {
-                            return Err(ResolveImportError::Open {
-                                import_path,
-                                package_name,
-                                module_path,
-                                source,
-                            });
-                        }
-                    }
                 }
             }
         }
 
         Ok(Diagnosed::new((), diags))
+    }
+
+    pub async fn resolve_import(
+        &mut self,
+        import_path: &ModuleId,
+    ) -> Result<Option<&crate::ast::FileMod>, ResolveImportError> {
+        let Some(package_name) = self.package_name_for_import(import_path) else {
+            return Ok(None);
+        };
+
+        let Some(module_segments) = import_path.suffix_after(&package_name) else {
+            return Ok(None);
+        };
+        if module_segments.is_empty() {
+            return Ok(None);
+        }
+
+        let module_path = module_segments
+            .iter()
+            .cloned()
+            .collect::<ModuleId>()
+            .to_path_buf_with_extension("scl");
+
+        let Some(package) = self.packages.get_mut(&package_name) else {
+            return Ok(None);
+        };
+
+        match package.open(&module_path).await {
+            Ok(file_mod) => Ok(Some(file_mod)),
+            Err(OpenError::NotFound(_)) => Ok(None),
+            Err(source) => Err(ResolveImportError::Open {
+                import_path: import_path.clone(),
+                package_name,
+                module_path,
+                source,
+            }),
+        }
     }
 
     fn package_name_for_import(&self, import_path: &ModuleId) -> Option<ModuleId> {
@@ -217,8 +204,7 @@ impl<S: SourceRepo> Program<S> {
         };
         let imports = self.find_imports(&file_mod);
 
-        let mut eval = crate::Eval::new(effects);
-        <AnySource<S> as SourceRepo>::register_extern(&mut eval)?;
+        let mut eval = crate::Eval::new::<S>(effects);
         let env = crate::EvalEnv::new()
             .with_module_id(module_id)
             .with_imports(&imports);

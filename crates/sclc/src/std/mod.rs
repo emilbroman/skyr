@@ -16,11 +16,10 @@ macro_rules! std_modules {
             )),*
         ];
 
-        fn register_std_externs(eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
+        fn register_std_externs(eval: &mut crate::Eval) {
             $(
-                $module::register_extern(eval)?;
+                $module::register_extern(eval);
             )*
-            Ok(())
         }
     };
 }
@@ -67,7 +66,7 @@ impl SourceRepo for StdSourceRepo {
         Ok(self.files.get(&key).map(|data| data.to_vec()))
     }
 
-    fn register_extern(eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
-        register_std_externs(eval)
+    fn register_extern(eval: &mut crate::Eval) {
+        register_std_externs(eval);
     }
 }

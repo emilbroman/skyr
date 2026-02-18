@@ -186,11 +186,13 @@ impl ValueAssertions for Option<Value> {
 }
 
 impl Eval {
-    pub fn new(effects: mpsc::UnboundedSender<Effect>) -> Self {
-        Self {
+    pub fn new<S: crate::SourceRepo>(effects: mpsc::UnboundedSender<Effect>) -> Self {
+        let mut eval = Self {
             _effects: effects,
             externs: HashMap::new(),
-        }
+        };
+        <crate::AnySource<S> as crate::SourceRepo>::register_extern(&mut eval);
+        eval
     }
 
     pub fn add_extern(&mut self, name: impl Into<String>, value: Value) {

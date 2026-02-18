@@ -1,4 +1,4 @@
-pub fn register_extern(eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
+pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn("Std/Num.toHex", |args| {
         use crate::ValueAssertions;
 
@@ -6,5 +6,4 @@ pub fn register_extern(eval: &mut crate::Eval) -> Result<(), crate::EvaluateErro
         let i = args.next().assert_int()?;
         Ok(crate::Value::Str(format!("{i:x}")))
     });
-    Ok(())
 }
