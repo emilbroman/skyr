@@ -22,6 +22,43 @@ impl RecordType {
     pub fn get(&self, name: &str) -> Option<&Type> {
         self.fields.get(name)
     }
+
+    fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
+        let fields = self
+            .fields
+            .iter()
+            .map(|(name, ty)| (name.clone(), f(ty)))
+            .collect();
+        Self { fields }
+    }
+}
+
+impl Type {
+    pub fn unfold(&self) -> Self {
+        self.unfold_inner(None)
+    }
+
+    fn unfold_inner(&self, replacement: Option<(usize, &Type)>) -> Self {
+        match self {
+            Type::Int => Type::Int,
+            Type::Never => Type::Never,
+            Type::Var(id) => {
+                if let Some((target_id, replacement_ty)) = replacement {
+                    if *id == target_id {
+                        return replacement_ty.clone();
+                    }
+                }
+                Type::Var(*id)
+            }
+            Type::Record(record) => {
+                Type::Record(record.map_types(|ty| ty.unfold_inner(replacement)))
+            }
+            Type::IsoRec(id, body) => {
+                let rec = Type::IsoRec(*id, body.clone());
+                body.unfold_inner(Some((*id, &rec)))
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for Type {

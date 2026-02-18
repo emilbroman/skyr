@@ -97,10 +97,11 @@ impl crate::Diag for UndefinedVariable {
 }
 
 #[derive(Error, Debug)]
-#[error("undefined member: {name}")]
+#[error("undefined member: {name} in type {ty}")]
 pub struct UndefinedMember {
     pub module_id: crate::ModuleId,
     pub name: String,
+    pub ty: Type,
     pub property: crate::Loc<ast::Var>,
 }
 
@@ -261,8 +262,9 @@ impl TypeChecker {
                 let mut diags = DiagList::new();
                 let lhs_ty = self
                     .check_expr(env, &property_access.expr)?
-                    .unpack(&mut diags);
-                let member_ty = match lhs_ty {
+                    .unpack(&mut diags)
+                    .unfold();
+                let member_ty = match &lhs_ty {
                     Type::Record(record_ty) => record_ty
                         .get(property_access.property.name.as_str())
                         .cloned(),
@@ -275,6 +277,7 @@ impl TypeChecker {
                 diags.push(UndefinedMember {
                     module_id: env.module_id()?,
                     name: property_access.property.name.clone(),
+                    ty: lhs_ty,
                     property: property_access.property.clone(),
                 });
                 Ok(Diagnosed::new(Type::Never, diags))
