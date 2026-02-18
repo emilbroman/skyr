@@ -5,15 +5,18 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package, SourceRepo};
+use crate::std::StdSourceRepo;
+use crate::{
+    AnySource, Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package, SourceRepo,
+};
 
 #[derive(Clone, Default)]
 pub struct Program<S> {
-    packages: HashMap<ModuleId, Package<S>>,
+    packages: HashMap<ModuleId, Package<AnySource<S>>>,
 }
 
 impl<S> Program<S> {
-    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package<S>)> {
+    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package<AnySource<S>>)> {
         self.packages.iter()
     }
 
@@ -67,16 +70,17 @@ impl Diag for InvalidImport {
 
 impl<S: SourceRepo> Program<S> {
     pub fn new() -> Self {
-        Self {
-            packages: HashMap::new(),
-        }
+        let mut packages = HashMap::new();
+        let std = StdSourceRepo::new();
+        packages.insert(std.package_id(), Package::new(AnySource::Std(std)));
+        Self { packages }
     }
 
-    pub async fn open_package(&mut self, source: S) -> &mut Package<S> {
+    pub async fn open_package(&mut self, source: S) -> &mut Package<AnySource<S>> {
         let name = SourceRepo::package_id(&source);
         self.packages
             .entry(name)
-            .or_insert_with(|| Package::new(source))
+            .or_insert_with(|| Package::new(AnySource::User(source)))
     }
 
     pub async fn resolve_imports(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
@@ -214,6 +218,7 @@ impl<S: SourceRepo> Program<S> {
         let imports = self.find_imports(&file_mod);
 
         let mut eval = crate::Eval::new(effects);
+        <AnySource<S> as SourceRepo>::register_extern(&mut eval)?;
         let env = crate::EvalEnv::new()
             .with_module_id(module_id)
             .with_imports(&imports);

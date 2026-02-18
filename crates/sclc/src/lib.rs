@@ -10,6 +10,7 @@ mod package;
 mod parser;
 mod program;
 mod source_repo;
+mod std;
 mod ty;
 mod value;
 
@@ -25,5 +26,6 @@ pub use package::*;
 pub use parser::*;
 pub use program::*;
 pub use source_repo::*;
+pub use std::*;
 pub use ty::*;
 pub use value::*;

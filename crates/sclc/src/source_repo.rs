@@ -1,6 +1,7 @@
 use std::{error::Error, path::Path};
 
 use crate::ModuleId;
+use crate::std::StdSourceRepo;
 
 #[allow(async_fn_in_trait)]
 pub trait SourceRepo {
@@ -8,6 +9,46 @@ pub trait SourceRepo {
 
     fn package_id(&self) -> ModuleId;
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err>;
+
+    fn register_extern(_eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub enum AnySource<S> {
+    User(S),
+    Std(StdSourceRepo),
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum AnySourceError<E: Error + Send + Sync + 'static> {
+    #[error(transparent)]
+    User(E),
+}
+
+impl<S: SourceRepo> SourceRepo for AnySource<S> {
+    type Err = AnySourceError<S::Err>;
+
+    fn package_id(&self) -> ModuleId {
+        match self {
+            AnySource::User(source) => source.package_id(),
+            AnySource::Std(source) => source.package_id(),
+        }
+    }
+
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+        match self {
+            AnySource::User(source) => source.read_file(path).await.map_err(AnySourceError::User),
+            AnySource::Std(source) => source.read_file(path).await.map_err(|never| match never {}),
+        }
+    }
+
+    fn register_extern(eval: &mut crate::Eval) -> Result<(), crate::EvaluateError> {
+        S::register_extern(eval)?;
+        StdSourceRepo::register_extern(eval)?;
+        Ok(())
+    }
 }
 
 impl SourceRepo for cdb::DeploymentClient {

@@ -161,6 +161,28 @@ pub enum EvalError {
 
     #[error("extern not found: {0}")]
     MissingExtern(String),
+
+    #[error("unexpected value: {0}")]
+    UnexpectedValue(Value),
+}
+
+pub trait ValueAssertions {
+    fn assert_int(self) -> Result<i64, EvalError>;
+}
+
+impl ValueAssertions for Value {
+    fn assert_int(self) -> Result<i64, EvalError> {
+        match self {
+            Value::Int(value) => Ok(value),
+            other => Err(EvalError::UnexpectedValue(other)),
+        }
+    }
+}
+
+impl ValueAssertions for Option<Value> {
+    fn assert_int(self) -> Result<i64, EvalError> {
+        self.unwrap_or(Value::Nil).assert_int()
+    }
 }
 
 impl Eval {

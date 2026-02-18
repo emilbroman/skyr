@@ -3,7 +3,7 @@ use std::path::Component;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{DiagList, Diagnosed, FnType, Package, Program, RecordType, Type, ast};
+use crate::{AnySource, DiagList, Diagnosed, FnType, Package, Program, RecordType, Type, ast};
 use thiserror::Error;
 
 pub struct TypeEnv<'a> {
@@ -220,7 +220,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     pub fn check_package(
         &self,
         env: &TypeEnv<'_>,
-        package: &Package<S>,
+        package: &Package<AnySource<S>>,
     ) -> Result<Diagnosed<()>, TypeCheckError> {
         let package_id = package.package_id();
         let mut diags = DiagList::new();
