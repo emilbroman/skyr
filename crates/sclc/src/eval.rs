@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{FnValue, Record, Value, ast};
+use crate::{ExternFnValue, FnValue, Record, Value, ast};
 
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
@@ -140,6 +140,7 @@ impl FnEnv {
 
 pub struct Eval {
     _effects: mpsc::UnboundedSender<Effect>,
+    externs: HashMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,11 +158,29 @@ pub enum EvalError {
 
     #[error("module id missing during evaluation")]
     ModuleIdMissing,
+
+    #[error("extern not found: {0}")]
+    MissingExtern(String),
 }
 
 impl Eval {
     pub fn new(effects: mpsc::UnboundedSender<Effect>) -> Self {
-        Self { _effects: effects }
+        Self {
+            _effects: effects,
+            externs: HashMap::new(),
+        }
+    }
+
+    pub fn add_extern(&mut self, name: impl Into<String>, value: Value) {
+        self.externs.insert(name.into(), value);
+    }
+
+    pub fn add_extern_fn(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<Value>) -> Result<Value, EvalError> + Clone + Send + Sync + 'static,
+    ) {
+        self.add_extern(name, Value::ExternFn(ExternFnValue::new(Box::new(f))));
     }
 
     pub fn eval_expr(
@@ -172,6 +191,11 @@ impl Eval {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
             ast::Expr::Str(str) => Ok(Value::Str(str.value.clone())),
+            ast::Expr::Extern(extern_expr) => self
+                .externs
+                .get(extern_expr.name.as_str())
+                .cloned()
+                .ok_or_else(|| EvalError::MissingExtern(extern_expr.name.clone())),
             ast::Expr::Let(let_expr) => {
                 let bind_value = self.eval_expr(env, let_expr.bind.expr.as_ref())?;
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_value);
@@ -203,11 +227,14 @@ impl Eval {
                     .collect::<Result<Vec<_>, _>>()?;
                 let callee = self.eval_expr(env, call_expr.callee.as_ref())?;
 
-                let Value::Fn(function) = callee else {
-                    return Ok(Value::Nil);
-                };
-                let call_env = function.env.as_eval_env(&args);
-                self.eval_expr(&call_env, &function.body)
+                match callee {
+                    Value::Fn(function) => {
+                        let call_env = function.env.as_eval_env(&args);
+                        self.eval_expr(&call_env, &function.body)
+                    }
+                    Value::ExternFn(function) => function.call(args),
+                    _ => Ok(Value::Nil),
+                }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
             ast::Expr::Record(record_expr) => {

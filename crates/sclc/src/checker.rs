@@ -296,6 +296,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         match expr.as_ref() {
             ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
             ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
+            ast::Expr::Extern(extern_expr) => Ok(Diagnosed::new(
+                self.resolve_type_expr(&extern_expr.ty),
+                DiagList::new(),
+            )),
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self
@@ -477,9 +481,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         ))
     }
 
-    fn resolve_type_expr(&self, type_expr: &ast::TypeExpr) -> Type {
-        match type_expr {
+    fn resolve_type_expr(&self, type_expr: &crate::Loc<ast::TypeExpr>) -> Type {
+        match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
+            ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
+            ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
+                params: fn_ty
+                    .params
+                    .iter()
+                    .map(|param| self.resolve_type_expr(param))
+                    .collect(),
+                ret: Box::new(self.resolve_type_expr(&fn_ty.ret)),
+            }),
             ast::TypeExpr::Var(_) => Type::Never,
         }
     }

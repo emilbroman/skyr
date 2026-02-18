@@ -34,6 +34,7 @@ impl Expr {
         match self {
             Expr::Int(_) => HashSet::new(),
             Expr::Str(_) => HashSet::new(),
+            Expr::Extern(_) => HashSet::new(),
             Expr::Var(var) => HashSet::from([var.name.as_str()]),
             Expr::Let(let_expr) => {
                 let mut vars = let_expr.bind.expr.as_ref().free_vars();
@@ -88,6 +89,7 @@ pub enum ModStmt {
 pub enum Expr {
     Int(Int),
     Str(StrExpr),
+    Extern(ExternExpr),
     Let(LetExpr),
     Fn(FnExpr),
     Call(CallExpr),
@@ -116,6 +118,12 @@ pub struct Int {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrExpr {
     pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternExpr {
+    pub name: String,
+    pub ty: Loc<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,12 +174,19 @@ pub struct FnExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnParam {
     pub var: Loc<Var>,
-    pub ty: TypeExpr,
+    pub ty: Loc<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeExpr {
     Var(Loc<Var>),
+    Fn(FnTypeExpr),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnTypeExpr {
+    pub params: Vec<Loc<TypeExpr>>,
+    pub ret: Box<Loc<TypeExpr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -202,6 +217,7 @@ mod tests {
     fn free_vars_skip_fn_params() {
         let span = crate::Span::default();
         let expr_loc = |expr| Loc::new(expr, span);
+        let type_loc = |ty| Loc::new(ty, span);
         let expr = Expr::Record(RecordExpr {
             fields: vec![
                 RecordField {
@@ -214,11 +230,11 @@ mod tests {
                         params: vec![
                             FnParam {
                                 var: var("x"),
-                                ty: TypeExpr::Var(var("X")),
+                                ty: type_loc(TypeExpr::Var(var("X"))),
                             },
                             FnParam {
                                 var: var("y"),
-                                ty: TypeExpr::Var(var("Y")),
+                                ty: type_loc(TypeExpr::Var(var("Y"))),
                             },
                         ],
                         body: Box::new(expr_loc(Expr::Record(RecordExpr {

@@ -20,6 +20,7 @@ pub enum Token<'a> {
     FnKeyword,
     ExportKeyword,
     PrintKeyword,
+    ExternKeyword,
     Int(&'a str),
     StrBegin(&'a str),
     StrCont(&'a str),
@@ -240,6 +241,8 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::ExportKeyword
             } else if symbol == "print" {
                 Token::PrintKeyword
+            } else if symbol == "extern" {
+                Token::ExternKeyword
             } else {
                 Token::Symbol(symbol)
             }

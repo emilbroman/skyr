@@ -5,9 +5,60 @@ pub enum Value {
     Nil,
     Int(i64),
     Str(String),
+    ExternFn(ExternFnValue),
     Fn(FnValue),
     Record(Record),
 }
+
+pub trait ExternFn: Send + Sync + 'static {
+    fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError>;
+    fn clone_extern_fn(&self) -> Box<dyn ExternFn>;
+}
+
+impl<F> ExternFn for F
+where
+    F: Fn(Vec<Value>) -> Result<Value, crate::EvalError> + Clone + Send + Sync + 'static,
+{
+    fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError> {
+        self(args)
+    }
+
+    fn clone_extern_fn(&self) -> Box<dyn ExternFn> {
+        Box::new(self.clone())
+    }
+}
+
+pub struct ExternFnValue(Box<dyn ExternFn>);
+
+impl ExternFnValue {
+    pub fn new(inner: Box<dyn ExternFn>) -> Self {
+        Self(inner)
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError> {
+        self.0.call(args)
+    }
+}
+
+impl Clone for ExternFnValue {
+    fn clone(&self) -> Self {
+        Self(self.0.clone_extern_fn())
+    }
+}
+
+impl std::fmt::Debug for ExternFnValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ExternFnValue(<dyn ExternFn>)")
+    }
+}
+
+impl PartialEq for ExternFnValue {
+    fn eq(&self, _other: &Self) -> bool {
+        false
+    }
+}
+
+impl Eq for ExternFnValue {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnValue {
@@ -36,6 +87,7 @@ impl std::fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Int(value) => write!(f, "{value}"),
             Value::Str(value) => write!(f, "{value}"),
+            Value::ExternFn(_) => write!(f, "<extern fn>"),
             Value::Fn(function) => write!(f, "{function}"),
             Value::Record(record) => write!(f, "{record}"),
         }

@@ -126,6 +126,7 @@ peg::parser! {
         rule expr() -> Loc<Expr>
             = let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
+            / extern_expr:extern_expr() { extern_expr }
             / property_expr()
 
         // fn expressions are right-associative because the body is parsed as a full Expr.
@@ -145,8 +146,37 @@ peg::parser! {
         rule fn_param() -> FnParam
             = var:var() colon() ty:type_expr() { FnParam { var, ty } }
 
-        rule type_expr() -> TypeExpr
-            = var:var() { TypeExpr::Var(var) }
+        rule type_expr() -> Loc<TypeExpr>
+            = fn_type_expr:type_expr_fn() { fn_type_expr }
+            / var:var() {
+                let span = var.span();
+                Loc::new(TypeExpr::Var(var), span)
+            }
+
+        rule type_expr_fn() -> Loc<TypeExpr>
+            = fn_kw_span:fn_keyword() open_paren() params:type_expr_params() close_paren() ret:type_expr() {
+                let end = ret.span().end();
+                Loc::new(TypeExpr::Fn(crate::FnTypeExpr {
+                    params,
+                    ret: Box::new(ret),
+                }), Span::new(fn_kw_span.start(), end))
+            }
+
+        rule type_expr_params() -> Vec<Loc<TypeExpr>>
+            = params:(type_expr() ++ comma()) comma()? { params }
+            / { vec![] }
+
+        rule extern_expr() -> Loc<Expr>
+            = extern_kw_span:extern_keyword() name:str_simple() colon() ty:type_expr() {
+                let end = ty.span().end();
+                Loc::new(
+                    Expr::Extern(crate::ExternExpr {
+                        name: name.0,
+                        ty,
+                    }),
+                    Span::new(extern_kw_span.start(), end),
+                )
+            }
 
         rule property_expr() -> Loc<Expr>
             = head:atom_expr() suffixes:postfix_suffix()* {
@@ -283,6 +313,9 @@ peg::parser! {
 
         rule fn_keyword() -> Span
             = [token if matches!(token.as_ref(), Token::FnKeyword)] { token.span() }
+
+        rule extern_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::ExternKeyword)] { token.span() }
 
         rule equals() -> Span
             = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
@@ -542,5 +575,36 @@ mod tests {
             crate::Expr::PropertyAccess(_)
         ));
         assert!(matches!(interp.parts[2].as_ref(), crate::Expr::Str(_)));
+    }
+
+    #[test]
+    fn parses_extern_expr() {
+        let line = parse_repl_line("extern \"clock\": Int", &ModuleId::default())
+            .expect("extern expression should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
+            panic!("expected extern expression");
+        };
+        assert_eq!(extern_expr.name, "clock");
+    }
+
+    #[test]
+    fn parses_function_type_expr() {
+        let line = parse_repl_line("extern \"f\": fn(Int, Str) Int", &ModuleId::default())
+            .expect("extern function type should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
+            panic!("expected extern expression");
+        };
+        let crate::TypeExpr::Fn(fn_ty) = extern_expr.ty.into_inner() else {
+            panic!("expected fn type expression");
+        };
+        assert_eq!(fn_ty.params.len(), 2);
     }
 }
