@@ -8,6 +8,7 @@ use crate::{Record, Value, ast};
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, &'a ast::Expr>>,
+    imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, Value>,
     stack_depth: u32,
 }
@@ -17,6 +18,7 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: None,
             globals: None,
+            imports: None,
             locals: HashMap::new(),
             stack_depth: 0,
         }
@@ -26,6 +28,7 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
+            imports: self.imports,
             locals: self.locals.clone(),
             stack_depth: self.stack_depth,
         }
@@ -35,6 +38,20 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
+            imports: self.imports,
+            locals: HashMap::new(),
+            stack_depth: self.stack_depth,
+        }
+    }
+
+    pub fn with_imports(
+        &self,
+        imports: &'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>,
+    ) -> Self {
+        Self {
+            module_id: self.module_id,
+            globals: self.globals,
+            imports: Some(imports),
             locals: HashMap::new(),
             stack_depth: self.stack_depth,
         }
@@ -44,6 +61,7 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: Some(module_id),
             globals: self.globals,
+            imports: self.imports,
             locals: self.locals.clone(),
             stack_depth: self.stack_depth,
         }
@@ -59,6 +77,7 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
+            imports: self.imports,
             locals: HashMap::new(),
             stack_depth: self.stack_depth,
         }
@@ -80,6 +99,12 @@ impl<'a> EvalEnv<'a> {
 
     pub fn lookup_global(&self, name: &str) -> Option<&ast::Expr> {
         self.globals.and_then(|globals| globals.get(name).copied())
+    }
+
+    pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, &'a ast::FileMod)> {
+        self.imports
+            .and_then(|imports| imports.get(name))
+            .map(|(module_id, file_mod)| (module_id.clone(), *file_mod))
     }
 }
 
@@ -125,6 +150,12 @@ impl Eval {
                     let global_env = env.without_locals().with_stack_frame()?;
                     return self.eval_expr(&global_env, global_expr);
                 }
+                if let Some((target_module_id, import_file_mod)) =
+                    env.lookup_import(var.name.as_str())
+                {
+                    let import_env = EvalEnv::new().with_module_id(&target_module_id);
+                    return self.eval_file_mod(&import_env, import_file_mod);
+                }
                 Ok(Value::Nil)
             }
             ast::Expr::Record(record_expr) => {
@@ -148,20 +179,27 @@ impl Eval {
         }
     }
 
-    pub fn eval_stmt(&mut self, env: &EvalEnv<'_>, stmt: &ast::ModStmt) -> Result<(), EvalError> {
+    pub fn eval_stmt(
+        &mut self,
+        env: &EvalEnv<'_>,
+        stmt: &ast::ModStmt,
+    ) -> Result<Option<(String, Value)>, EvalError> {
         match stmt {
             ast::ModStmt::Print(print_stmt) => {
                 let value = self.eval_expr(env, &print_stmt.expr)?;
                 self._effects
                     .send(Effect::Print(value))
                     .map_err(|send_error| EvalError::EmitEffect(send_error.0))?;
-                Ok(())
+                Ok(None)
             }
-            ast::ModStmt::Let(_) => Ok(()),
-            ast::ModStmt::Export(_) => Ok(()),
+            ast::ModStmt::Let(_) | ast::ModStmt::Import(_) => Ok(None),
+            ast::ModStmt::Export(let_bind) => {
+                let value = self.eval_expr(env, &let_bind.expr)?;
+                Ok(Some((let_bind.var.name.clone(), value)))
+            }
             ast::ModStmt::Expr(expr) => {
                 let _ = self.eval_expr(env, expr)?;
-                Ok(())
+                Ok(None)
             }
             s => Err(EvalError::UnimplementedStmt(s.clone())),
         }
@@ -174,11 +212,14 @@ impl Eval {
     ) -> Result<Value, EvalError> {
         let globals = file_mod.find_globals();
         let env = env.with_globals(&globals);
+        let mut exports = Record::default();
 
         for statement in &file_mod.statements {
-            self.eval_stmt(&env, statement)?;
+            if let Some((name, value)) = self.eval_stmt(&env, statement)? {
+                exports.insert(name, value);
+            }
         }
 
-        Ok(Value::Record(Record::default()))
+        Ok(Value::Record(exports))
     }
 }

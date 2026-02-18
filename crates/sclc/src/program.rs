@@ -201,18 +201,71 @@ impl<S: SourceRepo> Program<S> {
             .collect::<ModuleId>()
             .to_path_buf_with_extension("scl");
 
-        let Some(package) = self.packages.get_mut(&package_name) else {
-            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+        let file_mod = {
+            let Some(package) = self.packages.get_mut(&package_name) else {
+                return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+            };
+            package
+                .open(&module_path)
+                .await
+                .map_err(|err| EvaluateError::Open(module_id.clone(), err))?
+                .clone()
         };
-        let file_mod = package
-            .open(&module_path)
-            .await
-            .map_err(|err| EvaluateError::Open(module_id.clone(), err))?;
+        let imports = self.find_imports(&file_mod);
 
         let mut eval = crate::Eval::new(effects);
-        let env = crate::EvalEnv::new().with_module_id(module_id);
-        eval.eval_file_mod(&env, file_mod)
+        let env = crate::EvalEnv::new()
+            .with_module_id(module_id)
+            .with_imports(&imports);
+        eval.eval_file_mod(&env, &file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
         Ok(())
+    }
+
+    fn find_imports<'a>(
+        &'a self,
+        file_mod: &'a crate::ast::FileMod,
+    ) -> HashMap<&'a str, (ModuleId, &'a crate::ast::FileMod)> {
+        file_mod
+            .statements
+            .iter()
+            .filter_map(|statement| {
+                if let crate::ast::ModStmt::Import(import_stmt) = statement {
+                    let alias = import_stmt.as_ref().vars.last()?;
+                    let import_path = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.as_ref().name.clone())
+                        .collect::<ModuleId>();
+                    let destination = self.resolve_import_path(&import_path)?;
+                    return Some((alias.as_ref().name.as_str(), (import_path, destination)));
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn resolve_import_path<'a>(
+        &'a self,
+        import_path: &ModuleId,
+    ) -> Option<&'a crate::ast::FileMod> {
+        let package_name = self.package_name_for_import(import_path)?;
+        let (_, package) = self
+            .packages
+            .iter()
+            .find(|(name, _)| *name == &package_name)?;
+        let module_segments = import_path.suffix_after(&package_name)?;
+        if module_segments.is_empty() {
+            return None;
+        }
+        let module_path = module_segments
+            .iter()
+            .cloned()
+            .collect::<ModuleId>()
+            .to_path_buf_with_extension("scl");
+        package
+            .modules()
+            .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
     }
 }
