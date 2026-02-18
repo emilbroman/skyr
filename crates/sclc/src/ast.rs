@@ -43,9 +43,15 @@ pub enum Expr {
     PropertyAccess(PropertyAccessExpr),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Var {
     pub name: String,
+}
+
+impl std::fmt::Debug for Var {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{}", self.name)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

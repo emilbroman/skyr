@@ -11,7 +11,7 @@ pub struct Span {
     end: Position,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Loc<T> {
     value: T,
     span: Span,
@@ -110,6 +110,15 @@ impl<T> std::ops::Deref for Loc<T> {
 impl<T> std::ops::DerefMut for Loc<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.value
+    }
+}
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Loc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if f.alternate() {
+            write!(f, "{} ", self.span)?;
+        }
+        std::fmt::Debug::fmt(&self.value, f)
     }
 }
 
