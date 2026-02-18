@@ -1,5 +1,6 @@
 use clap::Parser;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use sclc::Diag;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::task;
@@ -40,7 +41,7 @@ impl Repl {
         }
     }
 
-    fn process(&mut self, line: &str) -> anyhow::Result<()> {
+    async fn process(&mut self, line: &str) -> anyhow::Result<()> {
         self.line_number += 1;
 
         let module_id = [format!("Repl{}", self.line_number)].into();
@@ -48,11 +49,48 @@ impl Repl {
             return Ok(());
         };
 
+        let mut program = sclc::Program::<FsSource>::new();
         let type_env = Self::type_env(&self.bindings, &module_id);
-        let empty_program = sclc::Program::<FsSource>::new();
-        let checker = sclc::TypeChecker::new(&empty_program);
         let pending_binding = match &repl_line.statement {
+            sclc::ModStmt::Import(import_stmt) => {
+                let import_path = import_stmt
+                    .as_ref()
+                    .vars
+                    .iter()
+                    .map(|var| var.as_ref().name.clone())
+                    .collect::<sclc::ModuleId>();
+                let Some(alias) = import_stmt
+                    .as_ref()
+                    .vars
+                    .last()
+                    .map(|var| var.as_ref().name.clone())
+                else {
+                    return Ok(());
+                };
+
+                let Some(file_mod) = program.resolve_import(&import_path).await?.cloned() else {
+                    let diag = sclc::InvalidImport {
+                        module_id: import_path,
+                        import: import_stmt.clone(),
+                    };
+                    let (module_id, span) = diag.locate();
+                    println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
+                    return Ok(());
+                };
+
+                let checker = sclc::TypeChecker::new(&program);
+                let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
+                let diagnosed_ty = checker.check_file_mod(&type_env, &file_mod)?;
+                let Some(ty) = Self::report(diagnosed_ty) else {
+                    return Ok(());
+                };
+
+                let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
+                let value = self.eval.eval_file_mod(&eval_env, &file_mod)?;
+                Some((alias, (ty, value)))
+            }
             sclc::ModStmt::Let(let_bind) => {
+                let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_expr(&type_env, &let_bind.expr)?;
                 let Some(ty) = Self::report(diagnosed) else {
                     return Ok(());
@@ -64,6 +102,7 @@ impl Repl {
                 Some((let_bind.var.name.clone(), (ty, value)))
             }
             sclc::ModStmt::Expr(expr) => {
+                let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_stmt(&type_env, &repl_line.statement)?;
                 let Some(_) = Self::report(diagnosed) else {
                     return Ok(());
@@ -75,6 +114,7 @@ impl Repl {
                 None
             }
             stmt => {
+                let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_stmt(&type_env, stmt)?;
                 let Some(_) = Self::report(diagnosed) else {
                     return Ok(());
@@ -161,7 +201,7 @@ async fn run_repl() -> anyhow::Result<()> {
             }
         }
     });
-    let eval = sclc::Eval::new(effects_tx);
+    let eval = sclc::Eval::new::<FsSource>(effects_tx);
     let mut repl = Repl::new(eval);
     let mut editor = DefaultEditor::new()?;
 
@@ -170,7 +210,7 @@ async fn run_repl() -> anyhow::Result<()> {
             Ok(line) => {
                 editor.add_history_entry(&line)?;
 
-                repl.process(&line)?;
+                repl.process(&line).await?;
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
