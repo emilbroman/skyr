@@ -6,8 +6,10 @@ use std::{
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt, future};
+use sclc::SourceRepo;
 use slog::{Drain, Logger, debug, error, info, o};
 use tokio::{
+    sync::mpsc,
     sync::oneshot::{self, error::TryRecvError},
     task,
     time::{Instant, sleep_until},
@@ -170,9 +172,7 @@ impl Worker {
                 // TODO: resource management
 
                 info!(&self.log, "reconciling");
-
-                let program = sclc::compile(self.client.clone()).await?;
-                debug!(&self.log, "{program:?}");
+                self.compile_and_evaluate().await?;
 
                 if let Some(superceded) = self.client.get_superceded().await? {
                     superceded.set(DeploymentState::Undesired).await?;
@@ -226,11 +226,49 @@ impl Worker {
 
             DeploymentState::Lingering => {
                 info!(&self.log, "lingering...");
-
-                let program = sclc::compile(self.client.clone()).await?;
-                debug!(&self.log, "{program:?}");
+                self.compile_and_evaluate().await?;
                 Ok(())
             }
         }
+    }
+
+    async fn compile_and_evaluate(&mut self) -> anyhow::Result<()> {
+        let diagnosed = sclc::compile(self.client.clone()).await?;
+        for diag in diagnosed.diags().iter() {
+            let (module_id, span) = diag.locate();
+            info!(&self.log, "compile diagnostic";
+                "module" => module_id.to_string(),
+                "span" => span.to_string(),
+                "diag" => diag.to_string()
+            );
+        }
+        if diagnosed.diags().has_errors() {
+            info!(&self.log, "compile produced errors; skipping evaluation");
+            return Ok(());
+        }
+
+        let mut program = diagnosed.into_inner();
+        let module_id = SourceRepo::package_id(&self.client)
+            .as_slice()
+            .iter()
+            .cloned()
+            .chain(std::iter::once(String::from("Main")))
+            .collect::<sclc::ModuleId>();
+
+        let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
+        let log = self.log.clone();
+        let effects_task = task::spawn(async move {
+            while let Some(effect) = effects_rx.recv().await {
+                match effect {
+                    sclc::Effect::Print(value) => {
+                        info!(log, "effect print"; "value" => value.to_string())
+                    }
+                }
+            }
+        });
+
+        program.evaluate(&module_id, effects_tx).await?;
+        effects_task.await?;
+        Ok(())
     }
 }
