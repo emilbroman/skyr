@@ -42,6 +42,7 @@ impl<S> Package<S> {
                 .filter_map(|statement| match statement {
                     ModStmt::Import(import_stmt) => Some(import_stmt),
                     ModStmt::Let(_) => None,
+                    ModStmt::Export(_) => None,
                     ModStmt::Print(_) => None,
                     ModStmt::Expr(_) => None,
                 })

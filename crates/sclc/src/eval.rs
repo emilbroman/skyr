@@ -158,6 +158,7 @@ impl Eval {
                 Ok(())
             }
             ast::ModStmt::Let(_) => Ok(()),
+            ast::ModStmt::Export(_) => Ok(()),
             ast::ModStmt::Expr(expr) => {
                 let _ = self.eval_expr(env, expr)?;
                 Ok(())

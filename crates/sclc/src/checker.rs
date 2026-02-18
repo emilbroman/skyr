@@ -9,6 +9,7 @@ use thiserror::Error;
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, &'a ast::Expr>>,
+    imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     locals: HashMap<&'a str, Type>,
 }
 
@@ -17,6 +18,7 @@ impl<'a> TypeEnv<'a> {
         Self {
             module_id: None,
             globals: None,
+            imports: None,
             locals: HashMap::new(),
         }
     }
@@ -25,6 +27,7 @@ impl<'a> TypeEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
+            imports: self.imports,
             locals: self.locals.clone(),
         }
     }
@@ -33,6 +36,19 @@ impl<'a> TypeEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
+            imports: self.imports,
+            locals: HashMap::new(),
+        }
+    }
+
+    pub fn with_imports(
+        &self,
+        imports: &'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>,
+    ) -> Self {
+        Self {
+            module_id: self.module_id,
+            globals: self.globals,
+            imports: Some(imports),
             locals: HashMap::new(),
         }
     }
@@ -41,6 +57,7 @@ impl<'a> TypeEnv<'a> {
         Self {
             module_id: Some(module_id),
             globals: self.globals,
+            imports: self.imports,
             locals: self.locals.clone(),
         }
     }
@@ -55,6 +72,7 @@ impl<'a> TypeEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
+            imports: self.imports,
             locals: HashMap::new(),
         }
     }
@@ -67,6 +85,12 @@ impl<'a> TypeEnv<'a> {
         self.globals.and_then(|globals| globals.get(name).copied())
     }
 
+    pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, Option<&'a ast::FileMod>)> {
+        self.imports
+            .and_then(|imports| imports.get(name))
+            .map(|(module_id, file_mod)| (module_id.clone(), *file_mod))
+    }
+
     pub fn module_id(&self) -> Result<crate::ModuleId, TypeCheckError> {
         self.module_id
             .cloned()
@@ -74,7 +98,9 @@ impl<'a> TypeEnv<'a> {
     }
 }
 
-pub struct TypeChecker;
+pub struct TypeChecker<'p, S> {
+    program: &'p Program<S>,
+}
 
 static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -120,22 +146,23 @@ pub enum TypeCheckError {
     ModuleIdMissing,
 }
 
-impl TypeChecker {
-    pub fn check_program<S: crate::SourceRepo>(
-        &self,
-        program: &Program<S>,
-    ) -> Result<Diagnosed<()>, TypeCheckError> {
+impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
+    pub fn new(program: &'p Program<S>) -> Self {
+        Self { program }
+    }
+
+    pub fn check_program(&self) -> Result<Diagnosed<()>, TypeCheckError> {
         let env = TypeEnv::new();
         let mut diags = DiagList::new();
 
-        for (_, package) in program.packages() {
+        for (_, package) in self.program.packages() {
             self.check_package(&env, package)?.unpack(&mut diags);
         }
 
         Ok(Diagnosed::new((), diags))
     }
 
-    pub fn check_package<S: crate::SourceRepo>(
+    pub fn check_package(
         &self,
         env: &TypeEnv<'_>,
         package: &Package<S>,
@@ -146,7 +173,7 @@ impl TypeChecker {
         for (path, file_mod) in package.modules() {
             let module_id = module_id_for_path(&package_id, path);
             let env = env.with_module_id(&module_id);
-            self.check_file_mod(&env, file_mod)?.unpack(&mut diags);
+            let _ = self.check_file_mod(&env, file_mod)?.unpack(&mut diags);
         }
 
         Ok(Diagnosed::new((), diags))
@@ -156,50 +183,53 @@ impl TypeChecker {
         &self,
         env: &TypeEnv<'_>,
         file_mod: &ast::FileMod,
-    ) -> Result<Diagnosed<()>, TypeCheckError> {
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let globals = file_mod.find_globals();
-        let env = env.with_globals(&globals);
+        let imports = self.find_imports(file_mod);
+        let env = env.with_globals(&globals).with_imports(&imports);
 
         let mut diags = DiagList::new();
+        let mut exports = RecordType::default();
 
         for statement in &file_mod.statements {
-            match statement {
-                ast::ModStmt::Let(let_bind) => {
-                    self.check_global_let_bind(&env, let_bind)?
-                        .unpack(&mut diags);
-                }
-                _ => {
-                    self.check_stmt(&env, statement)?.unpack(&mut diags);
-                }
+            if let Some((name, ty)) = self.check_stmt(&env, statement)?.unpack(&mut diags) {
+                exports.insert(name, ty);
             }
         }
 
-        Ok(Diagnosed::new((), diags))
+        Ok(Diagnosed::new(Type::Record(exports), diags))
     }
 
     pub fn check_stmt(
         &self,
         env: &TypeEnv<'_>,
         stmt: &ast::ModStmt,
-    ) -> Result<Diagnosed<()>, TypeCheckError> {
+    ) -> Result<Diagnosed<Option<(String, Type)>>, TypeCheckError> {
         match stmt {
+            ast::ModStmt::Import(_) => Ok(Diagnosed::new(None, DiagList::new())),
             ast::ModStmt::Expr(expr) => {
                 let mut diags = DiagList::new();
                 self.check_expr(env, expr)?.unpack(&mut diags);
-                Ok(Diagnosed::new((), diags))
+                Ok(Diagnosed::new(None, diags))
             }
             ast::ModStmt::Let(let_bind) => {
                 let mut diags = DiagList::new();
                 self.check_global_let_bind(env, let_bind)?
                     .unpack(&mut diags);
-                Ok(Diagnosed::new((), diags))
+                Ok(Diagnosed::new(None, diags))
+            }
+            ast::ModStmt::Export(let_bind) => {
+                let mut diags = DiagList::new();
+                let ty = self
+                    .check_global_let_bind(env, let_bind)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(Some((let_bind.var.name.clone(), ty)), diags))
             }
             ast::ModStmt::Print(print_stmt) => {
                 let mut diags = DiagList::new();
                 self.check_expr(env, &print_stmt.expr)?.unpack(&mut diags);
-                Ok(Diagnosed::new((), diags))
+                Ok(Diagnosed::new(None, diags))
             }
-            stmt => Err(TypeCheckError::UnimplementedStmt(stmt.clone())),
         }
     }
 
@@ -239,6 +269,16 @@ impl TypeChecker {
                         diags,
                     ));
                 }
+                if let Some((target_module_id, maybe_import_file_mod)) =
+                    env.lookup_import(var.name.as_str())
+                {
+                    let Some(import_file_mod) = maybe_import_file_mod else {
+                        return Ok(Diagnosed::new(Type::Never, DiagList::new()));
+                    };
+                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                    let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
+                    return Ok(Diagnosed::new(imported_ty.into_inner(), DiagList::new()));
+                }
                 let mut diags = DiagList::new();
                 diags.push(UndefinedVariable {
                     module_id: env.module_id()?,
@@ -264,6 +304,9 @@ impl TypeChecker {
                     .check_expr(env, &property_access.expr)?
                     .unpack(&mut diags)
                     .unfold();
+                if matches!(lhs_ty, Type::Never) {
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
                 let member_ty = match &lhs_ty {
                     Type::Record(record_ty) => record_ty
                         .get(property_access.property.name.as_str())
@@ -298,6 +341,72 @@ impl TypeChecker {
             Type::IsoRec(type_id, Box::new(resolved_ty)),
             diags,
         ))
+    }
+
+    fn find_imports<'a>(
+        &'a self,
+        file_mod: &'a ast::FileMod,
+    ) -> HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)> {
+        file_mod
+            .statements
+            .iter()
+            .filter_map(|statement| {
+                if let ast::ModStmt::Import(import_stmt) = statement {
+                    let alias = import_stmt
+                        .as_ref()
+                        .vars
+                        .last()
+                        .expect("import path contains at least one segment");
+                    let import_path = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.name.clone())
+                        .collect::<crate::ModuleId>();
+                    let destination = self.resolve_import(import_stmt);
+                    return Some((alias.name.as_str(), (import_path, destination)));
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn resolve_import<'a>(
+        &'a self,
+        import_stmt: &'a crate::Loc<ast::ImportStmt>,
+    ) -> Option<&'a ast::FileMod> {
+        let import_path = import_stmt
+            .as_ref()
+            .vars
+            .iter()
+            .map(|var| var.name.clone())
+            .collect::<crate::ModuleId>();
+        let package_name = self.package_name_for_import(&import_path)?;
+        let (_, package) = self
+            .program
+            .packages()
+            .find(|(name, _)| *name == &package_name)?;
+        let module_segments = import_path.suffix_after(&package_name)?;
+        if module_segments.is_empty() {
+            return None;
+        }
+        let module_path = module_segments
+            .iter()
+            .cloned()
+            .collect::<crate::ModuleId>()
+            .to_path_buf_with_extension("scl");
+        package
+            .modules()
+            .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
+    }
+
+    fn package_name_for_import(&self, import_path: &crate::ModuleId) -> Option<crate::ModuleId> {
+        self.program
+            .packages()
+            .map(|(name, _)| name)
+            .filter(|package_name| import_path.starts_with(package_name))
+            .max_by_key(|package_name| package_name.len())
+            .cloned()
     }
 }
 

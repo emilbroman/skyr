@@ -86,6 +86,7 @@ peg::parser! {
 
         rule mod_stmt() -> ModStmt
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
+            / export_let_bind:export_let_bind() { ModStmt::Export(export_let_bind) }
             / print_stmt:print_stmt() { ModStmt::Print(print_stmt) }
             / expr:expr() { ModStmt::Expr(expr) }
             / let_bind:let_bind() { ModStmt::Let(let_bind) }
@@ -137,6 +138,9 @@ peg::parser! {
         rule let_bind() -> LetBind
             = let_keyword() var:var() equals() expr:expr() { LetBind { var, expr: Box::new(expr) } }
 
+        rule export_let_bind() -> LetBind
+            = export_keyword() let_bind:let_bind() { let_bind }
+
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {
                 let end = vars
@@ -163,6 +167,8 @@ peg::parser! {
         rule let_keyword() = [token if matches!(token.as_ref(), Token::LetKeyword)]
 
         rule print_keyword() = [token if matches!(token.as_ref(), Token::PrintKeyword)]
+
+        rule export_keyword() = [token if matches!(token.as_ref(), Token::ExportKeyword)]
 
         rule equals() = [token if matches!(token.as_ref(), Token::Equals)]
 

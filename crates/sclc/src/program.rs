@@ -21,8 +21,7 @@ impl<S> Program<S> {
     where
         S: SourceRepo,
     {
-        let checker = crate::TypeChecker;
-        checker.check_program(self)
+        crate::TypeChecker::new(self).check_program()
     }
 }
 

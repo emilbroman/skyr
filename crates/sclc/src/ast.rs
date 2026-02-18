@@ -17,8 +17,11 @@ impl FileMod {
         let mut globals = HashMap::new();
 
         for statement in &self.statements {
-            if let ModStmt::Let(let_bind) = statement {
-                globals.insert(let_bind.var.name.as_str(), let_bind.expr.as_ref());
+            match statement {
+                ModStmt::Let(let_bind) | ModStmt::Export(let_bind) => {
+                    globals.insert(let_bind.var.name.as_str(), let_bind.expr.as_ref());
+                }
+                _ => {}
             }
         }
 
@@ -30,6 +33,7 @@ impl FileMod {
 pub enum ModStmt {
     Import(Loc<ImportStmt>),
     Let(LetBind),
+    Export(LetBind),
     Print(PrintStmt),
     Expr(Expr),
 }
