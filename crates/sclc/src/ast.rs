@@ -33,8 +33,15 @@ impl Expr {
     pub fn free_vars(&self) -> HashSet<&str> {
         match self {
             Expr::Int(_) => HashSet::new(),
+            Expr::Bool(_) => HashSet::new(),
             Expr::Str(_) => HashSet::new(),
             Expr::Extern(_) => HashSet::new(),
+            Expr::If(if_expr) => {
+                let mut vars = if_expr.condition.as_ref().free_vars();
+                vars.extend(if_expr.then_expr.as_ref().free_vars());
+                vars.extend(if_expr.else_expr.as_ref().free_vars());
+                vars
+            }
             Expr::Var(var) => HashSet::from([var.name.as_str()]),
             Expr::Let(let_expr) => {
                 let mut vars = let_expr.bind.expr.as_ref().free_vars();
@@ -87,8 +94,10 @@ pub enum ModStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Int(Int),
+    Bool(Bool),
     Str(StrExpr),
     Extern(ExternExpr),
+    If(IfExpr),
     Let(LetExpr),
     Fn(FnExpr),
     Call(CallExpr),
@@ -115,6 +124,11 @@ pub struct Int {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bool {
+    pub value: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StrExpr {
     pub value: String,
 }
@@ -123,6 +137,13 @@ pub struct StrExpr {
 pub struct ExternExpr {
     pub name: String,
     pub ty: Loc<TypeExpr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IfExpr {
+    pub condition: Box<Loc<Expr>>,
+    pub then_expr: Box<Loc<Expr>>,
+    pub else_expr: Box<Loc<Expr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

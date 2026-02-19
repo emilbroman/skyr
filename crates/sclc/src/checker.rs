@@ -196,6 +196,35 @@ impl crate::Diag for TypeMismatch {
 }
 
 #[derive(Error, Debug)]
+#[error("if condition must be Bool, got {actual}")]
+pub struct IfConditionNotBool {
+    pub module_id: crate::ModuleId,
+    pub actual: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for IfConditionNotBool {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("if branch type mismatch: then is {then_ty}, else is {else_ty}")]
+pub struct IfBranchTypeMismatch {
+    pub module_id: crate::ModuleId,
+    pub then_ty: Type,
+    pub else_ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for IfBranchTypeMismatch {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -290,11 +319,50 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match expr.as_ref() {
             ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
+            ast::Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool, DiagList::new())),
             ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
             ast::Expr::Extern(extern_expr) => Ok(Diagnosed::new(
                 self.resolve_type_expr(&extern_expr.ty),
                 DiagList::new(),
             )),
+            ast::Expr::If(if_expr) => {
+                let mut diags = DiagList::new();
+                let condition_ty = self
+                    .check_expr(env, if_expr.condition.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+                if !matches!(condition_ty, Type::Bool | Type::Never) {
+                    diags.push(IfConditionNotBool {
+                        module_id: env.module_id()?,
+                        actual: condition_ty,
+                        span: if_expr.condition.span(),
+                    });
+                }
+
+                let then_ty = self
+                    .check_expr(env, if_expr.then_expr.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+                let else_ty = self
+                    .check_expr(env, if_expr.else_expr.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+
+                if matches!(then_ty, Type::Never) || matches!(else_ty, Type::Never) {
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
+                if then_ty != else_ty {
+                    diags.push(IfBranchTypeMismatch {
+                        module_id: env.module_id()?,
+                        then_ty,
+                        else_ty,
+                        span: if_expr.else_expr.span(),
+                    });
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
+
+                Ok(Diagnosed::new(then_ty, diags))
+            }
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self
@@ -479,6 +547,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     fn resolve_type_expr(&self, type_expr: &crate::Loc<ast::TypeExpr>) -> Type {
         match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
+            ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
