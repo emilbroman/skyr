@@ -259,12 +259,382 @@ async fn worker_loop(
                     "resource_id" => message.resource.resource_id.clone()
                 );
             }
-            _ => {
-                info!(
-                    log,
-                    "received rtq message";
-                    "redelivered" => delivery.redelivered(),
-                    "message" => format!("{:?}", delivery.message)
+            rtq::Message::Destroy(message) => {
+                let resource_client = rdb_client
+                    .namespace(message.resource.namespace.clone())
+                    .resource(
+                        message.resource.resource_type.clone(),
+                        message.resource.resource_id.clone(),
+                    );
+                match resource_client.get().await {
+                    Ok(Some(resource)) => {
+                        if resource.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
+                            info!(log, "dropping delete for non-matching owner";
+                                "namespace" => message.resource.namespace.clone(),
+                                "resource_type" => message.resource.resource_type.clone(),
+                                "resource_id" => message.resource.resource_id.clone(),
+                                "message_owner" => message.owner_deployment_id.clone(),
+                                "current_owner" => resource.owner
+                            );
+                            delivery.ack().await?;
+                            continue;
+                        }
+                    }
+                    Ok(None) => {
+                        info!(log, "dropping idempotent delete for missing resource";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.ack().await?;
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(log, "failed to read resource state before delete";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                }
+
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for delete";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                if let Err(error) = plugin.delete_resource(id).await {
+                    warn!(log, "delete_resource plugin call failed";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                if let Err(error) = resource_client.delete().await {
+                    warn!(log, "failed to delete resource from rdb";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                info!(log, "deleted resource";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+            }
+            rtq::Message::Adopt(message) => {
+                let resource_client = rdb_client
+                    .namespace(message.resource.namespace.clone())
+                    .resource(
+                        message.resource.resource_type.clone(),
+                        message.resource.resource_id.clone(),
+                    );
+                let current = match resource_client.get().await {
+                    Ok(Some(resource)) => resource,
+                    Ok(None) => {
+                        info!(log, "dropping adopt for missing resource";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.ack().await?;
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(log, "failed to read resource state before adopt";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+                if current.owner.as_deref() != Some(message.from_owner_deployment_id.as_str()) {
+                    info!(log, "dropping adopt for non-matching owner";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "from_owner" => message.from_owner_deployment_id.clone(),
+                        "current_owner" => current.owner
+                    );
+                    delivery.ack().await?;
+                    continue;
+                }
+
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for adopt";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+
+                let prev_inputs = match current.inputs {
+                    Some(inputs) => inputs,
+                    None => {
+                        warn!(log, "missing current inputs for adopt";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+                let desired_inputs: sclc::Record =
+                    match serde_json::from_value(message.desired_inputs.clone()) {
+                        Ok(inputs) => inputs,
+                        Err(error) => {
+                            warn!(log, "invalid adopt desired_inputs json";
+                                "namespace" => message.resource.namespace.clone(),
+                                "resource_type" => message.resource.resource_type.clone(),
+                                "resource_id" => message.resource.resource_id.clone(),
+                                "error" => error.to_string()
+                            );
+                            delivery.nack(false).await?;
+                            continue;
+                        }
+                    };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                let resource = match plugin
+                    .update_resource(id, prev_inputs, desired_inputs)
+                    .await
+                {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        warn!(log, "update_resource plugin call failed for adopt";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+
+                if let Err(error) = resource_client
+                    .set_input(
+                        resource.inputs.clone(),
+                        message.to_owner_deployment_id.clone(),
+                    )
+                    .await
+                {
+                    warn!(log, "failed to persist adopted resource inputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+                if let Err(error) = resource_client.set_output(resource.outputs).await {
+                    warn!(log, "failed to persist adopted resource outputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                info!(log, "adopted resource";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone(),
+                    "from_owner" => message.from_owner_deployment_id.clone(),
+                    "to_owner" => message.to_owner_deployment_id.clone()
+                );
+            }
+            rtq::Message::Restore(message) => {
+                let resource_client = rdb_client
+                    .namespace(message.resource.namespace.clone())
+                    .resource(
+                        message.resource.resource_type.clone(),
+                        message.resource.resource_id.clone(),
+                    );
+                let current = match resource_client.get().await {
+                    Ok(Some(resource)) => resource,
+                    Ok(None) => {
+                        info!(log, "dropping restore for missing resource";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.ack().await?;
+                        continue;
+                    }
+                    Err(error) => {
+                        warn!(log, "failed to read resource state before restore";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+                if current.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
+                    info!(log, "dropping restore for non-matching owner";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "message_owner" => message.owner_deployment_id.clone(),
+                        "current_owner" => current.owner
+                    );
+                    delivery.ack().await?;
+                    continue;
+                }
+
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for restore";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+
+                let prev_inputs = match current.inputs {
+                    Some(inputs) => inputs,
+                    None => {
+                        warn!(log, "missing current inputs for restore";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+                let desired_inputs: sclc::Record =
+                    match serde_json::from_value(message.desired_inputs.clone()) {
+                        Ok(inputs) => inputs,
+                        Err(error) => {
+                            warn!(log, "invalid restore desired_inputs json";
+                                "namespace" => message.resource.namespace.clone(),
+                                "resource_type" => message.resource.resource_type.clone(),
+                                "resource_id" => message.resource.resource_id.clone(),
+                                "error" => error.to_string()
+                            );
+                            delivery.nack(false).await?;
+                            continue;
+                        }
+                    };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                let resource = match plugin
+                    .update_resource(id, prev_inputs, desired_inputs)
+                    .await
+                {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        warn!(log, "update_resource plugin call failed for restore";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+
+                if let Err(error) = resource_client
+                    .set_input(resource.inputs.clone(), message.owner_deployment_id.clone())
+                    .await
+                {
+                    warn!(log, "failed to persist restored resource inputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+                if let Err(error) = resource_client.set_output(resource.outputs).await {
+                    warn!(log, "failed to persist restored resource outputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                info!(log, "restored resource";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone(),
+                    "owner" => message.owner_deployment_id.clone()
                 );
             }
         }
