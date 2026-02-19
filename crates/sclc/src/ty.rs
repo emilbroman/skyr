@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
+    Any,
     Int,
     Bool,
     Str,
@@ -55,6 +56,7 @@ impl Type {
 
     fn unfold_inner(&self, replacement: Option<(usize, &Type)>) -> Self {
         match self {
+            Type::Any => Type::Any,
             Type::Int => Type::Int,
             Type::Bool => Type::Bool,
             Type::Str => Type::Str,
@@ -91,6 +93,7 @@ impl Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Type::Any => write!(f, "Any"),
             Type::Int => write!(f, "Int"),
             Type::Bool => write!(f, "Bool"),
             Type::Str => write!(f, "Str"),

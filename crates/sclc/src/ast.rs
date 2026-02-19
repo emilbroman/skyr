@@ -76,8 +76,8 @@ impl Expr {
             }
             Expr::List(list_expr) => {
                 let mut vars = HashSet::new();
-                for expr in &list_expr.items {
-                    vars.extend(expr.as_ref().free_vars());
+                for item in &list_expr.items {
+                    vars.extend(item.free_vars());
                 }
                 vars
             }
@@ -182,7 +182,47 @@ pub struct RecordExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListExpr {
-    pub items: Vec<Loc<Expr>>,
+    pub items: Vec<ListItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListItem {
+    Expr(Loc<Expr>),
+    If(ListIfItem),
+    For(ListForItem),
+}
+
+impl ListItem {
+    pub fn free_vars(&self) -> HashSet<&str> {
+        match self {
+            ListItem::Expr(expr) => expr.as_ref().free_vars(),
+            ListItem::If(item) => {
+                let mut vars = item.condition.as_ref().free_vars();
+                vars.extend(item.then_item.as_ref().free_vars());
+                vars
+            }
+            ListItem::For(item) => {
+                let mut vars = item.iterable.as_ref().free_vars();
+                let mut body_vars = item.emit_item.as_ref().free_vars();
+                body_vars.remove(item.var.name.as_str());
+                vars.extend(body_vars);
+                vars
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListIfItem {
+    pub condition: Box<Loc<Expr>>,
+    pub then_item: Box<ListItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListForItem {
+    pub var: Loc<Var>,
+    pub iterable: Box<Loc<Expr>>,
+    pub emit_item: Box<ListItem>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -379,11 +379,10 @@ impl Eval {
                 Ok(Value::Record(record))
             }
             ast::Expr::List(list_expr) => {
-                let values = list_expr
-                    .items
-                    .iter()
-                    .map(|item| self.eval_expr(env, item))
-                    .collect::<Result<Vec<_>, _>>()?;
+                let mut values = Vec::new();
+                for item in &list_expr.items {
+                    self.eval_list_item(env, item, &mut values)?;
+                }
                 Ok(Value::List(values))
             }
             ast::Expr::Interp(interp_expr) => {
@@ -406,6 +405,49 @@ impl Eval {
                         .cloned()
                         .unwrap_or(Value::Nil)),
                     _ => Ok(Value::Nil),
+                }
+            }
+        }
+    }
+
+    fn eval_list_item(
+        &self,
+        env: &EvalEnv<'_>,
+        item: &ast::ListItem,
+        out: &mut Vec<Value>,
+    ) -> Result<(), EvalError> {
+        match item {
+            ast::ListItem::Expr(expr) => {
+                out.push(self.eval_expr(env, expr)?);
+                Ok(())
+            }
+            ast::ListItem::If(if_item) => {
+                let condition = self.eval_expr(env, if_item.condition.as_ref())?;
+                match condition {
+                    Value::Bool(true) => self.eval_list_item(env, if_item.then_item.as_ref(), out),
+                    Value::Bool(false) => Ok(()),
+                    Value::Pending(_) => {
+                        out.push(Value::Pending(PendingValue));
+                        Ok(())
+                    }
+                    other => Err(EvalError::UnexpectedValue(other)),
+                }
+            }
+            ast::ListItem::For(for_item) => {
+                let iterable = self.eval_expr(env, for_item.iterable.as_ref())?;
+                match iterable {
+                    Value::List(values) => {
+                        for value in values {
+                            let inner_env = env.with_local(for_item.var.name.as_str(), value);
+                            self.eval_list_item(&inner_env, for_item.emit_item.as_ref(), out)?;
+                        }
+                        Ok(())
+                    }
+                    Value::Pending(_) => {
+                        out.push(Value::Pending(PendingValue));
+                        Ok(())
+                    }
+                    other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
         }
