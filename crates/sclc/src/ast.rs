@@ -74,6 +74,13 @@ impl Expr {
                 }
                 vars
             }
+            Expr::List(list_expr) => {
+                let mut vars = HashSet::new();
+                for expr in &list_expr.items {
+                    vars.extend(expr.as_ref().free_vars());
+                }
+                vars
+            }
             Expr::Interp(interp_expr) => {
                 let mut vars = HashSet::new();
                 for part in &interp_expr.parts {
@@ -107,6 +114,7 @@ pub enum Expr {
     Call(CallExpr),
     Var(Loc<Var>),
     Record(RecordExpr),
+    List(ListExpr),
     Interp(InterpExpr),
     PropertyAccess(PropertyAccessExpr),
 }
@@ -173,6 +181,11 @@ pub struct RecordExpr {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListExpr {
+    pub items: Vec<Loc<Expr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordField {
     pub var: Loc<Var>,
     pub expr: Loc<Expr>,
@@ -200,6 +213,7 @@ pub struct FnParam {
 pub enum TypeExpr {
     Var(Loc<Var>),
     Optional(Box<Loc<TypeExpr>>),
+    List(Box<Loc<TypeExpr>>),
     Fn(FnTypeExpr),
     Record(RecordTypeExpr),
 }

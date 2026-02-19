@@ -5,9 +5,9 @@ use thiserror::Error;
 
 use crate::{
     Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, IfExpr, ImportStmt,
-    Int, InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
-    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
-    TypeExpr, Var,
+    Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, Loc, ModStmt, ModuleId, Position,
+    PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine,
+    Span, StrExpr, Token, TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -176,9 +176,18 @@ peg::parser! {
         rule type_expr_base() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
             / record_type_expr:type_expr_record() { record_type_expr }
+            / list_type_expr:type_expr_list() { list_type_expr }
             / var:var() {
                 let span = var.span();
                 Loc::new(TypeExpr::Var(var), span)
+            }
+
+        rule type_expr_list() -> Loc<TypeExpr>
+            = open_square_span:open_square() item:type_expr() close_square_span:close_square() {
+                Loc::new(
+                    TypeExpr::List(Box::new(item)),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
             }
 
         rule type_expr_fn() -> Loc<TypeExpr>
@@ -263,6 +272,7 @@ peg::parser! {
             }
             / string_expr:string_expr() { string_expr }
             / record_expr:record_expr() { record_expr }
+            / list_expr:list_expr() { list_expr }
             / int:int() {
                 let span = int.span();
                 Loc::new(Expr::Int(int.into_inner()), span)
@@ -314,6 +324,20 @@ peg::parser! {
 
         rule record_field() -> RecordField
             = var:var() colon() expr:expr() { RecordField { var, expr } }
+
+        rule list_expr() -> Loc<Expr>
+            = open_square_span:open_square() close_square_span:close_square() {
+                Loc::new(
+                    Expr::List(ListExpr { items: vec![] }),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
+            }
+            / open_square_span:open_square() items:(expr() ++ comma()) comma()? close_square_span:close_square() {
+                Loc::new(
+                    Expr::List(ListExpr { items }),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
+            }
 
         rule let_expr() -> Loc<Expr>
             = bind:let_bind() semicolon() expr:expr() {
@@ -398,6 +422,12 @@ peg::parser! {
 
         rule close_paren() -> Span
             = [token if matches!(token.as_ref(), Token::CloseParen)] { token.span() }
+
+        rule open_square() -> Span
+            = [token if matches!(token.as_ref(), Token::OpenSquare)] { token.span() }
+
+        rule close_square() -> Span
+            = [token if matches!(token.as_ref(), Token::CloseSquare)] { token.span() }
 
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
@@ -590,6 +620,20 @@ mod tests {
     }
 
     #[test]
+    fn parses_list_literal_with_optional_trailing_comma() {
+        let line = parse_repl_line("[1, 2,]", &ModuleId::default())
+            .expect("list literal should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 2);
+    }
+
+    #[test]
     fn fn_body_is_right_associative() {
         let line = parse_repl_line("fn(a: A) fn(b: B) b", &ModuleId::default())
             .expect("nested fn expression should parse")
@@ -689,5 +733,25 @@ mod tests {
             panic!("expected fn type expression");
         };
         assert_eq!(fn_ty.params.len(), 2);
+    }
+
+    #[test]
+    fn parses_list_type_expr() {
+        let line = parse_repl_line("extern \"xs\": [Int]", &ModuleId::default())
+            .expect("list type should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
+            panic!("expected extern expression");
+        };
+        let crate::TypeExpr::List(inner) = extern_expr.ty.into_inner() else {
+            panic!("expected list type expression");
+        };
+        let crate::TypeExpr::Var(var) = inner.into_inner() else {
+            panic!("expected var inner type");
+        };
+        assert_eq!(var.name, "Int");
     }
 }

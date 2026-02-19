@@ -378,6 +378,14 @@ impl Eval {
                 }
                 Ok(Value::Record(record))
             }
+            ast::Expr::List(list_expr) => {
+                let values = list_expr
+                    .items
+                    .iter()
+                    .map(|item| self.eval_expr(env, item))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::List(values))
+            }
             ast::Expr::Interp(interp_expr) => {
                 let mut out = String::new();
                 for part in &interp_expr.parts {

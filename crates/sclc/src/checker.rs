@@ -300,6 +300,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     rhs.clone(),
                 ))),
             },
+            Type::List(lhs_inner) => match rhs {
+                Type::List(rhs_inner) => self
+                    .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
             _ => Err(TypeError::new(TypeIssue::Mismatch(
                 lhs.clone(),
                 rhs.clone(),
@@ -636,6 +645,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
+            ast::Expr::List(list_expr) => {
+                let mut diags = DiagList::new();
+                let list_ty = if let Some((first, rest)) = list_expr.items.split_first() {
+                    let first_ty = self
+                        .check_expr(env, first, None)?
+                        .unpack(&mut diags)
+                        .unfold();
+                    for item in rest {
+                        self.check_expr(env, item, Some(&first_ty))?
+                            .unpack(&mut diags);
+                    }
+                    Type::List(Box::new(first_ty))
+                } else {
+                    Type::List(Box::new(Type::Never))
+                };
+                let ty = self
+                    .apply_expected_type(env, expr.span(), list_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::Interp(interp_expr) => {
                 let mut diags = DiagList::new();
                 for part in &interp_expr.parts {
@@ -703,6 +732,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Optional(inner) => {
                 Type::Optional(Box::new(self.resolve_type_expr(inner.as_ref())))
+            }
+            ast::TypeExpr::List(inner) => {
+                Type::List(Box::new(self.resolve_type_expr(inner.as_ref())))
             }
             ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
