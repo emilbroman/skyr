@@ -196,6 +196,35 @@ impl crate::Diag for TypeMismatch {
 }
 
 #[derive(Error, Debug)]
+#[error("if condition must be Bool, got {actual}")]
+pub struct IfConditionNotBool {
+    pub module_id: crate::ModuleId,
+    pub actual: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for IfConditionNotBool {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("if branch type mismatch: then is {then_ty}, else is {else_ty}")]
+pub struct IfBranchTypeMismatch {
+    pub module_id: crate::ModuleId,
+    pub then_ty: Type,
+    pub else_ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for IfBranchTypeMismatch {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -296,6 +325,44 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 self.resolve_type_expr(&extern_expr.ty),
                 DiagList::new(),
             )),
+            ast::Expr::If(if_expr) => {
+                let mut diags = DiagList::new();
+                let condition_ty = self
+                    .check_expr(env, if_expr.condition.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+                if !matches!(condition_ty, Type::Bool | Type::Never) {
+                    diags.push(IfConditionNotBool {
+                        module_id: env.module_id()?,
+                        actual: condition_ty,
+                        span: if_expr.condition.span(),
+                    });
+                }
+
+                let then_ty = self
+                    .check_expr(env, if_expr.then_expr.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+                let else_ty = self
+                    .check_expr(env, if_expr.else_expr.as_ref())?
+                    .unpack(&mut diags)
+                    .unfold();
+
+                if matches!(then_ty, Type::Never) || matches!(else_ty, Type::Never) {
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
+                if then_ty != else_ty {
+                    diags.push(IfBranchTypeMismatch {
+                        module_id: env.module_id()?,
+                        then_ty,
+                        else_ty,
+                        span: if_expr.else_expr.span(),
+                    });
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
+
+                Ok(Diagnosed::new(then_ty, diags))
+            }
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self

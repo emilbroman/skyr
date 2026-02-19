@@ -305,6 +305,15 @@ impl Eval {
                 .get(extern_expr.name.as_str())
                 .cloned()
                 .ok_or_else(|| EvalError::MissingExtern(extern_expr.name.clone())),
+            ast::Expr::If(if_expr) => {
+                let condition = self.eval_expr(env, if_expr.condition.as_ref())?;
+                match condition {
+                    Value::Pending(_) => Ok(Value::Pending(PendingValue)),
+                    Value::Bool(true) => self.eval_expr(env, if_expr.then_expr.as_ref()),
+                    Value::Bool(false) => self.eval_expr(env, if_expr.else_expr.as_ref()),
+                    other => Err(EvalError::UnexpectedValue(other)),
+                }
+            }
             ast::Expr::Let(let_expr) => {
                 let bind_value = self.eval_expr(env, let_expr.bind.expr.as_ref())?;
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_value);

@@ -4,8 +4,8 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
-    InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
+    Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, IfExpr, ImportStmt,
+    Int, InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
     RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
     TypeExpr, Var,
 };
@@ -124,10 +124,24 @@ peg::parser! {
             / let_bind:let_bind() { ModStmt::Let(let_bind) }
 
         rule expr() -> Loc<Expr>
-            = let_expr:let_expr() { let_expr }
+            = if_expr:if_expr() { if_expr }
+            / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
             / property_expr()
+
+        rule if_expr() -> Loc<Expr>
+            = if_kw_span:if_keyword() open_paren() condition:expr() close_paren() then_expr:expr() else_keyword() else_expr:expr() {
+                let end = else_expr.span().end();
+                Loc::new(
+                    Expr::If(IfExpr {
+                        condition: Box::new(condition),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Box::new(else_expr),
+                    }),
+                    Span::new(if_kw_span.start(), end),
+                )
+            }
 
         // fn expressions are right-associative because the body is parsed as a full Expr.
         rule fn_expr() -> Loc<Expr>
@@ -333,6 +347,12 @@ peg::parser! {
         rule extern_keyword() -> Span
             = [token if matches!(token.as_ref(), Token::ExternKeyword)] { token.span() }
 
+        rule if_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::IfKeyword)] { token.span() }
+
+        rule else_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::ElseKeyword)] { token.span() }
+
         rule equals() -> Span
             = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
 
@@ -527,6 +547,23 @@ mod tests {
         assert_eq!(fn_expr.params.len(), 2);
         assert_eq!(fn_expr.params[0].var.name, "a");
         assert_eq!(fn_expr.params[1].var.name, "b");
+    }
+
+    #[test]
+    fn parses_if_expression_with_else() {
+        let line = parse_repl_line("if (true) 1 else 2", &ModuleId::default())
+            .expect("if expression should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::If(if_expr) = expr.into_inner() else {
+            panic!("expected if expression");
+        };
+        let crate::Expr::Bool(condition) = if_expr.condition.into_inner() else {
+            panic!("expected bool condition");
+        };
+        assert!(condition.value);
     }
 
     #[test]
