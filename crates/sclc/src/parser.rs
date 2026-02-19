@@ -131,13 +131,16 @@ peg::parser! {
             / property_expr()
 
         rule if_expr() -> Loc<Expr>
-            = if_kw_span:if_keyword() open_paren() condition:expr() close_paren() then_expr:expr() else_keyword() else_expr:expr() {
-                let end = else_expr.span().end();
+            = if_kw_span:if_keyword() open_paren() condition:expr() close_paren() then_expr:expr() else_expr:(else_keyword() else_expr:expr() { else_expr })? {
+                let end = else_expr
+                    .as_ref()
+                    .map(|expr| expr.span().end())
+                    .unwrap_or_else(|| then_expr.span().end());
                 Loc::new(
                     Expr::If(IfExpr {
                         condition: Box::new(condition),
                         then_expr: Box::new(then_expr),
-                        else_expr: Box::new(else_expr),
+                        else_expr: else_expr.map(Box::new),
                     }),
                     Span::new(if_kw_span.start(), end),
                 )
@@ -161,6 +164,16 @@ peg::parser! {
             = var:var() colon() ty:type_expr() { FnParam { var, ty } }
 
         rule type_expr() -> Loc<TypeExpr>
+            = base:type_expr_base() optional:question_mark()? {
+                if let Some(optional_span) = optional {
+                    let span = Span::new(base.span().start(), optional_span.end());
+                    Loc::new(TypeExpr::Optional(Box::new(base)), span)
+                } else {
+                    base
+                }
+            }
+
+        rule type_expr_base() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
             / record_type_expr:type_expr_record() { record_type_expr }
             / var:var() {
@@ -258,6 +271,7 @@ peg::parser! {
                 let span = bool_lit.span();
                 Loc::new(Expr::Bool(bool_lit.into_inner()), span)
             }
+            / nil_lit:nil_lit() { nil_lit }
             / var:var() {
                 let span = var.span();
                 Loc::new(Expr::Var(var), span)
@@ -359,6 +373,9 @@ peg::parser! {
         rule semicolon() -> Span
             = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
 
+        rule question_mark() -> Span
+            = [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
+
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
 
         rule open_curly() -> Span
@@ -402,6 +419,12 @@ peg::parser! {
                 Token::TrueKeyword => Ok(Loc::new(Bool { value: true }, token.span())),
                 Token::FalseKeyword => Ok(Loc::new(Bool { value: false }, token.span())),
                 _ => Err("boolean"),
+            } }
+
+        rule nil_lit() -> Loc<Expr>
+            = [token] {? match *token.as_ref() {
+                Token::NilKeyword => Ok(Loc::new(Expr::Nil, token.span())),
+                _ => Err("nil"),
             } }
 
         rule str_simple() -> (String, Span)

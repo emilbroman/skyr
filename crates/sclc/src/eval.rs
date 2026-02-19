@@ -299,6 +299,7 @@ impl Eval {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
             ast::Expr::Bool(bool) => Ok(Value::Bool(bool.value)),
+            ast::Expr::Nil => Ok(Value::Nil),
             ast::Expr::Str(str) => Ok(Value::Str(str.value.clone())),
             ast::Expr::Extern(extern_expr) => self
                 .externs
@@ -310,7 +311,13 @@ impl Eval {
                 match condition {
                     Value::Pending(_) => Ok(Value::Pending(PendingValue)),
                     Value::Bool(true) => self.eval_expr(env, if_expr.then_expr.as_ref()),
-                    Value::Bool(false) => self.eval_expr(env, if_expr.else_expr.as_ref()),
+                    Value::Bool(false) => {
+                        if let Some(else_expr) = &if_expr.else_expr {
+                            self.eval_expr(env, else_expr.as_ref())
+                        } else {
+                            Ok(Value::Nil)
+                        }
+                    }
                     other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
