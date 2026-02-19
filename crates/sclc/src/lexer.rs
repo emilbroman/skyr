@@ -22,8 +22,10 @@ pub enum Token<'a> {
     ExternKeyword,
     IfKeyword,
     ElseKeyword,
+    NilKeyword,
     TrueKeyword,
     FalseKeyword,
+    QuestionMark,
     Int(&'a str),
     StrBegin(&'a str),
     StrCont(&'a str),
@@ -248,6 +250,8 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::IfKeyword
             } else if symbol == "else" {
                 Token::ElseKeyword
+            } else if symbol == "nil" {
+                Token::NilKeyword
             } else if symbol == "true" {
                 Token::TrueKeyword
             } else if symbol == "false" {
@@ -299,6 +303,7 @@ impl<'a> Iterator for Lexer<'a> {
                 "=" => Token::Equals,
                 ";" => Token::Semicolon,
                 "/" => Token::Slash,
+                "?" => Token::QuestionMark,
                 _ => Token::Unknown(grapheme),
             }
         };

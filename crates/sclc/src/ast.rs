@@ -34,12 +34,15 @@ impl Expr {
         match self {
             Expr::Int(_) => HashSet::new(),
             Expr::Bool(_) => HashSet::new(),
+            Expr::Nil => HashSet::new(),
             Expr::Str(_) => HashSet::new(),
             Expr::Extern(_) => HashSet::new(),
             Expr::If(if_expr) => {
                 let mut vars = if_expr.condition.as_ref().free_vars();
                 vars.extend(if_expr.then_expr.as_ref().free_vars());
-                vars.extend(if_expr.else_expr.as_ref().free_vars());
+                if let Some(else_expr) = &if_expr.else_expr {
+                    vars.extend(else_expr.as_ref().free_vars());
+                }
                 vars
             }
             Expr::Var(var) => HashSet::from([var.name.as_str()]),
@@ -95,6 +98,7 @@ pub enum ModStmt {
 pub enum Expr {
     Int(Int),
     Bool(Bool),
+    Nil,
     Str(StrExpr),
     Extern(ExternExpr),
     If(IfExpr),
@@ -143,7 +147,7 @@ pub struct ExternExpr {
 pub struct IfExpr {
     pub condition: Box<Loc<Expr>>,
     pub then_expr: Box<Loc<Expr>>,
-    pub else_expr: Box<Loc<Expr>>,
+    pub else_expr: Option<Box<Loc<Expr>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +199,7 @@ pub struct FnParam {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeExpr {
     Var(Loc<Var>),
+    Optional(Box<Loc<TypeExpr>>),
     Fn(FnTypeExpr),
     Record(RecordTypeExpr),
 }

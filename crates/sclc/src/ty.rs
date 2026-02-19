@@ -5,6 +5,7 @@ pub enum Type {
     Int,
     Bool,
     Str,
+    Optional(Box<Type>),
     Fn(FnType),
     Record(RecordType),
     IsoRec(usize, Box<Type>),
@@ -52,6 +53,7 @@ impl Type {
             Type::Int => Type::Int,
             Type::Bool => Type::Bool,
             Type::Str => Type::Str,
+            Type::Optional(ty) => Type::Optional(Box::new(ty.unfold_inner(replacement))),
             Type::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
                     .params
@@ -86,6 +88,7 @@ impl std::fmt::Display for Type {
             Type::Int => write!(f, "Int"),
             Type::Bool => write!(f, "Bool"),
             Type::Str => write!(f, "Str"),
+            Type::Optional(ty) => write!(f, "{ty}?"),
             Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
             Type::Record(record) => write!(f, "{record}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),

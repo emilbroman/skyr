@@ -195,30 +195,65 @@ impl crate::Diag for TypeMismatch {
     }
 }
 
-#[derive(Error, Debug)]
-#[error("if condition must be Bool, got {actual}")]
-pub struct IfConditionNotBool {
-    pub module_id: crate::ModuleId,
-    pub actual: Type,
-    pub span: crate::Span,
+#[derive(Clone, Debug)]
+pub enum TypeIssue {
+    Mismatch(Type, Type),
 }
 
-impl crate::Diag for IfConditionNotBool {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+impl std::fmt::Display for TypeIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TypeIssue::Mismatch(lhs, rhs) => write!(f, "{rhs} is not assignable to {lhs}"),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct TypeError {
+    issue: TypeIssue,
+    cause: Option<Box<TypeError>>,
+}
+
+impl TypeError {
+    pub fn new(issue: TypeIssue) -> Self {
+        Self { issue, cause: None }
+    }
+
+    pub fn causing(self, issue: TypeIssue) -> Self {
+        Self {
+            issue,
+            cause: Some(Box::new(self)),
+        }
+    }
+}
+
+impl std::fmt::Display for TypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.issue)?;
+        if let Some(cause) = &self.cause {
+            write!(f, ", because {cause}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for TypeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause
+            .as_ref()
+            .map(|cause| cause.as_ref() as &(dyn std::error::Error + 'static))
     }
 }
 
 #[derive(Error, Debug)]
-#[error("if branch type mismatch: then is {then_ty}, else is {else_ty}")]
-pub struct IfBranchTypeMismatch {
+#[error("invalid type: {error}")]
+pub struct InvalidType {
     pub module_id: crate::ModuleId,
-    pub then_ty: Type,
-    pub else_ty: Type,
+    pub error: TypeError,
     pub span: crate::Span,
 }
 
-impl crate::Diag for IfBranchTypeMismatch {
+impl crate::Diag for InvalidType {
     fn locate(&self) -> (crate::ModuleId, crate::Span) {
         (self.module_id.clone(), self.span)
     }
@@ -231,6 +266,48 @@ pub enum TypeCheckError {
 }
 
 impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
+    fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
+        if lhs == rhs || matches!(rhs, Type::Never) {
+            return Ok(());
+        }
+
+        match lhs {
+            Type::Optional(lhs_inner) => match rhs {
+                Type::Optional(rhs_inner) => self
+                    .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+                _ => self
+                    .assign_type(lhs_inner.as_ref(), rhs)
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+            },
+            _ => Err(TypeError::new(TypeIssue::Mismatch(
+                lhs.clone(),
+                rhs.clone(),
+            ))),
+        }
+    }
+
+    fn apply_expected_type(
+        &self,
+        env: &TypeEnv<'_>,
+        span: crate::Span,
+        ty: Type,
+        expected_type: Option<&Type>,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        let mut diags = DiagList::new();
+        if let Some(expected_type) = expected_type {
+            if let Err(error) = self.assign_type(expected_type, &ty) {
+                diags.push(InvalidType {
+                    module_id: env.module_id()?,
+                    error,
+                    span,
+                });
+            }
+        }
+
+        Ok(Diagnosed::new(ty, diags))
+    }
+
     pub fn new(program: &'p Program<S>) -> Self {
         Self { program }
     }
@@ -293,7 +370,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::ModStmt::Import(_) => Ok(Diagnosed::new(None, DiagList::new())),
             ast::ModStmt::Expr(expr) => {
                 let mut diags = DiagList::new();
-                self.check_expr(env, expr)?.unpack(&mut diags);
+                self.check_expr(env, expr, None)?.unpack(&mut diags);
                 Ok(Diagnosed::new(None, diags))
             }
             ast::ModStmt::Let(let_bind) => {
@@ -316,61 +393,67 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
+        expected_type: Option<&Type>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match expr.as_ref() {
-            ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
-            ast::Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool, DiagList::new())),
-            ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
-            ast::Expr::Extern(extern_expr) => Ok(Diagnosed::new(
+            ast::Expr::Int(_) => {
+                self.apply_expected_type(env, expr.span(), Type::Int, expected_type)
+            }
+            ast::Expr::Bool(_) => {
+                self.apply_expected_type(env, expr.span(), Type::Bool, expected_type)
+            }
+            ast::Expr::Nil => self.apply_expected_type(
+                env,
+                expr.span(),
+                Type::Optional(Box::new(Type::Never)),
+                expected_type,
+            ),
+            ast::Expr::Str(_) => {
+                self.apply_expected_type(env, expr.span(), Type::Str, expected_type)
+            }
+            ast::Expr::Extern(extern_expr) => self.apply_expected_type(
+                env,
+                expr.span(),
                 self.resolve_type_expr(&extern_expr.ty),
-                DiagList::new(),
-            )),
+                expected_type,
+            ),
             ast::Expr::If(if_expr) => {
                 let mut diags = DiagList::new();
-                let condition_ty = self
-                    .check_expr(env, if_expr.condition.as_ref())?
-                    .unpack(&mut diags)
-                    .unfold();
-                if !matches!(condition_ty, Type::Bool | Type::Never) {
-                    diags.push(IfConditionNotBool {
-                        module_id: env.module_id()?,
-                        actual: condition_ty,
-                        span: if_expr.condition.span(),
-                    });
-                }
+                let bool_ty = Type::Bool;
+                self.check_expr(env, if_expr.condition.as_ref(), Some(&bool_ty))?
+                    .unpack(&mut diags);
 
                 let then_ty = self
-                    .check_expr(env, if_expr.then_expr.as_ref())?
+                    .check_expr(env, if_expr.then_expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
-                let else_ty = self
-                    .check_expr(env, if_expr.else_expr.as_ref())?
-                    .unpack(&mut diags)
-                    .unfold();
-
-                if matches!(then_ty, Type::Never) || matches!(else_ty, Type::Never) {
-                    return Ok(Diagnosed::new(Type::Never, diags));
-                }
-                if then_ty != else_ty {
-                    diags.push(IfBranchTypeMismatch {
-                        module_id: env.module_id()?,
-                        then_ty,
-                        else_ty,
-                        span: if_expr.else_expr.span(),
-                    });
-                    return Ok(Diagnosed::new(Type::Never, diags));
+                if let Some(else_expr) = if_expr.else_expr.as_ref() {
+                    self.check_expr(env, else_expr.as_ref(), Some(&then_ty))?
+                        .unpack(&mut diags);
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), then_ty, expected_type)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
                 }
 
-                Ok(Diagnosed::new(then_ty, diags))
+                let ty = self
+                    .apply_expected_type(
+                        env,
+                        expr.span(),
+                        Type::Optional(Box::new(then_ty)),
+                        expected_type,
+                    )?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
                 let bind_ty = self
-                    .check_expr(env, let_expr.bind.expr.as_ref())?
+                    .check_expr(env, let_expr.bind.expr.as_ref(), None)?
                     .unpack(&mut diags);
                 let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_ty);
                 let body_ty = self
-                    .check_expr(&inner_env, let_expr.expr.as_ref())?
+                    .check_expr(&inner_env, let_expr.expr.as_ref(), expected_type)?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(body_ty, diags))
             }
@@ -386,20 +469,25 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
 
                 let ret = self
-                    .check_expr(&fn_env, fn_expr.body.as_ref())?
+                    .check_expr(&fn_env, fn_expr.body.as_ref(), None)?
                     .unpack(&mut diags);
-                Ok(Diagnosed::new(
-                    Type::Fn(FnType {
-                        params,
-                        ret: Box::new(ret),
-                    }),
-                    diags,
-                ))
+                let ty = self
+                    .apply_expected_type(
+                        env,
+                        expr.span(),
+                        Type::Fn(FnType {
+                            params,
+                            ret: Box::new(ret),
+                        }),
+                        expected_type,
+                    )?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Call(call_expr) => {
                 let mut diags = DiagList::new();
                 let callee_ty = self
-                    .check_expr(env, call_expr.callee.as_ref())?
+                    .check_expr(env, call_expr.callee.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
                 let Type::Fn(fn_ty) = callee_ty else {
@@ -421,7 +509,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
 
                 for (index, arg) in call_expr.args.iter().enumerate() {
-                    let arg_ty = self.check_expr(env, arg)?.unpack(&mut diags);
                     let Some(param_ty) = fn_ty.params.get(index) else {
                         diags.push(ExtraneousArgument {
                             module_id: env.module_id()?,
@@ -431,21 +518,23 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         continue;
                     };
 
-                    if &arg_ty != param_ty {
-                        diags.push(TypeMismatch {
-                            module_id: env.module_id()?,
-                            expected: param_ty.clone(),
-                            actual: arg_ty,
-                            span: arg.span(),
-                        });
-                    }
+                    self.check_expr(env, arg, Some(param_ty))?
+                        .unpack(&mut diags);
                 }
 
-                Ok(Diagnosed::new(*fn_ty.ret, diags))
+                let ty = self
+                    .apply_expected_type(env, expr.span(), *fn_ty.ret, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Var(var) => {
                 if let Some(local_ty) = env.lookup_local(var.name.as_str()) {
-                    return Ok(Diagnosed::new(local_ty.clone(), DiagList::new()));
+                    return self.apply_expected_type(
+                        env,
+                        expr.span(),
+                        local_ty.clone(),
+                        expected_type,
+                    );
                 }
                 if let Some(global_expr) = env.lookup_global(var.name.as_str()) {
                     let mut diags = DiagList::new();
@@ -454,12 +543,17 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .without_locals()
                         .with_local(var.name.as_str(), Type::Var(type_id));
                     let resolved_ty = self
-                        .check_expr(&global_env, global_expr)?
+                        .check_expr(&global_env, global_expr, expected_type)?
                         .unpack(&mut diags);
-                    return Ok(Diagnosed::new(
-                        Type::IsoRec(type_id, Box::new(resolved_ty)),
-                        diags,
-                    ));
+                    let ty = self
+                        .apply_expected_type(
+                            env,
+                            expr.span(),
+                            Type::IsoRec(type_id, Box::new(resolved_ty)),
+                            expected_type,
+                        )?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
                 }
                 if let Some((target_module_id, maybe_import_file_mod)) =
                     env.lookup_import(var.name.as_str())
@@ -469,7 +563,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     };
                     let import_env = TypeEnv::new().with_module_id(&target_module_id);
                     let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
-                    return Ok(Diagnosed::new(imported_ty.into_inner(), DiagList::new()));
+                    return self.apply_expected_type(
+                        env,
+                        expr.span(),
+                        imported_ty.into_inner(),
+                        expected_type,
+                    );
                 }
                 let mut diags = DiagList::new();
                 diags.push(UndefinedVariable {
@@ -484,23 +583,28 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut record_ty = RecordType::default();
 
                 for field in &record_expr.fields {
-                    let field_ty = self.check_expr(env, &field.expr)?.unpack(&mut diags);
+                    let field_ty = self.check_expr(env, &field.expr, None)?.unpack(&mut diags);
                     record_ty.insert(field.var.name.clone(), field_ty);
                 }
-
-                Ok(Diagnosed::new(Type::Record(record_ty), diags))
+                let ty = self
+                    .apply_expected_type(env, expr.span(), Type::Record(record_ty), expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Interp(interp_expr) => {
                 let mut diags = DiagList::new();
                 for part in &interp_expr.parts {
-                    self.check_expr(env, part)?.unpack(&mut diags);
+                    self.check_expr(env, part, None)?.unpack(&mut diags);
                 }
-                Ok(Diagnosed::new(Type::Str, diags))
+                let ty = self
+                    .apply_expected_type(env, expr.span(), Type::Str, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
                 let lhs_ty = self
-                    .check_expr(env, property_access.expr.as_ref())?
+                    .check_expr(env, property_access.expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
                 if matches!(lhs_ty, Type::Never) {
@@ -513,7 +617,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     _ => None,
                 };
                 if let Some(member_ty) = member_ty {
-                    return Ok(Diagnosed::new(member_ty, diags));
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), member_ty, expected_type)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
                 }
 
                 diags.push(UndefinedMember {
@@ -536,7 +643,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let type_id = next_type_id();
         let env = env.with_local(let_bind.var.name.as_str(), Type::Var(type_id));
         let resolved_ty = self
-            .check_expr(&env, let_bind.expr.as_ref())?
+            .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
         Ok(Diagnosed::new(
             Type::IsoRec(type_id, Box::new(resolved_ty)),
@@ -549,6 +656,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
             ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
+            ast::TypeExpr::Optional(inner) => {
+                Type::Optional(Box::new(self.resolve_type_expr(inner.as_ref())))
+            }
             ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
                     .params
@@ -650,4 +760,53 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
     }
 
     segments.into_iter().collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TypeChecker;
+    use crate::{Program, StdSourceRepo, Type};
+
+    fn checker() -> TypeChecker<'static, StdSourceRepo> {
+        let program = Box::new(Program::<StdSourceRepo>::new());
+        let program = Box::leak(program);
+        TypeChecker::new(program)
+    }
+
+    #[test]
+    fn assign_type_accepts_exact_match() {
+        let checker = checker();
+        assert!(checker.assign_type(&Type::Int, &Type::Int).is_ok());
+    }
+
+    #[test]
+    fn assign_type_accepts_non_optional_rhs_for_optional_lhs() {
+        let checker = checker();
+        let lhs = Type::Optional(Box::new(Type::Int));
+        let rhs = Type::Int;
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_rejects_optional_rhs_for_non_optional_lhs() {
+        let checker = checker();
+        let lhs = Type::Int;
+        let rhs = Type::Optional(Box::new(Type::Int));
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_error_has_causal_chain() {
+        let checker = checker();
+        let lhs = Type::Optional(Box::new(Type::Str));
+        let rhs = Type::Int;
+        let error = checker
+            .assign_type(&lhs, &rhs)
+            .expect_err("expected mismatch");
+        let text = error.to_string();
+
+        assert!(text.contains("Int is not assignable to Str?"));
+        assert!(text.contains("Int is not assignable to Str"));
+        assert!(text.contains(", because "));
+    }
 }
