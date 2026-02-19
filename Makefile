@@ -3,8 +3,8 @@
 image:
 	podman build -t skyr:latest -t localhost/skyr:latest .
 
-deps:
-	podman compose up -d cassandra rabbitmq
+deps: image
+	podman compose up -d cassandra rabbitmq plugin-std-random
 	@echo "Waiting for cassandra to become healthy..."
 	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_cassandra_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
 	@echo "Waiting for rabbitmq to become healthy..."

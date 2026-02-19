@@ -50,14 +50,24 @@ services:
       ["daemon", "--db-hostname", "cassandra", "--mq-hostname", "rabbitmq"]
     restart: unless-stopped
 
+  plugin-std-random:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_random"]
+    command: ["--bind", "tcp://0.0.0.0:50051"]
+    restart: unless-stopped
+
   rte-0:
     image: skyr:latest
     entrypoint: ["/rte"]
     command:
       [
         "daemon",
+        "--db-hostname",
+        "cassandra",
         "--mq-hostname",
         "rabbitmq",
+        "--plugin",
+        "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",
         "0",
         "--worker-count",
@@ -71,8 +81,12 @@ services:
     command:
       [
         "daemon",
+        "--db-hostname",
+        "cassandra",
         "--mq-hostname",
         "rabbitmq",
+        "--plugin",
+        "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",
         "1",
         "--worker-count",
@@ -86,8 +100,12 @@ services:
     command:
       [
         "daemon",
+        "--db-hostname",
+        "cassandra",
         "--mq-hostname",
         "rabbitmq",
+        "--plugin",
+        "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",
         "2",
         "--worker-count",
