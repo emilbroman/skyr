@@ -1,10 +1,15 @@
 use clap::Parser;
 use slog::{Drain, Logger, error, info, o, warn};
+use std::collections::HashMap;
+use std::str::FromStr;
 use tokio::task;
 
 #[derive(Parser)]
 enum Program {
     Daemon {
+        #[clap(long = "db-hostname", default_value = "localhost")]
+        db_hostname: String,
+
         #[clap(long = "mq-hostname", default_value = "localhost")]
         mq_hostname: String,
 
@@ -16,7 +21,38 @@ enum Program {
 
         #[clap(long = "local-workers", default_value_t = 1)]
         local_workers: u16,
+
+        #[clap(long = "plugin")]
+        plugin: Vec<PluginSpec>,
     },
+}
+
+#[derive(Clone, Debug)]
+struct PluginSpec {
+    name: sclc::ModuleId,
+    target: rtp::Target,
+}
+
+impl FromStr for PluginSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts = s.split('@').collect::<Vec<_>>();
+        if parts.len() != 2 {
+            return Err(format!(
+                "invalid plugin spec `{s}`: expected NAME@TARGET (e.g. Std/Random@tcp://127.0.0.1:50051)"
+            ));
+        }
+
+        let name = parts[0]
+            .parse::<sclc::ModuleId>()
+            .map_err(|error| format!("invalid plugin name `{}`: {error}", parts[0]))?;
+        let target = parts[1]
+            .parse::<rtp::Target>()
+            .map_err(|error| format!("invalid plugin target `{}`: {error}", parts[1]))?;
+
+        Ok(Self { name, target })
+    }
 }
 
 #[tokio::main]
@@ -29,10 +65,12 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
+            db_hostname,
             mq_hostname,
             worker_index,
             worker_count,
             local_workers,
+            plugin,
         } => {
             info!(log, "starting resource transition engine daemon");
 
@@ -50,6 +88,11 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let uri = format!("amqp://{}:5672/%2f", mq_hostname);
+            let rdb_client = rdb::ClientBuilder::new()
+                .known_node(&db_hostname)
+                .build()
+                .await?;
+            let plugins = dial_plugins(&log, &plugin).await?;
             let mut handles = Vec::new();
 
             for offset in 0..local_workers {
@@ -71,7 +114,12 @@ async fn main() -> anyhow::Result<()> {
                     "shards" => format!("{:?}", consumer.owned_shards())
                 );
 
-                handles.push(task::spawn(worker_loop(worker_log, consumer)));
+                handles.push(task::spawn(worker_loop(
+                    worker_log,
+                    consumer,
+                    rdb_client.clone(),
+                    plugins.clone(),
+                )));
             }
 
             for handle in handles {
@@ -85,22 +133,163 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn worker_loop(log: Logger, mut consumer: rtq::Consumer) -> anyhow::Result<()> {
+async fn worker_loop(
+    log: Logger,
+    mut consumer: rtq::Consumer,
+    rdb_client: rdb::Client,
+    plugins: HashMap<String, rtp::PluginClient>,
+) -> anyhow::Result<()> {
     loop {
         let Some(delivery) = consumer.next().await? else {
             warn!(log, "rtq consumer stream closed");
             return Ok(());
         };
 
-        // TODO: route message to transition handlers.
-        info!(
-            log,
-            "received rtq message";
-            "redelivered" => delivery.redelivered(),
-            "message" => format!("{:?}", delivery.message)
-        );
+        match &delivery.message {
+            rtq::Message::Create(message) => {
+                let resource_client = rdb_client
+                    .namespace(message.resource.namespace.clone())
+                    .resource(
+                        message.resource.resource_type.clone(),
+                        message.resource.resource_id.clone(),
+                    );
+                match resource_client.get().await {
+                    Ok(_) => {
+                        info!(log, "dropping idempotent create for existing resource";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone()
+                        );
+                        delivery.ack().await?;
+                        continue;
+                    }
+                    Err(rdb::ResourceError::NotFound) => {}
+                    Err(error) => {
+                        warn!(log, "failed to read resource state before create";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                }
+
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for create";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                };
+
+                let inputs: sclc::Record = match serde_json::from_value(message.inputs.clone()) {
+                    Ok(inputs) => inputs,
+                    Err(error) => {
+                        warn!(log, "invalid create inputs json";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                let resource = match plugin.create_resource(id, inputs).await {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        warn!(log, "create_resource plugin call failed";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        continue;
+                    }
+                };
+
+                if let Err(error) = resource_client
+                    .set_input(resource.inputs.clone(), message.owner_deployment_id.clone())
+                    .await
+                {
+                    warn!(log, "failed to persist created resource inputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                if let Err(error) = resource_client.set_output(resource.outputs).await {
+                    warn!(log, "failed to persist created resource outputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
+                info!(log, "created resource";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+            }
+            _ => {
+                info!(
+                    log,
+                    "received rtq message";
+                    "redelivered" => delivery.redelivered(),
+                    "message" => format!("{:?}", delivery.message)
+                );
+            }
+        }
 
         // Placeholder behavior until transition execution is implemented.
         delivery.ack().await?;
     }
+}
+
+async fn dial_plugins(
+    log: &Logger,
+    plugin_specs: &[PluginSpec],
+) -> anyhow::Result<HashMap<String, rtp::PluginClient>> {
+    let mut plugins = HashMap::new();
+    for spec in plugin_specs {
+        let client = rtp::dial(spec.target.clone()).await?;
+        info!(log, "dialed plugin";
+            "name" => spec.name.to_string(),
+            "target" => format!("{:?}", spec.target)
+        );
+        plugins.insert(spec.name.to_string(), client);
+    }
+    Ok(plugins)
+}
+
+fn plugin_name_for_resource_type(resource_type: &str) -> Option<&str> {
+    resource_type.rsplit_once('.').map(|(prefix, _)| prefix)
 }

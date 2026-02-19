@@ -3817,7 +3817,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "rdb",
+ "rtp",
  "rtq",
+ "sclc",
+ "serde_json",
  "slog",
  "slog-async",
  "slog-term",
