@@ -4,6 +4,7 @@ members = [
   "crates/cdb",
   "crates/de",
   "crates/rdb",
+  "crates/rtp",
   "crates/rte",
   "crates/rtq",
   "crates/scl",

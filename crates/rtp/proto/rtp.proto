@@ -1,0 +1,64 @@
+syntax = "proto3";
+
+package rtp.v1;
+
+import "google/protobuf/empty.proto";
+
+service ResourceTransitionPlugin {
+  rpc ExchangeCapabilities(CapabilityRequest) returns (CapabilityResponse);
+  rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse);
+  rpc UpdateResource(UpdateResourceRequest) returns (UpdateResourceResponse);
+  rpc DeleteResource(DeleteResourceRequest) returns (google.protobuf.Empty);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message CapabilityRequest {
+  string plugin_name = 1;
+  string plugin_version = 2;
+}
+
+message CapabilityResponse {
+  string protocol_version = 1;
+  repeated string capabilities = 2;
+}
+
+message CreateResourceRequest {
+  string resource_type = 1;
+  string resource_id = 2;
+  string resource_inputs_json = 3;
+}
+
+message Resource {
+  string type = 1;
+  string id = 2;
+  string inputs_json = 3;
+  string outputs_json = 4;
+}
+
+message CreateResourceResponse {
+  Resource resource = 1;
+}
+
+message UpdateResourceRequest {
+  string resource_type = 1;
+  string resource_id = 2;
+  string prev_resource_inputs_json = 3;
+  string resource_inputs_json = 4;
+}
+
+message UpdateResourceResponse {
+  Resource resource = 1;
+}
+
+message DeleteResourceRequest {
+  string resource_type = 1;
+  string resource_id = 2;
+}
+
+message HealthRequest {
+  Resource resource = 1;
+}
+
+message HealthResponse {
+  Resource resource = 1;
+}
