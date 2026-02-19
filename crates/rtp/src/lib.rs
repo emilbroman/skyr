@@ -53,7 +53,7 @@ pub trait Plugin: Send + Sync + 'static {
 
 #[derive(Debug, Clone)]
 pub enum Target {
-    Tcp(SocketAddr),
+    Tcp(String),
     Unix(PathBuf),
 }
 
@@ -68,7 +68,7 @@ pub enum TargetParseError {
     #[error("unsupported scheme: {0}")]
     UnsupportedScheme(String),
 
-    #[error("invalid tcp address: {0}")]
+    #[error("invalid tcp target: {0}")]
     InvalidTcpAddress(String),
 
     #[error("invalid unix socket path")]
@@ -96,10 +96,7 @@ impl FromStr for Target {
                 let Some(authority) = uri.authority() else {
                     return Err(TargetParseError::InvalidTcpAddress(s.to_owned()));
                 };
-                let addr: SocketAddr = authority.as_str().parse().map_err(|_| {
-                    TargetParseError::InvalidTcpAddress(authority.as_str().to_owned())
-                })?;
-                Ok(Target::Tcp(addr))
+                Ok(Target::Tcp(authority.as_str().to_owned()))
             }
             other => Err(TargetParseError::UnsupportedScheme(other.to_owned())),
         }
@@ -116,13 +113,13 @@ pub enum ServeError {
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+
+    #[error("invalid tcp bind address: {0}")]
+    InvalidTcpBindAddress(String),
 }
 
 #[derive(Debug, Error)]
 pub enum DialError {
-    #[error("invalid target: {0}")]
-    Target(#[from] TargetParseError),
-
     #[error("transport error: {0}")]
     Transport(#[from] tonic::transport::Error),
 
@@ -131,6 +128,12 @@ pub enum DialError {
 
     #[error("capability exchange failed: {0}")]
     CapabilityExchange(#[from] tonic::Status),
+
+    #[error("failed to resolve tcp address `{target}`: {source}")]
+    ResolveTcpAddress {
+        target: String,
+        source: std::io::Error,
+    },
 }
 
 struct PluginFactory<P, F>
@@ -343,6 +346,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct PluginClient {
     inner: ResourceTransitionPluginClient,
     _capabilities: CapabilityResponse,
@@ -467,6 +471,9 @@ where
 
     match target {
         Target::Tcp(addr) => {
+            let addr: SocketAddr = addr
+                .parse()
+                .map_err(|_| ServeError::InvalidTcpBindAddress(addr.clone()))?;
             Server::builder().add_service(service).serve(addr).await?;
         }
         Target::Unix(path) => {
@@ -489,6 +496,7 @@ where
 async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, DialError> {
     match target {
         Target::Tcp(addr) => {
+            resolve_tcp_authority(&addr).await?;
             let client =
                 proto::resource_transition_plugin_client::ResourceTransitionPluginClient::connect(
                     format!("http://{addr}"),
@@ -517,8 +525,18 @@ async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, Dial
     }
 }
 
-pub async fn dial(target: impl AsRef<str>) -> Result<PluginClient, DialError> {
-    let mut inner = dial_raw(target.as_ref().parse()?).await?;
+async fn resolve_tcp_authority(authority: &str) -> Result<(), DialError> {
+    tokio::net::lookup_host(authority)
+        .await
+        .map(|_| ())
+        .map_err(|source| DialError::ResolveTcpAddress {
+            target: authority.to_owned(),
+            source,
+        })
+}
+
+pub async fn dial(target: Target) -> Result<PluginClient, DialError> {
+    let mut inner = dial_raw(target).await?;
     let capabilities = inner
         .exchange_capabilities(CapabilityRequest {
             plugin_name: String::from("rtp"),
@@ -531,4 +549,21 @@ pub async fn dial(target: impl AsRef<str>) -> Result<PluginClient, DialError> {
         inner,
         _capabilities: capabilities,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Target, resolve_tcp_authority};
+
+    #[tokio::test]
+    async fn tcp_target_with_hostname_resolves() {
+        let target: Target = "tcp://localhost:50051".parse().expect("parse target");
+        let Target::Tcp(authority) = target else {
+            panic!("expected tcp target");
+        };
+
+        resolve_tcp_authority(&authority)
+            .await
+            .expect("localhost should resolve");
+    }
 }
