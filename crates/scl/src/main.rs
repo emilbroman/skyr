@@ -91,7 +91,7 @@ impl Repl {
             }
             sclc::ModStmt::Let(let_bind) => {
                 let checker = sclc::TypeChecker::new(&program);
-                let diagnosed = checker.check_expr(&type_env, &let_bind.expr)?;
+                let diagnosed = checker.check_expr(&type_env, &let_bind.expr, None)?;
                 let Some(ty) = Self::report(diagnosed) else {
                     return Ok(());
                 };
