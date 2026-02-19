@@ -275,9 +275,6 @@ impl Worker {
         let effects_task = task::spawn(async move {
             while let Some(effect) = effects_rx.recv().await {
                 match effect {
-                    sclc::Effect::Print(value) => {
-                        info!(log, "effect print"; "value" => value.to_string())
-                    }
                     sclc::Effect::CreateResource { id, inputs } => {
                         info!(log, "effect create resource";
                             "type" => id.ty,

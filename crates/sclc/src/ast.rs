@@ -81,7 +81,6 @@ pub enum ModStmt {
     Import(Loc<ImportStmt>),
     Let(LetBind),
     Export(LetBind),
-    Print(PrintStmt),
     Expr(Loc<Expr>),
 }
 
@@ -129,11 +128,6 @@ pub struct ExternExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImportStmt {
     pub vars: Vec<Loc<Var>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrintStmt {
-    pub expr: Loc<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

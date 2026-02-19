@@ -5,9 +5,9 @@ use thiserror::Error;
 
 use crate::{
     CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
-    InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PrintStmt,
-    PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine,
-    Span, StrExpr, Token, TypeExpr, Var,
+    InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
+    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
+    TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -120,7 +120,6 @@ peg::parser! {
         rule mod_stmt() -> ModStmt
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
             / export_let_bind:export_let_bind() { ModStmt::Export(export_let_bind) }
-            / print_stmt:print_stmt() { ModStmt::Print(print_stmt) }
             / expr:expr() { ModStmt::Expr(expr) }
             / let_bind:let_bind() { ModStmt::Let(let_bind) }
 
@@ -308,9 +307,6 @@ peg::parser! {
                 Loc::new(ImportStmt { vars }, span)
             }
 
-        rule print_stmt() -> PrintStmt
-            = print_keyword() expr:expr() { PrintStmt { expr } }
-
         rule import_path() -> Vec<Loc<Var>>
             = first:var() rest:(slash() var:var() { var })* {
                 let mut vars = vec![first];
@@ -323,9 +319,6 @@ peg::parser! {
 
         rule let_keyword() -> Span
             = [token if matches!(token.as_ref(), Token::LetKeyword)] { token.span() }
-
-        rule print_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::PrintKeyword)] { token.span() }
 
         rule export_keyword() -> Span
             = [token if matches!(token.as_ref(), Token::ExportKeyword)] { token.span() }

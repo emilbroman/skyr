@@ -145,7 +145,6 @@ pub struct Eval {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
-    Print(Value),
     CreateResource {
         id: crate::ResourceId,
         inputs: crate::Record,
@@ -408,11 +407,6 @@ impl Eval {
         stmt: &ast::ModStmt,
     ) -> Result<Option<(String, Value)>, EvalError> {
         match stmt {
-            ast::ModStmt::Print(print_stmt) => {
-                let value = self.eval_expr(env, &print_stmt.expr)?;
-                self.ctx.emit(Effect::Print(value))?;
-                Ok(None)
-            }
             ast::ModStmt::Let(_) | ast::ModStmt::Import(_) => Ok(None),
             ast::ModStmt::Export(let_bind) => {
                 let value = self.eval_expr(env, let_bind.expr.as_ref())?;

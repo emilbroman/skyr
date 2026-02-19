@@ -280,11 +280,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(Some((let_bind.var.name.clone(), ty)), diags))
             }
-            ast::ModStmt::Print(print_stmt) => {
-                let mut diags = DiagList::new();
-                self.check_expr(env, &print_stmt.expr)?.unpack(&mut diags);
-                Ok(Diagnosed::new(None, diags))
-            }
         }
     }
 

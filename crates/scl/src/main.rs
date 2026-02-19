@@ -197,7 +197,6 @@ async fn run_repl() -> anyhow::Result<()> {
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
-                sclc::Effect::Print(value) => println!("{value}"),
                 sclc::Effect::CreateResource { id, inputs } => {
                     println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
@@ -255,7 +254,6 @@ async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
-                sclc::Effect::Print(value) => println!("{value}"),
                 sclc::Effect::CreateResource { id, inputs } => {
                     println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
