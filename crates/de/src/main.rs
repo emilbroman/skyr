@@ -256,6 +256,21 @@ impl Worker {
             .collect::<sclc::ModuleId>();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
+        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx);
+        let mut resources = self.namespace.list_resources().await?;
+        while let Some(resource) = resources.try_next().await? {
+            eval.add_resource(
+                sclc::ResourceId {
+                    ty: resource.resource_type,
+                    id: resource.id,
+                },
+                sclc::Resource {
+                    inputs: resource.inputs.unwrap_or_default(),
+                    outputs: resource.outputs.unwrap_or_default(),
+                },
+            );
+        }
+
         let log = self.log.clone();
         let effects_task = task::spawn(async move {
             while let Some(effect) = effects_rx.recv().await {
@@ -263,11 +278,25 @@ impl Worker {
                     sclc::Effect::Print(value) => {
                         info!(log, "effect print"; "value" => value.to_string())
                     }
+                    sclc::Effect::CreateResource { id, inputs } => {
+                        info!(log, "effect create resource";
+                            "type" => id.ty,
+                            "id" => id.id,
+                            "inputs" => format!("{:?}", inputs)
+                        )
+                    }
+                    sclc::Effect::UpdateResource { id, inputs } => {
+                        info!(log, "effect update resource";
+                            "type" => id.ty,
+                            "id" => id.id,
+                            "inputs" => format!("{:?}", inputs)
+                        )
+                    }
                 }
             }
         });
 
-        program.evaluate(&module_id, effects_tx).await?;
+        program.evaluate(&module_id, &eval).await?;
         effects_task.await?;
         Ok(())
     }
