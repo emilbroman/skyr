@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/cdb",
   "crates/de",
+  "crates/plugin_std_random",
   "crates/rdb",
   "crates/rtp",
   "crates/rte",

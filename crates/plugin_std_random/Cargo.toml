@@ -1,0 +1,17 @@
+[package]
+name = "plugin_std_random"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "plugin_std_random"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.101"
+async-trait = "0.1.89"
+clap = { version = "4.5.57", features = ["derive"] }
+rand = "0.9.2"
+rtp = { path = "../rtp" }
+sclc = { path = "../sclc" }
+tokio = { version = "1.49.0", features = ["full"] }

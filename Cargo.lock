@@ -3324,6 +3324,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_std_random"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "rand 0.9.2",
+ "rtp",
+ "sclc",
+ "tokio",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
