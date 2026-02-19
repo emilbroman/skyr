@@ -199,6 +199,7 @@ impl Worker {
                 while let Some(resource) = resources.try_next().await? {
                     let message = rtq::Message::Destroy(rtq::DestroyMessage {
                         resource: rtq::ResourceRef {
+                            namespace: self.namespace.namespace().to_owned(),
                             resource_type: resource.resource_type.clone(),
                             resource_id: resource.id.clone(),
                         },
@@ -258,7 +259,7 @@ impl Worker {
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx);
-        let mut resource_owner_by_id = HashMap::new();
+        let mut unowned_resource_owner_by_id = HashMap::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
             let resource_id = sclc::ResourceId {
@@ -267,7 +268,7 @@ impl Worker {
             };
             if resource.owner.as_deref() != Some(owner_deployment_id.as_str()) {
                 if let Some(owner) = resource.owner.clone() {
-                    resource_owner_by_id.insert(resource_id.clone(), owner);
+                    unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
                 }
             }
 
@@ -279,8 +280,10 @@ impl Worker {
                 },
             );
         }
+        drop(resources);
 
         let log = self.log.clone();
+        let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(async move {
             while let Some(effect) = effects_rx.recv().await {
@@ -288,6 +291,7 @@ impl Worker {
                     sclc::Effect::CreateResource { id, inputs } => {
                         let message = rtq::Message::Create(rtq::CreateMessage {
                             resource: rtq::ResourceRef {
+                                namespace: namespace_id.clone(),
                                 resource_type: id.ty.clone(),
                                 resource_id: id.id.clone(),
                             },
@@ -331,10 +335,11 @@ impl Worker {
                             }
                         };
                         let message = if let Some(from_owner_deployment_id) =
-                            resource_owner_by_id.get(&id).cloned()
+                            unowned_resource_owner_by_id.get(&id).cloned()
                         {
                             rtq::Message::Adopt(rtq::AdoptMessage {
                                 resource: rtq::ResourceRef {
+                                    namespace: namespace_id.clone(),
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
@@ -345,6 +350,7 @@ impl Worker {
                         } else {
                             rtq::Message::Restore(rtq::RestoreMessage {
                                 resource: rtq::ResourceRef {
+                                    namespace: namespace_id.clone(),
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
