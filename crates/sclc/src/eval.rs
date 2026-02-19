@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{ExternFnValue, FnValue, Record, Value, ast};
+use crate::{ExternFnValue, FnValue, PendingValue, Record, Value, ast};
 
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
@@ -139,13 +139,79 @@ impl FnEnv {
 }
 
 pub struct Eval {
-    _effects: mpsc::UnboundedSender<Effect>,
+    ctx: EvalCtx,
     externs: HashMap<String, Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     Print(Value),
+    CreateResource {
+        id: crate::ResourceId,
+        inputs: crate::Record,
+    },
+    UpdateResource {
+        id: crate::ResourceId,
+        inputs: crate::Record,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct EvalCtx {
+    effects: mpsc::UnboundedSender<Effect>,
+    resources: HashMap<crate::ResourceId, crate::Resource>,
+}
+
+impl EvalCtx {
+    pub fn emit(&self, effect: Effect) -> Result<(), EvalError> {
+        self.effects
+            .send(effect)
+            .map_err(|send_error| EvalError::EmitEffect(send_error.0))
+    }
+
+    pub fn get_resource(
+        &self,
+        ty: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Option<&crate::Resource> {
+        let resource_id = crate::ResourceId {
+            ty: ty.into(),
+            id: id.into(),
+        };
+        self.resources.get(&resource_id)
+    }
+
+    pub fn resource(
+        &self,
+        ty: impl Into<String>,
+        id: impl Into<String>,
+        inputs: &crate::Record,
+    ) -> Result<Option<crate::Record>, EvalError> {
+        let ty = ty.into();
+        let id = id.into();
+        let resource_id = crate::ResourceId {
+            ty: ty.clone(),
+            id: id.clone(),
+        };
+
+        let Some(resource) = self.get_resource(ty, id) else {
+            self.emit(Effect::CreateResource {
+                id: resource_id,
+                inputs: inputs.clone(),
+            })?;
+            return Ok(None);
+        };
+
+        if resource.inputs != *inputs {
+            self.emit(Effect::UpdateResource {
+                id: resource_id,
+                inputs: inputs.clone(),
+            })?;
+            return Ok(None);
+        }
+
+        Ok(Some(resource.outputs.clone()))
+    }
 }
 
 #[derive(Error, Debug)]
@@ -168,6 +234,7 @@ pub enum EvalError {
 
 pub trait ValueAssertions {
     fn assert_int(self) -> Result<i64, EvalError>;
+    fn assert_str(self) -> Result<String, EvalError>;
 }
 
 impl ValueAssertions for Value {
@@ -177,18 +244,32 @@ impl ValueAssertions for Value {
             other => Err(EvalError::UnexpectedValue(other)),
         }
     }
+
+    fn assert_str(self) -> Result<String, EvalError> {
+        match self {
+            Value::Str(value) => Ok(value),
+            other => Err(EvalError::UnexpectedValue(other)),
+        }
+    }
 }
 
 impl ValueAssertions for Option<Value> {
     fn assert_int(self) -> Result<i64, EvalError> {
         self.unwrap_or(Value::Nil).assert_int()
     }
+
+    fn assert_str(self) -> Result<String, EvalError> {
+        self.unwrap_or(Value::Nil).assert_str()
+    }
 }
 
 impl Eval {
     pub fn new<S: crate::SourceRepo>(effects: mpsc::UnboundedSender<Effect>) -> Self {
         let mut eval = Self {
-            _effects: effects,
+            ctx: EvalCtx {
+                effects,
+                resources: HashMap::new(),
+            },
             externs: HashMap::new(),
         };
         <crate::AnySource<S> as crate::SourceRepo>::register_extern(&mut eval);
@@ -199,16 +280,20 @@ impl Eval {
         self.externs.insert(name.into(), value);
     }
 
+    pub fn add_resource(&mut self, id: crate::ResourceId, resource: crate::Resource) {
+        self.ctx.resources.insert(id, resource);
+    }
+
     pub fn add_extern_fn(
         &mut self,
         name: impl Into<String>,
-        f: impl Fn(Vec<Value>) -> Result<Value, EvalError> + Clone + Send + Sync + 'static,
+        f: impl Fn(Vec<Value>, &EvalCtx) -> Result<Value, EvalError> + Clone + Send + Sync + 'static,
     ) {
         self.add_extern(name, Value::ExternFn(ExternFnValue::new(Box::new(f))));
     }
 
     pub fn eval_expr(
-        &mut self,
+        &self,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
     ) -> Result<Value, EvalError> {
@@ -250,13 +335,21 @@ impl Eval {
                     .map(|arg| self.eval_expr(env, arg))
                     .collect::<Result<Vec<_>, _>>()?;
                 let callee = self.eval_expr(env, call_expr.callee.as_ref())?;
+                if matches!(callee, Value::Pending(_)) {
+                    return Ok(Value::Pending(PendingValue));
+                }
 
                 match callee {
                     Value::Fn(function) => {
                         let call_env = function.env.as_eval_env(&args);
                         self.eval_expr(&call_env, &function.body)
                     }
-                    Value::ExternFn(function) => function.call(args),
+                    Value::ExternFn(function) => {
+                        if args.iter().any(|arg| matches!(arg, Value::Pending(_))) {
+                            return Ok(Value::Pending(PendingValue));
+                        }
+                        function.call(args, &self.ctx)
+                    }
                     _ => Ok(Value::Nil),
                 }
             }
@@ -272,13 +365,18 @@ impl Eval {
             ast::Expr::Interp(interp_expr) => {
                 let mut out = String::new();
                 for part in &interp_expr.parts {
-                    out.push_str(&self.eval_expr(env, part)?.to_string());
+                    let value = self.eval_expr(env, part)?;
+                    if matches!(value, Value::Pending(_)) {
+                        return Ok(Value::Pending(PendingValue));
+                    }
+                    out.push_str(&value.to_string());
                 }
                 Ok(Value::Str(out))
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let value = self.eval_expr(env, property_access.expr.as_ref())?;
                 match value {
+                    Value::Pending(_) => Ok(Value::Pending(PendingValue)),
                     Value::Record(record) => Ok(record
                         .get(property_access.property.name.as_str())
                         .cloned()
@@ -289,7 +387,7 @@ impl Eval {
         }
     }
 
-    fn eval_var_name(&mut self, env: &EvalEnv<'_>, name: &str) -> Result<Value, EvalError> {
+    fn eval_var_name(&self, env: &EvalEnv<'_>, name: &str) -> Result<Value, EvalError> {
         if let Some(local_value) = env.lookup_local(name) {
             return Ok(local_value.clone());
         }
@@ -305,16 +403,14 @@ impl Eval {
     }
 
     pub fn eval_stmt(
-        &mut self,
+        &self,
         env: &EvalEnv<'_>,
         stmt: &ast::ModStmt,
     ) -> Result<Option<(String, Value)>, EvalError> {
         match stmt {
             ast::ModStmt::Print(print_stmt) => {
                 let value = self.eval_expr(env, &print_stmt.expr)?;
-                self._effects
-                    .send(Effect::Print(value))
-                    .map_err(|send_error| EvalError::EmitEffect(send_error.0))?;
+                self.ctx.emit(Effect::Print(value))?;
                 Ok(None)
             }
             ast::ModStmt::Let(_) | ast::ModStmt::Import(_) => Ok(None),
@@ -330,7 +426,7 @@ impl Eval {
     }
 
     pub fn eval_file_mod(
-        &mut self,
+        &self,
         env: &EvalEnv<'_>,
         file_mod: &ast::FileMod,
     ) -> Result<Value, EvalError> {

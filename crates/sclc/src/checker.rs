@@ -493,6 +493,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .collect(),
                 ret: Box::new(self.resolve_type_expr(&fn_ty.ret)),
             }),
+            ast::TypeExpr::Record(record_ty) => {
+                let mut resolved = RecordType::default();
+                for field in &record_ty.fields {
+                    resolved.insert(field.var.name.clone(), self.resolve_type_expr(&field.ty));
+                }
+                Type::Record(resolved)
+            }
             ast::TypeExpr::Var(_) => Type::Never,
         }
     }

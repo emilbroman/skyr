@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Value {
     Nil,
+    Pending(PendingValue),
     Int(i64),
     Str(String),
     ExternFn(ExternFnValue),
@@ -11,17 +12,42 @@ pub enum Value {
     Record(Record),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingValue;
+
+impl Serialize for PendingValue {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom("cannot serialize pending value"))
+    }
+}
+
+impl<'de> Deserialize<'de> for PendingValue {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom("cannot deserialize pending value"))
+    }
+}
+
 pub trait ExternFn: Send + Sync + 'static {
-    fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError>;
+    fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError>;
     fn clone_extern_fn(&self) -> Box<dyn ExternFn>;
 }
 
 impl<F> ExternFn for F
 where
-    F: Fn(Vec<Value>) -> Result<Value, crate::EvalError> + Clone + Send + Sync + 'static,
+    F: Fn(Vec<Value>, &crate::EvalCtx) -> Result<Value, crate::EvalError>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
-    fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError> {
-        self(args)
+    fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError> {
+        self(args, ctx)
     }
 
     fn clone_extern_fn(&self) -> Box<dyn ExternFn> {
@@ -36,8 +62,8 @@ impl ExternFnValue {
         Self(inner)
     }
 
-    pub fn call(&self, args: Vec<Value>) -> Result<Value, crate::EvalError> {
-        self.0.call(args)
+    pub fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError> {
+        self.0.call(args, ctx)
     }
 }
 
@@ -120,12 +146,19 @@ impl Record {
     pub fn get(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
+        self.fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value))
+    }
 }
 
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Nil => write!(f, "nil"),
+            Value::Pending(_) => write!(f, "<pending>"),
             Value::Int(value) => write!(f, "{value}"),
             Value::Str(value) => write!(f, "{value}"),
             Value::ExternFn(_) => write!(f, "<extern fn>"),

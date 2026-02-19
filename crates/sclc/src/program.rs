@@ -173,7 +173,7 @@ impl<S: SourceRepo> Program<S> {
     pub async fn evaluate(
         &mut self,
         module_id: &ModuleId,
-        effects: tokio::sync::mpsc::UnboundedSender<crate::Effect>,
+        eval: &crate::Eval,
     ) -> Result<(), EvaluateError> {
         let Some(package_name) = self.package_name_for_import(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
@@ -204,7 +204,6 @@ impl<S: SourceRepo> Program<S> {
         };
         let imports = self.find_imports(&file_mod);
 
-        let mut eval = crate::Eval::new::<S>(effects);
         let env = crate::EvalEnv::new()
             .with_module_id(module_id)
             .with_imports(&imports);

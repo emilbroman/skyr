@@ -1,5 +1,5 @@
 pub fn register_extern(eval: &mut crate::Eval) {
-    eval.add_extern_fn("Std/Num.toHex", |args| {
+    eval.add_extern_fn("Std/Num.toHex", |args, _ctx| {
         use crate::ValueAssertions;
 
         let mut args = args.into_iter();

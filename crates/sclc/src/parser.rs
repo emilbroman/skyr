@@ -6,7 +6,8 @@ use thiserror::Error;
 use crate::{
     CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
     InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PrintStmt,
-    PropertyAccessExpr, RecordExpr, RecordField, ReplLine, Span, StrExpr, Token, TypeExpr, Var,
+    PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine,
+    Span, StrExpr, Token, TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -148,6 +149,7 @@ peg::parser! {
 
         rule type_expr() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
+            / record_type_expr:type_expr_record() { record_type_expr }
             / var:var() {
                 let span = var.span();
                 Loc::new(TypeExpr::Var(var), span)
@@ -165,6 +167,23 @@ peg::parser! {
         rule type_expr_params() -> Vec<Loc<TypeExpr>>
             = params:(type_expr() ++ comma()) comma()? { params }
             / { vec![] }
+
+        rule type_expr_record() -> Loc<TypeExpr>
+            = open_curly_span:open_curly() close_curly_span:close_curly() {
+                Loc::new(
+                    TypeExpr::Record(RecordTypeExpr { fields: vec![] }),
+                    Span::new(open_curly_span.start(), close_curly_span.end()),
+                )
+            }
+            / open_curly_span:open_curly() fields:(type_expr_record_field() ++ comma()) comma()? close_curly_span:close_curly() {
+                Loc::new(
+                    TypeExpr::Record(RecordTypeExpr { fields }),
+                    Span::new(open_curly_span.start(), close_curly_span.end()),
+                )
+            }
+
+        rule type_expr_record_field() -> RecordTypeFieldExpr
+            = var:var() colon() ty:type_expr() { RecordTypeFieldExpr { var, ty } }
 
         rule extern_expr() -> Loc<Expr>
             = extern_kw_span:extern_keyword() name:str_simple() colon() ty:type_expr() {

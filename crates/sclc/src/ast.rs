@@ -181,12 +181,24 @@ pub struct FnParam {
 pub enum TypeExpr {
     Var(Loc<Var>),
     Fn(FnTypeExpr),
+    Record(RecordTypeExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnTypeExpr {
     pub params: Vec<Loc<TypeExpr>>,
     pub ret: Box<Loc<TypeExpr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordTypeExpr {
+    pub fields: Vec<RecordTypeFieldExpr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordTypeFieldExpr {
+    pub var: Loc<Var>,
+    pub ty: Loc<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

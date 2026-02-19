@@ -1,0 +1,1 @@
+export let Int = extern "Std/Random.Int": fn(Str, Int, Int) {min: Int, max: Int, result: Int}

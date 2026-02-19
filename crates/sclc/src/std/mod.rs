@@ -26,6 +26,7 @@ macro_rules! std_modules {
 
 std_modules! {
     num => "Num.scl",
+    random => "Random.scl",
 }
 
 #[derive(Clone)]
