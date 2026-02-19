@@ -133,6 +133,13 @@ struct Worker {
     rtq_publisher: rtq::Publisher,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvalCompleteness {
+    Complete,
+    Partial,
+    Unviable,
+}
+
 impl Worker {
     async fn run_loop(mut self, mut rx: oneshot::Receiver<()>) {
         loop {
@@ -169,13 +176,31 @@ impl Worker {
             }
 
             DeploymentState::Desired => {
-                // TODO: resource management
-
                 info!(&self.log, "reconciling");
-                self.compile_and_evaluate().await?;
+                let completeness = self.compile_and_evaluate().await?;
 
-                if let Some(superceded) = self.client.get_superceded().await? {
-                    superceded.set(DeploymentState::Undesired).await?;
+                match completeness {
+                    EvalCompleteness::Complete => {
+                        if let Some(superceded) = self.client.get_superceded().await? {
+                            superceded.set(DeploymentState::Undesired).await?;
+                        }
+                    }
+                    EvalCompleteness::Partial => {
+                        info!(
+                            &self.log,
+                            "evaluation incomplete; deferring superceded deployment teardown"
+                        );
+                    }
+                    EvalCompleteness::Unviable => {
+                        info!(
+                            &self.log,
+                            "evaluation unviable; setting deployment DOWN and restoring superceded"
+                        );
+                        self.client.set(DeploymentState::Down).await?;
+                        if let Some(superceded) = self.client.get_superceded().await? {
+                            superceded.set(DeploymentState::Desired).await?;
+                        }
+                    }
                 }
 
                 Ok(())
@@ -227,13 +252,12 @@ impl Worker {
 
             DeploymentState::Lingering => {
                 info!(&self.log, "lingering...");
-                self.compile_and_evaluate().await?;
                 Ok(())
             }
         }
     }
 
-    async fn compile_and_evaluate(&mut self) -> anyhow::Result<()> {
+    async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalCompleteness> {
         let diagnosed = sclc::compile(self.client.clone()).await?;
         for diag in diagnosed.diags().iter() {
             let (module_id, span) = diag.locate();
@@ -245,7 +269,7 @@ impl Worker {
         }
         if diagnosed.diags().has_errors() {
             info!(&self.log, "compile produced errors; skipping evaluation");
-            return Ok(());
+            return Ok(EvalCompleteness::Unviable);
         }
 
         let mut program = diagnosed.into_inner();
@@ -286,7 +310,9 @@ impl Worker {
         let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(async move {
+            let mut had_effect = false;
             while let Some(effect) = effects_rx.recv().await {
+                had_effect = true;
                 match effect {
                     sclc::Effect::CreateResource { id, inputs } => {
                         let message = rtq::Message::Create(rtq::CreateMessage {
@@ -373,11 +399,17 @@ impl Worker {
                     }
                 }
             }
+
+            if had_effect {
+                EvalCompleteness::Partial
+            } else {
+                EvalCompleteness::Complete
+            }
         });
 
         program.evaluate(&module_id, &eval).await?;
         drop(eval);
-        effects_task.await?;
-        Ok(())
+        let completeness = effects_task.await?;
+        Ok(completeness)
     }
 }
