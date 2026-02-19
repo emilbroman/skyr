@@ -20,6 +20,8 @@ pub enum Token<'a> {
     FnKeyword,
     ExportKeyword,
     ExternKeyword,
+    TrueKeyword,
+    FalseKeyword,
     Int(&'a str),
     StrBegin(&'a str),
     StrCont(&'a str),
@@ -240,6 +242,10 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::ExportKeyword
             } else if symbol == "extern" {
                 Token::ExternKeyword
+            } else if symbol == "true" {
+                Token::TrueKeyword
+            } else if symbol == "false" {
+                Token::FalseKeyword
             } else {
                 Token::Symbol(symbol)
             }

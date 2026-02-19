@@ -33,6 +33,7 @@ impl Expr {
     pub fn free_vars(&self) -> HashSet<&str> {
         match self {
             Expr::Int(_) => HashSet::new(),
+            Expr::Bool(_) => HashSet::new(),
             Expr::Str(_) => HashSet::new(),
             Expr::Extern(_) => HashSet::new(),
             Expr::Var(var) => HashSet::from([var.name.as_str()]),
@@ -87,6 +88,7 @@ pub enum ModStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Int(Int),
+    Bool(Bool),
     Str(StrExpr),
     Extern(ExternExpr),
     Let(LetExpr),
@@ -112,6 +114,11 @@ impl std::fmt::Debug for Var {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Int {
     pub value: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bool {
+    pub value: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

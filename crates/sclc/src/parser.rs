@@ -4,7 +4,7 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
+    Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, ImportStmt, Int,
     InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
     RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
     TypeExpr, Var,
@@ -240,6 +240,10 @@ peg::parser! {
                 let span = int.span();
                 Loc::new(Expr::Int(int.into_inner()), span)
             }
+            / bool_lit:bool_lit() {
+                let span = bool_lit.span();
+                Loc::new(Expr::Bool(bool_lit.into_inner()), span)
+            }
             / var:var() {
                 let span = var.span();
                 Loc::new(Expr::Var(var), span)
@@ -371,6 +375,13 @@ peg::parser! {
                     Err(_) => Err("integer"),
                 },
                 _ => Err("integer"),
+            } }
+
+        rule bool_lit() -> Loc<Bool>
+            = [token] {? match *token.as_ref() {
+                Token::TrueKeyword => Ok(Loc::new(Bool { value: true }, token.span())),
+                Token::FalseKeyword => Ok(Loc::new(Bool { value: false }, token.span())),
+                _ => Err("boolean"),
             } }
 
         rule str_simple() -> (String, Span)

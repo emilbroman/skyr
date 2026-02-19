@@ -298,6 +298,7 @@ impl Eval {
     ) -> Result<Value, EvalError> {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
+            ast::Expr::Bool(bool) => Ok(Value::Bool(bool.value)),
             ast::Expr::Str(str) => Ok(Value::Str(str.value.clone())),
             ast::Expr::Extern(extern_expr) => self
                 .externs
