@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     time::Duration,
 };
 
@@ -254,16 +254,25 @@ impl Worker {
             .cloned()
             .chain(std::iter::once(String::from("Main")))
             .collect::<sclc::ModuleId>();
+        let owner_deployment_id = self.client.fqid();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx);
+        let mut resource_owner_by_id = HashMap::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
+            let resource_id = sclc::ResourceId {
+                ty: resource.resource_type.clone(),
+                id: resource.id.clone(),
+            };
+            if resource.owner.as_deref() != Some(owner_deployment_id.as_str()) {
+                if let Some(owner) = resource.owner.clone() {
+                    resource_owner_by_id.insert(resource_id.clone(), owner);
+                }
+            }
+
             eval.add_resource(
-                sclc::ResourceId {
-                    ty: resource.resource_type,
-                    id: resource.id,
-                },
+                resource_id,
                 sclc::Resource {
                     inputs: resource.inputs.unwrap_or_default(),
                     outputs: resource.outputs.unwrap_or_default(),
@@ -272,10 +281,37 @@ impl Worker {
         }
 
         let log = self.log.clone();
+        let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(async move {
             while let Some(effect) = effects_rx.recv().await {
                 match effect {
                     sclc::Effect::CreateResource { id, inputs } => {
+                        let message = rtq::Message::Create(rtq::CreateMessage {
+                            resource: rtq::ResourceRef {
+                                resource_type: id.ty.clone(),
+                                resource_id: id.id.clone(),
+                            },
+                            owner_deployment_id: owner_deployment_id.clone(),
+                            inputs: match serde_json::to_value(&inputs) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    error!(log, "failed to encode create inputs";
+                                        "type" => id.ty,
+                                        "id" => id.id,
+                                        "error" => error.to_string()
+                                    );
+                                    continue;
+                                }
+                            },
+                            dependencies: vec![],
+                        });
+                        if let Err(error) = rtq_publisher.enqueue(&message).await {
+                            error!(log, "failed to publish create message";
+                                "error" => error.to_string()
+                            );
+                            continue;
+                        }
+
                         info!(log, "effect create resource";
                             "type" => id.ty,
                             "id" => id.id,
@@ -283,6 +319,46 @@ impl Worker {
                         )
                     }
                     sclc::Effect::UpdateResource { id, inputs } => {
+                        let desired_inputs = match serde_json::to_value(&inputs) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                error!(log, "failed to encode update inputs";
+                                    "type" => id.ty,
+                                    "id" => id.id,
+                                    "error" => error.to_string()
+                                );
+                                continue;
+                            }
+                        };
+                        let message = if let Some(from_owner_deployment_id) =
+                            resource_owner_by_id.get(&id).cloned()
+                        {
+                            rtq::Message::Adopt(rtq::AdoptMessage {
+                                resource: rtq::ResourceRef {
+                                    resource_type: id.ty.clone(),
+                                    resource_id: id.id.clone(),
+                                },
+                                from_owner_deployment_id,
+                                to_owner_deployment_id: owner_deployment_id.clone(),
+                                desired_inputs,
+                            })
+                        } else {
+                            rtq::Message::Restore(rtq::RestoreMessage {
+                                resource: rtq::ResourceRef {
+                                    resource_type: id.ty.clone(),
+                                    resource_id: id.id.clone(),
+                                },
+                                owner_deployment_id: owner_deployment_id.clone(),
+                                desired_inputs,
+                            })
+                        };
+                        if let Err(error) = rtq_publisher.enqueue(&message).await {
+                            error!(log, "failed to publish update message";
+                                "error" => error.to_string()
+                            );
+                            continue;
+                        }
+
                         info!(log, "effect update resource";
                             "type" => id.ty,
                             "id" => id.id,
@@ -294,6 +370,7 @@ impl Worker {
         });
 
         program.evaluate(&module_id, &eval).await?;
+        drop(eval);
         effects_task.await?;
         Ok(())
     }

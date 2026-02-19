@@ -15,3 +15,4 @@ rdb = { path = "../rdb" }
 sclc = { path = "../sclc" }
 rtq = { path = "../rtq" }
 futures-util = "0.3.31"
+serde_json = "1.0.149"
