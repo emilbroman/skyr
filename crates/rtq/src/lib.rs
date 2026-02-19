@@ -48,13 +48,17 @@ impl Message {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ResourceRef {
+    pub namespace: String,
     pub resource_type: String,
     pub resource_id: String,
 }
 
 impl ResourceRef {
     pub fn uid(&self) -> String {
-        format!("{}:{}", self.resource_type, self.resource_id)
+        format!(
+            "{}:{}:{}",
+            self.namespace, self.resource_type, self.resource_id
+        )
     }
 }
 
