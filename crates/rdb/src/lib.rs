@@ -161,6 +161,10 @@ pub struct NamespaceClient {
 }
 
 impl NamespaceClient {
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
     pub fn resource(&self, resource_type: String, id: String) -> ResourceClient {
         ResourceClient {
             namespace: self.clone(),
@@ -183,7 +187,13 @@ impl NamespaceClient {
 
         let namespace = self.namespace.clone();
         Ok(pager
-            .rows_stream::<(String, String, Option<String>, Option<String>, Option<String>)>()?
+            .rows_stream::<(
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>()?
             .map(move |row| {
                 let (resource_type, id, inputs_json, outputs_json, owner) = row?;
                 Ok::<_, ResourceError>(Resource {
@@ -240,7 +250,11 @@ impl ResourceClient {
         })
     }
 
-    pub async fn set_input(&self, inputs: Record, owner: String) -> Result<Resource, ResourceError> {
+    pub async fn set_input(
+        &self,
+        inputs: Record,
+        owner: String,
+    ) -> Result<Resource, ResourceError> {
         let inputs_json = encode_record(&inputs)?;
 
         self.namespace
