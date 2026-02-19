@@ -1,5 +1,7 @@
+const INT_RESOURCE_TYPE: &str = "Std/Random.Int";
+
 pub fn register_extern(eval: &mut crate::Eval) {
-    eval.add_extern_fn("Std/Random.Int", |args, eval_ctx| {
+    eval.add_extern_fn(INT_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 
         let mut args = args.into_iter();
@@ -13,7 +15,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         inputs.insert(String::from("min"), crate::Value::Int(min));
         inputs.insert(String::from("max"), crate::Value::Int(max));
 
-        let Some(outputs) = eval_ctx.resource("Random.Int", name, &inputs)? else {
+        let Some(outputs) = eval_ctx.resource(INT_RESOURCE_TYPE, name, &inputs)? else {
             return Ok(crate::Value::Pending(crate::PendingValue));
         };
 
