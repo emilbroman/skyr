@@ -216,7 +216,7 @@ pub struct ResourceClient {
 }
 
 impl ResourceClient {
-    pub async fn get(&self) -> Result<Resource, ResourceError> {
+    pub async fn get(&self) -> Result<Option<Resource>, ResourceError> {
         let pager = self
             .namespace
             .client
@@ -237,17 +237,17 @@ impl ResourceClient {
             .await?
         {
             Some(row) => row,
-            None => return Err(ResourceError::NotFound),
+            None => return Ok(None),
         };
 
-        Ok(Resource {
+        Ok(Some(Resource {
             namespace: self.namespace.namespace.clone(),
             resource_type: self.resource_type.clone(),
             id: self.id.clone(),
             inputs: decode_record(inputs_json)?,
             outputs: decode_record(outputs_json)?,
             owner,
-        })
+        }))
     }
 
     pub async fn set_input(
@@ -272,7 +272,7 @@ impl ResourceClient {
             )
             .await?;
 
-        self.get().await
+        self.get().await?.ok_or(ResourceError::MissingAfterWrite)
     }
 
     pub async fn set_output(&self, outputs: Record) -> Result<Resource, ResourceError> {
@@ -292,7 +292,7 @@ impl ResourceClient {
             )
             .await?;
 
-        self.get().await
+        self.get().await?.ok_or(ResourceError::MissingAfterWrite)
     }
 
     pub async fn delete(&self) -> Result<(), ResourceError> {
@@ -325,8 +325,8 @@ pub struct Resource {
 
 #[derive(Error, Debug)]
 pub enum ResourceError {
-    #[error("not found")]
-    NotFound,
+    #[error("resource missing after successful write")]
+    MissingAfterWrite,
 
     #[error("failed to execute: {0}")]
     ScyllaPager(#[from] PagerExecutionError),

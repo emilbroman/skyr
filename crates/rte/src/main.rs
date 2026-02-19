@@ -154,7 +154,7 @@ async fn worker_loop(
                         message.resource.resource_id.clone(),
                     );
                 match resource_client.get().await {
-                    Ok(_) => {
+                    Ok(Some(_)) => {
                         info!(log, "dropping idempotent create for existing resource";
                             "namespace" => message.resource.namespace.clone(),
                             "resource_type" => message.resource.resource_type.clone(),
@@ -163,7 +163,7 @@ async fn worker_loop(
                         delivery.ack().await?;
                         continue;
                     }
-                    Err(rdb::ResourceError::NotFound) => {}
+                    Ok(None) => {}
                     Err(error) => {
                         warn!(log, "failed to read resource state before create";
                             "namespace" => message.resource.namespace.clone(),
