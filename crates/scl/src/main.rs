@@ -198,6 +198,12 @@ async fn run_repl() -> anyhow::Result<()> {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
                 sclc::Effect::Print(value) => println!("{value}"),
+                sclc::Effect::CreateResource { id, inputs } => {
+                    println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
+                }
+                sclc::Effect::UpdateResource { id, inputs } => {
+                    println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
+                }
             }
         }
     });
@@ -245,15 +251,22 @@ async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .collect::<sclc::ModuleId>();
 
     let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
+    let eval = sclc::Eval::new::<FsSource>(effects_tx);
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
                 sclc::Effect::Print(value) => println!("{value}"),
+                sclc::Effect::CreateResource { id, inputs } => {
+                    println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
+                }
+                sclc::Effect::UpdateResource { id, inputs } => {
+                    println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
+                }
             }
         }
     });
 
-    program.evaluate(&module_id, effects_tx).await?;
+    program.evaluate(&module_id, &eval).await?;
 
     effects_task.await?;
     Ok(())
