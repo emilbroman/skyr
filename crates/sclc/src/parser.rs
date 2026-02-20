@@ -354,7 +354,7 @@ peg::parser! {
             }
 
         rule list_if_item() -> ListItem
-            = if_keyword() open_paren() condition:expr() close_paren() then_item:list_item() {
+            = if_keyword() open_paren() condition:expr() close_paren() then_item:list_item() !else_keyword() {
                 ListItem::If(ListIfItem {
                     condition: Box::new(condition),
                     then_item: Box::new(then_item),
@@ -711,6 +711,24 @@ mod tests {
         };
         assert_eq!(list.items.len(), 3);
         assert!(matches!(list.items[1], crate::ListItem::If(_)));
+    }
+
+    #[test]
+    fn parses_if_expression_inside_list_item() {
+        let line = parse_repl_line("[if (true) 1 else 2]", &ModuleId::default())
+            .expect("if expression list item should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 1);
+        let crate::ListItem::Expr(expr) = &list.items[0] else {
+            panic!("expected expression list item");
+        };
+        assert!(matches!(expr.as_ref(), crate::Expr::If(_)));
     }
 
     #[test]
