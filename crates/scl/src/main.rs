@@ -45,7 +45,9 @@ impl Repl {
         self.line_number += 1;
 
         let module_id = [format!("Repl{}", self.line_number)].into();
-        let Some(repl_line) = Self::report(sclc::parse_repl_line(line, &module_id)?) else {
+        let Some(repl_line) =
+            Self::report(sclc::parse_repl_line(line, &module_id)).and_then(|line| line)
+        else {
             return Ok(());
         };
 
