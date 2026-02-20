@@ -928,9 +928,9 @@ mod tests {
     #[test]
     fn parses_dict_with_trailing_comma() {
         let line = parse_repl_line("#{ \"a\": 1, \"b\": 2, }", &ModuleId::default())
-            .expect("dict should parse")
-            .into_inner();
-        let crate::ModStmt::Expr(expr) = line.statement else {
+            .into_inner()
+            .expect("dict should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Dict(dict) = expr.into_inner() else {
@@ -942,9 +942,9 @@ mod tests {
     #[test]
     fn parses_empty_dict() {
         let line = parse_repl_line("#{}", &ModuleId::default())
-            .expect("dict should parse")
-            .into_inner();
-        let crate::ModStmt::Expr(expr) = line.statement else {
+            .into_inner()
+            .expect("dict should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Dict(dict) = expr.into_inner() else {
@@ -1486,9 +1486,9 @@ mod tests {
     #[test]
     fn parses_dict_type_expr() {
         let line = parse_repl_line("extern \"dict\": #{ Str: Int }", &ModuleId::default())
-            .expect("dict type should parse")
-            .into_inner();
-        let crate::ModStmt::Expr(expr) = line.statement else {
+            .into_inner()
+            .expect("dict type should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
