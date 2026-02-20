@@ -12,6 +12,8 @@ pub enum Token<'a> {
     Dot,
     OpenParen,
     CloseParen,
+    OpenSquare,
+    CloseSquare,
     Equals,
     Semicolon,
     Slash,
@@ -22,6 +24,8 @@ pub enum Token<'a> {
     ExternKeyword,
     IfKeyword,
     ElseKeyword,
+    ForKeyword,
+    InKeyword,
     NilKeyword,
     TrueKeyword,
     FalseKeyword,
@@ -250,6 +254,10 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::IfKeyword
             } else if symbol == "else" {
                 Token::ElseKeyword
+            } else if symbol == "for" {
+                Token::ForKeyword
+            } else if symbol == "in" {
+                Token::InKeyword
             } else if symbol == "nil" {
                 Token::NilKeyword
             } else if symbol == "true" {
@@ -300,6 +308,8 @@ impl<'a> Iterator for Lexer<'a> {
                 "." => Token::Dot,
                 "(" => Token::OpenParen,
                 ")" => Token::CloseParen,
+                "[" => Token::OpenSquare,
+                "]" => Token::CloseSquare,
                 "=" => Token::Equals,
                 ";" => Token::Semicolon,
                 "/" => Token::Slash,

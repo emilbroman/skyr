@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
+    Any,
     Int,
     Bool,
     Str,
     Optional(Box<Type>),
+    List(Box<Type>),
     Fn(FnType),
     Record(RecordType),
     IsoRec(usize, Box<Type>),
@@ -54,10 +56,12 @@ impl Type {
 
     fn unfold_inner(&self, replacement: Option<(usize, &Type)>) -> Self {
         match self {
+            Type::Any => Type::Any,
             Type::Int => Type::Int,
             Type::Bool => Type::Bool,
             Type::Str => Type::Str,
             Type::Optional(ty) => Type::Optional(Box::new(ty.unfold_inner(replacement))),
+            Type::List(ty) => Type::List(Box::new(ty.unfold_inner(replacement))),
             Type::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
                     .params
@@ -89,10 +93,12 @@ impl Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Type::Any => write!(f, "Any"),
             Type::Int => write!(f, "Int"),
             Type::Bool => write!(f, "Bool"),
             Type::Str => write!(f, "Str"),
             Type::Optional(ty) => write!(f, "{ty}?"),
+            Type::List(ty) => write!(f, "[{ty}]"),
             Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
             Type::Record(record) => write!(f, "{record}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),

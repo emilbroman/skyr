@@ -5,9 +5,9 @@ use thiserror::Error;
 
 use crate::{
     Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, IfExpr, ImportStmt,
-    Int, InterpExpr, LetBind, LetExpr, Lexer, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
-    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
-    TypeExpr, Var,
+    Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem, ListItem, Loc,
+    ModStmt, ModuleId, Position, PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr,
+    RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -176,9 +176,18 @@ peg::parser! {
         rule type_expr_base() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
             / record_type_expr:type_expr_record() { record_type_expr }
+            / list_type_expr:type_expr_list() { list_type_expr }
             / var:var() {
                 let span = var.span();
                 Loc::new(TypeExpr::Var(var), span)
+            }
+
+        rule type_expr_list() -> Loc<TypeExpr>
+            = open_square_span:open_square() item:type_expr() close_square_span:close_square() {
+                Loc::new(
+                    TypeExpr::List(Box::new(item)),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
             }
 
         rule type_expr_fn() -> Loc<TypeExpr>
@@ -263,6 +272,7 @@ peg::parser! {
             }
             / string_expr:string_expr() { string_expr }
             / record_expr:record_expr() { record_expr }
+            / list_expr:list_expr() { list_expr }
             / int:int() {
                 let span = int.span();
                 Loc::new(Expr::Int(int.into_inner()), span)
@@ -314,6 +324,42 @@ peg::parser! {
 
         rule record_field() -> RecordField
             = var:var() colon() expr:expr() { RecordField { var, expr } }
+
+        rule list_expr() -> Loc<Expr>
+            = open_square_span:open_square() close_square_span:close_square() {
+                Loc::new(
+                    Expr::List(ListExpr { items: vec![] }),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
+            }
+            / open_square_span:open_square() items:(list_item() ++ comma()) comma()? close_square_span:close_square() {
+                Loc::new(
+                    Expr::List(ListExpr { items }),
+                    Span::new(open_square_span.start(), close_square_span.end()),
+                )
+            }
+
+        rule list_item() -> ListItem
+            = list_for_item:list_for_item() { list_for_item }
+            / list_if_item:list_if_item() { list_if_item }
+            / expr:expr() { ListItem::Expr(expr) }
+
+        rule list_for_item() -> ListItem
+            = for_keyword() open_paren() var:var() in_keyword() iterable:expr() close_paren() emit_item:list_item() {
+                ListItem::For(ListForItem {
+                    var,
+                    iterable: Box::new(iterable),
+                    emit_item: Box::new(emit_item),
+                })
+            }
+
+        rule list_if_item() -> ListItem
+            = if_keyword() open_paren() condition:expr() close_paren() then_item:list_item() !else_keyword() {
+                ListItem::If(ListIfItem {
+                    condition: Box::new(condition),
+                    then_item: Box::new(then_item),
+                })
+            }
 
         rule let_expr() -> Loc<Expr>
             = bind:let_bind() semicolon() expr:expr() {
@@ -367,6 +413,12 @@ peg::parser! {
         rule else_keyword() -> Span
             = [token if matches!(token.as_ref(), Token::ElseKeyword)] { token.span() }
 
+        rule for_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::ForKeyword)] { token.span() }
+
+        rule in_keyword() -> Span
+            = [token if matches!(token.as_ref(), Token::InKeyword)] { token.span() }
+
         rule equals() -> Span
             = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
 
@@ -398,6 +450,12 @@ peg::parser! {
 
         rule close_paren() -> Span
             = [token if matches!(token.as_ref(), Token::CloseParen)] { token.span() }
+
+        rule open_square() -> Span
+            = [token if matches!(token.as_ref(), Token::OpenSquare)] { token.span() }
+
+        rule close_square() -> Span
+            = [token if matches!(token.as_ref(), Token::CloseSquare)] { token.span() }
 
         rule var() -> Loc<Var>
             = [token] {? match *token.as_ref() {
@@ -590,6 +648,116 @@ mod tests {
     }
 
     #[test]
+    fn parses_list_literal_with_optional_trailing_comma() {
+        let line = parse_repl_line("[1, 2,]", &ModuleId::default())
+            .expect("list literal should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 2);
+    }
+
+    #[test]
+    fn parses_list_for_comprehension_item() {
+        let line = parse_repl_line("[for (x in y) x]", &ModuleId::default())
+            .expect("list comprehension should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 1);
+        let crate::ListItem::For(for_item) = &list.items[0] else {
+            panic!("expected for item");
+        };
+        assert_eq!(for_item.var.name, "x");
+        let crate::Expr::Var(iterable) = for_item.iterable.as_ref().as_ref() else {
+            panic!("expected iterable var");
+        };
+        assert_eq!(iterable.name, "y");
+    }
+
+    #[test]
+    fn parses_mixed_list_comprehension_items() {
+        let line = parse_repl_line("[1, for (x in [2, 3]) x, 4, 5]", &ModuleId::default())
+            .expect("mixed list literal should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 4);
+        assert!(matches!(list.items[1], crate::ListItem::For(_)));
+    }
+
+    #[test]
+    fn parses_list_if_comprehension_item() {
+        let line = parse_repl_line("[1, if (false) 2, 3]", &ModuleId::default())
+            .expect("list-if comprehension should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 3);
+        assert!(matches!(list.items[1], crate::ListItem::If(_)));
+    }
+
+    #[test]
+    fn parses_if_expression_inside_list_item() {
+        let line = parse_repl_line("[if (true) 1 else 2]", &ModuleId::default())
+            .expect("if expression list item should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 1);
+        let crate::ListItem::Expr(expr) = &list.items[0] else {
+            panic!("expected expression list item");
+        };
+        assert!(matches!(expr.as_ref(), crate::Expr::If(_)));
+    }
+
+    #[test]
+    fn parses_nested_list_comprehension_items() {
+        let line = parse_repl_line(
+            "[1, 2, for (x in [3, 4]) if (true) for (y in [x, x]) y]",
+            &ModuleId::default(),
+        )
+        .expect("nested comprehension should parse")
+        .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 3);
+        let crate::ListItem::For(outer_for) = &list.items[2] else {
+            panic!("expected outer for item");
+        };
+        let crate::ListItem::If(inner_if) = outer_for.emit_item.as_ref() else {
+            panic!("expected nested if item");
+        };
+        let crate::ListItem::For(_) = inner_if.then_item.as_ref() else {
+            panic!("expected nested for item");
+        };
+    }
+
+    #[test]
     fn fn_body_is_right_associative() {
         let line = parse_repl_line("fn(a: A) fn(b: B) b", &ModuleId::default())
             .expect("nested fn expression should parse")
@@ -689,5 +857,25 @@ mod tests {
             panic!("expected fn type expression");
         };
         assert_eq!(fn_ty.params.len(), 2);
+    }
+
+    #[test]
+    fn parses_list_type_expr() {
+        let line = parse_repl_line("extern \"xs\": [Int]", &ModuleId::default())
+            .expect("list type should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
+            panic!("expected extern expression");
+        };
+        let crate::TypeExpr::List(inner) = extern_expr.ty.into_inner() else {
+            panic!("expected list type expression");
+        };
+        let crate::TypeExpr::Var(var) = inner.into_inner() else {
+            panic!("expected var inner type");
+        };
+        assert_eq!(var.name, "Int");
     }
 }

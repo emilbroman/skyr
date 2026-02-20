@@ -267,7 +267,7 @@ pub enum TypeCheckError {
 
 impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
-        if lhs == rhs || matches!(rhs, Type::Never) {
+        if lhs == rhs || matches!(lhs, Type::Any) || matches!(rhs, Type::Never) {
             return Ok(());
         }
 
@@ -295,6 +295,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     }
                     Ok(())
                 }
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
+            Type::List(lhs_inner) => match rhs {
+                Type::List(rhs_inner) => self
+                    .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
                     lhs.clone(),
                     rhs.clone(),
@@ -636,6 +645,33 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
+            ast::Expr::List(list_expr) => {
+                let mut diags = DiagList::new();
+                let list_ty = if let Some(Type::List(expected_item_ty)) = expected_type {
+                    let expected_item_ty = expected_item_ty.as_ref().clone().unfold();
+                    for item in &list_expr.items {
+                        self.check_list_item(env, item, Some(&expected_item_ty))?
+                            .unpack(&mut diags);
+                    }
+                    Type::List(Box::new(expected_item_ty))
+                } else if let Some((first, rest)) = list_expr.items.split_first() {
+                    let first_ty = self
+                        .check_list_item(env, first, None)?
+                        .unpack(&mut diags)
+                        .unfold();
+                    for item in rest {
+                        self.check_list_item(env, item, Some(&first_ty))?
+                            .unpack(&mut diags);
+                    }
+                    Type::List(Box::new(first_ty))
+                } else {
+                    Type::List(Box::new(Type::Never))
+                };
+                let ty = self
+                    .apply_expected_type(env, expr.span(), list_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::Interp(interp_expr) => {
                 let mut diags = DiagList::new();
                 for part in &interp_expr.parts {
@@ -679,6 +715,53 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
+    fn check_list_item(
+        &self,
+        env: &TypeEnv<'_>,
+        item: &ast::ListItem,
+        expected_type: Option<&Type>,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        match item {
+            ast::ListItem::Expr(expr) => self.check_expr(env, expr, expected_type),
+            ast::ListItem::If(if_item) => {
+                let mut diags = DiagList::new();
+                let bool_ty = Type::Bool;
+                self.check_expr(env, if_item.condition.as_ref(), Some(&bool_ty))?
+                    .unpack(&mut diags);
+                let item_ty = self
+                    .check_list_item(env, if_item.then_item.as_ref(), expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(item_ty, diags))
+            }
+            ast::ListItem::For(for_item) => {
+                let mut diags = DiagList::new();
+                let iterable_ty = self
+                    .check_expr(env, for_item.iterable.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+                let element_ty = match iterable_ty.clone() {
+                    Type::List(element_ty) => *element_ty,
+                    other => {
+                        diags.push(InvalidType {
+                            module_id: env.module_id()?,
+                            error: TypeError::new(TypeIssue::Mismatch(
+                                Type::List(Box::new(Type::Any)),
+                                other,
+                            )),
+                            span: for_item.iterable.span(),
+                        });
+                        Type::Never
+                    }
+                };
+                let inner_env = env.with_local(for_item.var.name.as_str(), element_ty);
+                let item_ty = self
+                    .check_list_item(&inner_env, for_item.emit_item.as_ref(), expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(item_ty, diags))
+            }
+        }
+    }
+
     fn check_global_let_bind(
         &self,
         env: &TypeEnv<'_>,
@@ -698,11 +781,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
     fn resolve_type_expr(&self, type_expr: &crate::Loc<ast::TypeExpr>) -> Type {
         match type_expr.as_ref() {
+            ast::TypeExpr::Var(var) if var.name == "Any" => Type::Any,
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
             ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Optional(inner) => {
                 Type::Optional(Box::new(self.resolve_type_expr(inner.as_ref())))
+            }
+            ast::TypeExpr::List(inner) => {
+                Type::List(Box::new(self.resolve_type_expr(inner.as_ref())))
             }
             ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
                 params: fn_ty
