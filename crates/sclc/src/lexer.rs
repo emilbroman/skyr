@@ -32,6 +32,7 @@ pub enum Token<'a> {
     FalseKeyword,
     QuestionMark,
     Int(&'a str),
+    Float(&'a str),
     StrBegin(&'a str),
     StrCont(&'a str),
     StrEnd(&'a str),
@@ -93,6 +94,36 @@ impl<'a> Lexer<'a> {
             .chars()
             .next()
             .is_some_and(|character| character.is_ascii_digit())
+    }
+
+    fn peek_is_float_fraction_start(&self) -> bool {
+        let mut iter = self.graphemes.clone();
+        let Some((_, dot)) = iter.next() else {
+            return false;
+        };
+        if dot != "." {
+            return false;
+        }
+        let Some((_, digit)) = iter.next() else {
+            return false;
+        };
+        Self::is_ascii_digit_grapheme(digit)
+    }
+
+    fn consume_float_fraction(&mut self) -> usize {
+        let (dot_index, dot_grapheme, _) = self.next_grapheme().expect("peek returned Some");
+        let mut float_end = dot_index + dot_grapheme.len();
+
+        while let Some((_, next_grapheme)) = self.graphemes.peek().copied() {
+            if !Self::is_ascii_digit_grapheme(next_grapheme) {
+                break;
+            }
+
+            let (next_index, next_grapheme, _) = self.next_grapheme().expect("peek returned Some");
+            float_end = next_index + next_grapheme.len();
+        }
+
+        float_end
     }
 
     fn advance_position_for_grapheme(&mut self, grapheme: &str) {
@@ -284,7 +315,14 @@ impl<'a> Iterator for Lexer<'a> {
                 int_end = next_index + next_grapheme.len();
             }
 
-            if has_trailing_digit {
+            if self.peek_is_float_fraction_start() {
+                let float_end = self.consume_float_fraction();
+                if has_trailing_digit {
+                    Token::Unknown(&self.source[int_start..float_end])
+                } else {
+                    Token::Float(&self.source[int_start..float_end])
+                }
+            } else if has_trailing_digit {
                 Token::Unknown(&self.source[int_start..int_end])
             } else {
                 Token::Int(&self.source[int_start..int_end])
@@ -303,7 +341,12 @@ impl<'a> Iterator for Lexer<'a> {
                 int_end = next_index + next_grapheme.len();
             }
 
-            Token::Int(&self.source[int_start..int_end])
+            if self.peek_is_float_fraction_start() {
+                let float_end = self.consume_float_fraction();
+                Token::Float(&self.source[int_start..float_end])
+            } else {
+                Token::Int(&self.source[int_start..int_end])
+            }
         } else if Self::is_whitespace_grapheme(grapheme) {
             let whitespace_start = grapheme_index;
             let mut whitespace_end = grapheme_index + grapheme.len();
@@ -385,5 +428,26 @@ mod tests {
         let tokens = Lexer::new("012").collect::<Vec<_>>();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].as_ref(), Token::Unknown("012")));
+    }
+
+    #[test]
+    fn lexes_float_literal() {
+        let tokens = Lexer::new("3.14").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Float("3.14")));
+    }
+
+    #[test]
+    fn lexes_float_with_leading_zero() {
+        let tokens = Lexer::new("0.12").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Float("0.12")));
+    }
+
+    #[test]
+    fn rejects_leading_zero_in_float() {
+        let tokens = Lexer::new("01.2").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Unknown("01.2")));
     }
 }

@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
+use ordered_float::NotNan;
+
 use crate::Loc;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -33,6 +35,7 @@ impl Expr {
     pub fn free_vars(&self) -> HashSet<&str> {
         match self {
             Expr::Int(_) => HashSet::new(),
+            Expr::Float(_) => HashSet::new(),
             Expr::Bool(_) => HashSet::new(),
             Expr::Nil => HashSet::new(),
             Expr::Str(_) => HashSet::new(),
@@ -112,6 +115,7 @@ pub enum ModStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
     Int(Int),
+    Float(Float),
     Bool(Bool),
     Nil,
     Str(StrExpr),
@@ -142,6 +146,11 @@ impl std::fmt::Debug for Var {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Int {
     pub value: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Float {
+    pub value: NotNan<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
