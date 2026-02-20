@@ -154,6 +154,7 @@ peg::parser! {
         rule mul_expr() -> Loc<Expr>
             = head:unary_expr() tail:(
                 star() rhs:unary_expr() { (BinaryOp::Mul, rhs) }
+                / slash() rhs:unary_expr() { (BinaryOp::Div, rhs) }
             )* {
                 let mut expr = head;
                 for (op, rhs) in tail {
@@ -804,6 +805,42 @@ mod tests {
         assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
         assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
         assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_division_left_associative() {
+        let line = parse_repl_line("8 / 2 / 2", &ModuleId::default())
+            .expect("division should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Div));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Div));
+    }
+
+    #[test]
+    fn parses_division_precedence() {
+        let line = parse_repl_line("1 + 6 / 2", &ModuleId::default())
+            .expect("division should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(div) = add.rhs.into_inner() else {
+            panic!("expected division on rhs");
+        };
+        assert!(matches!(div.op, crate::BinaryOp::Div));
     }
 
     #[test]
