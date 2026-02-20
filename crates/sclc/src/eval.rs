@@ -379,6 +379,25 @@ impl Eval {
                     _ => Ok(Value::Nil),
                 }
             }
+            ast::Expr::Unary(unary_expr) => {
+                let value = self.eval_expr(env, unary_expr.expr.as_ref())?;
+
+                if matches!(value, Value::Pending(_)) {
+                    return Ok(Value::Pending(PendingValue));
+                }
+
+                match unary_expr.op {
+                    ast::UnaryOp::Negate => match value {
+                        Value::Int(value) => Ok(Value::Int(-value)),
+                        Value::Float(value) => Ok(Value::Float(
+                            ordered_float::NotNan::new(-value.into_inner()).map_err(|_| {
+                                EvalError::InvalidNumericResult("unary - produced NaN".into())
+                            })?,
+                        )),
+                        other => Err(EvalError::UnexpectedValue(other)),
+                    },
+                }
+            }
             ast::Expr::Binary(binary_expr) => {
                 let lhs = self.eval_expr(env, binary_expr.lhs.as_ref())?;
                 let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
@@ -413,6 +432,29 @@ impl Eval {
                             lhs.push_str(&rhs);
                             Ok(Value::Str(lhs))
                         }
+                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                    },
+                    ast::BinaryOp::Sub => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs - rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs - rhs)),
+                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs as f64 - rhs.into_inner()).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "int - float produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
+                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs.into_inner() - rhs as f64).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "float - int produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
                         (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
                     },
                 }

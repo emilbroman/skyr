@@ -8,7 +8,7 @@ use crate::{
     FnParam, IfExpr, ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem,
     ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RecordExpr,
     RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr,
-    Var,
+    UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -132,13 +132,16 @@ peg::parser! {
             / add_expr()
 
         rule add_expr() -> Loc<Expr>
-            = head:property_expr() tail:(plus() rhs:property_expr() { rhs })* {
+            = head:unary_expr() tail:(
+                plus() rhs:unary_expr() { (BinaryOp::Add, rhs) }
+                / minus() rhs:unary_expr() { (BinaryOp::Sub, rhs) }
+            )* {
                 let mut expr = head;
-                for rhs in tail {
+                for (op, rhs) in tail {
                     let span = Span::new(expr.span().start(), rhs.span().end());
                     expr = Loc::new(
                         Expr::Binary(BinaryExpr {
-                            op: BinaryOp::Add,
+                            op,
                             lhs: Box::new(expr),
                             rhs: Box::new(rhs),
                         }),
@@ -147,6 +150,19 @@ peg::parser! {
                 }
                 expr
             }
+
+        rule unary_expr() -> Loc<Expr>
+            = minus_span:minus() expr:unary_expr() {
+                let span = Span::new(minus_span.start(), expr.span().end());
+                Loc::new(
+                    Expr::Unary(UnaryExpr {
+                        op: UnaryOp::Negate,
+                        expr: Box::new(expr),
+                    }),
+                    span,
+                )
+            }
+            / property_expr()
 
         rule if_expr() -> Loc<Expr>
             = if_kw_span:if_keyword() open_paren() condition:expr() close_paren() then_expr:expr() else_expr:(else_keyword() else_expr:expr() { else_expr })? {
@@ -453,6 +469,8 @@ peg::parser! {
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
         rule plus() -> Span
             = [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
+        rule minus() -> Span
+            = [token if matches!(token.as_ref(), Token::Minus)] { token.span() }
 
         rule open_curly() -> Span
             = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
@@ -682,9 +700,50 @@ mod tests {
             panic!("expected nested binary expression");
         };
         assert!(matches!(inner.op, crate::BinaryOp::Add));
-        assert!(matches!(inner.lhs.as_ref(), crate::Expr::Int(_)));
-        assert!(matches!(inner.rhs.as_ref(), crate::Expr::Int(_)));
-        assert!(matches!(outer.rhs.as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_subtraction_left_associative() {
+        let line = parse_repl_line("5 - 2 - 1", &ModuleId::default())
+            .expect("subtraction should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Sub));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Sub));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_unary_minus_with_addition() {
+        let line = parse_repl_line("-1 + 2", &ModuleId::default())
+            .expect("unary minus should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Unary(unary) = add.lhs.into_inner() else {
+            panic!("expected unary expression");
+        };
+        assert!(matches!(unary.op, crate::UnaryOp::Negate));
+        assert!(matches!(unary.expr.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(add.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
     }
 
     #[test]
