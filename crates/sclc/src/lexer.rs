@@ -267,6 +267,27 @@ impl<'a> Iterator for Lexer<'a> {
             } else {
                 Token::Symbol(symbol)
             }
+        } else if grapheme == "0" {
+            let int_start = grapheme_index;
+            let mut int_end = grapheme_index + grapheme.len();
+            let mut has_trailing_digit = false;
+
+            while let Some((_, next_grapheme)) = self.graphemes.peek().copied() {
+                if !Self::is_ascii_digit_grapheme(next_grapheme) {
+                    break;
+                }
+
+                has_trailing_digit = true;
+                let (next_index, next_grapheme, _) =
+                    self.next_grapheme().expect("peek returned Some");
+                int_end = next_index + next_grapheme.len();
+            }
+
+            if has_trailing_digit {
+                Token::Unknown(&self.source[int_start..int_end])
+            } else {
+                Token::Int(&self.source[int_start..int_end])
+            }
         } else if Self::is_non_zero_ascii_digit_grapheme(grapheme) {
             let int_start = grapheme_index;
             let mut int_end = grapheme_index + grapheme.len();
@@ -348,5 +369,19 @@ mod tests {
         let tokens = Lexer::new("\"x\\{y\"").collect::<Vec<_>>();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].as_ref(), Token::StrSimple("x\\{y")));
+    }
+
+    #[test]
+    fn lexes_zero_as_int() {
+        let tokens = Lexer::new("0").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Int("0")));
+    }
+
+    #[test]
+    fn rejects_leading_zero_in_integer() {
+        let tokens = Lexer::new("012").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Unknown("012")));
     }
 }
