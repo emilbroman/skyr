@@ -1,3 +1,4 @@
+use ordered_float::NotNan;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 
@@ -6,6 +7,7 @@ pub enum Value {
     Nil,
     Pending(PendingValue),
     Int(i64),
+    Float(NotNan<f64>),
     Bool(bool),
     Str(String),
     List(Vec<Value>),
@@ -178,6 +180,7 @@ impl std::fmt::Display for Value {
             Value::Nil => write!(f, "nil"),
             Value::Pending(_) => write!(f, "<pending>"),
             Value::Int(value) => write!(f, "{value}"),
+            Value::Float(value) => write!(f, "{value}"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Str(value) => write!(f, "{value}"),
             Value::List(values) => {

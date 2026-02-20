@@ -5,7 +5,7 @@ use thiserror::Error;
 
 use crate::{
     Bool, CallExpr, Diag, DiagList, Diagnosed, DictEntry, DictExpr, DictTypeExpr, Expr, FileMod,
-    FnExpr, FnParam, IfExpr, ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr,
+    Float, FnExpr, FnParam, IfExpr, ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr,
     ListForItem, ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
     RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
     TypeExpr, Var,
@@ -287,6 +287,10 @@ peg::parser! {
             / dict_expr:dict_expr() { dict_expr }
             / record_expr:record_expr() { record_expr }
             / list_expr:list_expr() { list_expr }
+            / float:float() {
+                let span = float.span();
+                Loc::new(Expr::Float(float.into_inner()), span)
+            }
             / int:int() {
                 let span = int.span();
                 Loc::new(Expr::Int(int.into_inner()), span)
@@ -504,6 +508,18 @@ peg::parser! {
                     Err(_) => Err("integer"),
                 },
                 _ => Err("integer"),
+            } }
+
+        rule float() -> Loc<Float>
+            = [token] {? match *token.as_ref() {
+                Token::Float(value) => match value.parse::<f64>() {
+                    Ok(parsed) if parsed.is_finite() => match ordered_float::NotNan::new(parsed) {
+                        Ok(parsed) => Ok(Loc::new(Float { value: parsed }, token.span())),
+                        Err(_) => Err("float"),
+                    },
+                    Ok(_) | Err(_) => Err("float"),
+                },
+                _ => Err("float"),
             } }
 
         rule bool_lit() -> Loc<Bool>
@@ -963,5 +979,19 @@ mod tests {
         };
         assert_eq!(key.name, "Str");
         assert_eq!(value.name, "Int");
+    }
+
+    #[test]
+    fn parses_float_literal() {
+        let line = parse_repl_line("3.14", &ModuleId::default())
+            .expect("float should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Float(float) = expr.into_inner() else {
+            panic!("expected float expression");
+        };
+        assert_eq!(float.value.to_string(), "3.14");
     }
 }
