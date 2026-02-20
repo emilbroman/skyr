@@ -225,6 +225,7 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    Div,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -233,6 +234,7 @@ impl std::fmt::Display for BinaryOp {
             BinaryOp::Add => write!(f, "+"),
             BinaryOp::Sub => write!(f, "-"),
             BinaryOp::Mul => write!(f, "*"),
+            BinaryOp::Div => write!(f, "/"),
         }
     }
 }

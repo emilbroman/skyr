@@ -238,6 +238,9 @@ pub enum EvalError {
 
     #[error("invalid numeric result: {0}")]
     InvalidNumericResult(String),
+
+    #[error("division by zero")]
+    DivisionByZero,
 }
 
 pub trait ValueAssertions {
@@ -480,6 +483,56 @@ impl Eval {
                         )),
                         (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
                     },
+                    ast::BinaryOp::Div => {
+                        match (lhs, rhs) {
+                            (Value::Int(lhs), Value::Int(rhs)) => {
+                                if rhs == 0 {
+                                    return Err(EvalError::DivisionByZero);
+                                }
+                                Ok(Value::Int(lhs / rhs))
+                            }
+                            (Value::Float(lhs), Value::Float(rhs)) => {
+                                if rhs.into_inner() == 0.0 {
+                                    return Err(EvalError::DivisionByZero);
+                                }
+                                Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs.into_inner() / rhs.into_inner())
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "float / float produced NaN".into(),
+                                            )
+                                        })?,
+                                ))
+                            }
+                            (Value::Int(lhs), Value::Float(rhs)) => {
+                                if rhs.into_inner() == 0.0 {
+                                    return Err(EvalError::DivisionByZero);
+                                }
+                                Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs as f64 / rhs.into_inner())
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "int / float produced NaN".into(),
+                                            )
+                                        })?,
+                                ))
+                            }
+                            (Value::Float(lhs), Value::Int(rhs)) => {
+                                if rhs == 0 {
+                                    return Err(EvalError::DivisionByZero);
+                                }
+                                Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs.into_inner() / rhs as f64)
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "float / int produced NaN".into(),
+                                            )
+                                        })?,
+                                ))
+                            }
+                            (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                        }
+                    }
                 }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
