@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{ExternFnValue, FnValue, PendingValue, Record, Value, ast};
+use crate::{Dict, ExternFnValue, FnValue, PendingValue, Record, Value, ast};
 
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
@@ -384,6 +384,18 @@ impl Eval {
                 }
                 Ok(Value::Record(record))
             }
+            ast::Expr::Dict(dict_expr) => {
+                let mut dict = Dict::default();
+                for entry in &dict_expr.entries {
+                    let key = self.eval_expr(env, &entry.key)?;
+                    let value = self.eval_expr(env, &entry.value)?;
+                    if matches!(key, Value::Pending(_)) || matches!(value, Value::Pending(_)) {
+                        return Ok(Value::Pending(PendingValue));
+                    }
+                    dict.insert(key, value);
+                }
+                Ok(Value::Dict(dict))
+            }
             ast::Expr::List(list_expr) => {
                 let mut values = Vec::new();
                 for item in &list_expr.items {
@@ -448,11 +460,7 @@ impl Eval {
                         for value in values {
                             let inner_env = env.with_local(for_item.var.name.as_str(), value);
                             if matches!(
-                                self.eval_list_item(
-                                    &inner_env,
-                                    for_item.emit_item.as_ref(),
-                                    out
-                                )?,
+                                self.eval_list_item(&inner_env, for_item.emit_item.as_ref(), out)?,
                                 ListItemOutcome::Pending
                             ) {
                                 return Ok(ListItemOutcome::Pending);

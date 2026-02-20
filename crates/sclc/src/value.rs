@@ -12,6 +12,7 @@ pub enum Value {
     ExternFn(ExternFnValue),
     Fn(FnValue),
     Record(Record),
+    Dict(Dict),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +141,11 @@ pub struct Record {
     fields: BTreeMap<String, Value>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Dict {
+    entries: Vec<(Value, Value)>,
+}
+
 impl Record {
     pub fn insert(&mut self, name: String, value: Value) {
         self.fields.insert(name, value);
@@ -153,6 +159,16 @@ impl Record {
         self.fields
             .iter()
             .map(|(name, value)| (name.as_str(), value))
+    }
+}
+
+impl Dict {
+    pub fn insert(&mut self, key: Value, value: Value) {
+        self.entries.push((key, value));
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
+        self.entries.iter().map(|(key, value)| (key, value))
     }
 }
 
@@ -178,6 +194,7 @@ impl std::fmt::Display for Value {
             Value::ExternFn(_) => write!(f, "<extern fn>"),
             Value::Fn(function) => write!(f, "{function}"),
             Value::Record(record) => write!(f, "{record}"),
+            Value::Dict(dict) => write!(f, "{dict}"),
         }
     }
 }
@@ -206,6 +223,22 @@ impl std::fmt::Display for Record {
         while let Some((name, value)) = fields.next() {
             write!(f, "{name}: {value}")?;
             if fields.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, "}}")
+    }
+}
+
+impl std::fmt::Display for Dict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{{")?;
+
+        let mut entries = self.entries.iter().peekable();
+        while let Some((key, value)) = entries.next() {
+            write!(f, "{key}: {value}")?;
+            if entries.peek().is_some() {
                 write!(f, ", ")?;
             }
         }
