@@ -17,7 +17,8 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - `crates/scs`: SSH Git server and packfile handling, writes Git objects and deployment states to CDB.
 - `crates/cdb`: Cassandra-backed API for repositories, objects, deployments, active deployments, supercession links.
 - `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
-- `crates/sclc`: Minimal compiler surface; currently reads `Main.scl` from a deployment and returns raw code.
+- `crates/sclc`: SCL front-end + runtime pieces (lexer/parser/AST/type-checker/eval), with a std package and compile pipeline.
+- `crates/scl`: CLI/REPL binary for SCL.
 - `crates/rdb`: Cassandra schema for resources plus basic ResourceClient CRUD for get/set/delete of inputs/outputs.
 - `crates/rte`: Daemon shell only; no RTQ consumption or transition logic.
 - `crates/rtq`: Placeholder crate (`src/lib.rs` is effectively empty).
@@ -63,9 +64,12 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 ### SCLC (`crates/sclc`)
 
-- Not a real compiler yet.
-- `compile()` only reads `Main.scl` from CDB and returns `Program { code: String }`.
-- AST/value model is minimal placeholder (`Program` wrapper, `Value::Record`, `Record` map).
+- Lexer + PEG parser are implemented for the SCL surface syntax.
+- AST/types/value model exists; parser produces AST nodes with spans.
+- Type checker and evaluator are implemented (see `checker` and `eval`).
+- `Program` supports opening packages, resolving imports, and evaluating a module.
+- `compile()` opens `Main.scl`, resolves imports, and type checks, returning `Diagnosed<Program<_>>` with accumulated diagnostics.
+- Parser now reports syntax errors as diagnostics (`SyntaxError`), and REPL lines can be empty (`ReplLine { statement: None }`).
 
 ### RDB / RTQ / RTE
 
@@ -99,6 +103,8 @@ Not implemented yet (high impact):
   5. Expand SCLC from file-loader to parser/evaluator with dependency propagation.
 - Keep deployment state transitions coherent across `scs` and `de`.
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
+- In `sclc`, parse functions return `Diagnosed<Option<_>>` and report syntax errors via diagnostics instead of `Result<_, ParseError>`.
+- In `scl`, the REPL ignores empty lines and uses `Diagnosed` reporting helpers for parse/type diagnostics.
 
 ## Running Locally (Quick Test)
 
@@ -111,6 +117,7 @@ Not implemented yet (high impact):
 
 - `cargo` is not available in the current shell session by default.
 - `flake.nix` defines a dev shell including `rustup` and `cargo`; use that shell before Rust builds/checks if needed.
+- Running tests/builds typically uses `nix develop -c cargo ...`.
 
 # GitHub
 
