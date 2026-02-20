@@ -50,6 +50,7 @@ pub enum Token<'a> {
     StrSimple(&'a str),
     Symbol(&'a str),
     Whitepace(&'a str),
+    Comment(&'a str),
     Unknown(&'a str),
 }
 
@@ -236,6 +237,29 @@ impl<'a> Lexer<'a> {
             Span::new(close_curly_start, self.current_position),
         )
     }
+
+    fn consume_line_comment(
+        &mut self,
+        comment_start: usize,
+        comment_start_position: Position,
+    ) -> Loc<Token<'a>> {
+        let mut comment_end = comment_start + "//".len();
+
+        while let Some((_, next_grapheme)) = self.graphemes.peek().copied() {
+            if next_grapheme == "\n" || next_grapheme == "\r\n" {
+                break;
+            }
+
+            let (next_index, next_grapheme, _) = self.next_grapheme().expect("peek returned Some");
+            comment_end = next_index + next_grapheme.len();
+        }
+
+        let comment = &self.source[comment_start..comment_end];
+        Loc::new(
+            Token::Comment(comment),
+            Span::new(comment_start_position, self.current_position),
+        )
+    }
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -401,6 +425,14 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 "\"" => return Some(self.consume_string_from_quote(grapheme_index, start)),
+                "/" => {
+                    if let Some((_, "/")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        return Some(self.consume_line_comment(grapheme_index, start));
+                    }
+
+                    Token::Slash
+                }
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
                 "#" => Token::Hash,
@@ -436,7 +468,6 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 ";" => Token::Semicolon,
-                "/" => Token::Slash,
                 "+" => Token::Plus,
                 "-" => Token::Minus,
                 "*" => Token::Star,
@@ -555,5 +586,17 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert!(matches!(tokens[0].as_ref(), Token::AndAnd));
         assert!(matches!(tokens[1].as_ref(), Token::OrOr));
+    }
+
+    #[test]
+    fn lexes_line_comment() {
+        let tokens = Lexer::new("let x = 1 // hi\nlet y = 2")
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .collect::<Vec<_>>();
+        assert!(
+            tokens
+                .iter()
+                .any(|token| matches!(token.as_ref(), Token::Comment("// hi")))
+        );
     }
 }
