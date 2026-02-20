@@ -129,7 +129,49 @@ peg::parser! {
             / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
-            / add_expr()
+            / equality_expr()
+
+        rule equality_expr() -> Loc<Expr>
+            = head:comparison_expr() tail:(
+                eq_eq() rhs:comparison_expr() { (BinaryOp::Eq, rhs) }
+                / bang_eq() rhs:comparison_expr() { (BinaryOp::Neq, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule comparison_expr() -> Loc<Expr>
+            = head:add_expr() tail:(
+                less() rhs:add_expr() { (BinaryOp::Lt, rhs) }
+                / less_eq() rhs:add_expr() { (BinaryOp::Lte, rhs) }
+                / greater() rhs:add_expr() { (BinaryOp::Gt, rhs) }
+                / greater_eq() rhs:add_expr() { (BinaryOp::Gte, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
 
         rule add_expr() -> Loc<Expr>
             = head:mul_expr() tail:(
@@ -509,6 +551,18 @@ peg::parser! {
 
         rule equals() -> Span
             = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
+        rule eq_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::EqEq)] { token.span() }
+        rule bang_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::BangEq)] { token.span() }
+        rule less() -> Span
+            = [token if matches!(token.as_ref(), Token::Less)] { token.span() }
+        rule less_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::LessEq)] { token.span() }
+        rule greater() -> Span
+            = [token if matches!(token.as_ref(), Token::Greater)] { token.span() }
+        rule greater_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::GreaterEq)] { token.span() }
 
         rule semicolon() -> Span
             = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
@@ -902,6 +956,42 @@ mod tests {
             panic!("expected division on rhs");
         };
         assert!(matches!(div.op, crate::BinaryOp::Div));
+    }
+
+    #[test]
+    fn parses_comparison_precedence_over_equality() {
+        let line = parse_repl_line("1 == 2 < 3", &ModuleId::default())
+            .expect("comparison should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(eq) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(eq.op, crate::BinaryOp::Eq));
+        let crate::Expr::Binary(cmp) = eq.rhs.into_inner() else {
+            panic!("expected comparison on rhs");
+        };
+        assert!(matches!(cmp.op, crate::BinaryOp::Lt));
+    }
+
+    #[test]
+    fn parses_equality_left_associative() {
+        let line = parse_repl_line("a == b != c", &ModuleId::default())
+            .expect("equality should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Neq));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Eq));
     }
 
     #[test]

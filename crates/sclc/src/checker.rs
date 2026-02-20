@@ -228,6 +228,25 @@ impl crate::Diag for InvalidUnaryOperand {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("comparison between disjoint types: {lhs} and {rhs}")]
+pub struct DisjointEquality {
+    pub module_id: crate::ModuleId,
+    pub lhs: Type,
+    pub rhs: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for DisjointEquality {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+
+    fn level(&self) -> crate::DiagLevel {
+        crate::DiagLevel::Warning
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeIssue {
     Mismatch(Type, Type),
@@ -299,6 +318,9 @@ pub enum TypeCheckError {
 }
 
 impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
+    fn types_disjoint(&self, lhs: &Type, rhs: &Type) -> bool {
+        self.assign_type(lhs, rhs).is_err() && self.assign_type(rhs, lhs).is_err()
+    }
     fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
         if lhs == rhs || matches!(lhs, Type::Any) || matches!(rhs, Type::Never) {
             return Ok(());
@@ -706,6 +728,36 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             (Type::Int, Type::Int) => Type::Int,
                             (Type::Float, Type::Float) => Type::Float,
                             (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
+                            _ => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: binary_expr.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
+                        ast::BinaryOp::Eq | ast::BinaryOp::Neq => {
+                            if self.types_disjoint(&lhs_ty, &rhs_ty) {
+                                diags.push(DisjointEquality {
+                                    module_id: env.module_id()?,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                            }
+                            Type::Bool
+                        }
+                        ast::BinaryOp::Lt
+                        | ast::BinaryOp::Lte
+                        | ast::BinaryOp::Gt
+                        | ast::BinaryOp::Gte => match (&lhs_ty, &rhs_ty) {
+                            (Type::Int, Type::Int)
+                            | (Type::Float, Type::Float)
+                            | (Type::Int, Type::Float)
+                            | (Type::Float, Type::Int) => Type::Bool,
                             _ => {
                                 diags.push(InvalidBinaryOperands {
                                     module_id: env.module_id()?,
@@ -1481,5 +1533,53 @@ mod tests {
             .check_expr(&env, &div_expr, None)
             .expect("type check should succeed");
         assert_eq!(diagnosed.into_inner(), Type::Int);
+    }
+
+    #[test]
+    fn equality_returns_bool_and_warns_on_disjoint_types() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let eq_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Eq,
+                lhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+                rhs: Box::new(loc(Expr::Str(StrExpr { value: "x".into() }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &eq_expr, None)
+            .expect("type check should succeed with diags");
+        assert_eq!(diagnosed.as_ref(), &Type::Bool);
+
+        let mut diags = diagnosed.diags().iter();
+        let diag = diags.next().expect("expected warning");
+        assert!(matches!(diag.level(), crate::DiagLevel::Warning));
+    }
+
+    #[test]
+    fn comparison_requires_numeric_operands() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let cmp_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Lt,
+                lhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+                rhs: Box::new(loc(Expr::Str(StrExpr { value: "x".into() }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &cmp_expr, None)
+            .expect("type check should succeed with diags");
+        assert!(matches!(*diagnosed, Type::Never));
     }
 }

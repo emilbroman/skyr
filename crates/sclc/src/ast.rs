@@ -226,6 +226,12 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -235,6 +241,12 @@ impl std::fmt::Display for BinaryOp {
             BinaryOp::Sub => write!(f, "-"),
             BinaryOp::Mul => write!(f, "*"),
             BinaryOp::Div => write!(f, "/"),
+            BinaryOp::Eq => write!(f, "=="),
+            BinaryOp::Neq => write!(f, "!="),
+            BinaryOp::Lt => write!(f, "<"),
+            BinaryOp::Lte => write!(f, "<="),
+            BinaryOp::Gt => write!(f, ">"),
+            BinaryOp::Gte => write!(f, ">="),
         }
     }
 }
