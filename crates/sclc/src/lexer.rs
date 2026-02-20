@@ -27,6 +27,8 @@ pub enum Token<'a> {
     LessEq,
     Greater,
     GreaterEq,
+    AndAnd,
+    OrOr,
     ImportKeyword,
     LetKeyword,
     FnKeyword,
@@ -382,6 +384,22 @@ impl<'a> Iterator for Lexer<'a> {
                         Token::Unknown(grapheme)
                     }
                 }
+                "&" => {
+                    if let Some((_, "&")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::AndAnd
+                    } else {
+                        Token::Unknown(grapheme)
+                    }
+                }
+                "|" => {
+                    if let Some((_, "|")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::OrOr
+                    } else {
+                        Token::Unknown(grapheme)
+                    }
+                }
                 "\"" => return Some(self.consume_string_from_quote(grapheme_index, start)),
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
@@ -527,5 +545,15 @@ mod tests {
         assert!(matches!(tokens[3].as_ref(), Token::LessEq));
         assert!(matches!(tokens[4].as_ref(), Token::Greater));
         assert!(matches!(tokens[5].as_ref(), Token::GreaterEq));
+    }
+
+    #[test]
+    fn lexes_boolean_operator_tokens() {
+        let tokens = Lexer::new("&& ||")
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(tokens[0].as_ref(), Token::AndAnd));
+        assert!(matches!(tokens[1].as_ref(), Token::OrOr));
     }
 }
