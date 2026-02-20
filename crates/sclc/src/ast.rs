@@ -74,6 +74,14 @@ impl Expr {
                 }
                 vars
             }
+            Expr::Dict(dict_expr) => {
+                let mut vars = HashSet::new();
+                for entry in &dict_expr.entries {
+                    vars.extend(entry.key.as_ref().free_vars());
+                    vars.extend(entry.value.as_ref().free_vars());
+                }
+                vars
+            }
             Expr::List(list_expr) => {
                 let mut vars = HashSet::new();
                 for item in &list_expr.items {
@@ -114,6 +122,7 @@ pub enum Expr {
     Call(CallExpr),
     Var(Loc<Var>),
     Record(RecordExpr),
+    Dict(DictExpr),
     List(ListExpr),
     Interp(InterpExpr),
     PropertyAccess(PropertyAccessExpr),
@@ -181,6 +190,11 @@ pub struct RecordExpr {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DictExpr {
+    pub entries: Vec<DictEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListExpr {
     pub items: Vec<ListItem>,
 }
@@ -232,6 +246,12 @@ pub struct RecordField {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DictEntry {
+    pub key: Loc<Expr>,
+    pub value: Loc<Expr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PropertyAccessExpr {
     pub expr: Box<Loc<Expr>>,
     pub property: Loc<Var>,
@@ -256,6 +276,7 @@ pub enum TypeExpr {
     List(Box<Loc<TypeExpr>>),
     Fn(FnTypeExpr),
     Record(RecordTypeExpr),
+    Dict(DictTypeExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -267,6 +288,12 @@ pub struct FnTypeExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordTypeExpr {
     pub fields: Vec<RecordTypeFieldExpr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DictTypeExpr {
+    pub key: Box<Loc<TypeExpr>>,
+    pub value: Box<Loc<TypeExpr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -7,6 +7,7 @@ use crate::{Loc, Position, Span};
 pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
+    Hash,
     Colon,
     Comma,
     Dot,
@@ -324,6 +325,7 @@ impl<'a> Iterator for Lexer<'a> {
                 "\"" => return Some(self.consume_string_from_quote(grapheme_index, start)),
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
+                "#" => Token::Hash,
                 ":" => Token::Colon,
                 "," => Token::Comma,
                 "." => Token::Dot,
