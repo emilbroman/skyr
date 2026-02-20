@@ -111,3 +111,11 @@ Not implemented yet (high impact):
 
 - `cargo` is not available in the current shell session by default.
 - `flake.nix` defines a dev shell including `rustup` and `cargo`; use that shell before Rust builds/checks if needed.
+
+# GitHub
+
+The repository is private and is called `emilbroman/skyr`. Use MCP to access it.
+
+Use conventional branch names to associate GH issues. The format is `<issue-number>-<kebab-cased-title>`. This convention can also be used to find the issue of the current branch.
+
+Use MCP to figure out if there is an open PR for the current branch. If I mention "PR" without specifying which one, assume the one attached to the current branch, if any.
