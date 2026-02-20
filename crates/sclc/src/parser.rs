@@ -65,7 +65,7 @@ pub struct TokenStream<'a> {
 impl<'a> TokenStream<'a> {
     fn new(source: &'a str) -> Self {
         let tokens = Lexer::new(source)
-            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_) | Token::Comment(_)))
             .collect::<Vec<_>>();
         let eof_position = tokens
             .last()
