@@ -129,7 +129,7 @@ peg::parser! {
             = statements:mod_stmt()* eof() { FileMod { statements } }
 
         pub rule repl_line() -> ReplLine
-            = statement:mod_stmt() eof() { ReplLine { statement } }
+            = statement:mod_stmt()? eof() { ReplLine { statement } }
 
         rule eof() = ![_]
 
@@ -881,7 +881,7 @@ mod tests {
         let line = parse_repl_line("{ a: 1, b: 2, }", &ModuleId::default())
             .into_inner()
             .expect("record should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Record(record) = expr.into_inner() else {
@@ -914,7 +914,7 @@ mod tests {
         let line = parse_repl_line("a.b.c", &ModuleId::default())
             .into_inner()
             .expect("property access should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::PropertyAccess(level2) = expr.into_inner() else {
@@ -936,7 +936,7 @@ mod tests {
         let line = parse_repl_line("({ a: 1 }).a", &ModuleId::default())
             .into_inner()
             .expect("parenthesized property access should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::PropertyAccess(access) = expr.into_inner() else {
@@ -953,7 +953,7 @@ mod tests {
         let line = parse_repl_line("fn(a: A, b: B,) a", &ModuleId::default())
             .into_inner()
             .expect("fn expression should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Fn(fn_expr) = expr.into_inner() else {
@@ -969,7 +969,7 @@ mod tests {
         let line = parse_repl_line("1 + 2 + 3", &ModuleId::default())
             .into_inner()
             .expect("addition should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(outer) = expr.into_inner() else {
@@ -990,7 +990,7 @@ mod tests {
         let line = parse_repl_line("5 - 2 - 1", &ModuleId::default())
             .into_inner()
             .expect("subtraction should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(outer) = expr.into_inner() else {
@@ -1011,7 +1011,7 @@ mod tests {
         let line = parse_repl_line("-1 + 2", &ModuleId::default())
             .into_inner()
             .expect("unary minus should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(add) = expr.into_inner() else {
@@ -1031,7 +1031,7 @@ mod tests {
         let line = parse_repl_line("1 + 2 * 3", &ModuleId::default())
             .into_inner()
             .expect("multiplication should bind tighter");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(add) = expr.into_inner() else {
@@ -1049,7 +1049,7 @@ mod tests {
         let line = parse_repl_line("6 * 2 * 3", &ModuleId::default())
             .into_inner()
             .expect("multiplication should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(outer) = expr.into_inner() else {
@@ -1070,7 +1070,7 @@ mod tests {
         let line = parse_repl_line("8 / 2 / 2", &ModuleId::default())
             .into_inner()
             .expect("division should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(outer) = expr.into_inner() else {
@@ -1088,7 +1088,7 @@ mod tests {
         let line = parse_repl_line("1 + 6 / 2", &ModuleId::default())
             .into_inner()
             .expect("division should bind tighter");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(add) = expr.into_inner() else {
@@ -1106,7 +1106,7 @@ mod tests {
         let line = parse_repl_line("1 == 2 < 3", &ModuleId::default())
             .into_inner()
             .expect("comparison should bind tighter");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(eq) = expr.into_inner() else {
@@ -1124,7 +1124,7 @@ mod tests {
         let line = parse_repl_line("a == b != c", &ModuleId::default())
             .into_inner()
             .expect("equality should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(outer) = expr.into_inner() else {
@@ -1142,7 +1142,7 @@ mod tests {
         let line = parse_repl_line("a || b == c", &ModuleId::default())
             .into_inner()
             .expect("equality should bind tighter than or");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(or_expr) = expr.into_inner() else {
@@ -1160,7 +1160,7 @@ mod tests {
         let line = parse_repl_line("a && b || c", &ModuleId::default())
             .into_inner()
             .expect("and should bind tighter than or");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Binary(or_expr) = expr.into_inner() else {
@@ -1178,7 +1178,7 @@ mod tests {
         let line = parse_repl_line("if (true) 1 else 2", &ModuleId::default())
             .into_inner()
             .expect("if expression should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::If(if_expr) = expr.into_inner() else {
@@ -1195,7 +1195,7 @@ mod tests {
         let line = parse_repl_line("[1, 2,]", &ModuleId::default())
             .into_inner()
             .expect("list literal should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1209,7 +1209,7 @@ mod tests {
         let line = parse_repl_line("[for (x in y) x]", &ModuleId::default())
             .into_inner()
             .expect("list comprehension should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1231,7 +1231,7 @@ mod tests {
         let line = parse_repl_line("[1, for (x in [2, 3]) x, 4, 5]", &ModuleId::default())
             .into_inner()
             .expect("mixed list literal should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1246,7 +1246,7 @@ mod tests {
         let line = parse_repl_line("[1, if (false) 2, 3]", &ModuleId::default())
             .into_inner()
             .expect("list-if comprehension should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1261,7 +1261,7 @@ mod tests {
         let line = parse_repl_line("[if (true) 1 else 2]", &ModuleId::default())
             .into_inner()
             .expect("if expression list item should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1282,7 +1282,7 @@ mod tests {
         )
         .into_inner()
         .expect("nested comprehension should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::List(list) = expr.into_inner() else {
@@ -1305,7 +1305,7 @@ mod tests {
         let line = parse_repl_line("fn(a: A) fn(b: B) b", &ModuleId::default())
             .into_inner()
             .expect("nested fn expression should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Fn(outer) = expr.into_inner() else {
@@ -1324,7 +1324,7 @@ mod tests {
         let line = parse_repl_line("f(a, b,)", &ModuleId::default())
             .into_inner()
             .expect("call expression should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Call(call) = expr.into_inner() else {
@@ -1342,7 +1342,7 @@ mod tests {
         let line = parse_repl_line("\"hello\\nworld\"", &ModuleId::default())
             .into_inner()
             .expect("string should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Str(string) = expr.into_inner() else {
@@ -1356,7 +1356,7 @@ mod tests {
         let line = parse_repl_line("\"value: {x.y}\"", &ModuleId::default())
             .into_inner()
             .expect("interpolated string should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Interp(interp) = expr.into_inner() else {
@@ -1376,7 +1376,7 @@ mod tests {
         let line = parse_repl_line("extern \"clock\": Int", &ModuleId::default())
             .into_inner()
             .expect("extern expression should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
@@ -1390,7 +1390,7 @@ mod tests {
         let line = parse_repl_line("extern \"f\": fn(Int, Str) Int", &ModuleId::default())
             .into_inner()
             .expect("extern function type should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
@@ -1407,7 +1407,7 @@ mod tests {
         let line = parse_repl_line("extern \"xs\": [Int]", &ModuleId::default())
             .into_inner()
             .expect("list type should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
@@ -1427,7 +1427,7 @@ mod tests {
         let line = parse_repl_line("3.14", &ModuleId::default())
             .into_inner()
             .expect("float should parse");
-        let crate::ModStmt::Expr(expr) = line.statement else {
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
             panic!("expected expression statement");
         };
         let crate::Expr::Float(float) = expr.into_inner() else {

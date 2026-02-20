@@ -11,7 +11,7 @@ pub struct FileMod {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplLine {
-    pub statement: ModStmt,
+    pub statement: Option<ModStmt>,
 }
 
 impl FileMod {

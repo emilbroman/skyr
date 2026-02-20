@@ -51,9 +51,13 @@ impl Repl {
             return Ok(());
         };
 
+        let Some(statement) = &repl_line.statement else {
+            return Ok(());
+        };
+
         let mut program = sclc::Program::<FsSource>::new();
         let type_env = Self::type_env(&self.bindings, &module_id);
-        let pending_binding = match &repl_line.statement {
+        let pending_binding = match statement {
             sclc::ModStmt::Import(import_stmt) => {
                 let import_path = import_stmt
                     .as_ref()
@@ -105,7 +109,7 @@ impl Repl {
             }
             sclc::ModStmt::Expr(expr) => {
                 let checker = sclc::TypeChecker::new(&program);
-                let diagnosed = checker.check_stmt(&type_env, &repl_line.statement)?;
+                let diagnosed = checker.check_stmt(&type_env, statement)?;
                 let Some(_) = Self::report(diagnosed) else {
                     return Ok(());
                 };
