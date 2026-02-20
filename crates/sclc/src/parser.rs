@@ -4,10 +4,11 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, Float, FnExpr, FnParam, IfExpr,
-    ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
-    ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RecordExpr, RecordField,
-    RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr, Var,
+    BinaryExpr, BinaryOp, Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, Float, FnExpr,
+    FnParam, IfExpr, ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem,
+    ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RecordExpr,
+    RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr,
+    UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -128,6 +129,139 @@ peg::parser! {
             / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
+            / logical_or_expr()
+
+        rule logical_or_expr() -> Loc<Expr>
+            = head:logical_and_expr() tail:(
+                or_or() rhs:logical_and_expr() { (BinaryOp::Or, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule logical_and_expr() -> Loc<Expr>
+            = head:equality_expr() tail:(
+                and_and() rhs:equality_expr() { (BinaryOp::And, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule equality_expr() -> Loc<Expr>
+            = head:comparison_expr() tail:(
+                eq_eq() rhs:comparison_expr() { (BinaryOp::Eq, rhs) }
+                / bang_eq() rhs:comparison_expr() { (BinaryOp::Neq, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule comparison_expr() -> Loc<Expr>
+            = head:add_expr() tail:(
+                less() rhs:add_expr() { (BinaryOp::Lt, rhs) }
+                / less_eq() rhs:add_expr() { (BinaryOp::Lte, rhs) }
+                / greater() rhs:add_expr() { (BinaryOp::Gt, rhs) }
+                / greater_eq() rhs:add_expr() { (BinaryOp::Gte, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule add_expr() -> Loc<Expr>
+            = head:mul_expr() tail:(
+                plus() rhs:mul_expr() { (BinaryOp::Add, rhs) }
+                / minus() rhs:mul_expr() { (BinaryOp::Sub, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule mul_expr() -> Loc<Expr>
+            = head:unary_expr() tail:(
+                star() rhs:unary_expr() { (BinaryOp::Mul, rhs) }
+                / slash() rhs:unary_expr() { (BinaryOp::Div, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule unary_expr() -> Loc<Expr>
+            = minus_span:minus() expr:unary_expr() {
+                let span = Span::new(minus_span.start(), expr.span().end());
+                Loc::new(
+                    Expr::Unary(UnaryExpr {
+                        op: UnaryOp::Negate,
+                        expr: Box::new(expr),
+                    }),
+                    span,
+                )
+            }
             / property_expr()
 
         rule if_expr() -> Loc<Expr>
@@ -425,6 +559,22 @@ peg::parser! {
 
         rule equals() -> Span
             = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
+        rule eq_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::EqEq)] { token.span() }
+        rule bang_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::BangEq)] { token.span() }
+        rule less() -> Span
+            = [token if matches!(token.as_ref(), Token::Less)] { token.span() }
+        rule less_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::LessEq)] { token.span() }
+        rule greater() -> Span
+            = [token if matches!(token.as_ref(), Token::Greater)] { token.span() }
+        rule greater_eq() -> Span
+            = [token if matches!(token.as_ref(), Token::GreaterEq)] { token.span() }
+        rule and_and() -> Span
+            = [token if matches!(token.as_ref(), Token::AndAnd)] { token.span() }
+        rule or_or() -> Span
+            = [token if matches!(token.as_ref(), Token::OrOr)] { token.span() }
 
         rule semicolon() -> Span
             = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
@@ -433,6 +583,12 @@ peg::parser! {
             = [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
+        rule plus() -> Span
+            = [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
+        rule minus() -> Span
+            = [token if matches!(token.as_ref(), Token::Minus)] { token.span() }
+        rule star() -> Span
+            = [token if matches!(token.as_ref(), Token::Star)] { token.span() }
 
         rule open_curly() -> Span
             = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
@@ -644,6 +800,215 @@ mod tests {
         assert_eq!(fn_expr.params.len(), 2);
         assert_eq!(fn_expr.params[0].var.name, "a");
         assert_eq!(fn_expr.params[1].var.name, "b");
+    }
+
+    #[test]
+    fn parses_addition_left_associative() {
+        let line = parse_repl_line("1 + 2 + 3", &ModuleId::default())
+            .expect("addition should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Add));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_subtraction_left_associative() {
+        let line = parse_repl_line("5 - 2 - 1", &ModuleId::default())
+            .expect("subtraction should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Sub));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Sub));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_unary_minus_with_addition() {
+        let line = parse_repl_line("-1 + 2", &ModuleId::default())
+            .expect("unary minus should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Unary(unary) = add.lhs.into_inner() else {
+            panic!("expected unary expression");
+        };
+        assert!(matches!(unary.op, crate::UnaryOp::Negate));
+        assert!(matches!(unary.expr.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(add.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_multiplication_precedence() {
+        let line = parse_repl_line("1 + 2 * 3", &ModuleId::default())
+            .expect("multiplication should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(mul) = add.rhs.into_inner() else {
+            panic!("expected multiplication on rhs");
+        };
+        assert!(matches!(mul.op, crate::BinaryOp::Mul));
+    }
+
+    #[test]
+    fn parses_multiplication_left_associative() {
+        let line = parse_repl_line("6 * 2 * 3", &ModuleId::default())
+            .expect("multiplication should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Mul));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Mul));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_division_left_associative() {
+        let line = parse_repl_line("8 / 2 / 2", &ModuleId::default())
+            .expect("division should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Div));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Div));
+    }
+
+    #[test]
+    fn parses_division_precedence() {
+        let line = parse_repl_line("1 + 6 / 2", &ModuleId::default())
+            .expect("division should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(div) = add.rhs.into_inner() else {
+            panic!("expected division on rhs");
+        };
+        assert!(matches!(div.op, crate::BinaryOp::Div));
+    }
+
+    #[test]
+    fn parses_comparison_precedence_over_equality() {
+        let line = parse_repl_line("1 == 2 < 3", &ModuleId::default())
+            .expect("comparison should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(eq) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(eq.op, crate::BinaryOp::Eq));
+        let crate::Expr::Binary(cmp) = eq.rhs.into_inner() else {
+            panic!("expected comparison on rhs");
+        };
+        assert!(matches!(cmp.op, crate::BinaryOp::Lt));
+    }
+
+    #[test]
+    fn parses_equality_left_associative() {
+        let line = parse_repl_line("a == b != c", &ModuleId::default())
+            .expect("equality should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Neq));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Eq));
+    }
+
+    #[test]
+    fn parses_logical_precedence_over_equality() {
+        let line = parse_repl_line("a || b == c", &ModuleId::default())
+            .expect("equality should bind tighter than or")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(or_expr) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(or_expr.op, crate::BinaryOp::Or));
+        let crate::Expr::Binary(eq_expr) = or_expr.rhs.into_inner() else {
+            panic!("expected equality on rhs");
+        };
+        assert!(matches!(eq_expr.op, crate::BinaryOp::Eq));
+    }
+
+    #[test]
+    fn parses_and_before_or() {
+        let line = parse_repl_line("a && b || c", &ModuleId::default())
+            .expect("and should bind tighter than or")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(or_expr) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(or_expr.op, crate::BinaryOp::Or));
+        let crate::Expr::Binary(and_expr) = or_expr.lhs.into_inner() else {
+            panic!("expected and on lhs");
+        };
+        assert!(matches!(and_expr.op, crate::BinaryOp::And));
     }
 
     #[test]

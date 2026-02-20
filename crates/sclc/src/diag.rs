@@ -5,6 +5,7 @@ use crate::{ModuleId, Span};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DiagLevel {
     Error,
+    Warning,
 }
 
 pub trait Diag: Error + Send + Sync {

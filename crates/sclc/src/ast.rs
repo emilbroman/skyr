@@ -70,6 +70,12 @@ impl Expr {
                 }
                 vars
             }
+            Expr::Unary(unary_expr) => unary_expr.expr.as_ref().free_vars(),
+            Expr::Binary(binary_expr) => {
+                let mut vars = binary_expr.lhs.as_ref().free_vars();
+                vars.extend(binary_expr.rhs.as_ref().free_vars());
+                vars
+            }
             Expr::Record(record_expr) => {
                 let mut vars = HashSet::new();
                 for field in &record_expr.fields {
@@ -124,6 +130,8 @@ pub enum Expr {
     Let(LetExpr),
     Fn(FnExpr),
     Call(CallExpr),
+    Unary(UnaryExpr),
+    Binary(BinaryExpr),
     Var(Loc<Var>),
     Record(RecordExpr),
     Dict(DictExpr),
@@ -191,6 +199,67 @@ pub struct LetBind {
 pub struct LetExpr {
     pub bind: LetBind,
     pub expr: Box<Loc<Expr>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnaryOp {
+    Negate,
+}
+
+impl std::fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            UnaryOp::Negate => write!(f, "-"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnaryExpr {
+    pub op: UnaryOp,
+    pub expr: Box<Loc<Expr>>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+    And,
+    Or,
+}
+
+impl std::fmt::Display for BinaryOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BinaryOp::Add => write!(f, "+"),
+            BinaryOp::Sub => write!(f, "-"),
+            BinaryOp::Mul => write!(f, "*"),
+            BinaryOp::Div => write!(f, "/"),
+            BinaryOp::Eq => write!(f, "=="),
+            BinaryOp::Neq => write!(f, "!="),
+            BinaryOp::Lt => write!(f, "<"),
+            BinaryOp::Lte => write!(f, "<="),
+            BinaryOp::Gt => write!(f, ">"),
+            BinaryOp::Gte => write!(f, ">="),
+            BinaryOp::And => write!(f, "&&"),
+            BinaryOp::Or => write!(f, "||"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryExpr {
+    pub op: BinaryOp,
+    pub lhs: Box<Loc<Expr>>,
+    pub rhs: Box<Loc<Expr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

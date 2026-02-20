@@ -16,8 +16,19 @@ pub enum Token<'a> {
     OpenSquare,
     CloseSquare,
     Equals,
+    EqEq,
     Semicolon,
     Slash,
+    Plus,
+    Minus,
+    Star,
+    BangEq,
+    Less,
+    LessEq,
+    Greater,
+    GreaterEq,
+    AndAnd,
+    OrOr,
     ImportKeyword,
     LetKeyword,
     FnKeyword,
@@ -365,6 +376,30 @@ impl<'a> Iterator for Lexer<'a> {
             Token::Whitepace(whitespace)
         } else {
             match grapheme {
+                "!" => {
+                    if let Some((_, "=")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::BangEq
+                    } else {
+                        Token::Unknown(grapheme)
+                    }
+                }
+                "&" => {
+                    if let Some((_, "&")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::AndAnd
+                    } else {
+                        Token::Unknown(grapheme)
+                    }
+                }
+                "|" => {
+                    if let Some((_, "|")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::OrOr
+                    } else {
+                        Token::Unknown(grapheme)
+                    }
+                }
                 "\"" => return Some(self.consume_string_from_quote(grapheme_index, start)),
                 "{" => Token::OpenCurly,
                 "}" => Token::CloseCurly,
@@ -376,9 +411,35 @@ impl<'a> Iterator for Lexer<'a> {
                 ")" => Token::CloseParen,
                 "[" => Token::OpenSquare,
                 "]" => Token::CloseSquare,
-                "=" => Token::Equals,
+                "=" => {
+                    if let Some((_, "=")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::EqEq
+                    } else {
+                        Token::Equals
+                    }
+                }
+                "<" => {
+                    if let Some((_, "=")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::LessEq
+                    } else {
+                        Token::Less
+                    }
+                }
+                ">" => {
+                    if let Some((_, "=")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::GreaterEq
+                    } else {
+                        Token::Greater
+                    }
+                }
                 ";" => Token::Semicolon,
                 "/" => Token::Slash,
+                "+" => Token::Plus,
+                "-" => Token::Minus,
+                "*" => Token::Star,
                 "?" => Token::QuestionMark,
                 _ => Token::Unknown(grapheme),
             }
@@ -449,5 +510,50 @@ mod tests {
         let tokens = Lexer::new("01.2").collect::<Vec<_>>();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].as_ref(), Token::Unknown("01.2")));
+    }
+
+    #[test]
+    fn lexes_plus_token() {
+        let tokens = Lexer::new("+").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Plus));
+    }
+
+    #[test]
+    fn lexes_minus_token() {
+        let tokens = Lexer::new("-").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Minus));
+    }
+
+    #[test]
+    fn lexes_star_token() {
+        let tokens = Lexer::new("*").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Star));
+    }
+
+    #[test]
+    fn lexes_equality_and_comparison_tokens() {
+        let tokens = Lexer::new("== != < <= > >=")
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 6);
+        assert!(matches!(tokens[0].as_ref(), Token::EqEq));
+        assert!(matches!(tokens[1].as_ref(), Token::BangEq));
+        assert!(matches!(tokens[2].as_ref(), Token::Less));
+        assert!(matches!(tokens[3].as_ref(), Token::LessEq));
+        assert!(matches!(tokens[4].as_ref(), Token::Greater));
+        assert!(matches!(tokens[5].as_ref(), Token::GreaterEq));
+    }
+
+    #[test]
+    fn lexes_boolean_operator_tokens() {
+        let tokens = Lexer::new("&& ||")
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(tokens[0].as_ref(), Token::AndAnd));
+        assert!(matches!(tokens[1].as_ref(), Token::OrOr));
     }
 }
