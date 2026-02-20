@@ -235,6 +235,9 @@ pub enum EvalError {
 
     #[error("unexpected value: {0}")]
     UnexpectedValue(Value),
+
+    #[error("invalid numeric result: {0}")]
+    InvalidNumericResult(String),
 }
 
 pub trait ValueAssertions {
@@ -374,6 +377,44 @@ impl Eval {
                         function.call(args, &self.ctx)
                     }
                     _ => Ok(Value::Nil),
+                }
+            }
+            ast::Expr::Binary(binary_expr) => {
+                let lhs = self.eval_expr(env, binary_expr.lhs.as_ref())?;
+                let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
+
+                if matches!(lhs, Value::Pending(_)) || matches!(rhs, Value::Pending(_)) {
+                    return Ok(Value::Pending(PendingValue));
+                }
+
+                match binary_expr.op {
+                    ast::BinaryOp::Add => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs + rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs + rhs)),
+                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs as f64 + rhs.into_inner()).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "int + float produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
+                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs.into_inner() + rhs as f64).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "float + int produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
+                        (Value::Str(mut lhs), Value::Str(rhs)) => {
+                            lhs.push_str(&rhs);
+                            Ok(Value::Str(lhs))
+                        }
+                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                    },
                 }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),

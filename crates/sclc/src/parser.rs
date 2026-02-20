@@ -129,7 +129,24 @@ peg::parser! {
             / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
-            / property_expr()
+            / add_expr()
+
+        rule add_expr() -> Loc<Expr>
+            = head:property_expr() tail:(plus() rhs:property_expr() { rhs })* {
+                let mut expr = head;
+                for rhs in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op: BinaryOp::Add,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
 
         rule if_expr() -> Loc<Expr>
             = if_kw_span:if_keyword() open_paren() condition:expr() close_paren() then_expr:expr() else_expr:(else_keyword() else_expr:expr() { else_expr })? {
@@ -464,6 +481,8 @@ peg::parser! {
             = [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
 
         rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
+        rule plus() -> Span
+            = [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
 
         rule open_curly() -> Span
             = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
@@ -706,6 +725,27 @@ mod tests {
         assert_eq!(fn_expr.params.len(), 2);
         assert_eq!(fn_expr.params[0].var.name, "a");
         assert_eq!(fn_expr.params[1].var.name, "b");
+    }
+
+    #[test]
+    fn parses_addition_left_associative() {
+        let line = parse_repl_line("1 + 2 + 3", &ModuleId::default())
+            .expect("addition should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Add));
+        assert!(matches!(inner.lhs.as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref(), crate::Expr::Int(_)));
     }
 
     #[test]
