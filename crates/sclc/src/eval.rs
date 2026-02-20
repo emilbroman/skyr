@@ -248,6 +248,9 @@ pub enum EvalError {
         lhs: Value,
         rhs: Value,
     },
+
+    #[error("{0}")]
+    Custom(String),
 }
 
 pub trait ValueAssertions {

@@ -25,6 +25,7 @@ macro_rules! std_modules {
 }
 
 std_modules! {
+    encoding => "Encoding.scl",
     num => "Num.scl",
     random => "Random.scl",
 }

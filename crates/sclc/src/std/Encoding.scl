@@ -1,0 +1,2 @@
+export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
+export let fromJson = extern "Std/Encoding.fromJson": fn(Str) Any
