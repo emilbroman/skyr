@@ -531,155 +531,284 @@ peg::parser! {
             }
 
         rule import_keyword_span() -> Span
-            = [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ImportKeyword)] { token.span() }
+            }
+            / expected!("import keyword")
 
         rule let_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::LetKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::LetKeyword)] { token.span() }
+            }
+            / expected!("let keyword")
 
         rule export_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::ExportKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ExportKeyword)] { token.span() }
+            }
+            / expected!("export keyword")
 
         rule fn_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::FnKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::FnKeyword)] { token.span() }
+            }
+            / expected!("fn keyword")
 
         rule extern_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::ExternKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ExternKeyword)] { token.span() }
+            }
+            / expected!("extern keyword")
 
         rule if_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::IfKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::IfKeyword)] { token.span() }
+            }
+            / expected!("if keyword")
 
         rule else_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::ElseKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ElseKeyword)] { token.span() }
+            }
+            / expected!("else keyword")
 
         rule for_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::ForKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ForKeyword)] { token.span() }
+            }
+            / expected!("for keyword")
 
         rule in_keyword() -> Span
-            = [token if matches!(token.as_ref(), Token::InKeyword)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::InKeyword)] { token.span() }
+            }
+            / expected!("in keyword")
 
         rule equals() -> Span
-            = [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Equals)] { token.span() }
+            }
+            / expected!("=")
         rule eq_eq() -> Span
-            = [token if matches!(token.as_ref(), Token::EqEq)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::EqEq)] { token.span() }
+            }
+            / expected!("==")
         rule bang_eq() -> Span
-            = [token if matches!(token.as_ref(), Token::BangEq)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::BangEq)] { token.span() }
+            }
+            / expected!("!=")
         rule less() -> Span
-            = [token if matches!(token.as_ref(), Token::Less)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Less)] { token.span() }
+            }
+            / expected!("<")
         rule less_eq() -> Span
-            = [token if matches!(token.as_ref(), Token::LessEq)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::LessEq)] { token.span() }
+            }
+            / expected!("<=")
         rule greater() -> Span
-            = [token if matches!(token.as_ref(), Token::Greater)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Greater)] { token.span() }
+            }
+            / expected!(">")
         rule greater_eq() -> Span
-            = [token if matches!(token.as_ref(), Token::GreaterEq)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::GreaterEq)] { token.span() }
+            }
+            / expected!(">=")
         rule and_and() -> Span
-            = [token if matches!(token.as_ref(), Token::AndAnd)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::AndAnd)] { token.span() }
+            }
+            / expected!("&&")
         rule or_or() -> Span
-            = [token if matches!(token.as_ref(), Token::OrOr)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::OrOr)] { token.span() }
+            }
+            / expected!("||")
 
         rule semicolon() -> Span
-            = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
+            }
+            / expected!(";")
 
         rule question_mark() -> Span
-            = [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
+            }
+            / expected!("?")
 
-        rule slash() = [token if matches!(token.as_ref(), Token::Slash)]
+        rule slash() = quiet!{
+            [token if matches!(token.as_ref(), Token::Slash)]
+        }
+        / expected!("/")
         rule plus() -> Span
-            = [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
+            }
+            / expected!("+")
         rule minus() -> Span
-            = [token if matches!(token.as_ref(), Token::Minus)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Minus)] { token.span() }
+            }
+            / expected!("-")
         rule star() -> Span
-            = [token if matches!(token.as_ref(), Token::Star)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Star)] { token.span() }
+            }
+            / expected!("*")
 
         rule open_curly() -> Span
-            = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
+            }
+            / expected!("{")
 
         rule close_curly() -> Span
-            = [token if matches!(token.as_ref(), Token::CloseCurly)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::CloseCurly)] { token.span() }
+            }
+            / expected!("}")
 
         rule colon() -> Span
-            = [token if matches!(token.as_ref(), Token::Colon)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Colon)] { token.span() }
+            }
+            / expected!(":")
 
         rule comma() -> Span
-            = [token if matches!(token.as_ref(), Token::Comma)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Comma)] { token.span() }
+            }
+            / expected!(",")
 
         rule dot() -> Span
-            = [token if matches!(token.as_ref(), Token::Dot)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Dot)] { token.span() }
+            }
+            / expected!(".")
 
         rule open_paren() -> Span
-            = [token if matches!(token.as_ref(), Token::OpenParen)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::OpenParen)] { token.span() }
+            }
+            / expected!("(")
 
         rule close_paren() -> Span
-            = [token if matches!(token.as_ref(), Token::CloseParen)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::CloseParen)] { token.span() }
+            }
+            / expected!(")")
 
         rule open_square() -> Span
-            = [token if matches!(token.as_ref(), Token::OpenSquare)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::OpenSquare)] { token.span() }
+            }
+            / expected!("[")
 
         rule close_square() -> Span
-            = [token if matches!(token.as_ref(), Token::CloseSquare)] { token.span() }
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::CloseSquare)] { token.span() }
+            }
+            / expected!("]")
 
         rule var() -> Loc<Var>
-            = [token] {? match *token.as_ref() {
-                Token::Symbol(name) => Ok(Loc::new(Var { name: name.to_owned() }, token.span())),
-                _ => Err("symbol"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::Symbol(name) => {
+                        Ok(Loc::new(Var { name: name.to_owned() }, token.span()))
+                    }
+                    _ => Err("symbol"),
+                } }
+            }
+            / expected!("symbol")
 
         rule int() -> Loc<Int>
-            = [token] {? match *token.as_ref() {
-                Token::Int(value) => match value.parse::<i64>() {
-                    Ok(parsed) => Ok(Loc::new(Int { value: parsed }, token.span())),
-                    Err(_) => Err("integer"),
-                },
-                _ => Err("integer"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::Int(value) => match value.parse::<i64>() {
+                        Ok(parsed) => Ok(Loc::new(Int { value: parsed }, token.span())),
+                        Err(_) => Err("integer"),
+                    },
+                    _ => Err("integer"),
+                } }
+            }
+            / expected!("integer")
 
         rule float() -> Loc<Float>
-            = [token] {? match *token.as_ref() {
-                Token::Float(value) => match value.parse::<f64>() {
-                    Ok(parsed) if parsed.is_finite() => match ordered_float::NotNan::new(parsed) {
-                        Ok(parsed) => Ok(Loc::new(Float { value: parsed }, token.span())),
-                        Err(_) => Err("float"),
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::Float(value) => match value.parse::<f64>() {
+                        Ok(parsed) if parsed.is_finite() => match ordered_float::NotNan::new(parsed)
+                        {
+                            Ok(parsed) => Ok(Loc::new(Float { value: parsed }, token.span())),
+                            Err(_) => Err("float"),
+                        },
+                        Ok(_) | Err(_) => Err("float"),
                     },
-                    Ok(_) | Err(_) => Err("float"),
-                },
-                _ => Err("float"),
-            } }
+                    _ => Err("float"),
+                } }
+            }
+            / expected!("float")
 
         rule bool_lit() -> Loc<Bool>
-            = [token] {? match *token.as_ref() {
-                Token::TrueKeyword => Ok(Loc::new(Bool { value: true }, token.span())),
-                Token::FalseKeyword => Ok(Loc::new(Bool { value: false }, token.span())),
-                _ => Err("boolean"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::TrueKeyword => Ok(Loc::new(Bool { value: true }, token.span())),
+                    Token::FalseKeyword => Ok(Loc::new(Bool { value: false }, token.span())),
+                    _ => Err("boolean"),
+                } }
+            }
+            / expected!("boolean")
 
         rule nil_lit() -> Loc<Expr>
-            = [token] {? match *token.as_ref() {
-                Token::NilKeyword => Ok(Loc::new(Expr::Nil, token.span())),
-                _ => Err("nil"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::NilKeyword => Ok(Loc::new(Expr::Nil, token.span())),
+                    _ => Err("nil"),
+                } }
+            }
+            / expected!("nil")
 
         rule str_simple() -> (String, Span)
-            = [token] {? match *token.as_ref() {
-                Token::StrSimple(raw) => Ok((decode_string(raw), token.span())),
-                _ => Err("string"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::StrSimple(raw) => Ok((decode_string(raw), token.span())),
+                    _ => Err("string"),
+                } }
+            }
+            / expected!("string")
 
         rule str_begin() -> (String, Span)
-            = [token] {? match *token.as_ref() {
-                Token::StrBegin(raw) => Ok((decode_string(raw), token.span())),
-                _ => Err("string interpolation begin"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::StrBegin(raw) => Ok((decode_string(raw), token.span())),
+                    _ => Err("string interpolation begin"),
+                } }
+            }
+            / expected!("string interpolation begin")
 
         rule str_cont() -> (String, Span)
-            = [token] {? match *token.as_ref() {
-                Token::StrCont(raw) => Ok((decode_string(raw), token.span())),
-                _ => Err("string interpolation continue"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::StrCont(raw) => Ok((decode_string(raw), token.span())),
+                    _ => Err("string interpolation continue"),
+                } }
+            }
+            / expected!("string interpolation continue")
 
         rule str_end() -> (String, Span)
-            = [token] {? match *token.as_ref() {
-                Token::StrEnd(raw) => Ok((decode_string(raw), token.span())),
-                _ => Err("string interpolation end"),
-            } }
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::StrEnd(raw) => Ok((decode_string(raw), token.span())),
+                    _ => Err("string interpolation end"),
+                } }
+            }
+            / expected!("string interpolation end")
     }
 }
 
