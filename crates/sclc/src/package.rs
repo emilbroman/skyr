@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::{FileMod, ImportStmt, Loc, ModStmt, Position, SourceRepo, parse_file_mod};
+use crate::{FileMod, ImportStmt, Loc, ModStmt, SourceRepo, parse_file_mod};
 
 #[derive(Clone)]
 pub struct Package<S> {
@@ -23,7 +23,7 @@ pub enum OpenError {
     Encoding(#[from] std::string::FromUtf8Error),
 
     #[error("parse error: {0}")]
-    Parse(#[from] peg::error::ParseError<Position>),
+    Parse(String),
 }
 
 impl<S> Package<S> {
@@ -74,7 +74,19 @@ impl<S: SourceRepo> Package<S> {
         let source = String::from_utf8(source_data)?;
         let package_id = self.package_id();
         let module_id = module_id_for_path(&package_id, &path);
-        let file_mod = parse_file_mod(&source, &module_id)?.into_inner();
+        let diagnosed = parse_file_mod(&source, &module_id);
+        if diagnosed.as_ref().is_none() {
+            let message = diagnosed
+                .diags()
+                .iter()
+                .next()
+                .map(|diag| diag.to_string())
+                .unwrap_or_else(|| "parse error".to_string());
+            return Err(OpenError::Parse(message));
+        }
+        let file_mod = diagnosed
+            .into_inner()
+            .expect("checked parse result before unwrapping");
         Ok(self.files.entry(path.clone()).or_insert(file_mod))
     }
 }
