@@ -33,6 +33,10 @@ impl RecordType {
         self.fields.get(name)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Type)> {
+        self.fields.iter()
+    }
+
     fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
         let fields = self
             .fields
