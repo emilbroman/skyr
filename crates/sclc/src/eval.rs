@@ -161,6 +161,12 @@ pub struct EvalCtx {
     resources: HashMap<crate::ResourceId, crate::Resource>,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum ListItemOutcome {
+    Complete,
+    Pending,
+}
+
 impl EvalCtx {
     pub fn emit(&self, effect: Effect) -> Result<(), EvalError> {
         self.effects
@@ -381,7 +387,12 @@ impl Eval {
             ast::Expr::List(list_expr) => {
                 let mut values = Vec::new();
                 for item in &list_expr.items {
-                    self.eval_list_item(env, item, &mut values)?;
+                    if matches!(
+                        self.eval_list_item(env, item, &mut values)?,
+                        ListItemOutcome::Pending
+                    ) {
+                        return Ok(Value::Pending(PendingValue));
+                    }
                 }
                 Ok(Value::List(values))
             }
@@ -415,21 +426,18 @@ impl Eval {
         env: &EvalEnv<'_>,
         item: &ast::ListItem,
         out: &mut Vec<Value>,
-    ) -> Result<(), EvalError> {
+    ) -> Result<ListItemOutcome, EvalError> {
         match item {
             ast::ListItem::Expr(expr) => {
                 out.push(self.eval_expr(env, expr)?);
-                Ok(())
+                Ok(ListItemOutcome::Complete)
             }
             ast::ListItem::If(if_item) => {
                 let condition = self.eval_expr(env, if_item.condition.as_ref())?;
                 match condition {
                     Value::Bool(true) => self.eval_list_item(env, if_item.then_item.as_ref(), out),
-                    Value::Bool(false) => Ok(()),
-                    Value::Pending(_) => {
-                        out.push(Value::Pending(PendingValue));
-                        Ok(())
-                    }
+                    Value::Bool(false) => Ok(ListItemOutcome::Complete),
+                    Value::Pending(_) => Ok(ListItemOutcome::Pending),
                     other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
@@ -439,14 +447,20 @@ impl Eval {
                     Value::List(values) => {
                         for value in values {
                             let inner_env = env.with_local(for_item.var.name.as_str(), value);
-                            self.eval_list_item(&inner_env, for_item.emit_item.as_ref(), out)?;
+                            if matches!(
+                                self.eval_list_item(
+                                    &inner_env,
+                                    for_item.emit_item.as_ref(),
+                                    out
+                                )?,
+                                ListItemOutcome::Pending
+                            ) {
+                                return Ok(ListItemOutcome::Pending);
+                            }
                         }
-                        Ok(())
+                        Ok(ListItemOutcome::Complete)
                     }
-                    Value::Pending(_) => {
-                        out.push(Value::Pending(PendingValue));
-                        Ok(())
-                    }
+                    Value::Pending(_) => Ok(ListItemOutcome::Pending),
                     other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
