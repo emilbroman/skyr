@@ -197,6 +197,22 @@ impl crate::Diag for TypeMismatch {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("invalid operands for {op}: {lhs} and {rhs}")]
+pub struct InvalidBinaryOperands {
+    pub module_id: crate::ModuleId,
+    pub op: ast::BinaryOp,
+    pub lhs: Type,
+    pub rhs: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for InvalidBinaryOperands {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeIssue {
     Mismatch(Type, Type),
@@ -575,6 +591,45 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
                 let ty = self
                     .apply_expected_type(env, expr.span(), *fn_ty.ret, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
+            ast::Expr::Binary(binary_expr) => {
+                let mut diags = DiagList::new();
+                let lhs_ty = self
+                    .check_expr(env, binary_expr.lhs.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+                let rhs_ty = self
+                    .check_expr(env, binary_expr.rhs.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+
+                let result_ty = if matches!(lhs_ty, Type::Never) || matches!(rhs_ty, Type::Never) {
+                    Type::Never
+                } else {
+                    match binary_expr.op {
+                        ast::BinaryOp::Add => match (&lhs_ty, &rhs_ty) {
+                            (Type::Int, Type::Int) => Type::Int,
+                            (Type::Float, Type::Float) => Type::Float,
+                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
+                            (Type::Str, Type::Str) => Type::Str,
+                            _ => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: binary_expr.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
+                    }
+                };
+
+                let ty = self
+                    .apply_expected_type(env, expr.span(), result_ty, expected_type)?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
@@ -977,7 +1032,10 @@ mod tests {
     use super::TypeChecker;
     use crate::{
         DictType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
-        ast::{DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr, Var},
+        ast::{
+            BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
+            Var,
+        },
     };
 
     fn checker() -> TypeChecker<'static, StdSourceRepo> {
@@ -1168,5 +1226,76 @@ mod tests {
                 value: Box::new(Type::Str),
             })
         );
+    }
+
+    #[test]
+    fn add_ints_returns_int() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let add_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Add,
+                lhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+                rhs: Box::new(loc(Expr::Int(Int { value: 2 }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &add_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(diagnosed.into_inner(), Type::Int);
+    }
+
+    #[test]
+    fn add_strings_returns_str() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let add_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Add,
+                lhs: Box::new(loc(Expr::Str(StrExpr { value: "a".into() }), span)),
+                rhs: Box::new(loc(Expr::Str(StrExpr { value: "b".into() }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &add_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(diagnosed.into_inner(), Type::Str);
+    }
+
+    #[test]
+    fn add_mismatched_types_reports_diag() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let add_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Add,
+                lhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+                rhs: Box::new(loc(Expr::Str(StrExpr { value: "b".into() }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &add_expr, None)
+            .expect("type check should succeed with diags");
+        assert!(matches!(*diagnosed, Type::Never));
+
+        let mut diags = diagnosed.diags().iter();
+        let diag = diags.next().expect("expected diagnostic");
+        assert!(diag.to_string().contains("invalid operands for +"));
+        assert!(diags.next().is_none(), "expected only one diagnostic");
     }
 }
