@@ -410,206 +410,242 @@ impl Eval {
             }
             ast::Expr::Binary(binary_expr) => {
                 let lhs = self.eval_expr(env, binary_expr.lhs.as_ref())?;
-                let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
 
-                if matches!(lhs, Value::Pending(_)) || matches!(rhs, Value::Pending(_)) {
+                if matches!(lhs, Value::Pending(_)) {
                     return Ok(Value::Pending(PendingValue));
                 }
 
                 match binary_expr.op {
-                    ast::BinaryOp::Add => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs + rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs + rhs)),
-                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs as f64 + rhs.into_inner()).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "int + float produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs.into_inner() + rhs as f64).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "float + int produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (Value::Str(mut lhs), Value::Str(rhs)) => {
-                            lhs.push_str(&rhs);
-                            Ok(Value::Str(lhs))
-                        }
-                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
-                    },
-                    ast::BinaryOp::Sub => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs - rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs - rhs)),
-                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs as f64 - rhs.into_inner()).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "int - float produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs.into_inner() - rhs as f64).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "float - int produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
-                    },
-                    ast::BinaryOp::Mul => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs * rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs * rhs)),
-                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs as f64 * rhs.into_inner()).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "int * float produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
-                            ordered_float::NotNan::new(lhs.into_inner() * rhs as f64).map_err(
-                                |_| {
-                                    EvalError::InvalidNumericResult(
-                                        "float * int produced NaN".into(),
-                                    )
-                                },
-                            )?,
-                        )),
-                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
-                    },
-                    ast::BinaryOp::Div => {
-                        match (lhs, rhs) {
-                            (Value::Int(lhs), Value::Int(rhs)) => {
-                                if rhs == 0 {
-                                    return Err(EvalError::DivisionByZero);
-                                }
-                                Ok(Value::Int(lhs / rhs))
+                    ast::BinaryOp::And => match lhs {
+                        Value::Bool(false) => Ok(Value::Bool(false)),
+                        Value::Bool(true) => {
+                            let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
+                            if matches!(rhs, Value::Pending(_)) {
+                                return Ok(Value::Pending(PendingValue));
                             }
-                            (Value::Float(lhs), Value::Float(rhs)) => {
-                                if rhs.into_inner() == 0.0 {
-                                    return Err(EvalError::DivisionByZero);
+                            match rhs {
+                                Value::Bool(value) => Ok(Value::Bool(value)),
+                                other => Err(EvalError::UnexpectedValue(other)),
+                            }
+                        }
+                        other => Err(EvalError::UnexpectedValue(other)),
+                    },
+                    ast::BinaryOp::Or => match lhs {
+                        Value::Bool(true) => Ok(Value::Bool(true)),
+                        Value::Bool(false) => {
+                            let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
+                            if matches!(rhs, Value::Pending(_)) {
+                                return Ok(Value::Pending(PendingValue));
+                            }
+                            match rhs {
+                                Value::Bool(value) => Ok(Value::Bool(value)),
+                                other => Err(EvalError::UnexpectedValue(other)),
+                            }
+                        }
+                        other => Err(EvalError::UnexpectedValue(other)),
+                    },
+                    _ => {
+                        let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
+                        if matches!(rhs, Value::Pending(_)) {
+                            return Ok(Value::Pending(PendingValue));
+                        }
+                        match binary_expr.op {
+                            ast::BinaryOp::Add => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs + rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Float(lhs + rhs))
                                 }
-                                Ok(Value::Float(
-                                    ordered_float::NotNan::new(lhs.into_inner() / rhs.into_inner())
+                                (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs as f64 + rhs.into_inner())
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "int + float produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs.into_inner() + rhs as f64)
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "float + int produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (Value::Str(mut lhs), Value::Str(rhs)) => {
+                                    lhs.push_str(&rhs);
+                                    Ok(Value::Str(lhs))
+                                }
+                                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                            },
+                            ast::BinaryOp::Sub => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs - rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Float(lhs - rhs))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs as f64 - rhs.into_inner())
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "int - float produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs.into_inner() - rhs as f64)
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "float - int produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                            },
+                            ast::BinaryOp::Mul => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs * rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Float(lhs * rhs))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs as f64 * rhs.into_inner())
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "int * float produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                                    ordered_float::NotNan::new(lhs.into_inner() * rhs as f64)
+                                        .map_err(|_| {
+                                            EvalError::InvalidNumericResult(
+                                                "float * int produced NaN".into(),
+                                            )
+                                        })?,
+                                )),
+                                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                            },
+                            ast::BinaryOp::Div => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => {
+                                    if rhs == 0 {
+                                        return Err(EvalError::DivisionByZero);
+                                    }
+                                    Ok(Value::Int(lhs / rhs))
+                                }
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    if rhs.into_inner() == 0.0 {
+                                        return Err(EvalError::DivisionByZero);
+                                    }
+                                    Ok(Value::Float(
+                                        ordered_float::NotNan::new(
+                                            lhs.into_inner() / rhs.into_inner(),
+                                        )
                                         .map_err(|_| {
                                             EvalError::InvalidNumericResult(
                                                 "float / float produced NaN".into(),
                                             )
                                         })?,
-                                ))
-                            }
-                            (Value::Int(lhs), Value::Float(rhs)) => {
-                                if rhs.into_inner() == 0.0 {
-                                    return Err(EvalError::DivisionByZero);
+                                    ))
                                 }
-                                Ok(Value::Float(
-                                    ordered_float::NotNan::new(lhs as f64 / rhs.into_inner())
-                                        .map_err(|_| {
+                                (Value::Int(lhs), Value::Float(rhs)) => {
+                                    if rhs.into_inner() == 0.0 {
+                                        return Err(EvalError::DivisionByZero);
+                                    }
+                                    Ok(Value::Float(
+                                        ordered_float::NotNan::new(lhs as f64 / rhs.into_inner())
+                                            .map_err(|_| {
                                             EvalError::InvalidNumericResult(
                                                 "int / float produced NaN".into(),
                                             )
                                         })?,
-                                ))
-                            }
-                            (Value::Float(lhs), Value::Int(rhs)) => {
-                                if rhs == 0 {
-                                    return Err(EvalError::DivisionByZero);
+                                    ))
                                 }
-                                Ok(Value::Float(
-                                    ordered_float::NotNan::new(lhs.into_inner() / rhs as f64)
-                                        .map_err(|_| {
+                                (Value::Float(lhs), Value::Int(rhs)) => {
+                                    if rhs == 0 {
+                                        return Err(EvalError::DivisionByZero);
+                                    }
+                                    Ok(Value::Float(
+                                        ordered_float::NotNan::new(lhs.into_inner() / rhs as f64)
+                                            .map_err(|_| {
                                             EvalError::InvalidNumericResult(
                                                 "float / int produced NaN".into(),
                                             )
                                         })?,
-                                ))
-                            }
-                            (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                                    ))
+                                }
+                                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                            },
+                            ast::BinaryOp::Eq => Ok(Value::Bool(lhs == rhs)),
+                            ast::BinaryOp::Neq => Ok(Value::Bool(lhs != rhs)),
+                            ast::BinaryOp::Lt => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs < rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() < rhs.into_inner()))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool((lhs as f64) < rhs.into_inner()))
+                                }
+                                (Value::Float(lhs), Value::Int(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() < rhs as f64))
+                                }
+                                (lhs, rhs) => Err(EvalError::InvalidComparison {
+                                    op: binary_expr.op,
+                                    lhs,
+                                    rhs,
+                                }),
+                            },
+                            ast::BinaryOp::Lte => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs <= rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() <= rhs.into_inner()))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool((lhs as f64) <= rhs.into_inner()))
+                                }
+                                (Value::Float(lhs), Value::Int(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() <= rhs as f64))
+                                }
+                                (lhs, rhs) => Err(EvalError::InvalidComparison {
+                                    op: binary_expr.op,
+                                    lhs,
+                                    rhs,
+                                }),
+                            },
+                            ast::BinaryOp::Gt => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs > rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() > rhs.into_inner()))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool((lhs as f64) > rhs.into_inner()))
+                                }
+                                (Value::Float(lhs), Value::Int(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() > rhs as f64))
+                                }
+                                (lhs, rhs) => Err(EvalError::InvalidComparison {
+                                    op: binary_expr.op,
+                                    lhs,
+                                    rhs,
+                                }),
+                            },
+                            ast::BinaryOp::Gte => match (lhs, rhs) {
+                                (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs >= rhs)),
+                                (Value::Float(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() >= rhs.into_inner()))
+                                }
+                                (Value::Int(lhs), Value::Float(rhs)) => {
+                                    Ok(Value::Bool((lhs as f64) >= rhs.into_inner()))
+                                }
+                                (Value::Float(lhs), Value::Int(rhs)) => {
+                                    Ok(Value::Bool(lhs.into_inner() >= rhs as f64))
+                                }
+                                (lhs, rhs) => Err(EvalError::InvalidComparison {
+                                    op: binary_expr.op,
+                                    lhs,
+                                    rhs,
+                                }),
+                            },
+                            _ => unreachable!("handled above"),
                         }
                     }
-                    ast::BinaryOp::Eq => Ok(Value::Bool(lhs == rhs)),
-                    ast::BinaryOp::Neq => Ok(Value::Bool(lhs != rhs)),
-                    ast::BinaryOp::Lt => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs < rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() < rhs.into_inner()))
-                        }
-                        (Value::Int(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool((lhs as f64) < rhs.into_inner()))
-                        }
-                        (Value::Float(lhs), Value::Int(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() < rhs as f64))
-                        }
-                        (lhs, rhs) => Err(EvalError::InvalidComparison {
-                            op: binary_expr.op,
-                            lhs,
-                            rhs,
-                        }),
-                    },
-                    ast::BinaryOp::Lte => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs <= rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() <= rhs.into_inner()))
-                        }
-                        (Value::Int(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool((lhs as f64) <= rhs.into_inner()))
-                        }
-                        (Value::Float(lhs), Value::Int(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() <= rhs as f64))
-                        }
-                        (lhs, rhs) => Err(EvalError::InvalidComparison {
-                            op: binary_expr.op,
-                            lhs,
-                            rhs,
-                        }),
-                    },
-                    ast::BinaryOp::Gt => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs > rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() > rhs.into_inner()))
-                        }
-                        (Value::Int(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool((lhs as f64) > rhs.into_inner()))
-                        }
-                        (Value::Float(lhs), Value::Int(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() > rhs as f64))
-                        }
-                        (lhs, rhs) => Err(EvalError::InvalidComparison {
-                            op: binary_expr.op,
-                            lhs,
-                            rhs,
-                        }),
-                    },
-                    ast::BinaryOp::Gte => match (lhs, rhs) {
-                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs >= rhs)),
-                        (Value::Float(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() >= rhs.into_inner()))
-                        }
-                        (Value::Int(lhs), Value::Float(rhs)) => {
-                            Ok(Value::Bool((lhs as f64) >= rhs.into_inner()))
-                        }
-                        (Value::Float(lhs), Value::Int(rhs)) => {
-                            Ok(Value::Bool(lhs.into_inner() >= rhs as f64))
-                        }
-                        (lhs, rhs) => Err(EvalError::InvalidComparison {
-                            op: binary_expr.op,
-                            lhs,
-                            rhs,
-                        }),
-                    },
                 }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),

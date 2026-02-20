@@ -769,6 +769,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 Type::Never
                             }
                         },
+                        ast::BinaryOp::And | ast::BinaryOp::Or => match (&lhs_ty, &rhs_ty) {
+                            (Type::Bool, Type::Bool) => Type::Bool,
+                            _ => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: binary_expr.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
                     }
                 };
 
@@ -1579,6 +1592,28 @@ mod tests {
 
         let diagnosed = checker
             .check_expr(&env, &cmp_expr, None)
+            .expect("type check should succeed with diags");
+        assert!(matches!(*diagnosed, Type::Never));
+    }
+
+    #[test]
+    fn logical_operators_require_bool() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let and_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::And,
+                lhs: Box::new(loc(Expr::Bool(crate::Bool { value: true }), span)),
+                rhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &and_expr, None)
             .expect("type check should succeed with diags");
         assert!(matches!(*diagnosed, Type::Never));
     }

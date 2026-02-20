@@ -232,6 +232,8 @@ pub enum BinaryOp {
     Lte,
     Gt,
     Gte,
+    And,
+    Or,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -247,6 +249,8 @@ impl std::fmt::Display for BinaryOp {
             BinaryOp::Lte => write!(f, "<="),
             BinaryOp::Gt => write!(f, ">"),
             BinaryOp::Gte => write!(f, ">="),
+            BinaryOp::And => write!(f, "&&"),
+            BinaryOp::Or => write!(f, "||"),
         }
     }
 }

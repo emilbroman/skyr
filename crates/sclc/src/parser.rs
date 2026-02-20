@@ -129,7 +129,45 @@ peg::parser! {
             / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
-            / equality_expr()
+            / logical_or_expr()
+
+        rule logical_or_expr() -> Loc<Expr>
+            = head:logical_and_expr() tail:(
+                or_or() rhs:logical_and_expr() { (BinaryOp::Or, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule logical_and_expr() -> Loc<Expr>
+            = head:equality_expr() tail:(
+                and_and() rhs:equality_expr() { (BinaryOp::And, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
 
         rule equality_expr() -> Loc<Expr>
             = head:comparison_expr() tail:(
@@ -533,6 +571,10 @@ peg::parser! {
             = [token if matches!(token.as_ref(), Token::Greater)] { token.span() }
         rule greater_eq() -> Span
             = [token if matches!(token.as_ref(), Token::GreaterEq)] { token.span() }
+        rule and_and() -> Span
+            = [token if matches!(token.as_ref(), Token::AndAnd)] { token.span() }
+        rule or_or() -> Span
+            = [token if matches!(token.as_ref(), Token::OrOr)] { token.span() }
 
         rule semicolon() -> Span
             = [token if matches!(token.as_ref(), Token::Semicolon)] { token.span() }
@@ -931,6 +973,42 @@ mod tests {
             panic!("expected nested binary expression");
         };
         assert!(matches!(inner.op, crate::BinaryOp::Eq));
+    }
+
+    #[test]
+    fn parses_logical_precedence_over_equality() {
+        let line = parse_repl_line("a || b == c", &ModuleId::default())
+            .expect("equality should bind tighter than or")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(or_expr) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(or_expr.op, crate::BinaryOp::Or));
+        let crate::Expr::Binary(eq_expr) = or_expr.rhs.into_inner() else {
+            panic!("expected equality on rhs");
+        };
+        assert!(matches!(eq_expr.op, crate::BinaryOp::Eq));
+    }
+
+    #[test]
+    fn parses_and_before_or() {
+        let line = parse_repl_line("a && b || c", &ModuleId::default())
+            .expect("and should bind tighter than or")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(or_expr) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(or_expr.op, crate::BinaryOp::Or));
+        let crate::Expr::Binary(and_expr) = or_expr.lhs.into_inner() else {
+            panic!("expected and on lhs");
+        };
+        assert!(matches!(and_expr.op, crate::BinaryOp::And));
     }
 
     #[test]
