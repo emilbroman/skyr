@@ -132,9 +132,28 @@ peg::parser! {
             / add_expr()
 
         rule add_expr() -> Loc<Expr>
+            = head:mul_expr() tail:(
+                plus() rhs:mul_expr() { (BinaryOp::Add, rhs) }
+                / minus() rhs:mul_expr() { (BinaryOp::Sub, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule mul_expr() -> Loc<Expr>
             = head:unary_expr() tail:(
-                plus() rhs:unary_expr() { (BinaryOp::Add, rhs) }
-                / minus() rhs:unary_expr() { (BinaryOp::Sub, rhs) }
+                star() rhs:unary_expr() { (BinaryOp::Mul, rhs) }
             )* {
                 let mut expr = head;
                 for (op, rhs) in tail {
@@ -501,6 +520,8 @@ peg::parser! {
             = [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
         rule minus() -> Span
             = [token if matches!(token.as_ref(), Token::Minus)] { token.span() }
+        rule star() -> Span
+            = [token if matches!(token.as_ref(), Token::Star)] { token.span() }
 
         rule open_curly() -> Span
             = [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() }
@@ -805,6 +826,45 @@ mod tests {
         assert!(matches!(unary.op, crate::UnaryOp::Negate));
         assert!(matches!(unary.expr.as_ref().as_ref(), crate::Expr::Int(_)));
         assert!(matches!(add.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_multiplication_precedence() {
+        let line = parse_repl_line("1 + 2 * 3", &ModuleId::default())
+            .expect("multiplication should bind tighter")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(add) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(add.op, crate::BinaryOp::Add));
+        let crate::Expr::Binary(mul) = add.rhs.into_inner() else {
+            panic!("expected multiplication on rhs");
+        };
+        assert!(matches!(mul.op, crate::BinaryOp::Mul));
+    }
+
+    #[test]
+    fn parses_multiplication_left_associative() {
+        let line = parse_repl_line("6 * 2 * 3", &ModuleId::default())
+            .expect("multiplication should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(outer) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(outer.op, crate::BinaryOp::Mul));
+        let crate::Expr::Binary(inner) = outer.lhs.into_inner() else {
+            panic!("expected nested binary expression");
+        };
+        assert!(matches!(inner.op, crate::BinaryOp::Mul));
+        assert!(matches!(inner.lhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(inner.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+        assert!(matches!(outer.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
     }
 
     #[test]

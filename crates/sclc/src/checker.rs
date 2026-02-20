@@ -687,6 +687,21 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 Type::Never
                             }
                         },
+                        ast::BinaryOp::Mul => match (&lhs_ty, &rhs_ty) {
+                            (Type::Int, Type::Int) => Type::Int,
+                            (Type::Float, Type::Float) => Type::Float,
+                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
+                            _ => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: binary_expr.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
                     }
                 };
 
@@ -1407,5 +1422,27 @@ mod tests {
             .check_expr(&env, &unary_expr, None)
             .expect("type check should succeed");
         assert_eq!(diagnosed.into_inner(), Type::Float);
+    }
+
+    #[test]
+    fn multiply_ints_returns_int() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let mul_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Mul,
+                lhs: Box::new(loc(Expr::Int(Int { value: 2 }), span)),
+                rhs: Box::new(loc(Expr::Int(Int { value: 4 }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &mul_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(diagnosed.into_inner(), Type::Int);
     }
 }
