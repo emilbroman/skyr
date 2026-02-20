@@ -304,6 +304,7 @@ impl Eval {
     ) -> Result<Value, EvalError> {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Value::Int(int.value)),
+            ast::Expr::Float(float) => Ok(Value::Float(float.value)),
             ast::Expr::Bool(bool) => Ok(Value::Bool(bool.value)),
             ast::Expr::Nil => Ok(Value::Nil),
             ast::Expr::Str(str) => Ok(Value::Str(str.value.clone())),

@@ -447,6 +447,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Int(_) => {
                 self.apply_expected_type(env, expr.span(), Type::Int, expected_type)
             }
+            ast::Expr::Float(_) => {
+                self.apply_expected_type(env, expr.span(), Type::Float, expected_type)
+            }
             ast::Expr::Bool(_) => {
                 self.apply_expected_type(env, expr.span(), Type::Bool, expected_type)
             }
@@ -853,6 +856,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Any" => Type::Any,
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
+            ast::TypeExpr::Var(var) if var.name == "Float" => Type::Float,
             ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Optional(inner) => {

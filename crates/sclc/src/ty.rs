@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 pub enum Type {
     Any,
     Int,
+    Float,
     Bool,
     Str,
     Optional(Box<Type>),
@@ -74,6 +75,7 @@ impl Type {
         match self {
             Type::Any => Type::Any,
             Type::Int => Type::Int,
+            Type::Float => Type::Float,
             Type::Bool => Type::Bool,
             Type::Str => Type::Str,
             Type::Optional(ty) => Type::Optional(Box::new(ty.unfold_inner(replacement))),
@@ -112,6 +114,7 @@ impl std::fmt::Display for Type {
         match self {
             Type::Any => write!(f, "Any"),
             Type::Int => write!(f, "Int"),
+            Type::Float => write!(f, "Float"),
             Type::Bool => write!(f, "Bool"),
             Type::Str => write!(f, "Str"),
             Type::Optional(ty) => write!(f, "{ty}?"),
