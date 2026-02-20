@@ -457,6 +457,29 @@ impl Eval {
                         )),
                         (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
                     },
+                    ast::BinaryOp::Mul => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs * rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs * rhs)),
+                        (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs as f64 * rhs.into_inner()).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "int * float produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
+                        (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
+                            ordered_float::NotNan::new(lhs.into_inner() * rhs as f64).map_err(
+                                |_| {
+                                    EvalError::InvalidNumericResult(
+                                        "float * int produced NaN".into(),
+                                    )
+                                },
+                            )?,
+                        )),
+                        (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                    },
                 }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),

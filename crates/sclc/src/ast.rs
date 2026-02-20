@@ -224,6 +224,7 @@ pub struct UnaryExpr {
 pub enum BinaryOp {
     Add,
     Sub,
+    Mul,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -231,6 +232,7 @@ impl std::fmt::Display for BinaryOp {
         match self {
             BinaryOp::Add => write!(f, "+"),
             BinaryOp::Sub => write!(f, "-"),
+            BinaryOp::Mul => write!(f, "*"),
         }
     }
 }
