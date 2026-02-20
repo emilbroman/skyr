@@ -19,6 +19,7 @@ pub enum Token<'a> {
     Semicolon,
     Slash,
     Plus,
+    Minus,
     ImportKeyword,
     LetKeyword,
     FnKeyword,
@@ -381,6 +382,7 @@ impl<'a> Iterator for Lexer<'a> {
                 ";" => Token::Semicolon,
                 "/" => Token::Slash,
                 "+" => Token::Plus,
+                "-" => Token::Minus,
                 "?" => Token::QuestionMark,
                 _ => Token::Unknown(grapheme),
             }
@@ -458,5 +460,12 @@ mod tests {
         let tokens = Lexer::new("+").collect::<Vec<_>>();
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0].as_ref(), Token::Plus));
+    }
+
+    #[test]
+    fn lexes_minus_token() {
+        let tokens = Lexer::new("-").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Minus));
     }
 }

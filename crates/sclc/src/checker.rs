@@ -213,6 +213,21 @@ impl crate::Diag for InvalidBinaryOperands {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("invalid operand for {op}: {operand}")]
+pub struct InvalidUnaryOperand {
+    pub module_id: crate::ModuleId,
+    pub op: ast::UnaryOp,
+    pub operand: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for InvalidUnaryOperand {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum TypeIssue {
     Mismatch(Type, Type),
@@ -594,6 +609,38 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
+            ast::Expr::Unary(unary_expr) => {
+                let mut diags = DiagList::new();
+                let operand_ty = self
+                    .check_expr(env, unary_expr.expr.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+
+                let result_ty = if matches!(operand_ty, Type::Never) {
+                    Type::Never
+                } else {
+                    match unary_expr.op {
+                        ast::UnaryOp::Negate => match operand_ty {
+                            Type::Int => Type::Int,
+                            Type::Float => Type::Float,
+                            _ => {
+                                diags.push(InvalidUnaryOperand {
+                                    module_id: env.module_id()?,
+                                    op: unary_expr.op,
+                                    operand: operand_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
+                    }
+                };
+
+                let ty = self
+                    .apply_expected_type(env, expr.span(), result_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::Binary(binary_expr) => {
                 let mut diags = DiagList::new();
                 let lhs_ty = self
@@ -614,6 +661,21 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             (Type::Float, Type::Float) => Type::Float,
                             (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
                             (Type::Str, Type::Str) => Type::Str,
+                            _ => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: binary_expr.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        },
+                        ast::BinaryOp::Sub => match (&lhs_ty, &rhs_ty) {
+                            (Type::Int, Type::Int) => Type::Int,
+                            (Type::Float, Type::Float) => Type::Float,
+                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
                             _ => {
                                 diags.push(InvalidBinaryOperands {
                                     module_id: env.module_id()?,
@@ -1034,7 +1096,7 @@ mod tests {
         DictType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
-            Var,
+            UnaryExpr, UnaryOp, Var,
         },
     };
 
@@ -1297,5 +1359,53 @@ mod tests {
         let diag = diags.next().expect("expected diagnostic");
         assert!(diag.to_string().contains("invalid operands for +"));
         assert!(diags.next().is_none(), "expected only one diagnostic");
+    }
+
+    #[test]
+    fn subtract_ints_returns_int() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let sub_expr = loc(
+            Expr::Binary(BinaryExpr {
+                op: BinaryOp::Sub,
+                lhs: Box::new(loc(Expr::Int(Int { value: 3 }), span)),
+                rhs: Box::new(loc(Expr::Int(Int { value: 1 }), span)),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &sub_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(diagnosed.into_inner(), Type::Int);
+    }
+
+    #[test]
+    fn unary_minus_float_returns_float() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let unary_expr = loc(
+            Expr::Unary(UnaryExpr {
+                op: UnaryOp::Negate,
+                expr: Box::new(loc(
+                    Expr::Float(crate::Float {
+                        value: ordered_float::NotNan::new(1.5).unwrap(),
+                    }),
+                    span,
+                )),
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &unary_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(diagnosed.into_inner(), Type::Float);
     }
 }
