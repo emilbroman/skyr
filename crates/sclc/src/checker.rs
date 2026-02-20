@@ -280,6 +280,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .assign_type(lhs_inner.as_ref(), rhs)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
             },
+            Type::Record(lhs_record) => match rhs {
+                Type::Record(rhs_record) => {
+                    for (name, lhs_field) in lhs_record.iter() {
+                        let Some(rhs_field) = rhs_record.get(name) else {
+                            return Err(TypeError::new(TypeIssue::Mismatch(
+                                lhs.clone(),
+                                rhs.clone(),
+                            )));
+                        };
+                        self.assign_type(lhs_field, rhs_field).map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    }
+                    Ok(())
+                }
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
             _ => Err(TypeError::new(TypeIssue::Mismatch(
                 lhs.clone(),
                 rhs.clone(),
@@ -581,13 +601,38 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Record(record_expr) => {
                 let mut diags = DiagList::new();
                 let mut record_ty = RecordType::default();
+                let expected_record = match expected_type {
+                    Some(Type::Record(record_ty)) => Some(record_ty),
+                    _ => None,
+                };
 
                 for field in &record_expr.fields {
-                    let field_ty = self.check_expr(env, &field.expr, None)?.unpack(&mut diags);
+                    let expected_field_ty = expected_record
+                        .and_then(|record_ty| record_ty.get(field.var.name.as_str()));
+                    let field_ty = self
+                        .check_expr(env, &field.expr, expected_field_ty)?
+                        .unpack(&mut diags);
                     record_ty.insert(field.var.name.clone(), field_ty);
                 }
+                let ty = Type::Record(record_ty);
+                if let Some(expected_record) = expected_record {
+                    let missing_field = expected_record
+                        .iter()
+                        .any(|(name, _)| matches!(ty, Type::Record(ref record) if record.get(name).is_none()));
+                    if missing_field {
+                        diags.push(InvalidType {
+                            module_id: env.module_id()?,
+                            error: TypeError::new(TypeIssue::Mismatch(
+                                Type::Record(expected_record.clone()),
+                                ty.clone(),
+                            )),
+                            span: expr.span(),
+                        });
+                    }
+                    return Ok(Diagnosed::new(ty, diags));
+                }
                 let ty = self
-                    .apply_expected_type(env, expr.span(), Type::Record(record_ty), expected_type)?
+                    .apply_expected_type(env, expr.span(), ty, expected_type)?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
@@ -765,12 +810,19 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
 #[cfg(test)]
 mod tests {
     use super::TypeChecker;
-    use crate::{Program, StdSourceRepo, Type};
+    use crate::{
+        Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
+        ast::{Expr, Int, RecordExpr, RecordField, Var},
+    };
 
     fn checker() -> TypeChecker<'static, StdSourceRepo> {
         let program = Box::new(Program::<StdSourceRepo>::new());
         let program = Box::leak(program);
         TypeChecker::new(program)
+    }
+
+    fn loc<T>(value: T, span: Span) -> Loc<T> {
+        Loc::new(value, span)
     }
 
     #[test]
@@ -808,5 +860,98 @@ mod tests {
         assert!(text.contains("Int is not assignable to Str?"));
         assert!(text.contains("Int is not assignable to Str"));
         assert!(text.contains(", because "));
+    }
+
+    #[test]
+    fn assign_type_record_width_subtyping() {
+        let checker = checker();
+        let mut lhs_record = RecordType::default();
+        lhs_record.insert("a".into(), Type::Int);
+        lhs_record.insert("c".into(), Type::Bool);
+        let lhs = Type::Record(lhs_record);
+
+        let mut rhs_record = RecordType::default();
+        rhs_record.insert("a".into(), Type::Int);
+        rhs_record.insert("b".into(), Type::Str);
+        rhs_record.insert("c".into(), Type::Bool);
+        let rhs = Type::Record(rhs_record);
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_record_depth_subtyping() {
+        let checker = checker();
+        let mut lhs_record = RecordType::default();
+        lhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
+        let lhs = Type::Record(lhs_record);
+
+        let mut rhs_record = RecordType::default();
+        rhs_record.insert("a".into(), Type::Int);
+        let rhs = Type::Record(rhs_record);
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_record_missing_field_rejected() {
+        let checker = checker();
+        let mut lhs_record = RecordType::default();
+        lhs_record.insert("a".into(), Type::Int);
+        lhs_record.insert("b".into(), Type::Str);
+        let lhs = Type::Record(lhs_record);
+
+        let mut rhs_record = RecordType::default();
+        rhs_record.insert("a".into(), Type::Int);
+        let rhs = Type::Record(rhs_record);
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_record_field_not_subtype_rejected() {
+        let checker = checker();
+        let mut lhs_record = RecordType::default();
+        lhs_record.insert("a".into(), Type::Int);
+        let lhs = Type::Record(lhs_record);
+
+        let mut rhs_record = RecordType::default();
+        rhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
+        let rhs = Type::Record(rhs_record);
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn record_field_mismatch_is_reported_at_field_expr_span() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let record_span = Span::new(Position::new(1, 1), Position::new(1, 10));
+        let field_span = Span::new(Position::new(1, 5), Position::new(1, 6));
+
+        let record_expr = loc(
+            Expr::Record(RecordExpr {
+                fields: vec![RecordField {
+                    var: loc(Var { name: "a".into() }, field_span),
+                    expr: loc(Expr::Int(Int { value: 1 }), field_span),
+                }],
+            }),
+            record_span,
+        );
+
+        let mut expected_record = RecordType::default();
+        expected_record.insert("a".into(), Type::Str);
+        let expected_ty = Type::Record(expected_record);
+
+        let diagnosed = checker
+            .check_expr(&env, &record_expr, Some(&expected_ty))
+            .expect("type check should succeed with diags");
+
+        let mut diags = diagnosed.diags().iter();
+        let diag = diags.next().expect("expected mismatch diagnostic");
+        let (_, span) = diag.locate();
+        assert_eq!(span, field_span);
+        assert!(diags.next().is_none(), "expected only one diagnostic");
     }
 }
