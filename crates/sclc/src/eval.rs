@@ -241,6 +241,13 @@ pub enum EvalError {
 
     #[error("division by zero")]
     DivisionByZero,
+
+    #[error("invalid comparison for {op}: {lhs} and {rhs}")]
+    InvalidComparison {
+        op: crate::ast::BinaryOp,
+        lhs: Value,
+        rhs: Value,
+    },
 }
 
 pub trait ValueAssertions {
@@ -533,6 +540,76 @@ impl Eval {
                             (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
                         }
                     }
+                    ast::BinaryOp::Eq => Ok(Value::Bool(lhs == rhs)),
+                    ast::BinaryOp::Neq => Ok(Value::Bool(lhs != rhs)),
+                    ast::BinaryOp::Lt => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs < rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() < rhs.into_inner()))
+                        }
+                        (Value::Int(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool((lhs as f64) < rhs.into_inner()))
+                        }
+                        (Value::Float(lhs), Value::Int(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() < rhs as f64))
+                        }
+                        (lhs, rhs) => Err(EvalError::InvalidComparison {
+                            op: binary_expr.op,
+                            lhs,
+                            rhs,
+                        }),
+                    },
+                    ast::BinaryOp::Lte => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs <= rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() <= rhs.into_inner()))
+                        }
+                        (Value::Int(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool((lhs as f64) <= rhs.into_inner()))
+                        }
+                        (Value::Float(lhs), Value::Int(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() <= rhs as f64))
+                        }
+                        (lhs, rhs) => Err(EvalError::InvalidComparison {
+                            op: binary_expr.op,
+                            lhs,
+                            rhs,
+                        }),
+                    },
+                    ast::BinaryOp::Gt => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs > rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() > rhs.into_inner()))
+                        }
+                        (Value::Int(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool((lhs as f64) > rhs.into_inner()))
+                        }
+                        (Value::Float(lhs), Value::Int(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() > rhs as f64))
+                        }
+                        (lhs, rhs) => Err(EvalError::InvalidComparison {
+                            op: binary_expr.op,
+                            lhs,
+                            rhs,
+                        }),
+                    },
+                    ast::BinaryOp::Gte => match (lhs, rhs) {
+                        (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs >= rhs)),
+                        (Value::Float(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() >= rhs.into_inner()))
+                        }
+                        (Value::Int(lhs), Value::Float(rhs)) => {
+                            Ok(Value::Bool((lhs as f64) >= rhs.into_inner()))
+                        }
+                        (Value::Float(lhs), Value::Int(rhs)) => {
+                            Ok(Value::Bool(lhs.into_inner() >= rhs as f64))
+                        }
+                        (lhs, rhs) => Err(EvalError::InvalidComparison {
+                            op: binary_expr.op,
+                            lhs,
+                            rhs,
+                        }),
+                    },
                 }
             }
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
