@@ -4,10 +4,11 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    Bool, CallExpr, Diag, DiagList, Diagnosed, Expr, FileMod, FnExpr, FnParam, IfExpr, ImportStmt,
-    Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem, ListItem, Loc,
-    ModStmt, ModuleId, Position, PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr,
-    RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr, Var,
+    Bool, CallExpr, Diag, DiagList, Diagnosed, DictEntry, DictExpr, DictTypeExpr, Expr, FileMod,
+    FnExpr, FnParam, IfExpr, ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr,
+    ListForItem, ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr,
+    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
+    TypeExpr, Var,
 };
 
 #[derive(Error, Debug)]
@@ -175,6 +176,7 @@ peg::parser! {
 
         rule type_expr_base() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
+            / dict_type_expr:type_expr_dict() { dict_type_expr }
             / record_type_expr:type_expr_record() { record_type_expr }
             / list_type_expr:type_expr_list() { list_type_expr }
             / var:var() {
@@ -202,6 +204,17 @@ peg::parser! {
         rule type_expr_params() -> Vec<Loc<TypeExpr>>
             = params:(type_expr() ++ comma()) comma()? { params }
             / { vec![] }
+
+        rule type_expr_dict() -> Loc<TypeExpr>
+            = hash_span:hash() _open_curly_span:open_curly() key:type_expr() colon() value:type_expr() close_curly_span:close_curly() {
+                Loc::new(
+                    TypeExpr::Dict(DictTypeExpr {
+                        key: Box::new(key),
+                        value: Box::new(value),
+                    }),
+                    Span::new(hash_span.start(), close_curly_span.end()),
+                )
+            }
 
         rule type_expr_record() -> Loc<TypeExpr>
             = open_curly_span:open_curly() close_curly_span:close_curly() {
@@ -271,6 +284,7 @@ peg::parser! {
                 Loc::new(expr.into_inner(), Span::new(open_paren_span.start(), close_paren_span.end()))
             }
             / string_expr:string_expr() { string_expr }
+            / dict_expr:dict_expr() { dict_expr }
             / record_expr:record_expr() { record_expr }
             / list_expr:list_expr() { list_expr }
             / int:int() {
@@ -324,6 +338,23 @@ peg::parser! {
 
         rule record_field() -> RecordField
             = var:var() colon() expr:expr() { RecordField { var, expr } }
+
+        rule dict_expr() -> Loc<Expr>
+            = hash_span:hash() _open_curly_span:open_curly() close_curly_span:close_curly() {
+                Loc::new(
+                    Expr::Dict(DictExpr { entries: vec![] }),
+                    Span::new(hash_span.start(), close_curly_span.end()),
+                )
+            }
+            / hash_span:hash() _open_curly_span:open_curly() entries:(dict_entry() ++ comma()) comma()? close_curly_span:close_curly() {
+                Loc::new(
+                    Expr::Dict(DictExpr { entries }),
+                    Span::new(hash_span.start(), close_curly_span.end()),
+                )
+            }
+
+        rule dict_entry() -> DictEntry
+            = key:expr() colon() value:expr() { DictEntry { key, value } }
 
         rule list_expr() -> Loc<Expr>
             = open_square_span:open_square() close_square_span:close_square() {
@@ -435,6 +466,9 @@ peg::parser! {
 
         rule close_curly() -> Span
             = [token if matches!(token.as_ref(), Token::CloseCurly)] { token.span() }
+
+        rule hash() -> Span
+            = [token if matches!(token.as_ref(), Token::Hash)] { token.span() }
 
         rule colon() -> Span
             = [token if matches!(token.as_ref(), Token::Colon)] { token.span() }
@@ -557,6 +591,34 @@ mod tests {
         assert_eq!(record.fields.len(), 2);
         assert_eq!(record.fields[0].var.name, "a");
         assert_eq!(record.fields[1].var.name, "b");
+    }
+
+    #[test]
+    fn parses_dict_with_trailing_comma() {
+        let line = parse_repl_line("#{ \"a\": 1, \"b\": 2, }", &ModuleId::default())
+            .expect("dict should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Dict(dict) = expr.into_inner() else {
+            panic!("expected dict expression");
+        };
+        assert_eq!(dict.entries.len(), 2);
+    }
+
+    #[test]
+    fn parses_empty_dict() {
+        let line = parse_repl_line("#{}", &ModuleId::default())
+            .expect("dict should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Dict(dict) = expr.into_inner() else {
+            panic!("expected dict expression");
+        };
+        assert!(dict.entries.is_empty());
     }
 
     #[test]
@@ -877,5 +939,29 @@ mod tests {
             panic!("expected var inner type");
         };
         assert_eq!(var.name, "Int");
+    }
+
+    #[test]
+    fn parses_dict_type_expr() {
+        let line = parse_repl_line("extern \"dict\": #{ Str: Int }", &ModuleId::default())
+            .expect("dict type should parse")
+            .into_inner();
+        let crate::ModStmt::Expr(expr) = line.statement else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Extern(extern_expr) = expr.into_inner() else {
+            panic!("expected extern expression");
+        };
+        let crate::TypeExpr::Dict(dict_ty) = extern_expr.ty.into_inner() else {
+            panic!("expected dict type expression");
+        };
+        let crate::TypeExpr::Var(key) = dict_ty.key.into_inner() else {
+            panic!("expected key type var");
+        };
+        let crate::TypeExpr::Var(value) = dict_ty.value.into_inner() else {
+            panic!("expected value type var");
+        };
+        assert_eq!(key.name, "Str");
+        assert_eq!(value.name, "Int");
     }
 }

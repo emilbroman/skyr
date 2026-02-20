@@ -3,7 +3,9 @@ use std::path::Component;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::{AnySource, DiagList, Diagnosed, FnType, Package, Program, RecordType, Type, ast};
+use crate::{
+    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type, ast,
+};
 use thiserror::Error;
 
 pub struct TypeEnv<'a> {
@@ -293,6 +295,23 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
                         })?;
                     }
+                    Ok(())
+                }
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
+            Type::Dict(lhs_dict) => match rhs {
+                Type::Dict(rhs_dict) => {
+                    self.assign_type(lhs_dict.key.as_ref(), rhs_dict.key.as_ref())
+                        .map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    self.assign_type(lhs_dict.value.as_ref(), rhs_dict.value.as_ref())
+                        .map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
                     Ok(())
                 }
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
@@ -645,6 +664,57 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
+            ast::Expr::Dict(dict_expr) => {
+                let mut diags = DiagList::new();
+                let expected_dict = match expected_type {
+                    Some(Type::Dict(dict_ty)) => Some(dict_ty),
+                    _ => None,
+                };
+
+                let dict_ty = if let Some(expected_dict) = expected_dict {
+                    let expected_key = expected_dict.key.as_ref().clone().unfold();
+                    let expected_value = expected_dict.value.as_ref().clone().unfold();
+                    for entry in &dict_expr.entries {
+                        self.check_expr(env, &entry.key, Some(&expected_key))?
+                            .unpack(&mut diags);
+                        self.check_expr(env, &entry.value, Some(&expected_value))?
+                            .unpack(&mut diags);
+                    }
+                    Type::Dict(DictType {
+                        key: Box::new(expected_key),
+                        value: Box::new(expected_value),
+                    })
+                } else if let Some((first, rest)) = dict_expr.entries.split_first() {
+                    let key_ty = self
+                        .check_expr(env, &first.key, None)?
+                        .unpack(&mut diags)
+                        .unfold();
+                    let value_ty = self
+                        .check_expr(env, &first.value, None)?
+                        .unpack(&mut diags)
+                        .unfold();
+                    for entry in rest {
+                        self.check_expr(env, &entry.key, Some(&key_ty))?
+                            .unpack(&mut diags);
+                        self.check_expr(env, &entry.value, Some(&value_ty))?
+                            .unpack(&mut diags);
+                    }
+                    Type::Dict(DictType {
+                        key: Box::new(key_ty),
+                        value: Box::new(value_ty),
+                    })
+                } else {
+                    Type::Dict(DictType {
+                        key: Box::new(Type::Never),
+                        value: Box::new(Type::Never),
+                    })
+                };
+
+                let ty = self
+                    .apply_expected_type(env, expr.span(), dict_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::List(list_expr) => {
                 let mut diags = DiagList::new();
                 let list_ty = if let Some(Type::List(expected_item_ty)) = expected_type {
@@ -806,6 +876,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 Type::Record(resolved)
             }
+            ast::TypeExpr::Dict(dict_ty) => Type::Dict(DictType {
+                key: Box::new(self.resolve_type_expr(&dict_ty.key)),
+                value: Box::new(self.resolve_type_expr(&dict_ty.value)),
+            }),
             ast::TypeExpr::Var(_) => Type::Never,
         }
     }
@@ -898,8 +972,8 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
 mod tests {
     use super::TypeChecker;
     use crate::{
-        Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
-        ast::{Expr, Int, RecordExpr, RecordField, Var},
+        DictType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
+        ast::{DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr, Var},
     };
 
     fn checker() -> TypeChecker<'static, StdSourceRepo> {
@@ -1040,5 +1114,55 @@ mod tests {
         let (_, span) = diag.locate();
         assert_eq!(span, field_span);
         assert!(diags.next().is_none(), "expected only one diagnostic");
+    }
+
+    #[test]
+    fn assign_type_dict_covariant() {
+        let checker = checker();
+        let lhs = Type::Dict(DictType {
+            key: Box::new(Type::Optional(Box::new(Type::Str))),
+            value: Box::new(Type::Optional(Box::new(Type::Int))),
+        });
+        let rhs = Type::Dict(DictType {
+            key: Box::new(Type::Str),
+            value: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn dict_infers_key_value_types_from_first_entry() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let dict_expr = loc(
+            Expr::Dict(DictExpr {
+                entries: vec![
+                    DictEntry {
+                        key: loc(Expr::Int(Int { value: 1 }), span),
+                        value: loc(Expr::Str(StrExpr { value: "a".into() }), span),
+                    },
+                    DictEntry {
+                        key: loc(Expr::Int(Int { value: 2 }), span),
+                        value: loc(Expr::Str(StrExpr { value: "b".into() }), span),
+                    },
+                ],
+            }),
+            span,
+        );
+
+        let diagnosed = checker
+            .check_expr(&env, &dict_expr, None)
+            .expect("type check should succeed");
+        assert_eq!(
+            diagnosed.into_inner(),
+            Type::Dict(DictType {
+                key: Box::new(Type::Int),
+                value: Box::new(Type::Str),
+            })
+        );
     }
 }

@@ -10,6 +10,7 @@ pub enum Type {
     List(Box<Type>),
     Fn(FnType),
     Record(RecordType),
+    Dict(DictType),
     IsoRec(usize, Box<Type>),
     Var(usize),
     Never,
@@ -24,6 +25,12 @@ pub struct FnType {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RecordType {
     fields: BTreeMap<String, Type>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DictType {
+    pub key: Box<Type>,
+    pub value: Box<Type>,
 }
 
 impl RecordType {
@@ -46,6 +53,15 @@ impl RecordType {
             .map(|(name, ty)| (name.clone(), f(ty)))
             .collect();
         Self { fields }
+    }
+}
+
+impl DictType {
+    fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
+        Self {
+            key: Box::new(f(self.key.as_ref())),
+            value: Box::new(f(self.value.as_ref())),
+        }
     }
 }
 
@@ -82,6 +98,7 @@ impl Type {
             Type::Record(record) => {
                 Type::Record(record.map_types(|ty| ty.unfold_inner(replacement)))
             }
+            Type::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.unfold_inner(replacement))),
             Type::IsoRec(id, body) => {
                 let rec = Type::IsoRec(*id, body.clone());
                 body.unfold_inner(Some((*id, &rec)))
@@ -101,6 +118,7 @@ impl std::fmt::Display for Type {
             Type::List(ty) => write!(f, "[{ty}]"),
             Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
             Type::Record(record) => write!(f, "{record}"),
+            Type::Dict(dict) => write!(f, "{dict}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
             Type::Var(id) => write!(f, "Var({id})"),
             Type::Never => write!(f, "Never"),
@@ -137,5 +155,11 @@ impl std::fmt::Display for RecordType {
         }
 
         write!(f, "}}")
+    }
+}
+
+impl std::fmt::Display for DictType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{{{}: {}}}", self.key, self.value)
     }
 }
