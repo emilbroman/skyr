@@ -242,6 +242,18 @@ async fn worker_loop(
                     continue;
                 }
 
+                let dependencies = dependencies_from_refs(&message.dependencies);
+                if let Err(error) = resource_client.set_dependencies(&dependencies).await {
+                    warn!(log, "failed to persist created resource dependencies";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
+
                 if let Err(error) = resource_client.set_output(resource.outputs).await {
                     warn!(log, "failed to persist created resource outputs";
                         "namespace" => message.resource.namespace.clone(),
@@ -478,6 +490,17 @@ async fn worker_loop(
                     delivery.nack(false).await?;
                     continue;
                 }
+                let dependencies = dependencies_from_refs(&message.dependencies);
+                if let Err(error) = resource_client.set_dependencies(&dependencies).await {
+                    warn!(log, "failed to persist adopted resource dependencies";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
                 if let Err(error) = resource_client.set_output(resource.outputs).await {
                     warn!(log, "failed to persist adopted resource outputs";
                         "namespace" => message.resource.namespace.clone(),
@@ -619,6 +642,17 @@ async fn worker_loop(
                     delivery.nack(false).await?;
                     continue;
                 }
+                let dependencies = dependencies_from_refs(&message.dependencies);
+                if let Err(error) = resource_client.set_dependencies(&dependencies).await {
+                    warn!(log, "failed to persist restored resource dependencies";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    continue;
+                }
                 if let Err(error) = resource_client.set_output(resource.outputs).await {
                     warn!(log, "failed to persist restored resource outputs";
                         "namespace" => message.resource.namespace.clone(),
@@ -662,4 +696,14 @@ async fn dial_plugins(
 
 fn plugin_name_for_resource_type(resource_type: &str) -> Option<&str> {
     resource_type.rsplit_once('.').map(|(prefix, _)| prefix)
+}
+
+fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::ResourceId> {
+    dependencies
+        .iter()
+        .map(|dependency| sclc::ResourceId {
+            ty: dependency.resource_type.clone(),
+            id: dependency.resource_id.clone(),
+        })
+        .collect()
 }
