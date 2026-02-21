@@ -31,6 +31,9 @@ enum Program {
 
         #[clap(long = "db-hostname", default_value = "localhost")]
         db_hostname: String,
+
+        #[clap(long = "udb-hostname", default_value = "localhost")]
+        udb_hostname: String,
     },
 }
 
@@ -47,32 +50,41 @@ async fn main() -> anyhow::Result<()> {
             address,
             key,
             db_hostname,
+            udb_hostname,
         } => {
             let client = cdb::ClientBuilder::new()
                 .known_node(db_hostname)
                 .build()
                 .await?;
+            let udb_client = udb::ClientBuilder::new()
+                .known_node(udb_hostname)
+                .build()
+                .await?;
 
             info!(log, "listening on {address}");
-            ConfigServer { log, client }
-                .run_on_address(
-                    Arc::new(Config {
-                        keys: vec![PrivateKey::from_openssh(
-                            std::fs::read_to_string(&key)
-                                .map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "failed to load private key from {}: {}",
-                                        key.display(),
-                                        e
-                                    )
-                                })?
-                                .as_bytes(),
-                        )?],
-                        ..Default::default()
-                    }),
-                    address,
-                )
-                .await?;
+            ConfigServer {
+                log,
+                client,
+                udb_client,
+            }
+            .run_on_address(
+                Arc::new(Config {
+                    keys: vec![PrivateKey::from_openssh(
+                        std::fs::read_to_string(&key)
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "failed to load private key from {}: {}",
+                                    key.display(),
+                                    e
+                                )
+                            })?
+                            .as_bytes(),
+                    )?],
+                    ..Default::default()
+                }),
+                address,
+            )
+            .await?;
             Ok(())
         }
     }
@@ -81,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
 struct ConfigServer {
     log: Logger,
     client: cdb::Client,
+    udb_client: udb::Client,
 }
 
 impl Server for ConfigServer {
@@ -92,6 +105,7 @@ impl Server for ConfigServer {
             channels: Default::default(),
             user: None,
             client: self.client.clone(),
+            udb_client: self.udb_client.clone(),
         }
     }
 }
@@ -113,8 +127,9 @@ enum ChannelCommand {
 struct ConfigHandler {
     log: Logger,
     channels: BTreeMap<ChannelId, mpsc::Sender<Result<ChannelCommand, clap::Error>>>,
-    user: Option<String>,
+    user: Option<udb::User>,
     client: cdb::Client,
+    udb_client: udb::Client,
 }
 
 impl Handler for ConfigHandler {
@@ -122,16 +137,51 @@ impl Handler for ConfigHandler {
 
     async fn auth_publickey(
         &mut self,
-        user: &str,
+        username: &str,
         public_key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
-        info!(
-            self.log,
-            "TODO: authn {} -- {}",
-            user,
-            public_key.fingerprint(Default::default())
-        );
-        self.user = Some(user.to_string());
+        let fingerprint = public_key.fingerprint(Default::default()).to_string();
+        let mut user_client = self.udb_client.user(username);
+        let user = match user_client.get().await {
+            Ok(user) => Some(user),
+            Err(udb::UserQueryError::NotFound) => None,
+            Err(err) => {
+                return Err(anyhow!(
+                    "failed to check existence for user {username}: {err}"
+                ));
+            }
+        };
+
+        let Some(user) = user else {
+            info!(
+                self.log,
+                "rejecting auth for unknown user"; "username" => username, "fingerprint" => fingerprint
+            );
+            return Ok(Auth::Reject {
+                proceed_with_methods: None,
+                partial_success: false,
+            });
+        };
+
+        let mut pubkeys = user_client.pubkeys();
+        let fingerprint_allowed = pubkeys
+            .contains(&fingerprint)
+            .await
+            .map_err(|err| anyhow!("failed to check pubkey for user {username}: {err}"))?;
+
+        if !fingerprint_allowed {
+            info!(
+                self.log,
+                "rejecting auth for unknown pubkey"; "username" => username, "fingerprint" => fingerprint
+            );
+            return Ok(Auth::Reject {
+                proceed_with_methods: None,
+                partial_success: false,
+            });
+        }
+
+        info!(self.log, "accepted auth"; "username" => username, "fingerprint" => fingerprint);
+        self.user = Some(user);
         Ok(Auth::Accept)
     }
 
@@ -154,7 +204,7 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
                         CommandHandler {
                             log: log.clone(),
-                            user,
+                            _user: user,
                             channel: &mut channel,
                             client: client.repo(repo),
                         }
@@ -164,7 +214,7 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
                         CommandHandler {
                             log: log.clone(),
-                            user,
+                            _user: user,
                             channel: &mut channel,
                             client: client.repo(repo),
                         }
@@ -223,7 +273,7 @@ impl Handler for ConfigHandler {
 struct CommandHandler<'a> {
     log: Logger,
     channel: &'a mut Channel<server::Msg>,
-    user: &'a str,
+    _user: &'a udb::User,
     client: cdb::RepositoryClient,
 }
 
