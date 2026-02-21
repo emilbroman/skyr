@@ -202,24 +202,32 @@ impl Handler for ConfigHandler {
                 let result: anyhow::Result<()> = match (&user, rx.recv().await) {
                     (None, _) => Err(anyhow!("not authenticated")),
                     (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
-                        CommandHandler {
-                            log: log.clone(),
-                            _user: user,
-                            channel: &mut channel,
-                            client: client.repo(repo),
+                        if let Err(err) = ensure_repo_access(user, &repo) {
+                            Err(err)
+                        } else {
+                            CommandHandler {
+                                log: log.clone(),
+                                _user: user,
+                                channel: &mut channel,
+                                client: client.repo(repo),
+                            }
+                            .receive_pack()
+                            .await
                         }
-                        .receive_pack()
-                        .await
                     }
                     (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
-                        CommandHandler {
-                            log: log.clone(),
-                            _user: user,
-                            channel: &mut channel,
-                            client: client.repo(repo),
+                        if let Err(err) = ensure_repo_access(user, &repo) {
+                            Err(err)
+                        } else {
+                            CommandHandler {
+                                log: log.clone(),
+                                _user: user,
+                                channel: &mut channel,
+                                client: client.repo(repo),
+                            }
+                            .upload_pack()
+                            .await
                         }
-                        .upload_pack()
-                        .await
                     }
                     (_, Some(Err(e))) => Err(e.into()),
                     (_, None) => break,
@@ -268,6 +276,19 @@ impl Handler for ConfigHandler {
         }
         Ok(())
     }
+}
+
+fn ensure_repo_access(user: &udb::User, repo: &RepositoryName) -> anyhow::Result<()> {
+    if repo.organization != user.username {
+        bail!(
+            "permission denied: user '{}' cannot access repository '{}'; expected organization '{}'",
+            user.username,
+            repo,
+            user.username
+        );
+    }
+
+    Ok(())
 }
 
 struct CommandHandler<'a> {
