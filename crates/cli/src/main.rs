@@ -5,6 +5,7 @@ mod auth;
 mod fs_source;
 mod repl;
 mod run;
+mod signin;
 mod signup;
 mod whoami;
 
@@ -17,6 +18,7 @@ enum Program {
         #[arg(long, default_value = "Local")]
         package: String,
     },
+    Signin(signin::SigninArgs),
     Signup(signup::SignupArgs),
     Whoami(whoami::WhoamiArgs),
 }
@@ -29,6 +31,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Program::Run { root, package } => {
             run::run_program(root, package).await?;
+        }
+        Program::Signin(args) => {
+            signin::run_signin(args).await?;
         }
         Program::Signup(args) => {
             signup::run_signup(args).await?;
