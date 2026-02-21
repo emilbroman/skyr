@@ -3,7 +3,14 @@ pub fn register_extern(eval: &mut crate::Eval) {
         use crate::ValueAssertions;
 
         let mut args = args.into_iter();
-        let i = args.next().assert_int()?;
-        Ok(crate::Value::Str(format!("{i:x}")))
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+
+        first.try_map(|value| {
+            value
+                .assert_int()
+                .map(|i| crate::Value::Str(format!("{i:x}")))
+        })
     });
 }

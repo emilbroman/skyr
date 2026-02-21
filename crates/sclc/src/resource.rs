@@ -1,6 +1,6 @@
 use crate::Record;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId {
     pub ty: String,
     pub id: String,
@@ -10,4 +10,5 @@ pub struct ResourceId {
 pub struct Resource {
     pub inputs: Record,
     pub outputs: Record,
+    pub dependencies: Vec<ResourceId>,
 }

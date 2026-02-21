@@ -1,6 +1,6 @@
 use ordered_float::NotNan;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Value {
@@ -15,6 +15,67 @@ pub enum Value {
     Fn(FnValue),
     Record(Record),
     Dict(Dict),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedValue {
+    pub value: Value,
+    pub dependencies: BTreeSet<crate::ResourceId>,
+}
+
+impl TrackedValue {
+    pub fn new(value: Value) -> Self {
+        Self {
+            value,
+            dependencies: BTreeSet::new(),
+        }
+    }
+
+    pub fn pending() -> Self {
+        Self::new(Value::Pending(PendingValue))
+    }
+
+    pub fn with_dependencies(mut self, dependencies: BTreeSet<crate::ResourceId>) -> Self {
+        self.dependencies.extend(dependencies);
+        self
+    }
+
+    pub fn with_dependency(mut self, dependency: crate::ResourceId) -> Self {
+        self.dependencies.insert(dependency);
+        self
+    }
+
+    pub fn map(self, f: impl FnOnce(Value) -> Value) -> Self {
+        Self {
+            value: f(self.value),
+            dependencies: self.dependencies,
+        }
+    }
+
+    pub fn try_map<E>(self, f: impl FnOnce(Value) -> Result<Value, E>) -> Result<Self, E> {
+        Ok(Self {
+            value: f(self.value)?,
+            dependencies: self.dependencies,
+        })
+    }
+
+    pub fn flat_map(self, f: impl FnOnce(Value) -> Self) -> Self {
+        let mut mapped = f(self.value);
+        mapped.dependencies.extend(self.dependencies);
+        mapped
+    }
+
+    pub fn try_flat_map<E>(self, f: impl FnOnce(Value) -> Result<Self, E>) -> Result<Self, E> {
+        let mut mapped = f(self.value)?;
+        mapped.dependencies.extend(self.dependencies);
+        Ok(mapped)
+    }
+}
+
+impl From<Value> for TrackedValue {
+    fn from(value: Value) -> Self {
+        Self::new(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,19 +100,27 @@ impl<'de> Deserialize<'de> for PendingValue {
 }
 
 pub trait ExternFn: Send + Sync + 'static {
-    fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError>;
+    fn call(
+        &self,
+        args: Vec<TrackedValue>,
+        ctx: &crate::EvalCtx,
+    ) -> Result<TrackedValue, crate::EvalError>;
     fn clone_extern_fn(&self) -> Box<dyn ExternFn>;
 }
 
 impl<F> ExternFn for F
 where
-    F: Fn(Vec<Value>, &crate::EvalCtx) -> Result<Value, crate::EvalError>
+    F: Fn(Vec<TrackedValue>, &crate::EvalCtx) -> Result<TrackedValue, crate::EvalError>
         + Clone
         + Send
         + Sync
         + 'static,
 {
-    fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError> {
+    fn call(
+        &self,
+        args: Vec<TrackedValue>,
+        ctx: &crate::EvalCtx,
+    ) -> Result<TrackedValue, crate::EvalError> {
         self(args, ctx)
     }
 
@@ -67,7 +136,11 @@ impl ExternFnValue {
         Self(inner)
     }
 
-    pub fn call(&self, args: Vec<Value>, ctx: &crate::EvalCtx) -> Result<Value, crate::EvalError> {
+    pub fn call(
+        &self,
+        args: Vec<TrackedValue>,
+        ctx: &crate::EvalCtx,
+    ) -> Result<TrackedValue, crate::EvalError> {
         self.0.call(args, ctx)
     }
 }
@@ -215,6 +288,67 @@ impl std::fmt::Display for FnValue {
         }
 
         write!(f, ")>")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TrackedValue, Value};
+    use crate::ResourceId;
+
+    fn dep(id: &str) -> ResourceId {
+        ResourceId {
+            ty: "Std/Random.Int".to_string(),
+            id: id.to_string(),
+        }
+    }
+
+    #[test]
+    fn tracked_value_flat_map_merges_dependencies() {
+        let outer = TrackedValue::new(Value::Int(1)).with_dependency(dep("outer"));
+        let inner = dep("inner");
+        let mapped = outer.flat_map(|value| {
+            assert_eq!(value, Value::Int(1));
+            TrackedValue::new(Value::Int(2)).with_dependency(inner.clone())
+        });
+
+        assert_eq!(mapped.value, Value::Int(2));
+        assert!(mapped.dependencies.contains(&dep("outer")));
+        assert!(mapped.dependencies.contains(&dep("inner")));
+    }
+
+    #[test]
+    fn tracked_value_try_flat_map_merges_dependencies() {
+        let outer = TrackedValue::new(Value::Str("x".to_string())).with_dependency(dep("outer"));
+        let inner = dep("inner");
+        let mapped: Result<TrackedValue, ()> = outer.try_flat_map(|value| {
+            assert_eq!(value, Value::Str("x".to_string()));
+            Ok(TrackedValue::new(Value::Str("y".to_string())).with_dependency(inner.clone()))
+        });
+        let mapped = mapped.expect("mapping should succeed");
+
+        assert_eq!(mapped.value, Value::Str("y".to_string()));
+        assert!(mapped.dependencies.contains(&dep("outer")));
+        assert!(mapped.dependencies.contains(&dep("inner")));
+    }
+
+    #[test]
+    fn tracked_value_map_preserves_dependencies() {
+        let outer = TrackedValue::new(Value::Int(1)).with_dependency(dep("outer"));
+        let mapped = outer.map(|_| Value::Int(2));
+
+        assert_eq!(mapped.value, Value::Int(2));
+        assert!(mapped.dependencies.contains(&dep("outer")));
+    }
+
+    #[test]
+    fn tracked_value_try_map_preserves_dependencies() {
+        let outer = TrackedValue::new(Value::Int(1)).with_dependency(dep("outer"));
+        let mapped: Result<TrackedValue, ()> = outer.try_map(|_| Ok(Value::Int(2)));
+        let mapped = mapped.expect("mapping should succeed");
+
+        assert_eq!(mapped.value, Value::Int(2));
+        assert!(mapped.dependencies.contains(&dep("outer")));
     }
 }
 
