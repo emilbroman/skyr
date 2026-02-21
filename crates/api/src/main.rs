@@ -53,7 +53,7 @@ impl Query {
         Ok(User { user })
     }
 
-    async fn signin_challenge(context: &Context, username: String) -> FieldResult<String> {
+    async fn auth_challenge(context: &Context, username: String) -> FieldResult<String> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(juniper::FieldError::new(
                 "Invalid username",
@@ -69,8 +69,6 @@ pub struct Mutation;
 
 lazy_static::lazy_static! {
     static ref USERNAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{3,20}$").unwrap();
-    static ref PUBKEY_FINGERPRINT_REGEX: regex::Regex =
-        regex::Regex::new(r"^SHA256:[A-Za-z0-9+/]{43}$").unwrap();
 }
 
 #[juniper::graphql_object(Context = Context)]
@@ -79,7 +77,8 @@ impl Mutation {
         context: &Context,
         username: String,
         email: String,
-        pubkey_fingerprint: String,
+        pubkey: String,
+        signature: String,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(juniper::FieldError::new(
@@ -95,12 +94,16 @@ impl Mutation {
             ));
         }
 
-        if !PUBKEY_FINGERPRINT_REGEX.is_match(&pubkey_fingerprint) {
-            return Err(juniper::FieldError::new(
-                "Invalid pubkey fingerprint",
-                juniper::Value::Null,
-            ));
-        }
+        let public_key =
+            russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
+                tracing::warn!("Invalid pubkey format: {}", e);
+                juniper::FieldError::new("Invalid credentials", juniper::Value::Null)
+            })?;
+        context
+            .challenger
+            .check(&public_key, &signature, &username, Utc::now())
+            .map_err(|_| juniper::FieldError::new("Invalid credentials", juniper::Value::Null))?;
+        let pubkey_fingerprint = public_key.fingerprint(Default::default()).to_string();
 
         match context.udb_client.user(&username).register(email).await {
             Err(udb::RegisterUserError::UsernameTaken) => Err(juniper::FieldError::new(
@@ -270,7 +273,9 @@ struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
     udb_hostname: String,
     #[arg(long)]
-    challenge_salt: String,
+    challenge_salt: Option<String>,
+    #[arg(long)]
+    write_schema: bool,
 }
 
 #[tokio::main]
@@ -281,11 +286,22 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if cli.write_schema {
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("schema.graphql");
+        std::fs::write(&schema_path, schema().as_sdl())?;
+        tracing::info!("wrote GraphQL schema to {}", schema_path.display());
+        return Ok(());
+    }
+
+    let challenge_salt = cli
+        .challenge_salt
+        .ok_or_else(|| anyhow::anyhow!("missing --challenge-salt"))?;
+
     let udb_client = udb::ClientBuilder::new()
         .known_node(cli.udb_hostname)
         .build()
         .await?;
-    let challenger = Arc::new(challenge::Challenger::new(cli.challenge_salt.into_bytes()));
+    let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
 
