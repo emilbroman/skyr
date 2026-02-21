@@ -63,6 +63,7 @@ prepared_statements! {
                 id TEXT,
                 inputs_json TEXT,
                 outputs_json TEXT,
+                dependencies_json TEXT,
                 owner TEXT,
                 PRIMARY KEY ((namespace), resource_type, id)
             )
@@ -71,14 +72,14 @@ prepared_statements! {
 
     PreparedStatements {
         get_resource = r#"
-            SELECT inputs_json, outputs_json, owner
+            SELECT inputs_json, outputs_json, dependencies_json, owner
             FROM rdb.resources
             WHERE namespace = ?
             AND resource_type = ?
             AND id = ?
         "#,
         list_resources = r#"
-            SELECT resource_type, id, inputs_json, outputs_json, owner
+            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, owner
             FROM rdb.resources
             WHERE namespace = ?
         "#,
@@ -93,6 +94,13 @@ prepared_statements! {
         set_resource_output = r#"
             UPDATE rdb.resources
             SET outputs_json = ?
+            WHERE namespace = ?
+            AND resource_type = ?
+            AND id = ?
+        "#,
+        set_resource_dependencies = r#"
+            UPDATE rdb.resources
+            SET dependencies_json = ?
             WHERE namespace = ?
             AND resource_type = ?
             AND id = ?
@@ -199,15 +207,17 @@ impl NamespaceClient {
                 Option<String>,
                 Option<String>,
                 Option<String>,
+                Option<String>,
             )>()?
             .map(move |row| {
-                let (resource_type, id, inputs_json, outputs_json, owner) = row?;
+                let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row?;
                 Ok::<_, ResourceError>(Resource {
                     namespace: namespace.clone(),
                     resource_type,
                     id,
                     inputs: decode_record(inputs_json)?,
                     outputs: decode_record(outputs_json)?,
+                    dependencies: decode_dependencies(dependencies_json)?,
                     owner,
                 })
             }))
@@ -237,8 +247,13 @@ impl ResourceClient {
             )
             .await?;
 
-        let (inputs_json, outputs_json, owner) = match pager
-            .rows_stream::<(Option<String>, Option<String>, Option<String>)>()?
+        let (inputs_json, outputs_json, dependencies_json, owner) = match pager
+            .rows_stream::<(
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>()?
             .try_next()
             .await?
         {
@@ -252,6 +267,7 @@ impl ResourceClient {
             id: self.id.clone(),
             inputs: decode_record(inputs_json)?,
             outputs: decode_record(outputs_json)?,
+            dependencies: decode_dependencies(dependencies_json)?,
             owner,
         }))
     }
@@ -301,6 +317,29 @@ impl ResourceClient {
         self.get().await?.ok_or(ResourceError::MissingAfterWrite)
     }
 
+    pub async fn set_dependencies(
+        &self,
+        dependencies: &[sclc::ResourceId],
+    ) -> Result<Resource, ResourceError> {
+        let dependencies_json = encode_dependencies(dependencies)?;
+
+        self.namespace
+            .client
+            .session
+            .execute_unpaged(
+                &self.namespace.client.statements.set_resource_dependencies,
+                (
+                    dependencies_json,
+                    self.namespace.namespace.as_str(),
+                    self.resource_type.as_str(),
+                    self.id.as_str(),
+                ),
+            )
+            .await?;
+
+        self.get().await?.ok_or(ResourceError::MissingAfterWrite)
+    }
+
     pub async fn delete(&self) -> Result<(), ResourceError> {
         self.namespace
             .client
@@ -326,6 +365,7 @@ pub struct Resource {
     pub id: String,
     pub inputs: Option<Record>,
     pub outputs: Option<Record>,
+    pub dependencies: Vec<sclc::ResourceId>,
     pub owner: Option<String>,
 }
 
@@ -359,5 +399,17 @@ fn decode_record(value: Option<String>) -> Result<Option<Record>, ResourceError>
 }
 
 fn encode_record(value: &Record) -> Result<String, ResourceError> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn decode_dependencies(value: Option<String>) -> Result<Vec<sclc::ResourceId>, ResourceError> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(text) if text.is_empty() => Ok(Vec::new()),
+        Some(text) => Ok(serde_json::from_str(&text)?),
+    }
+}
+
+fn encode_dependencies(value: &[sclc::ResourceId]) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }
