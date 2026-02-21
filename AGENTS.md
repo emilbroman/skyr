@@ -131,6 +131,7 @@ Not implemented yet (high impact):
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
 - In `sclc`, parse functions return `Diagnosed<Option<_>>` and report syntax errors via diagnostics instead of `Result<_, ParseError>`.
 - In `scl`, the REPL ignores empty lines and uses `Diagnosed` reporting helpers for parse/type diagnostics.
+- Whenever the GraphQL server is updated in a way that impacts the schema, regenerate the `crates/api/schema.graphql` file by running `cargo run -p api -- --write-schema`.
 
 ## Running Locally (Quick Test)
 

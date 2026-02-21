@@ -1,6 +1,6 @@
 services:
-  cassandra:
-    image: cassandra:5
+  scylla:
+    image: scylladb/scylla
     ports:
       - 9042:9042
     restart: unless-stopped
@@ -30,6 +30,24 @@ services:
       - 6379:6379
     restart: unless-stopped
 
+  api:
+    image: skyr:latest
+    entrypoint: ["/api"]
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--udb-hostname",
+        "redis",
+        "--challenge-salt",
+        "local-dev-challenge-salt",
+      ]
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+
   scs:
     image: skyr:latest
     entrypoint: ["/scs"]
@@ -41,7 +59,9 @@ services:
         "--key",
         "/host.pem",
         "--db-hostname",
-        "cassandra",
+        "scylla",
+        "--udb-hostname",
+        "redis",
       ]
     restart: unless-stopped
     ports:
@@ -52,8 +72,7 @@ services:
   de:
     image: skyr:latest
     entrypoint: ["/de"]
-    command:
-      ["daemon", "--db-hostname", "cassandra", "--mq-hostname", "rabbitmq"]
+    command: ["daemon", "--db-hostname", "scylla", "--mq-hostname", "rabbitmq"]
     restart: unless-stopped
 
   plugin-std-random:
@@ -69,7 +88,7 @@ services:
       [
         "daemon",
         "--db-hostname",
-        "cassandra",
+        "scylla",
         "--mq-hostname",
         "rabbitmq",
         "--plugin",
@@ -88,7 +107,7 @@ services:
       [
         "daemon",
         "--db-hostname",
-        "cassandra",
+        "scylla",
         "--mq-hostname",
         "rabbitmq",
         "--plugin",
@@ -107,7 +126,7 @@ services:
       [
         "daemon",
         "--db-hostname",
-        "cassandra",
+        "scylla",
         "--mq-hostname",
         "rabbitmq",
         "--plugin",

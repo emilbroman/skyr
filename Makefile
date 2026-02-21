@@ -4,11 +4,11 @@ image:
 	podman build -t skyr:latest -t localhost/skyr:latest .
 
 deps: image
-	podman compose up -d cassandra rabbitmq plugin-std-random
-	@echo "Waiting for cassandra to become healthy..."
-	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_cassandra_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+	podman compose up -d scylla rabbitmq redis plugin-std-random
+	@echo "Waiting for scylla to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_scylla_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
 	@echo "Waiting for rabbitmq to become healthy..."
 	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_rabbitmq_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
 
 compose: image deps
-	podman compose up de scs rte-0 rte-1 rte-2
+	podman compose up de scs rte-0 rte-1 rte-2 api
