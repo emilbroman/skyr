@@ -373,7 +373,11 @@ impl PluginClient {
         let inputs: sclc::Record = serde_json::from_str(&resource.inputs_json)?;
         let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)?;
 
-        Ok(sclc::Resource { inputs, outputs })
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
     }
 
     pub async fn update_resource(
@@ -399,7 +403,11 @@ impl PluginClient {
         let inputs: sclc::Record = serde_json::from_str(&resource.inputs_json)?;
         let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)?;
 
-        Ok(sclc::Resource { inputs, outputs })
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
     }
 
     pub async fn delete_resource(&mut self, id: sclc::ResourceId) -> anyhow::Result<()> {
@@ -455,7 +463,11 @@ fn decode_resource(resource: Resource) -> Result<sclc::Resource, tonic::Status> 
         .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
     let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)
         .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
-    Ok(sclc::Resource { inputs, outputs })
+    Ok(sclc::Resource {
+        inputs,
+        outputs,
+        dependencies: vec![],
+    })
 }
 
 pub async fn serve<P, F>(target: impl AsRef<str>, plugin_fn: F) -> Result<(), ServeError>
