@@ -7,6 +7,8 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - `docs/index.md` describes a full orchestrator with reconciliation, RTQ/RTE processing, and resource lifecycle operations.
 - The repository currently has an early vertical slice:
   - Git-over-SSH config server (`scs`) that can receive and upload Git data.
+  - Public API service (`api`) exposing GraphQL auth/signup/me endpoints.
+  - User database client (`udb`) backed by Redis for users, tokens, and SSH pubkey fingerprints.
   - Configuration/deployment database client (`cdb`) with Cassandra schema and typed APIs.
   - Deployment poller/worker loop (`de`) with state transitions and SCL file loading.
   - Skeletons for SCL compiler/runtime data model (`sclc`), resource DB (`rdb`), RTQ (`rtq`), and RTE (`rte`).
@@ -14,7 +16,9 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 ## Workspace Structure
 
+- `crates/api`: GraphQL API service (signup, bearer-token auth, and `me` query) backed by `udb`.
 - `crates/scs`: SSH Git server and packfile handling, writes Git objects and deployment states to CDB.
+- `crates/udb`: Redis-backed user database client for users, pubkeys, and short-lived bearer tokens.
 - `crates/cdb`: Cassandra-backed API for repositories, objects, deployments, active deployments, supercession links.
 - `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
 - `crates/sclc`: SCL front-end + runtime pieces (lexer/parser/AST/type-checker/eval), with a std package and compile pipeline.
@@ -30,7 +34,9 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - Implements SSH server with command handling for:
   - `git-receive-pack`
   - `git-upload-pack`
-- Accepts all public keys currently (`TODO: authn ...` in code). Do not assume auth is enforced.
+- Auth validates both:
+  - that the SSH username exists in `udb`
+  - that the connecting key fingerprint exists in that user’s stored pubkey set
 - On push:
   - Parses refs update commands.
   - Parses incoming packfiles, resolves deltas, writes Git objects into CDB.
@@ -40,6 +46,26 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - On fetch:
   - Advertises active deployments that are not `UNDESIRED` or `LINGERING` as refs.
   - Streams a generated packfile from stored objects.
+
+### API (`crates/api`)
+
+- Provides GraphQL endpoint and GraphiQL UI.
+- Supports:
+  - `signup(username, email)` mutation (creates user and issues a bearer token via `udb`)
+  - `me` query (requires bearer token, resolves the authenticated user)
+- Treat this as an early public-API stub; broader domain surface and hardening are still pending.
+
+### UDB (`crates/udb`)
+
+- Redis-backed client with typed APIs for:
+  - registering/fetching users
+  - setting optional full name
+  - issuing/revoking short-lived bearer tokens
+  - adding/checking/removing per-user SSH pubkey fingerprints
+- Key prefixes:
+  - `u:` user hashes
+  - `p:` per-user pubkey sets
+  - `t:` bearer tokens
 
 ### CDB (`crates/cdb`)
 
@@ -89,7 +115,7 @@ Not implemented yet (high impact):
 - DAG execution/reconciliation loop in DE (currently compile-only, no resource operations).
 - Health check / drift detection behavior.
 - Proper lingering/undesired cleanup based on dependency ownership in RDB.
-- Authentication/authorization in SCS.
+- Fine-grained authorization policy in SCS beyond username+pubkey presence checks.
 
 ## Practical Guidance for Future Agents
 
@@ -108,7 +134,7 @@ Not implemented yet (high impact):
 
 ## Running Locally (Quick Test)
 
-- Run `podman compose up` to start Cassandra and RabbitMQ.
+- Run `podman compose up` to start Cassandra, RabbitMQ, and Redis.
 - Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222`.
 - Start the `scs` program with `daemon --address 127.0.0.1:2222` so it matches the `test-repo/` remote.
 - Start the deployment engine with `cargo run -p de -- daemon` to process deployments.
