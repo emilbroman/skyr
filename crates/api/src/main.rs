@@ -8,9 +8,29 @@ use axum::{
     routing::{get, post},
 };
 use clap::Parser;
-use juniper::{EmptyMutation, EmptySubscription, RootNode};
+use juniper::{EmptySubscription, FieldResult, RootNode};
 
-pub struct Context;
+pub struct Context {
+    udb_client: udb::Client,
+    user: Option<udb::UserClient>,
+}
+
+impl Context {
+    async fn check_auth(&self) -> FieldResult<(udb::UserClient, udb::User)> {
+        let err = juniper::FieldError::new("Not authenticated", juniper::Value::Null);
+
+        let Some(mut client) = self.user.clone() else {
+            return Err(err);
+        };
+
+        let user = client.get().await.map_err(|e| {
+            tracing::error!("Failed to fetch user: {}", e);
+            err
+        })?;
+
+        Ok((client, user))
+    }
+}
 
 impl juniper::Context for Context {}
 
@@ -22,12 +42,109 @@ impl Query {
         tokio::task::yield_now().await;
         true
     }
+
+    async fn me(context: &Context) -> FieldResult<User> {
+        let (_, user) = context.check_auth().await?;
+
+        Ok(User { user })
+    }
 }
 
-pub type Schema = RootNode<'static, Query, EmptyMutation<Context>, EmptySubscription<Context>>;
+pub struct Mutation;
+
+lazy_static::lazy_static! {
+    static ref USERNAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{3,20}$").unwrap();
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Mutation {
+    async fn signup(
+        context: &Context,
+        username: String,
+        email: String,
+    ) -> FieldResult<SignupSuccess> {
+        if !USERNAME_REGEX.is_match(&username) {
+            return Err(juniper::FieldError::new(
+                "Invalid username",
+                juniper::Value::Null,
+            ));
+        }
+
+        if email.split('@').take(3).count() != 2 {
+            return Err(juniper::FieldError::new(
+                "Invalid email",
+                juniper::Value::Null,
+            ));
+        }
+
+        match context.udb_client.user(&username).register(email).await {
+            Err(udb::RegisterUserError::UsernameTaken) => Err(juniper::FieldError::new(
+                "Username already taken",
+                juniper::Value::Null,
+            )),
+            Err(e) => {
+                tracing::error!("Failed to register user: {}", e);
+                Err(juniper::FieldError::new(
+                    "Internal server error",
+                    juniper::Value::Null,
+                ))
+            }
+            Ok(user) => Ok(SignupSuccess {
+                user: User { user },
+                token: context
+                    .udb_client
+                    .user(&username)
+                    .tokens()
+                    .issue()
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to issue token: {}", e);
+                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    })?,
+            }),
+        }
+    }
+}
+
+pub struct SignupSuccess {
+    user: User,
+    token: String,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl SignupSuccess {
+    fn user(&self) -> &User {
+        &self.user
+    }
+
+    fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+pub struct User {
+    user: udb::User,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl User {
+    fn username(&self) -> &str {
+        &self.user.username
+    }
+
+    fn email(&self) -> &str {
+        &self.user.email
+    }
+
+    fn fullname(&self) -> Option<&str> {
+        self.user.fullname.as_ref().map(|s| s.as_str())
+    }
+}
+
+pub type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
 
 pub fn schema() -> Schema {
-    Schema::new(Query, EmptyMutation::new(), EmptySubscription::new())
+    Schema::new(Query, Mutation, EmptySubscription::new())
 }
 
 #[derive(Parser, Debug)]
@@ -37,36 +154,78 @@ struct Cli {
     host: IpAddr,
     #[arg(long, default_value_t = 8080)]
     port: u16,
+    #[arg(long, default_value = "127.0.0.1")]
+    udb_hostname: String,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
+
+    let udb_client = udb::ClientBuilder::new()
+        .known_node(cli.udb_hostname)
+        .build()
+        .await?;
+
     let schema = Arc::new(schema());
 
     let app = Router::new()
         .route("/graphql", post(graphql_handler))
         .route("/graphiql", get(graphiql))
-        .layer(Extension(schema));
+        .layer(Extension(schema))
+        .layer(Extension(udb_client));
 
     let addr = SocketAddr::from((cli.host, cli.port));
     tracing::info!("listening on http://{addr}");
 
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .expect("failed to bind address");
-    axum::serve(listener, app).await.expect("server failed");
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
+#[axum::debug_handler]
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
+    Extension(mut udb_client): Extension<udb::Client>,
+    headers: http::header::HeaderMap,
     Json(request): Json<juniper::http::GraphQLRequest>,
 ) -> Json<juniper::http::GraphQLResponse> {
-    let ctx = Context;
+    let auth_header = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|v| String::from_utf8(v.to_vec()).ok());
+
+    if let Some(token) = auth_header {
+        match udb_client.lookup_token(token).await {
+            Err(udb::LookupTokenError::InvalidToken) => {
+                return Json(juniper::http::GraphQLResponse::error(
+                    "Invalid token".into(),
+                ));
+            }
+            Err(e) => {
+                tracing::error!("Failed to lookup token: {}", e);
+                return Json(juniper::http::GraphQLResponse::error(
+                    "Internal server error".into(),
+                ));
+            }
+            Ok(user) => {
+                let ctx = Context {
+                    udb_client,
+                    user: Some(user),
+                };
+                return Json(request.execute(&schema, &ctx).await);
+            }
+        }
+    }
+
+    let ctx = Context {
+        udb_client,
+        user: None,
+    };
     Json(request.execute(&schema, &ctx).await)
 }
 
