@@ -8,7 +8,7 @@ use crate::fs_source::FsSource;
 
 struct Repl {
     line_number: usize,
-    bindings: HashMap<String, (sclc::Type, sclc::Value)>,
+    bindings: HashMap<String, (sclc::Type, sclc::TrackedValue)>,
     eval: sclc::Eval,
 }
 
@@ -96,7 +96,7 @@ impl Repl {
 
                 let eval_env = Self::eval_env(&self.bindings, &module_id);
                 let value = self.eval.eval_expr(&eval_env, expr)?;
-                println!("{value}");
+                println!("{}", value.value);
                 None
             }
             stmt => {
@@ -133,7 +133,7 @@ impl Repl {
     }
 
     fn type_env<'a>(
-        bindings: &'a HashMap<String, (sclc::Type, sclc::Value)>,
+        bindings: &'a HashMap<String, (sclc::Type, sclc::TrackedValue)>,
         module_id: &'a sclc::ModuleId,
     ) -> sclc::TypeEnv<'a> {
         bindings.iter().fold(
@@ -143,7 +143,7 @@ impl Repl {
     }
 
     fn eval_env<'a>(
-        bindings: &'a HashMap<String, (sclc::Type, sclc::Value)>,
+        bindings: &'a HashMap<String, (sclc::Type, sclc::TrackedValue)>,
         module_id: &'a sclc::ModuleId,
     ) -> sclc::EvalEnv<'a> {
         bindings.iter().fold(
@@ -158,10 +158,10 @@ pub async fn run_repl() -> anyhow::Result<()> {
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
-                sclc::Effect::CreateResource { id, inputs } => {
+                sclc::Effect::CreateResource { id, inputs, .. } => {
                     println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
-                sclc::Effect::UpdateResource { id, inputs } => {
+                sclc::Effect::UpdateResource { id, inputs, .. } => {
                     println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
             }

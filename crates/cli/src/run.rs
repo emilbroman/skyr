@@ -30,10 +30,10 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
-                sclc::Effect::CreateResource { id, inputs } => {
+                sclc::Effect::CreateResource { id, inputs, .. } => {
                     println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
-                sclc::Effect::UpdateResource { id, inputs } => {
+                sclc::Effect::UpdateResource { id, inputs, .. } => {
                     println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
             }
