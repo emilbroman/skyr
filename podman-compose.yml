@@ -24,6 +24,12 @@ services:
       retries: 12
       start_period: 20s
 
+  redis:
+    image: redis:8-alpine
+    ports:
+      - 6379:6379
+    restart: unless-stopped
+
   scs:
     image: skyr:latest
     entrypoint: ["/scs"]
