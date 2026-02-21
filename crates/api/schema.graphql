@@ -1,0 +1,26 @@
+schema {
+  query: Query
+  mutation: Mutation
+}
+
+type AuthSuccess {
+  user: User!
+  token: String!
+}
+
+type Mutation {
+  signup(username: String!, email: String!, pubkey: String!, signature: String!): AuthSuccess!
+  signin(username: String!, signature: String!, pubkey: String!): AuthSuccess!
+}
+
+type Query {
+  health: Boolean!
+  me: User!
+  authChallenge(username: String!): String!
+}
+
+type User {
+  username: String!
+  email: String!
+  fullname: String
+}

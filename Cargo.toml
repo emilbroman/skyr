@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/api",
   "crates/cdb",
   "crates/de",
   "crates/plugin_std_random",
@@ -8,7 +9,8 @@ members = [
   "crates/rtp",
   "crates/rte",
   "crates/rtq",
-  "crates/scl",
+  "crates/cli",
   "crates/sclc",
   "crates/scs",
+  "crates/udb",
 ]

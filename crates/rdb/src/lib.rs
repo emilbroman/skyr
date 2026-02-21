@@ -48,11 +48,14 @@ macro_rules! prepared_statements {
 }
 
 prepared_statements! {
-    TableStatements {
+    KeyspaceStatements {
         create_keyspace = r#"
             CREATE KEYSPACE IF NOT EXISTS rdb
             WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
         "#,
+    }
+
+    TableStatements {
         create_resources_table = r#"
             CREATE TABLE IF NOT EXISTS rdb.resources (
                 namespace TEXT,
@@ -121,14 +124,17 @@ impl ClientBuilder {
     pub async fn build(&self) -> Result<Client, ConnectError> {
         let session = Arc::new(self.inner.build().await?);
 
+        let statements = KeyspaceStatements::new(&session).await?;
+
+        session
+            .execute_unpaged(&statements.create_keyspace, ())
+            .await?;
+
         let statements = TableStatements::new(&session).await?;
 
-        let (r0, r1) = futures::join!(
-            session.execute_unpaged(&statements.create_keyspace, ()),
-            session.execute_unpaged(&statements.create_resources_table, ()),
-        );
-        r0?;
-        r1?;
+        session
+            .execute_unpaged(&statements.create_resources_table, ())
+            .await?;
 
         let statements = PreparedStatements::new(&session).await?;
 

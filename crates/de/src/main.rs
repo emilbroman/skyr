@@ -209,7 +209,7 @@ impl Worker {
             DeploymentState::Undesired => {
                 info!(&self.log, "tearing down");
 
-                let owner = deployment.id.commit_hash.to_string();
+                let owner = deployment.fqid();
                 let owner_for_filter = owner.clone();
                 let mut emitted = 0usize;
                 let mut resources =
