@@ -1,17 +1,21 @@
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
+mod challenge;
+
 use axum::{
     Json, Router,
     extract::Extension,
     response::Html,
     routing::{get, post},
 };
+use chrono::Utc;
 use clap::Parser;
 use juniper::{EmptySubscription, FieldResult, RootNode};
 
 pub struct Context {
     udb_client: udb::Client,
+    challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
 }
 
@@ -48,12 +52,25 @@ impl Query {
 
         Ok(User { user })
     }
+
+    async fn signin_challenge(context: &Context, username: String) -> FieldResult<String> {
+        if !USERNAME_REGEX.is_match(&username) {
+            return Err(juniper::FieldError::new(
+                "Invalid username",
+                juniper::Value::Null,
+            ));
+        }
+
+        Ok(context.challenger.challenge(Utc::now(), &username))
+    }
 }
 
 pub struct Mutation;
 
 lazy_static::lazy_static! {
     static ref USERNAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{3,20}$").unwrap();
+    static ref PUBKEY_FINGERPRINT_REGEX: regex::Regex =
+        regex::Regex::new(r"^SHA256:[A-Za-z0-9+/]{43}$").unwrap();
 }
 
 #[juniper::graphql_object(Context = Context)]
@@ -62,7 +79,8 @@ impl Mutation {
         context: &Context,
         username: String,
         email: String,
-    ) -> FieldResult<SignupSuccess> {
+        pubkey_fingerprint: String,
+    ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(juniper::FieldError::new(
                 "Invalid username",
@@ -73,6 +91,13 @@ impl Mutation {
         if email.split('@').take(3).count() != 2 {
             return Err(juniper::FieldError::new(
                 "Invalid email",
+                juniper::Value::Null,
+            ));
+        }
+
+        if !PUBKEY_FINGERPRINT_REGEX.is_match(&pubkey_fingerprint) {
+            return Err(juniper::FieldError::new(
+                "Invalid pubkey fingerprint",
                 juniper::Value::Null,
             ));
         }
@@ -89,9 +114,19 @@ impl Mutation {
                     juniper::Value::Null,
                 ))
             }
-            Ok(user) => Ok(SignupSuccess {
-                user: User { user },
-                token: context
+            Ok(user) => {
+                context
+                    .udb_client
+                    .user(&username)
+                    .pubkeys()
+                    .add(pubkey_fingerprint)
+                    .await
+                    .map_err(|e| {
+                        tracing::error!("Failed to add pubkey fingerprint: {}", e);
+                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    })?;
+
+                let token = context
                     .udb_client
                     .user(&username)
                     .tokens()
@@ -100,19 +135,97 @@ impl Mutation {
                     .map_err(|e| {
                         tracing::error!("Failed to issue token: {}", e);
                         juniper::FieldError::new("Internal server error", juniper::Value::Null)
-                    })?,
-            }),
+                    })?;
+
+                Ok(AuthSuccess {
+                    user: User { user },
+                    token,
+                })
+            }
         }
+    }
+
+    async fn signin(
+        context: &Context,
+        username: String,
+        signature: String,
+        pubkey: String,
+    ) -> FieldResult<AuthSuccess> {
+        if !USERNAME_REGEX.is_match(&username) {
+            return Err(juniper::FieldError::new(
+                "Invalid username",
+                juniper::Value::Null,
+            ));
+        }
+
+        let public_key =
+            russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
+                tracing::warn!("Invalid pubkey format: {}", e);
+                juniper::FieldError::new("Invalid credentials", juniper::Value::Null)
+            })?;
+        let fingerprint = public_key.fingerprint(Default::default()).to_string();
+
+        let mut user_client = context.udb_client.user(&username);
+        let user = match user_client.get().await {
+            Ok(user) => user,
+            Err(udb::UserQueryError::NotFound) => {
+                return Err(juniper::FieldError::new(
+                    "Invalid credentials",
+                    juniper::Value::Null,
+                ));
+            }
+            Err(e) => {
+                tracing::error!("Failed to lookup user: {}", e);
+                return Err(juniper::FieldError::new(
+                    "Internal server error",
+                    juniper::Value::Null,
+                ));
+            }
+        };
+
+        let mut pubkeys = user_client.pubkeys();
+        let has_fingerprint = pubkeys.contains(&fingerprint).await.map_err(|e| {
+            tracing::error!("Failed to check pubkey fingerprint: {}", e);
+            juniper::FieldError::new("Internal server error", juniper::Value::Null)
+        })?;
+
+        if !has_fingerprint {
+            return Err(juniper::FieldError::new(
+                "Invalid credentials",
+                juniper::Value::Null,
+            ));
+        }
+
+        context
+            .challenger
+            .check(&public_key, &signature, &username, Utc::now())
+            .map_err(|_| juniper::FieldError::new("Invalid credentials", juniper::Value::Null))?;
+
+        let token = context
+            .udb_client
+            .user(&username)
+            .tokens()
+            .issue()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to issue token: {}", e);
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?;
+
+        Ok(AuthSuccess {
+            user: User { user },
+            token,
+        })
     }
 }
 
-pub struct SignupSuccess {
+pub struct AuthSuccess {
     user: User,
     token: String,
 }
 
 #[juniper::graphql_object(Context = Context)]
-impl SignupSuccess {
+impl AuthSuccess {
     fn user(&self) -> &User {
         &self.user
     }
@@ -156,6 +269,8 @@ struct Cli {
     port: u16,
     #[arg(long, default_value = "127.0.0.1")]
     udb_hostname: String,
+    #[arg(long)]
+    challenge_salt: String,
 }
 
 #[tokio::main]
@@ -170,6 +285,7 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.udb_hostname)
         .build()
         .await?;
+    let challenger = Arc::new(challenge::Challenger::new(cli.challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
 
@@ -177,6 +293,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphql", post(graphql_handler))
         .route("/graphiql", get(graphiql))
         .layer(Extension(schema))
+        .layer(Extension(challenger))
         .layer(Extension(udb_client));
 
     let addr = SocketAddr::from((cli.host, cli.port));
@@ -190,6 +307,7 @@ async fn main() -> anyhow::Result<()> {
 #[axum::debug_handler]
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
+    Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     Json(request): Json<juniper::http::GraphQLRequest>,
@@ -215,6 +333,7 @@ async fn graphql_handler(
             Ok(user) => {
                 let ctx = Context {
                     udb_client,
+                    challenger,
                     user: Some(user),
                 };
                 return Json(request.execute(&schema, &ctx).await);
@@ -224,6 +343,7 @@ async fn graphql_handler(
 
     let ctx = Context {
         udb_client,
+        challenger,
         user: None,
     };
     Json(request.execute(&schema, &ctx).await)
