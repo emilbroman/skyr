@@ -75,6 +75,7 @@ pub struct RestoreMessage {
     pub resource: ResourceRef,
     pub owner_deployment_id: String,
     pub desired_inputs: Value,
+    pub dependencies: Vec<ResourceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -83,6 +84,7 @@ pub struct AdoptMessage {
     pub from_owner_deployment_id: String,
     pub to_owner_deployment_id: String,
     pub desired_inputs: Value,
+    pub dependencies: Vec<ResourceRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

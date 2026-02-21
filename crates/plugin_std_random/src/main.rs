@@ -26,7 +26,11 @@ impl RandomPlugin {
 
         let mut outputs = sclc::Record::default();
         outputs.insert(String::from("result"), sclc::Value::Int(result));
-        Ok(sclc::Resource { inputs, outputs })
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
     }
 }
 

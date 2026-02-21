@@ -5,21 +5,33 @@ use crate::{Dict, EvalError, Record, Value};
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn("Std/Encoding.toJson", |args, _ctx| {
-        let value = args.into_iter().next().unwrap_or(Value::Nil);
-        let json = to_json_value(&value)?;
-        let encoded = serde_json::to_string(&json)
-            .map_err(|err| EvalError::Custom(format!("failed to encode JSON: {err}")))?;
-        Ok(Value::Str(encoded))
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+
+        first.try_map(|value| {
+            let json = to_json_value(&value)?;
+            let encoded = serde_json::to_string(&json)
+                .map_err(|err| EvalError::Custom(format!("failed to encode JSON: {err}")))?;
+            Ok(Value::Str(encoded))
+        })
     });
 
     eval.add_extern_fn("Std/Encoding.fromJson", |args, _ctx| {
         use crate::ValueAssertions;
 
         let mut args = args.into_iter();
-        let input = args.next().assert_str()?;
-        let json = serde_json::from_str::<JsonValue>(&input)
-            .map_err(|err| EvalError::Custom(format!("invalid JSON: {err}")))?;
-        from_json_value(json)
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+
+        first.try_map(|value| {
+            let input = value.assert_str()?;
+            let json = serde_json::from_str::<JsonValue>(&input)
+                .map_err(|err| EvalError::Custom(format!("invalid JSON: {err}")))?;
+            from_json_value(json)
+        })
     });
 }
 

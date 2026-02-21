@@ -1,11 +1,11 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     time::Duration,
 };
 
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
-use futures_util::{StreamExt, TryStreamExt, future};
+use futures_util::{StreamExt, TryStreamExt};
 use sclc::SourceRepo;
 use slog::{Drain, Logger, debug, error, info, o};
 use tokio::{
@@ -210,18 +210,38 @@ impl Worker {
                 info!(&self.log, "tearing down");
 
                 let owner = deployment.fqid();
-                let owner_for_filter = owner.clone();
-                let mut emitted = 0usize;
-                let mut resources =
-                    self.namespace
-                        .list_resources()
-                        .await?
-                        .try_filter(move |resource| {
-                            future::ready(
-                                resource.owner.as_deref() == Some(owner_for_filter.as_str()),
-                            )
-                        });
+                let mut all_resources = Vec::new();
+                let mut resources = self.namespace.list_resources().await?;
                 while let Some(resource) = resources.try_next().await? {
+                    all_resources.push(resource);
+                }
+
+                let owned_resources = all_resources
+                    .iter()
+                    .filter(|resource| resource.owner.as_deref() == Some(owner.as_str()))
+                    .collect::<Vec<_>>();
+                let mut emitted = 0usize;
+                let mut blocked = 0usize;
+                let living_dependency_targets = all_resources
+                    .iter()
+                    .flat_map(|resource| resource.dependencies.iter().cloned())
+                    .collect::<HashSet<_>>();
+
+                for resource in &owned_resources {
+                    let resource_id = sclc::ResourceId {
+                        ty: resource.resource_type.clone(),
+                        id: resource.id.clone(),
+                    };
+                    if living_dependency_targets.contains(&resource_id) {
+                        blocked += 1;
+                        info!(&self.log, "resource still has living dependents; deferring destroy";
+                            "type" => resource.resource_type.clone(),
+                            "id" => resource.id.clone(),
+                            "owner" => resource.owner.clone()
+                        );
+                        continue;
+                    }
+
                     let message = rtq::Message::Destroy(rtq::DestroyMessage {
                         resource: rtq::ResourceRef {
                             namespace: self.namespace.namespace().to_owned(),
@@ -234,9 +254,9 @@ impl Worker {
                     emitted += 1;
 
                     info!(&self.log, "queued destroy";
-                        "type" => resource.resource_type,
-                        "id" => resource.id,
-                        "owner" => resource.owner
+                        "type" => resource.resource_type.clone(),
+                        "id" => resource.id.clone(),
+                        "owner" => resource.owner.clone()
                     );
                 }
 
@@ -245,8 +265,17 @@ impl Worker {
                     return Ok(());
                 }
 
-                info!(&self.log, "no more resources, setting state to DOWN");
-                self.client.set(DeploymentState::Down).await?;
+                if owned_resources.is_empty() {
+                    info!(&self.log, "no more resources, setting state to DOWN");
+                    self.client.set(DeploymentState::Down).await?;
+                    return Ok(());
+                }
+
+                if blocked > 0 {
+                    info!(&self.log, "teardown waiting on living dependents";
+                        "blocked_resources" => blocked
+                    );
+                }
                 Ok(())
             }
 
@@ -301,6 +330,7 @@ impl Worker {
                 sclc::Resource {
                     inputs: resource.inputs.unwrap_or_default(),
                     outputs: resource.outputs.unwrap_or_default(),
+                    dependencies: resource.dependencies,
                 },
             );
         }
@@ -314,7 +344,11 @@ impl Worker {
             while let Some(effect) = effects_rx.recv().await {
                 had_effect = true;
                 match effect {
-                    sclc::Effect::CreateResource { id, inputs } => {
+                    sclc::Effect::CreateResource {
+                        id,
+                        inputs,
+                        dependencies,
+                    } => {
                         let message = rtq::Message::Create(rtq::CreateMessage {
                             resource: rtq::ResourceRef {
                                 namespace: namespace_id.clone(),
@@ -333,7 +367,14 @@ impl Worker {
                                     continue;
                                 }
                             },
-                            dependencies: vec![],
+                            dependencies: dependencies
+                                .into_iter()
+                                .map(|dependency| rtq::ResourceRef {
+                                    namespace: namespace_id.clone(),
+                                    resource_type: dependency.ty,
+                                    resource_id: dependency.id,
+                                })
+                                .collect(),
                         });
                         if let Err(error) = rtq_publisher.enqueue(&message).await {
                             error!(log, "failed to publish create message";
@@ -348,7 +389,11 @@ impl Worker {
                             "inputs" => format!("{:?}", inputs)
                         )
                     }
-                    sclc::Effect::UpdateResource { id, inputs } => {
+                    sclc::Effect::UpdateResource {
+                        id,
+                        inputs,
+                        dependencies,
+                    } => {
                         let desired_inputs = match serde_json::to_value(&inputs) {
                             Ok(value) => value,
                             Err(error) => {
@@ -360,6 +405,14 @@ impl Worker {
                                 continue;
                             }
                         };
+                        let dependencies = dependencies
+                            .into_iter()
+                            .map(|dependency| rtq::ResourceRef {
+                                namespace: namespace_id.clone(),
+                                resource_type: dependency.ty,
+                                resource_id: dependency.id,
+                            })
+                            .collect::<Vec<_>>();
                         let message = if let Some(from_owner_deployment_id) =
                             unowned_resource_owner_by_id.get(&id).cloned()
                         {
@@ -372,6 +425,7 @@ impl Worker {
                                 from_owner_deployment_id,
                                 to_owner_deployment_id: owner_deployment_id.clone(),
                                 desired_inputs,
+                                dependencies,
                             })
                         } else {
                             rtq::Message::Restore(rtq::RestoreMessage {
@@ -382,6 +436,7 @@ impl Worker {
                                 },
                                 owner_deployment_id: owner_deployment_id.clone(),
                                 desired_inputs,
+                                dependencies,
                             })
                         };
                         if let Err(error) = rtq_publisher.enqueue(&message).await {
