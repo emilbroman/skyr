@@ -1,6 +1,7 @@
 use base64::Engine;
 use rand::{Rng, SeedableRng};
 use redis::{AsyncCommands, Client as RedisClient};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -64,6 +65,12 @@ pub enum UserQueryError {
 
     #[error("user not found")]
     NotFound,
+
+    #[error("system clock error: {0}")]
+    Clock(#[from] std::time::SystemTimeError),
+
+    #[error("token expiry cannot be represented as u32 epoch seconds")]
+    InvalidTokenExpiry,
 }
 
 #[derive(Error, Debug)]
@@ -91,6 +98,7 @@ pub struct Client {
 const PREFIX_USER: &str = "u:";
 const PREFIX_PUBKEY: &str = "p:";
 const PREFIX_TOKEN: &str = "t:";
+const TOKEN_TTL_SECONDS: u64 = 900;
 
 impl Client {
     pub fn user(&self, username: impl Into<String>) -> UserClient {
@@ -201,10 +209,16 @@ pub struct TokensClient {
 
 impl TokensClient {
     pub async fn issue(&mut self) -> Result<String, UserQueryError> {
-        let mut token = String::new();
+        let mut raw_token = String::new();
 
         base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode_string(self.user.client.rng.random::<[u8; 32]>(), &mut token);
+            .encode_string(self.user.client.rng.random::<[u8; 32]>(), &mut raw_token);
+
+        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let expiry = now + TOKEN_TTL_SECONDS;
+        let expiry_u32 = u32::try_from(expiry).map_err(|_| UserQueryError::InvalidTokenExpiry)?;
+        let expiry_hex = hex::encode(expiry_u32.to_be_bytes());
+        let token = format!("{expiry_hex}.{raw_token}");
 
         let _: () = self
             .user
@@ -213,7 +227,7 @@ impl TokensClient {
             .set_ex(
                 format!("{PREFIX_TOKEN}{}", &token),
                 &self.user.username,
-                900,
+                TOKEN_TTL_SECONDS,
             )
             .await?;
 
