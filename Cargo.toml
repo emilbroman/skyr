@@ -9,7 +9,7 @@ members = [
   "crates/rtp",
   "crates/rte",
   "crates/rtq",
-  "crates/scl",
+  "crates/cli",
   "crates/sclc",
   "crates/scs",
   "crates/udb",

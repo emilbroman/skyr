@@ -22,7 +22,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - `crates/cdb`: Cassandra-backed API for repositories, objects, deployments, active deployments, supercession links.
 - `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
 - `crates/sclc`: SCL front-end + runtime pieces (lexer/parser/AST/type-checker/eval), with a std package and compile pipeline.
-- `crates/scl`: CLI/REPL binary for SCL.
+- `crates/cli`: CLI/REPL binary for SCL (compiled as `skyr`).
 - `crates/rdb`: Cassandra schema for resources plus basic ResourceClient CRUD for get/set/delete of inputs/outputs.
 - `crates/rte`: Daemon shell only; no RTQ consumption or transition logic.
 - `crates/rtq`: Placeholder crate (`src/lib.rs` is effectively empty).
