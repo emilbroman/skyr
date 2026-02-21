@@ -1,0 +1,20 @@
+mutation Signup(
+  $username: String!
+  $email: String!
+  $pubkey: String!
+  $signature: String!
+) {
+  signup(
+    username: $username
+    email: $email
+    pubkey: $pubkey
+    signature: $signature
+  ) {
+    user {
+      username
+      email
+      fullname
+    }
+    token
+  }
+}
