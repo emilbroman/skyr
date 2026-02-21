@@ -12,7 +12,7 @@ use clap::Parser;
 use gix_protocol::futures_lite::AsyncWriteExt;
 use gix_ref::Reference;
 use russh::{
-    Channel, ChannelId,
+    Channel, ChannelId, MethodKind,
     keys::{PrivateKey, ssh_key::PublicKey},
     server::{self, Auth, Config, Handler, Server},
 };
@@ -69,6 +69,7 @@ async fn main() -> anyhow::Result<()> {
             }
             .run_on_address(
                 Arc::new(Config {
+                    methods: (&[MethodKind::PublicKey][..]).into(),
                     keys: vec![PrivateKey::from_openssh(
                         std::fs::read_to_string(&key)
                             .map_err(|e| {
