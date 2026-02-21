@@ -18,11 +18,14 @@ use tokio::{
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "db-hostname", default_value = "localhost")]
-        db_hostname: String,
+        #[clap(long = "cdb-hostname", default_value = "localhost")]
+        cdb_hostname: String,
 
-        #[clap(long = "mq-hostname", default_value = "localhost")]
-        mq_hostname: String,
+        #[clap(long = "rdb-hostname", default_value = "localhost")]
+        rdb_hostname: String,
+
+        #[clap(long = "rtq-hostname", default_value = "localhost")]
+        rtq_hostname: String,
     },
 }
 
@@ -36,23 +39,24 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            db_hostname,
-            mq_hostname,
+            cdb_hostname,
+            rdb_hostname,
+            rtq_hostname,
         } => {
             info!(log, "starting deployment engine daemon");
 
             let cdb_client = cdb::ClientBuilder::new()
-                .known_node(&db_hostname)
+                .known_node(&cdb_hostname)
                 .build()
                 .await?;
 
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(&db_hostname)
+                .known_node(&rdb_hostname)
                 .build()
                 .await?;
 
             let rtq_publisher = rtq::ClientBuilder::new()
-                .uri(format!("amqp://{}:5672/%2f", mq_hostname))
+                .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
                 .build_publisher()
                 .await?;
 

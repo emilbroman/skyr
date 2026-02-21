@@ -1,4 +1,3 @@
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 mod challenge;
@@ -15,6 +14,8 @@ use juniper::{EmptySubscription, FieldResult, RootNode};
 
 pub struct Context {
     udb_client: udb::Client,
+    cdb_client: cdb::Client,
+    rdb_client: rdb::Client,
     challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
 }
@@ -42,7 +43,8 @@ pub struct Query;
 
 #[juniper::graphql_object(Context = Context)]
 impl Query {
-    async fn health(_context: &Context) -> bool {
+    async fn health(context: &Context) -> bool {
+        let _ = (&context.cdb_client, &context.rdb_client);
         tokio::task::yield_now().await;
         true
     }
@@ -267,10 +269,14 @@ pub fn schema() -> Schema {
 #[command(name = "api", about = "Skyr GraphQL API")]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
-    host: IpAddr,
+    host: String,
     #[arg(long, default_value_t = 8080)]
     port: u16,
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "localhost")]
+    cdb_hostname: String,
+    #[arg(long, default_value = "localhost")]
+    rdb_hostname: String,
+    #[arg(long, default_value = "localhost")]
     udb_hostname: String,
     #[arg(long)]
     challenge_salt: Option<String>,
@@ -301,6 +307,14 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.udb_hostname)
         .build()
         .await?;
+    let cdb_client = cdb::ClientBuilder::new()
+        .known_node(cli.cdb_hostname)
+        .build()
+        .await?;
+    let rdb_client = rdb::ClientBuilder::new()
+        .known_node(cli.rdb_hostname)
+        .build()
+        .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
@@ -310,9 +324,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphiql", get(graphiql))
         .layer(Extension(schema))
         .layer(Extension(challenger))
+        .layer(Extension(cdb_client))
+        .layer(Extension(rdb_client))
         .layer(Extension(udb_client));
 
-    let addr = SocketAddr::from((cli.host, cli.port));
+    let bind_target = format!("{}:{}", cli.host, cli.port);
+    let addr = tokio::net::lookup_host(&bind_target)
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve bind address {bind_target}"))?;
     tracing::info!("listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -324,6 +344,8 @@ async fn main() -> anyhow::Result<()> {
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(rdb_client): Extension<rdb::Client>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     Json(request): Json<juniper::http::GraphQLRequest>,
@@ -349,6 +371,8 @@ async fn graphql_handler(
             Ok(user) => {
                 let ctx = Context {
                     udb_client,
+                    cdb_client,
+                    rdb_client,
                     challenger,
                     user: Some(user),
                 };
@@ -359,6 +383,8 @@ async fn graphql_handler(
 
     let ctx = Context {
         udb_client,
+        cdb_client,
+        rdb_client,
         challenger,
         user: None,
     };

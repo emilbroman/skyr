@@ -7,11 +7,11 @@ use tokio::task;
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "db-hostname", default_value = "localhost")]
-        db_hostname: String,
+        #[clap(long = "rdb-hostname", default_value = "localhost")]
+        rdb_hostname: String,
 
-        #[clap(long = "mq-hostname", default_value = "localhost")]
-        mq_hostname: String,
+        #[clap(long = "rtq-hostname", default_value = "localhost")]
+        rtq_hostname: String,
 
         #[clap(long = "worker-index", default_value_t = 0)]
         worker_index: u16,
@@ -65,8 +65,8 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            db_hostname,
-            mq_hostname,
+            rdb_hostname,
+            rtq_hostname,
             worker_index,
             worker_count,
             local_workers,
@@ -87,9 +87,9 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--worker-index + --local-workers must be <= --worker-count");
             }
 
-            let uri = format!("amqp://{}:5672/%2f", mq_hostname);
+            let uri = format!("amqp://{}:5672/%2f", rtq_hostname);
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(&db_hostname)
+                .known_node(&rdb_hostname)
                 .build()
                 .await?;
             let plugins = dial_plugins(&log, &plugin).await?;

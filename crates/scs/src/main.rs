@@ -23,14 +23,14 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(short = 'a', long = "address", default_value = "0.0.0.0:22")]
+        #[clap(short = 'a', long = "address", default_value = "127.0.0.1:22")]
         address: String,
 
         #[clap(short = 'k', long = "key", default_value = "host.pem")]
         key: PathBuf,
 
-        #[clap(long = "db-hostname", default_value = "localhost")]
-        db_hostname: String,
+        #[clap(long = "cdb-hostname", default_value = "localhost")]
+        cdb_hostname: String,
 
         #[clap(long = "udb-hostname", default_value = "localhost")]
         udb_hostname: String,
@@ -49,11 +49,11 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             address,
             key,
-            db_hostname,
+            cdb_hostname,
             udb_hostname,
         } => {
             let client = cdb::ClientBuilder::new()
-                .known_node(db_hostname)
+                .known_node(cdb_hostname)
                 .build()
                 .await?;
             let udb_client = udb::ClientBuilder::new()
