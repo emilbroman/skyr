@@ -3,12 +3,27 @@ schema {
   mutation: Mutation
 }
 
+enum DeploymentState {
+  DOWN
+  UNDESIRED
+  LINGERING
+  DESIRED
+}
+
 type AuthSuccess {
   user: User!
   token: String!
 }
 
+type Deployment {
+  ref: String!
+  commit: String!
+  createdAt: String!
+  state: DeploymentState!
+}
+
 type Mutation {
+  createRepository(organization: String!, repository: String!): Repository!
   signup(username: String!, email: String!, pubkey: String!, signature: String!): AuthSuccess!
   signin(username: String!, signature: String!, pubkey: String!): AuthSuccess!
 }
@@ -17,6 +32,12 @@ type Query {
   health: Boolean!
   me: User!
   authChallenge(username: String!): String!
+  repositories: [Repository!]!
+}
+
+type Repository {
+  name: String!
+  deployments: [Deployment!]!
 }
 
 type User {

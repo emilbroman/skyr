@@ -18,11 +18,14 @@ use tokio::{
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "db-hostname", default_value = "localhost")]
-        db_hostname: String,
+        #[clap(long = "cdb-hostname", default_value = "localhost")]
+        cdb_hostname: String,
 
-        #[clap(long = "mq-hostname", default_value = "localhost")]
-        mq_hostname: String,
+        #[clap(long = "rdb-hostname", default_value = "localhost")]
+        rdb_hostname: String,
+
+        #[clap(long = "rtq-hostname", default_value = "localhost")]
+        rtq_hostname: String,
     },
 }
 
@@ -36,23 +39,24 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            db_hostname,
-            mq_hostname,
+            cdb_hostname,
+            rdb_hostname,
+            rtq_hostname,
         } => {
             info!(log, "starting deployment engine daemon");
 
             let cdb_client = cdb::ClientBuilder::new()
-                .known_node(&db_hostname)
+                .known_node(&cdb_hostname)
                 .build()
                 .await?;
 
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(&db_hostname)
+                .known_node(&rdb_hostname)
                 .build()
                 .await?;
 
             let rtq_publisher = rtq::ClientBuilder::new()
-                .uri(format!("amqp://{}:5672/%2f", mq_hostname))
+                .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
                 .build_publisher()
                 .await?;
 
@@ -342,13 +346,13 @@ impl Worker {
         let effects_task = task::spawn(async move {
             let mut had_effect = false;
             while let Some(effect) = effects_rx.recv().await {
-                had_effect = true;
                 match effect {
                     sclc::Effect::CreateResource {
                         id,
                         inputs,
                         dependencies,
                     } => {
+                        had_effect = true;
                         let message = rtq::Message::Create(rtq::CreateMessage {
                             resource: rtq::ResourceRef {
                                 namespace: namespace_id.clone(),
@@ -394,6 +398,7 @@ impl Worker {
                         inputs,
                         dependencies,
                     } => {
+                        had_effect = true;
                         let desired_inputs = match serde_json::to_value(&inputs) {
                             Ok(value) => value,
                             Err(error) => {
@@ -447,6 +452,60 @@ impl Worker {
                         }
 
                         info!(log, "effect update resource";
+                            "type" => id.ty,
+                            "id" => id.id,
+                            "inputs" => format!("{:?}", inputs)
+                        )
+                    }
+                    sclc::Effect::TouchResource {
+                        id,
+                        inputs,
+                        dependencies,
+                    } => {
+                        let Some(from_owner_deployment_id) =
+                            unowned_resource_owner_by_id.get(&id).cloned()
+                        else {
+                            continue;
+                        };
+                        had_effect = true;
+                        let desired_inputs = match serde_json::to_value(&inputs) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                error!(log, "failed to encode touch inputs";
+                                    "type" => id.ty,
+                                    "id" => id.id,
+                                    "error" => error.to_string()
+                                );
+                                continue;
+                            }
+                        };
+                        let dependencies = dependencies
+                            .into_iter()
+                            .map(|dependency| rtq::ResourceRef {
+                                namespace: namespace_id.clone(),
+                                resource_type: dependency.ty,
+                                resource_id: dependency.id,
+                            })
+                            .collect::<Vec<_>>();
+                        let message = rtq::Message::Adopt(rtq::AdoptMessage {
+                            resource: rtq::ResourceRef {
+                                namespace: namespace_id.clone(),
+                                resource_type: id.ty.clone(),
+                                resource_id: id.id.clone(),
+                            },
+                            from_owner_deployment_id,
+                            to_owner_deployment_id: owner_deployment_id.clone(),
+                            desired_inputs,
+                            dependencies,
+                        });
+                        if let Err(error) = rtq_publisher.enqueue(&message).await {
+                            error!(log, "failed to publish touch adopt message";
+                                "error" => error.to_string()
+                            );
+                            continue;
+                        }
+
+                        info!(log, "effect touch resource adopt";
                             "type" => id.ty,
                             "id" => id.id,
                             "inputs" => format!("{:?}", inputs)

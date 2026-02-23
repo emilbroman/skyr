@@ -164,6 +164,9 @@ pub async fn run_repl() -> anyhow::Result<()> {
                 sclc::Effect::UpdateResource { id, inputs, .. } => {
                     println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
                 }
+                sclc::Effect::TouchResource { id, inputs, .. } => {
+                    println!("TOUCH {}:{} {:?}", id.ty, id.id, inputs);
+                }
             }
         }
     });

@@ -2,8 +2,10 @@ use clap::Parser;
 use std::path::PathBuf;
 
 mod auth;
+mod deployment;
 mod fs_source;
 mod repl;
+mod repo;
 mod run;
 mod signin;
 mod signup;
@@ -21,6 +23,8 @@ enum Program {
     Signin(signin::SigninArgs),
     Signup(signup::SignupArgs),
     Whoami(whoami::WhoamiArgs),
+    Repo(repo::RepoArgs),
+    Deployments(deployment::DeploymentsArgs),
 }
 
 #[tokio::main]
@@ -40,6 +44,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Program::Whoami(args) => {
             whoami::run_whoami(args).await?;
+        }
+        Program::Repo(args) => {
+            repo::run_repo(args).await?;
+        }
+        Program::Deployments(args) => {
+            deployment::run_deployments(args).await?;
         }
     }
 

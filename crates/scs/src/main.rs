@@ -23,14 +23,14 @@ use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(short = 'a', long = "address", default_value = "0.0.0.0:22")]
+        #[clap(short = 'a', long = "address", default_value = "127.0.0.1:22")]
         address: String,
 
         #[clap(short = 'k', long = "key", default_value = "host.pem")]
         key: PathBuf,
 
-        #[clap(long = "db-hostname", default_value = "localhost")]
-        db_hostname: String,
+        #[clap(long = "cdb-hostname", default_value = "localhost")]
+        cdb_hostname: String,
 
         #[clap(long = "udb-hostname", default_value = "localhost")]
         udb_hostname: String,
@@ -49,11 +49,11 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             address,
             key,
-            db_hostname,
+            cdb_hostname,
             udb_hostname,
         } => {
             let client = cdb::ClientBuilder::new()
-                .known_node(db_hostname)
+                .known_node(cdb_hostname)
                 .build()
                 .await?;
             let udb_client = udb::ClientBuilder::new()
@@ -205,6 +205,8 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
                         if let Err(err) = ensure_repo_access(user, &repo) {
                             Err(err)
+                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
+                            Err(err)
                         } else {
                             CommandHandler {
                                 log: log.clone(),
@@ -218,6 +220,8 @@ impl Handler for ConfigHandler {
                     }
                     (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
                         if let Err(err) = ensure_repo_access(user, &repo) {
+                            Err(err)
+                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
                             Err(err)
                         } else {
                             CommandHandler {
@@ -240,7 +244,7 @@ impl Handler for ConfigHandler {
                     }
                     Err(e) => {
                         channel
-                            .extended_data(1, e.to_string().as_bytes())
+                            .extended_data(1, format!("{e}\n").as_bytes())
                             .await
                             .unwrap_or_default();
                         channel.exit_status(1).await.unwrap_or_default();
@@ -290,6 +294,16 @@ fn ensure_repo_access(user: &udb::User, repo: &RepositoryName) -> anyhow::Result
     }
 
     Ok(())
+}
+
+async fn ensure_repo_exists(client: &cdb::Client, repo: &RepositoryName) -> anyhow::Result<()> {
+    match client.repo(repo.clone()).get().await {
+        Ok(_) => Ok(()),
+        Err(cdb::RepositoryQueryError::NotFound) => {
+            bail!("repository '{}' does not exist", repo);
+        }
+        Err(err) => Err(anyhow!("failed to query repository '{}': {}", repo, err)),
+    }
 }
 
 struct CommandHandler<'a> {
@@ -602,12 +616,6 @@ impl<'a> CommandHandler<'a> {
             data: Option<Vec<u8>>,
         }
 
-        struct ResolvedObject {
-            kind: gix_object::Kind,
-            data: Vec<u8>,
-            id: gix_hash::ObjectId,
-        }
-
         fn decode_varint(data: &[u8], mut idx: usize) -> anyhow::Result<(u64, usize)> {
             let mut size = 0u64;
             let mut shift = 0u32;
@@ -860,95 +868,110 @@ impl<'a> CommandHandler<'a> {
             reader.read_exact(&mut trailer).await?;
         }
 
-        let mut resolved_by_offset: HashMap<u64, ResolvedObject> = HashMap::new();
-        let mut resolved_by_id: HashMap<gix_hash::ObjectId, u64> = HashMap::new();
+        let mut oid_by_offset: HashMap<u64, gix_hash::ObjectId> = HashMap::new();
+
+        fn infer_object_kind(
+            id: gix_hash::ObjectId,
+            data: &[u8],
+        ) -> anyhow::Result<gix_object::Kind> {
+            for kind in [
+                gix_object::Kind::Commit,
+                gix_object::Kind::Tree,
+                gix_object::Kind::Blob,
+                gix_object::Kind::Tag,
+            ] {
+                let computed = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, data)?;
+                if computed == id {
+                    return Ok(kind);
+                }
+            }
+            bail!("failed to infer object kind for {}", id);
+        }
 
         loop {
             let mut progress = false;
-            for entry in entries.iter_mut() {
-                if resolved_by_offset.contains_key(&entry.pack_offset) {
+            for entry_idx in 0..entries.len() {
+                let pack_offset = entries[entry_idx].pack_offset;
+                if oid_by_offset.contains_key(&pack_offset) {
                     continue;
                 }
-                match entry.header {
+                match entries[entry_idx].header {
                     header @ gix_pack::data::entry::Header::Commit
                     | header @ gix_pack::data::entry::Header::Tree
                     | header @ gix_pack::data::entry::Header::Blob
                     | header @ gix_pack::data::entry::Header::Tag => {
                         let kind = header.as_kind().expect("base objects have a kind");
-                        let data = entry
+                        let data = entries[entry_idx]
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing base object data"))?;
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
-                        resolved_by_id.insert(id, entry.pack_offset);
-                        resolved_by_offset
-                            .insert(entry.pack_offset, ResolvedObject { kind, data, id });
+                        let object =
+                            gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
+                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        self.client.write_object(id, object).await?;
+                        oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
                     gix_pack::data::entry::Header::OfsDelta { base_distance } => {
-                        let base_offset = entry
-                            .pack_offset
+                        let base_offset = pack_offset
                             .checked_sub(base_distance)
                             .ok_or_else(|| anyhow!("ofs-delta base offset underflow"))?;
-                        let delta = entry
+                        let Some(base_id) = oid_by_offset.get(&base_offset).copied() else {
+                            continue;
+                        };
+                        let base_data =
+                            self.client.read_raw_object(base_id).await.map_err(|err| {
+                                anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
+                            })?;
+                        let delta = entries[entry_idx]
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
-                        let (data, kind) = {
-                            let Some(base) = resolved_by_offset.get(&base_offset) else {
-                                continue;
-                            };
-                            let data = apply_delta(&base.data, &delta)?;
-                            (data, base.kind)
-                        };
+                        let kind = infer_object_kind(base_id, &base_data)?;
+                        let data = apply_delta(&base_data, &delta)?;
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
-                        resolved_by_id.insert(id, entry.pack_offset);
-                        resolved_by_offset
-                            .insert(entry.pack_offset, ResolvedObject { kind, data, id });
+                        let object =
+                            gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
+                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        self.client.write_object(id, object).await?;
+                        oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
                     gix_pack::data::entry::Header::RefDelta { base_id } => {
-                        let Some(base_offset) = resolved_by_id.get(&base_id).copied() else {
-                            continue;
+                        let base_data = match self.client.read_raw_object(base_id).await {
+                            Ok(data) => data,
+                            Err(cdb::LoadObjectError::NotFound) => continue,
+                            Err(err) => {
+                                return Err(anyhow!(
+                                    "failed to load ref-delta base object {}: {}",
+                                    base_id,
+                                    err
+                                ));
+                            }
                         };
-                        let delta = entry
+                        let kind = infer_object_kind(base_id, &base_data)?;
+
+                        let delta = entries[entry_idx]
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
-                        let (data, kind) = {
-                            let base = resolved_by_offset
-                                .get(&base_offset)
-                                .ok_or_else(|| anyhow!("ref-delta base not resolved"))?;
-                            let data = apply_delta(&base.data, &delta)?;
-                            (data, base.kind)
-                        };
+                        let data = apply_delta(&base_data, &delta)?;
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
-                        resolved_by_id.insert(id, entry.pack_offset);
-                        resolved_by_offset
-                            .insert(entry.pack_offset, ResolvedObject { kind, data, id });
+                        let object =
+                            gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
+                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        self.client.write_object(id, object).await?;
+                        oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
                 }
             }
-            if resolved_by_offset.len() == entries.len() {
+            if oid_by_offset.len() == entries.len() {
                 break;
             }
             if !progress {
                 bail!("unable to resolve all deltas in pack");
-            }
-        }
-
-        if !entries.is_empty() {
-            debug!(self.log, "unpacked packfile");
-
-            for entry in entries.iter() {
-                let resolved = resolved_by_offset
-                    .get(&entry.pack_offset)
-                    .ok_or_else(|| anyhow!("missing resolved object for pack entry"))?;
-                let object = gix_object::ObjectRef::from_bytes(resolved.kind, &resolved.data)?
-                    .into_owned()?;
-                debug!(self.log, "writing {} {}", object.kind(), resolved.id);
-                self.client.write_object(resolved.id, object).await?;
             }
         }
 

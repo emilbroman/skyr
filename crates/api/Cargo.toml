@@ -9,6 +9,7 @@ axum = { version = "0.7.9", features = ["macros"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["clock"] }
 clap = { version = "4.5.48", features = ["derive"] }
+futures-util = "0.3.31"
 http = "1.4.0"
 juniper = { version = "0.16.2", features = ["schema-language"] }
 lazy_static = "1.5.0"
@@ -19,4 +20,6 @@ sha2 = "0.10.9"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+cdb = { path = "../cdb" }
+rdb = { path = "../rdb" }
 udb = { path = "../udb" }

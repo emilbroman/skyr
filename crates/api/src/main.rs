@@ -1,4 +1,3 @@
-use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 mod challenge;
@@ -11,10 +10,13 @@ use axum::{
 };
 use chrono::Utc;
 use clap::Parser;
+use futures_util::{StreamExt, TryStreamExt};
 use juniper::{EmptySubscription, FieldResult, RootNode};
 
 pub struct Context {
     udb_client: udb::Client,
+    cdb_client: cdb::Client,
+    rdb_client: rdb::Client,
     challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
 }
@@ -42,7 +44,8 @@ pub struct Query;
 
 #[juniper::graphql_object(Context = Context)]
 impl Query {
-    async fn health(_context: &Context) -> bool {
+    async fn health(context: &Context) -> bool {
+        let _ = (&context.cdb_client, &context.rdb_client);
         tokio::task::yield_now().await;
         true
     }
@@ -63,6 +66,25 @@ impl Query {
 
         Ok(context.challenger.challenge(Utc::now(), &username))
     }
+
+    async fn repositories(context: &Context) -> FieldResult<Vec<Repository>> {
+        let (_, user) = context.check_auth().await?;
+        context
+            .cdb_client
+            .repositories_by_organization(user.username.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list repositories: {}", e);
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .map(|repository| repository.map(|repository| Repository { repository }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read repository row: {}", e);
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
 }
 
 pub struct Mutation;
@@ -73,6 +95,50 @@ lazy_static::lazy_static! {
 
 #[juniper::graphql_object(Context = Context)]
 impl Mutation {
+    async fn create_repository(
+        context: &Context,
+        organization: String,
+        repository: String,
+    ) -> FieldResult<Repository> {
+        let (_, user) = context.check_auth().await?;
+
+        if organization != user.username {
+            return Err(juniper::FieldError::new(
+                "Permission denied",
+                juniper::Value::Null,
+            ));
+        }
+
+        if !USERNAME_REGEX.is_match(&repository) {
+            return Err(juniper::FieldError::new(
+                "Invalid repository name",
+                juniper::Value::Null,
+            ));
+        }
+
+        let name = cdb::RepositoryName {
+            organization,
+            repository,
+        };
+
+        let repository = context
+            .cdb_client
+            .repo(name)
+            .create()
+            .await
+            .map_err(|e| match e {
+                cdb::CreateRepositoryError::AlreadyExists => {
+                    juniper::FieldError::new("Repository already exists", juniper::Value::Null)
+                }
+                _ => {
+                    tracing::error!("Failed to create repository: {}", e);
+                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                }
+            })?;
+
+        Ok(Repository { repository })
+    }
+
     async fn signup(
         context: &Context,
         username: String,
@@ -257,6 +323,92 @@ impl User {
     }
 }
 
+pub struct Repository {
+    repository: cdb::Repository,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Repository {
+    fn name(&self) -> String {
+        self.repository.name.repository.clone()
+    }
+
+    async fn deployments(&self, context: &Context) -> FieldResult<Vec<Deployment>> {
+        context
+            .cdb_client
+            .repo(self.repository.name.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to list deployments for {}: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .map(|d| d.map(|deployment| Deployment { deployment }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to read deployments for {}: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
+}
+
+pub struct Deployment {
+    deployment: cdb::Deployment,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Deployment {
+    #[graphql(name = "ref")]
+    fn r#ref(&self) -> &str {
+        &self.deployment.id.ref_name
+    }
+
+    fn commit(&self) -> String {
+        self.deployment.id.commit_hash.to_string()
+    }
+
+    #[graphql(name = "createdAt")]
+    fn created_at(&self) -> String {
+        self.deployment.created_at.to_rfc3339()
+    }
+
+    fn state(&self) -> DeploymentState {
+        self.deployment.state.into()
+    }
+}
+
+#[derive(Clone, Copy, juniper::GraphQLEnum)]
+enum DeploymentState {
+    #[graphql(name = "DOWN")]
+    Down,
+    #[graphql(name = "UNDESIRED")]
+    Undesired,
+    #[graphql(name = "LINGERING")]
+    Lingering,
+    #[graphql(name = "DESIRED")]
+    Desired,
+}
+
+impl From<cdb::DeploymentState> for DeploymentState {
+    fn from(state: cdb::DeploymentState) -> Self {
+        match state {
+            cdb::DeploymentState::Down => DeploymentState::Down,
+            cdb::DeploymentState::Undesired => DeploymentState::Undesired,
+            cdb::DeploymentState::Lingering => DeploymentState::Lingering,
+            cdb::DeploymentState::Desired => DeploymentState::Desired,
+        }
+    }
+}
+
 pub type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
 
 pub fn schema() -> Schema {
@@ -267,10 +419,14 @@ pub fn schema() -> Schema {
 #[command(name = "api", about = "Skyr GraphQL API")]
 struct Cli {
     #[arg(long, default_value = "127.0.0.1")]
-    host: IpAddr,
+    host: String,
     #[arg(long, default_value_t = 8080)]
     port: u16,
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(long, default_value = "localhost")]
+    cdb_hostname: String,
+    #[arg(long, default_value = "localhost")]
+    rdb_hostname: String,
+    #[arg(long, default_value = "localhost")]
     udb_hostname: String,
     #[arg(long)]
     challenge_salt: Option<String>,
@@ -301,6 +457,14 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.udb_hostname)
         .build()
         .await?;
+    let cdb_client = cdb::ClientBuilder::new()
+        .known_node(cli.cdb_hostname)
+        .build()
+        .await?;
+    let rdb_client = rdb::ClientBuilder::new()
+        .known_node(cli.rdb_hostname)
+        .build()
+        .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
@@ -310,9 +474,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphiql", get(graphiql))
         .layer(Extension(schema))
         .layer(Extension(challenger))
+        .layer(Extension(cdb_client))
+        .layer(Extension(rdb_client))
         .layer(Extension(udb_client));
 
-    let addr = SocketAddr::from((cli.host, cli.port));
+    let bind_target = format!("{}:{}", cli.host, cli.port);
+    let addr = tokio::net::lookup_host(&bind_target)
+        .await?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("failed to resolve bind address {bind_target}"))?;
     tracing::info!("listening on http://{addr}");
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -324,6 +494,8 @@ async fn main() -> anyhow::Result<()> {
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(rdb_client): Extension<rdb::Client>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     Json(request): Json<juniper::http::GraphQLRequest>,
@@ -349,6 +521,8 @@ async fn graphql_handler(
             Ok(user) => {
                 let ctx = Context {
                     udb_client,
+                    cdb_client,
+                    rdb_client,
                     challenger,
                     user: Some(user),
                 };
@@ -359,6 +533,8 @@ async fn graphql_handler(
 
     let ctx = Context {
         udb_client,
+        cdb_client,
+        rdb_client,
         challenger,
         user: None,
     };

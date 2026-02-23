@@ -155,6 +155,11 @@ pub enum Effect {
         inputs: crate::Record,
         dependencies: Vec<crate::ResourceId>,
     },
+    TouchResource {
+        id: crate::ResourceId,
+        inputs: crate::Record,
+        dependencies: Vec<crate::ResourceId>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -220,6 +225,12 @@ impl EvalCtx {
             })?;
             return Ok(None);
         }
+
+        self.emit(Effect::TouchResource {
+            id: resource_id,
+            inputs: inputs.clone(),
+            dependencies,
+        })?;
 
         Ok(Some(resource.outputs.clone()))
     }
@@ -1050,6 +1061,52 @@ mod tests {
                 assert_eq!(dependencies, vec![dependency]);
             }
             Ok(other) => panic!("expected update effect, got {other:?}"),
+            Err(error) => panic!("expected queued effect, got {error}"),
+        }
+    }
+
+    #[test]
+    fn resource_effect_touches_when_unchanged() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let id = ResourceId {
+            ty: "Std/Random.Int".to_string(),
+            id: "x".to_string(),
+        };
+        let mut inputs = crate::Record::default();
+        inputs.insert("min".to_string(), Value::Int(1));
+        inputs.insert("max".to_string(), Value::Int(2));
+        let dependency = ResourceId {
+            ty: "Std/Random.Int".to_string(),
+            id: "seed".to_string(),
+        };
+        eval.add_resource(
+            id.clone(),
+            Resource {
+                inputs: inputs.clone(),
+                outputs: crate::Record::default(),
+                dependencies: vec![dependency.clone()],
+            },
+        );
+        let mut dependencies = std::collections::BTreeSet::new();
+        dependencies.insert(dependency.clone());
+
+        let outputs = eval
+            .ctx
+            .resource(id.ty.clone(), id.id.clone(), &inputs, dependencies)
+            .expect("resource lookup should succeed");
+        assert_eq!(outputs, Some(crate::Record::default()));
+
+        match rx.try_recv() {
+            Ok(Effect::TouchResource {
+                id: effect_id,
+                dependencies,
+                ..
+            }) => {
+                assert_eq!(effect_id, id);
+                assert_eq!(dependencies, vec![dependency]);
+            }
+            Ok(other) => panic!("expected touch effect, got {other:?}"),
             Err(error) => panic!("expected queued effect, got {error}"),
         }
     }
