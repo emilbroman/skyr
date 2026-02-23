@@ -386,6 +386,22 @@ impl Deployment {
     }
 }
 
+pub struct Resource {
+    resource: rdb::Resource,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Resource {
+    #[graphql(name = "type")]
+    fn r#type(&self) -> &str {
+        &self.resource.resource_type
+    }
+
+    fn id(&self) -> &str {
+        &self.resource.id
+    }
+}
+
 #[derive(Clone, Copy, juniper::GraphQLEnum)]
 enum DeploymentState {
     #[graphql(name = "DOWN")]
