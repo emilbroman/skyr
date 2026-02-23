@@ -2,6 +2,9 @@ query ListRepositoryDeployments {
   repositories {
     name
     deployments {
+      ref
+      commit
+      createdAt
       state
     }
   }

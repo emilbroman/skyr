@@ -15,11 +15,7 @@ pub struct RepoArgs {
 #[derive(Subcommand, Debug)]
 enum RepoCommand {
     List,
-    Create {
-        repository: String,
-    },
-    #[command(external_subcommand)]
-    Repository(Vec<String>),
+    Create { repository: String },
 }
 
 #[derive(GraphQLQuery)]
@@ -28,14 +24,6 @@ enum RepoCommand {
     query_path = "src/graphql/list_repositories.graphql"
 )]
 struct ListRepositories;
-
-#[derive(GraphQLQuery)]
-#[graphql(
-    schema_path = "../api/schema.graphql",
-    query_path = "src/graphql/list_repository_deployments.graphql",
-    response_derives = "Debug"
-)]
-struct ListRepositoryDeployments;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -55,19 +43,6 @@ pub async fn run_repo(args: RepoArgs) -> anyhow::Result<()> {
         }
         RepoCommand::Create { repository } => {
             create_repository(&client, &endpoint, &token, &repository).await?;
-        }
-        RepoCommand::Repository(parts) => {
-            let [repository, deployments, list] = parts.as_slice() else {
-                return Err(anyhow!(
-                    "usage: skyr repo <organization>/<repository> deployments list"
-                ));
-            };
-            if deployments != "deployments" || list != "list" {
-                return Err(anyhow!(
-                    "usage: skyr repo <organization>/<repository> deployments list"
-                ));
-            }
-            list_deployments(&client, &endpoint, &token, repository).await?;
         }
     }
 
@@ -153,54 +128,7 @@ async fn list_repositories(
     Ok(())
 }
 
-async fn list_deployments(
-    client: &reqwest::Client,
-    endpoint: &str,
-    token: &str,
-    repository: &str,
-) -> anyhow::Result<()> {
-    let (_, repository_name) = parse_repository_path(repository)?;
-
-    let body = ListRepositoryDeployments::build_query(list_repository_deployments::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send deployments query")?;
-    let response: graphql_client::Response<list_repository_deployments::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode deployments response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "deployment list failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("deployments response did not include data")?;
-    let repository = data
-        .repositories
-        .into_iter()
-        .find(|repo| repo.name == repository_name)
-        .ok_or_else(|| anyhow!("repository '{}' not found", repository))?;
-
-    for deployment in repository.deployments {
-        println!("{:?}", deployment.state);
-    }
-    Ok(())
-}
-
-fn parse_repository_path(repository: &str) -> anyhow::Result<(&str, &str)> {
+pub(crate) fn parse_repository_path(repository: &str) -> anyhow::Result<(&str, &str)> {
     let (organization, repository_name) = repository
         .split_once('/')
         .ok_or_else(|| anyhow!("repository must be in <organization>/<repository> format"))?;
