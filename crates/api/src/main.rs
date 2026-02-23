@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, sync::Arc};
 mod challenge;
 
 use axum::{
-    Json, Router,
+    Json as AxumJson, Router,
     extract::Extension,
     response::Html,
     routing::{get, post},
@@ -11,7 +11,9 @@ use axum::{
 use chrono::Utc;
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
-use juniper::{EmptySubscription, FieldResult, RootNode};
+use juniper::{
+    EmptySubscription, FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar,
+};
 
 pub struct Context {
     udb_client: udb::Client,
@@ -558,6 +560,101 @@ impl From<cdb::DeploymentState> for DeploymentState {
     }
 }
 
+#[derive(Clone, Debug)]
+#[graphql_scalar(with = json_scalar, parse_token(String), name = "JSON")]
+pub struct JsonValue(pub serde_json::Value);
+
+mod json_scalar {
+    use super::*;
+
+    pub(super) fn to_output<S: ScalarValue>(value: &JsonValue) -> Value<S> {
+        json_to_graphql_value(&value.0)
+    }
+
+    pub(super) fn from_input<S: ScalarValue>(value: &InputValue<S>) -> Result<JsonValue, String> {
+        Ok(JsonValue(input_to_json(value)?))
+    }
+}
+
+fn json_to_graphql_value<S: ScalarValue>(value: &serde_json::Value) -> Value<S> {
+    match value {
+        serde_json::Value::Null => Value::null(),
+        serde_json::Value::Bool(value) => Value::scalar(*value),
+        serde_json::Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                if let Ok(value) = i32::try_from(value) {
+                    Value::scalar(value)
+                } else {
+                    Value::scalar(value as f64)
+                }
+            } else if let Some(value) = value.as_u64() {
+                if let Ok(value) = i32::try_from(value) {
+                    Value::scalar(value)
+                } else {
+                    Value::scalar(value as f64)
+                }
+            } else if let Some(value) = value.as_f64() {
+                Value::scalar(value)
+            } else {
+                Value::null()
+            }
+        }
+        serde_json::Value::String(value) => Value::scalar(value.clone()),
+        serde_json::Value::Array(values) => Value::list(
+            values
+                .iter()
+                .map(json_to_graphql_value::<S>)
+                .collect::<Vec<_>>(),
+        ),
+        serde_json::Value::Object(values) => {
+            let mut object = juniper::Object::with_capacity(values.len());
+            for (name, value) in values {
+                object.add_field(name.to_string(), json_to_graphql_value::<S>(value));
+            }
+            Value::object(object)
+        }
+    }
+}
+
+fn input_to_json<S: ScalarValue>(value: &InputValue<S>) -> Result<serde_json::Value, String> {
+    match value {
+        InputValue::Null => Ok(serde_json::Value::Null),
+        InputValue::Scalar(scalar) => {
+            if let Some(value) = scalar.as_str() {
+                Ok(serde_json::Value::String(value.to_string()))
+            } else if let Some(value) = scalar.as_bool() {
+                Ok(serde_json::Value::Bool(value))
+            } else if let Some(value) = scalar.as_int() {
+                Ok(serde_json::Value::Number(serde_json::Number::from(value)))
+            } else if let Some(value) = scalar.as_float() {
+                let Some(value) = serde_json::Number::from_f64(value) else {
+                    return Err("JSON cannot represent NaN or infinite floats".to_string());
+                };
+                Ok(serde_json::Value::Number(value))
+            } else {
+                Err(format!("Expected JSON scalar, found: {value}"))
+            }
+        }
+        InputValue::Enum(value) | InputValue::Variable(value) => {
+            Ok(serde_json::Value::String(value.clone()))
+        }
+        InputValue::List(values) => {
+            let mut array = Vec::with_capacity(values.len());
+            for item in values {
+                array.push(input_to_json(&item.item)?);
+            }
+            Ok(serde_json::Value::Array(array))
+        }
+        InputValue::Object(values) => {
+            let mut object = serde_json::Map::with_capacity(values.len());
+            for (key, item) in values {
+                object.insert(key.item.clone(), input_to_json(&item.item)?);
+            }
+            Ok(serde_json::Value::Object(object))
+        }
+    }
+}
+
 pub type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
 
 pub fn schema() -> Schema {
@@ -647,8 +744,8 @@ async fn graphql_handler(
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
-    Json(request): Json<juniper::http::GraphQLRequest>,
-) -> Json<juniper::http::GraphQLResponse> {
+    AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
+) -> AxumJson<juniper::http::GraphQLResponse> {
     let auth_header = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
@@ -657,13 +754,13 @@ async fn graphql_handler(
     if let Some(token) = auth_header {
         match udb_client.lookup_token(token).await {
             Err(udb::LookupTokenError::InvalidToken) => {
-                return Json(juniper::http::GraphQLResponse::error(
+                return AxumJson(juniper::http::GraphQLResponse::error(
                     "Invalid token".into(),
                 ));
             }
             Err(e) => {
                 tracing::error!("Failed to lookup token: {}", e);
-                return Json(juniper::http::GraphQLResponse::error(
+                return AxumJson(juniper::http::GraphQLResponse::error(
                     "Internal server error".into(),
                 ));
             }
@@ -675,7 +772,7 @@ async fn graphql_handler(
                     challenger,
                     user: Some(user),
                 };
-                return Json(request.execute(&schema, &ctx).await);
+                return AxumJson(request.execute(&schema, &ctx).await);
             }
         }
     }
@@ -687,7 +784,7 @@ async fn graphql_handler(
         challenger,
         user: None,
     };
-    Json(request.execute(&schema, &ctx).await)
+    AxumJson(request.execute(&schema, &ctx).await)
 }
 
 async fn graphiql() -> Html<String> {
