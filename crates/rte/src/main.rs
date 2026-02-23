@@ -1,4 +1,5 @@
 use clap::Parser;
+use ldb::Severity;
 use slog::{Drain, Logger, error, info, o, warn};
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -12,6 +13,9 @@ enum Program {
 
         #[clap(long = "rtq-hostname", default_value = "localhost")]
         rtq_hostname: String,
+
+        #[clap(long = "ldb-hostname", default_value = "localhost")]
+        ldb_hostname: String,
 
         #[clap(long = "worker-index", default_value_t = 0)]
         worker_index: u16,
@@ -67,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             rdb_hostname,
             rtq_hostname,
+            ldb_hostname,
             worker_index,
             worker_count,
             local_workers,
@@ -91,6 +96,10 @@ async fn main() -> anyhow::Result<()> {
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(&rdb_hostname)
                 .build()
+                .await?;
+            let ldb_publisher = ldb::ClientBuilder::new()
+                .brokers(format!("{}:9092", ldb_hostname))
+                .build_publisher()
                 .await?;
             let plugins = dial_plugins(&log, &plugin).await?;
             let mut handles = Vec::new();
@@ -118,6 +127,7 @@ async fn main() -> anyhow::Result<()> {
                     worker_log,
                     consumer,
                     rdb_client.clone(),
+                    ldb_publisher.clone(),
                     plugins.clone(),
                 )));
             }
@@ -137,6 +147,7 @@ async fn worker_loop(
     log: Logger,
     mut consumer: rtq::Consumer,
     rdb_client: rdb::Client,
+    ldb_publisher: ldb::Publisher,
     plugins: HashMap<String, rtp::PluginClient>,
 ) -> anyhow::Result<()> {
     loop {
@@ -270,6 +281,17 @@ async fn worker_loop(
                     "resource_type" => message.resource.resource_type.clone(),
                     "resource_id" => message.resource.resource_id.clone()
                 );
+                log_deployment_event(
+                    &log,
+                    &ldb_publisher,
+                    &message.owner_deployment_id,
+                    Severity::Info,
+                    format!(
+                        "CREATE applied for {}.{}",
+                        message.resource.resource_type, message.resource.resource_id
+                    ),
+                )
+                .await;
             }
             rtq::Message::Destroy(message) => {
                 let resource_client = rdb_client
@@ -364,6 +386,17 @@ async fn worker_loop(
                     "resource_type" => message.resource.resource_type.clone(),
                     "resource_id" => message.resource.resource_id.clone()
                 );
+                log_deployment_event(
+                    &log,
+                    &ldb_publisher,
+                    &message.owner_deployment_id,
+                    Severity::Info,
+                    format!(
+                        "DESTROY applied for {}.{}",
+                        message.resource.resource_type, message.resource.resource_id
+                    ),
+                )
+                .await;
             }
             rtq::Message::Adopt(message) => {
                 let resource_client = rdb_client
@@ -519,6 +552,29 @@ async fn worker_loop(
                     "from_owner" => message.from_owner_deployment_id.clone(),
                     "to_owner" => message.to_owner_deployment_id.clone()
                 );
+                let summary = format!(
+                    "ADOPT applied for {}.{} from {} to {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    message.from_owner_deployment_id,
+                    message.to_owner_deployment_id
+                );
+                log_deployment_event(
+                    &log,
+                    &ldb_publisher,
+                    &message.from_owner_deployment_id,
+                    Severity::Info,
+                    summary.clone(),
+                )
+                .await;
+                log_deployment_event(
+                    &log,
+                    &ldb_publisher,
+                    &message.to_owner_deployment_id,
+                    Severity::Info,
+                    summary,
+                )
+                .await;
             }
             rtq::Message::Restore(message) => {
                 let resource_client = rdb_client
@@ -670,6 +726,17 @@ async fn worker_loop(
                     "resource_id" => message.resource.resource_id.clone(),
                     "owner" => message.owner_deployment_id.clone()
                 );
+                log_deployment_event(
+                    &log,
+                    &ldb_publisher,
+                    &message.owner_deployment_id,
+                    Severity::Info,
+                    format!(
+                        "RESTORE applied for {}.{}",
+                        message.resource.resource_type, message.resource.resource_id
+                    ),
+                )
+                .await;
             }
         }
 
@@ -706,4 +773,20 @@ fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::Resour
             id: dependency.resource_id.clone(),
         })
         .collect()
+}
+
+async fn log_deployment_event(
+    log: &Logger,
+    publisher: &ldb::Publisher,
+    deployment_id: &str,
+    severity: Severity,
+    message: String,
+) {
+    let namespace_publisher = publisher.namespace(deployment_id.to_string());
+    if let Err(error) = namespace_publisher.log(severity, message).await {
+        warn!(log, "failed to publish deployment log event";
+            "deployment_id" => deployment_id.to_string(),
+            "error" => error.to_string()
+        );
+    }
 }
