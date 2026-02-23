@@ -450,15 +450,16 @@ impl Deployment {
             "{}/{}",
             self.deployment.repository, self.deployment.id.ref_name
         );
+        let owner = self.deployment.fqid();
 
         context
             .rdb_client
             .namespace(namespace.clone())
-            .list_resources()
+            .list_resources_by_owner(&owner)
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to list resources for deployment namespace {namespace}: {e}"
+                    "Failed to list resources for deployment namespace {namespace} and owner {owner}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?
@@ -467,7 +468,7 @@ impl Deployment {
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to load resources for deployment namespace {namespace}: {e}"
+                    "Failed to load resources for deployment namespace {namespace} and owner {owner}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })
