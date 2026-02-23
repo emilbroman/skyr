@@ -384,6 +384,34 @@ impl Deployment {
     fn state(&self) -> DeploymentState {
         self.deployment.state.into()
     }
+
+    async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
+        let namespace = format!(
+            "{}/{}",
+            self.deployment.repository, self.deployment.id.ref_name
+        );
+
+        context
+            .rdb_client
+            .namespace(namespace.clone())
+            .list_resources()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to list resources for deployment namespace {namespace}: {e}"
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .map(|resource| resource.map(|resource| Resource { resource }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to load resources for deployment namespace {namespace}: {e}"
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
 }
 
 pub struct Resource {

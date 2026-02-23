@@ -20,6 +20,7 @@ type Deployment {
   commit: String!
   createdAt: String!
   state: DeploymentState!
+  resources: [Resource!]!
 }
 
 type Mutation {
@@ -38,6 +39,11 @@ type Query {
 type Repository {
   name: String!
   deployments: [Deployment!]!
+}
+
+type Resource {
+  type: String!
+  id: String!
 }
 
 type User {
