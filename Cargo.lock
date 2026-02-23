@@ -1125,6 +1125,7 @@ dependencies = [
  "cdb",
  "clap",
  "futures-util",
+ "ldb",
  "rdb",
  "rtq",
  "sclc",

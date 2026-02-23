@@ -6,6 +6,7 @@ use std::{
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
+use ldb::Severity;
 use sclc::SourceRepo;
 use slog::{Drain, Logger, debug, error, info, o};
 use tokio::{
@@ -26,6 +27,9 @@ enum Program {
 
         #[clap(long = "rtq-hostname", default_value = "localhost")]
         rtq_hostname: String,
+
+        #[clap(long = "ldb-hostname", default_value = "localhost")]
+        ldb_hostname: String,
     },
 }
 
@@ -42,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
             cdb_hostname,
             rdb_hostname,
             rtq_hostname,
+            ldb_hostname,
         } => {
             info!(log, "starting deployment engine daemon");
 
@@ -59,6 +64,10 @@ async fn main() -> anyhow::Result<()> {
                 .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
                 .build_publisher()
                 .await?;
+            let ldb_publisher = ldb::ClientBuilder::new()
+                .brokers(format!("{}:9092", ldb_hostname))
+                .build_publisher()
+                .await?;
 
             let mut workers = BTreeMap::new();
 
@@ -70,6 +79,7 @@ async fn main() -> anyhow::Result<()> {
                     cdb_client.clone(),
                     rdb_client.clone(),
                     rtq_publisher.clone(),
+                    ldb_publisher.clone(),
                     &mut workers,
                 )
                 .await
@@ -93,6 +103,7 @@ async fn process(
     client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
+    ldb_publisher: ldb::Publisher,
     workers: &mut BTreeMap<String, oneshot::Sender<()>>,
 ) -> anyhow::Result<()> {
     let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
@@ -114,6 +125,7 @@ async fn process(
                 client: client.repo(deployment.repository).deployment(deployment.id),
                 namespace: rdb_client.namespace(namespace),
                 rtq_publisher: rtq_publisher.clone(),
+                log_publisher: ldb_publisher.namespace(id.clone()),
             };
 
             task::spawn(worker.run_loop(rx));
@@ -135,6 +147,7 @@ struct Worker {
     client: DeploymentClient,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
+    log_publisher: ldb::NamespacePublisher,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -256,6 +269,14 @@ impl Worker {
                     });
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
+                    self.log_message(
+                        Severity::Info,
+                        format!(
+                            "Queued DESTROY for resource {}.{}",
+                            resource.resource_type, resource.id
+                        ),
+                    )
+                    .await;
 
                     info!(&self.log, "queued destroy";
                         "type" => resource.resource_type.clone(),
@@ -279,6 +300,11 @@ impl Worker {
                     info!(&self.log, "teardown waiting on living dependents";
                         "blocked_resources" => blocked
                     );
+                    self.log_message(
+                        Severity::Warning,
+                        format!("Teardown blocked by {blocked} resources with living dependents"),
+                    )
+                    .await;
                 }
                 Ok(())
             }
@@ -341,6 +367,7 @@ impl Worker {
         drop(resources);
 
         let log = self.log.clone();
+        let log_publisher = self.log_publisher.clone();
         let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(async move {
@@ -384,14 +411,28 @@ impl Worker {
                             error!(log, "failed to publish create message";
                                 "error" => error.to_string()
                             );
+                            publish_worker_log(
+                                &log,
+                                &log_publisher,
+                                Severity::Error,
+                                format!("Failed to enqueue CREATE {}.{}: {}", id.ty, id.id, error),
+                            )
+                            .await;
                             continue;
                         }
 
                         info!(log, "effect create resource";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
+                        );
+                        publish_worker_log(
+                            &log,
+                            &log_publisher,
+                            Severity::Info,
+                            format!("Enqueued CREATE {}.{}", id.ty, id.id),
                         )
+                        .await;
                     }
                     sclc::Effect::UpdateResource {
                         id,
@@ -448,14 +489,28 @@ impl Worker {
                             error!(log, "failed to publish update message";
                                 "error" => error.to_string()
                             );
+                            publish_worker_log(
+                                &log,
+                                &log_publisher,
+                                Severity::Error,
+                                format!("Failed to enqueue UPDATE {}.{}: {}", id.ty, id.id, error),
+                            )
+                            .await;
                             continue;
                         }
 
                         info!(log, "effect update resource";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
+                        );
+                        publish_worker_log(
+                            &log,
+                            &log_publisher,
+                            Severity::Info,
+                            format!("Enqueued UPDATE {}.{}", id.ty, id.id),
                         )
+                        .await;
                     }
                     sclc::Effect::TouchResource {
                         id,
@@ -502,14 +557,28 @@ impl Worker {
                             error!(log, "failed to publish touch adopt message";
                                 "error" => error.to_string()
                             );
+                            publish_worker_log(
+                                &log,
+                                &log_publisher,
+                                Severity::Error,
+                                format!("Failed to enqueue ADOPT {}.{}: {}", id.ty, id.id, error),
+                            )
+                            .await;
                             continue;
                         }
 
                         info!(log, "effect touch resource adopt";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
+                        );
+                        publish_worker_log(
+                            &log,
+                            &log_publisher,
+                            Severity::Info,
+                            format!("Enqueued ADOPT {}.{}", id.ty, id.id),
                         )
+                        .await;
                     }
                 }
             }
@@ -525,5 +594,22 @@ impl Worker {
         drop(eval);
         let completeness = effects_task.await?;
         Ok(completeness)
+    }
+
+    async fn log_message(&self, severity: Severity, message: String) {
+        if let Err(error) = self.log_publisher.log(severity, message).await {
+            error!(self.log, "failed to publish deployment log"; "error" => error.to_string());
+        }
+    }
+}
+
+async fn publish_worker_log(
+    log: &Logger,
+    publisher: &ldb::NamespacePublisher,
+    severity: Severity,
+    message: String,
+) {
+    if let Err(error) = publisher.log(severity, message).await {
+        error!(log, "failed to publish deployment log"; "error" => error.to_string());
     }
 }
