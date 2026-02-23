@@ -4,6 +4,7 @@ members = [
   "crates/api",
   "crates/cdb",
   "crates/de",
+  "crates/ldb",
   "crates/plugin_std_random",
   "crates/rdb",
   "crates/rtp",
