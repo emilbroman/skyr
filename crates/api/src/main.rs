@@ -11,7 +11,7 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use clap::Parser;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
@@ -665,7 +665,7 @@ impl From<ldb::Severity> for Severity {
 #[derive(Clone)]
 struct Log {
     severity: Severity,
-    timestamp: i32,
+    timestamp: String,
     message: String,
 }
 
@@ -675,8 +675,8 @@ impl Log {
         self.severity
     }
 
-    fn timestamp(&self) -> i32 {
-        self.timestamp
+    fn timestamp(&self) -> &str {
+        &self.timestamp
     }
 
     fn message(&self) -> &str {
@@ -742,7 +742,7 @@ impl Subscription {
                     Ok((timestamp, severity, message)) => {
                         yield Log {
                             severity: severity.into(),
-                            timestamp: normalize_timestamp(timestamp),
+                            timestamp: format_timestamp(timestamp),
                             message,
                         };
                     }
@@ -778,7 +778,7 @@ async fn load_deployment_logs(
         let (timestamp, severity, message) = item?;
         logs.push(Log {
             severity: severity.into(),
-            timestamp: normalize_timestamp(timestamp),
+            timestamp: format_timestamp(timestamp),
             message,
         });
     }
@@ -786,10 +786,12 @@ async fn load_deployment_logs(
     Ok(logs)
 }
 
-fn normalize_timestamp(timestamp_millis: u64) -> i32 {
-    // GraphQL Int is 32-bit. We expose seconds since epoch to stay within range.
-    let seconds = timestamp_millis / 1_000;
-    i32::try_from(seconds).unwrap_or(i32::MAX)
+fn format_timestamp(timestamp_millis: u64) -> String {
+    let timestamp_millis = i64::try_from(timestamp_millis).unwrap_or(i64::MAX);
+    Utc.timestamp_millis_opt(timestamp_millis)
+        .single()
+        .map(|timestamp| timestamp.to_rfc3339())
+        .unwrap_or_else(|| String::from("9999-12-31T23:59:59.999+00:00"))
 }
 
 fn deployment_organization(deployment_id: &str) -> Option<&str> {

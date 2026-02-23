@@ -78,7 +78,7 @@ struct ResourceDependencyOutput {
 #[derive(Debug)]
 struct SubscriptionLog {
     severity: String,
-    timestamp: i64,
+    timestamp: String,
     message: String,
 }
 
@@ -392,7 +392,7 @@ fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
                 .ok_or_else(|| anyhow!("log entry missing severity"))?;
             let timestamp = log
                 .get("timestamp")
-                .and_then(|timestamp| timestamp.as_i64())
+                .and_then(|timestamp| timestamp.as_str())
                 .ok_or_else(|| anyhow!("log entry missing timestamp"))?;
             let message = log
                 .get("message")
@@ -401,7 +401,7 @@ fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
 
             Ok(Some(SubscriptionLog {
                 severity: severity.to_string(),
-                timestamp,
+                timestamp: timestamp.to_string(),
                 message: message.to_string(),
             }))
         }
