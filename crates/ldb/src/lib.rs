@@ -174,6 +174,20 @@ pub struct NamespacePublisher {
 }
 
 impl NamespacePublisher {
+    pub async fn info(&self, message: String) {
+        self.log(Severity::Info, message).await.unwrap_or_default();
+    }
+
+    pub async fn warn(&self, message: String) {
+        self.log(Severity::Warning, message)
+            .await
+            .unwrap_or_default();
+    }
+
+    pub async fn error(&self, message: String) {
+        self.log(Severity::Error, message).await.unwrap_or_default();
+    }
+
     pub async fn log(&self, severity: Severity, message: String) -> Result<(), PublishError> {
         ensure_topic(&self.client, &self.topic).await?;
 
