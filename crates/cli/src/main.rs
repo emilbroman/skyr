@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod auth;
 mod deployment;
 mod fs_source;
+mod output;
 mod repl;
 mod repo;
 mod run;
@@ -12,7 +13,15 @@ mod signup;
 mod whoami;
 
 #[derive(Parser)]
-enum Program {
+struct Program {
+    #[arg(long, global = true, value_enum, default_value_t = output::OutputFormat::Text)]
+    format: output::OutputFormat,
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(clap::Subcommand)]
+enum Command {
     Repl,
     Run {
         #[arg(long, default_value = ".")]
@@ -29,27 +38,29 @@ enum Program {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    match Program::parse() {
-        Program::Repl => {
+    let program = Program::parse();
+
+    match program.command {
+        Command::Repl => {
             repl::run_repl().await?;
         }
-        Program::Run { root, package } => {
+        Command::Run { root, package } => {
             run::run_program(root, package).await?;
         }
-        Program::Signin(args) => {
-            signin::run_signin(args).await?;
+        Command::Signin(args) => {
+            signin::run_signin(args, program.format).await?;
         }
-        Program::Signup(args) => {
-            signup::run_signup(args).await?;
+        Command::Signup(args) => {
+            signup::run_signup(args, program.format).await?;
         }
-        Program::Whoami(args) => {
-            whoami::run_whoami(args).await?;
+        Command::Whoami(args) => {
+            whoami::run_whoami(args, program.format).await?;
         }
-        Program::Repo(args) => {
-            repo::run_repo(args).await?;
+        Command::Repo(args) => {
+            repo::run_repo(args, program.format).await?;
         }
-        Program::Deployments(args) => {
-            deployment::run_deployments(args).await?;
+        Command::Deployments(args) => {
+            deployment::run_deployments(args, program.format).await?;
         }
     }
 

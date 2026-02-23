@@ -3,7 +3,7 @@ use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
 
-use crate::{auth, repo};
+use crate::{auth, output::OutputFormat, repo};
 
 #[derive(Args, Debug)]
 pub struct DeploymentsArgs {
@@ -26,14 +26,14 @@ enum DeploymentsCommand {
 )]
 struct ListRepositoryDeployments;
 
-pub async fn run_deployments(args: DeploymentsArgs) -> anyhow::Result<()> {
+pub async fn run_deployments(args: DeploymentsArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, &args.api_url).await?;
     let endpoint = auth::graphql_endpoint(&args.api_url);
 
     match args.command {
         DeploymentsCommand::List { repository } => {
-            list_deployments(&client, &endpoint, &token, &repository).await?;
+            list_deployments(&client, &endpoint, &token, &repository, format).await?;
         }
     }
 
@@ -53,6 +53,7 @@ async fn list_deployments(
     endpoint: &str,
     token: &str,
     repository: &str,
+    format: OutputFormat,
 ) -> anyhow::Result<()> {
     let (_, repository_name) = repo::parse_repository_path(repository)?;
 
@@ -100,6 +101,27 @@ async fn list_deployments(
         })
         .collect::<Vec<_>>();
 
-    println!("{}", serde_json::to_string_pretty(&deployments)?);
+    match format {
+        OutputFormat::Json => crate::output::print_json(&deployments)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}");
+            table.add_row(crate::output::row(vec![
+                String::from("REF"),
+                String::from("COMMIT"),
+                String::from("CREATED"),
+                String::from("STATE"),
+            ]));
+            for deployment in deployments {
+                table.add_row(crate::output::row(vec![
+                    deployment.r#ref,
+                    crate::output::shorten_commit_hash(&deployment.commit),
+                    crate::output::format_created_at(&deployment.created_at),
+                    deployment.state,
+                ]));
+            }
+            print!("{table}");
+        }
+    }
+
     Ok(())
 }

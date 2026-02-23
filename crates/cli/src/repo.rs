@@ -1,8 +1,9 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
+use serde::Serialize;
 
-use crate::auth;
+use crate::{auth, output::OutputFormat};
 
 #[derive(Args, Debug)]
 pub struct RepoArgs {
@@ -32,17 +33,17 @@ struct ListRepositories;
 )]
 struct CreateRepository;
 
-pub async fn run_repo(args: RepoArgs) -> anyhow::Result<()> {
+pub async fn run_repo(args: RepoArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, &args.api_url).await?;
     let endpoint = auth::graphql_endpoint(&args.api_url);
 
     match args.command {
         RepoCommand::List => {
-            list_repositories(&client, &endpoint, &token).await?;
+            list_repositories(&client, &endpoint, &token, format).await?;
         }
         RepoCommand::Create { repository } => {
-            create_repository(&client, &endpoint, &token, &repository).await?;
+            create_repository(&client, &endpoint, &token, &repository, format).await?;
         }
     }
 
@@ -54,6 +55,7 @@ async fn create_repository(
     endpoint: &str,
     token: &str,
     repository: &str,
+    format: OutputFormat,
 ) -> anyhow::Result<()> {
     let (organization, repository) = parse_repository_path(repository)?;
     let body = CreateRepository::build_query(create_repository::Variables {
@@ -86,7 +88,21 @@ async fn create_repository(
     let data = response
         .data
         .context("create repository response did not include data")?;
-    println!("{}", data.create_repository.name);
+
+    #[derive(Serialize)]
+    struct CreateRepositoryOutput {
+        name: String,
+    }
+
+    let output = CreateRepositoryOutput {
+        name: data.create_repository.name,
+    };
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => println!("{}", output.name),
+    }
+
     Ok(())
 }
 
@@ -94,6 +110,7 @@ async fn list_repositories(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    format: OutputFormat,
 ) -> anyhow::Result<()> {
     let body = ListRepositories::build_query(list_repositories::Variables {});
     let response = client
@@ -122,8 +139,28 @@ async fn list_repositories(
     let data = response
         .data
         .context("repositories response did not include data")?;
-    for repo in data.repositories {
-        println!("{}", repo.name);
+
+    #[derive(Serialize)]
+    struct RepositoryOutput {
+        name: String,
+    }
+
+    let repositories = data
+        .repositories
+        .into_iter()
+        .map(|repo| RepositoryOutput { name: repo.name })
+        .collect::<Vec<_>>();
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&repositories)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}");
+            table.add_row(crate::output::row(vec![String::from("NAME")]));
+            for repo in repositories {
+                table.add_row(crate::output::row(vec![repo.name]));
+            }
+            print!("{table}");
+        }
     }
     Ok(())
 }

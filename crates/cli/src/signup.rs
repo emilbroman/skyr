@@ -1,8 +1,9 @@
 use anyhow::{Context, anyhow};
 use clap::Args;
 use graphql_client::GraphQLQuery;
+use serde::Serialize;
 
-use crate::auth;
+use crate::{auth, output::OutputFormat};
 
 #[derive(Args, Debug)]
 pub struct SignupArgs {
@@ -24,7 +25,7 @@ pub struct SignupArgs {
 )]
 struct Signup;
 
-pub async fn run_signup(args: SignupArgs) -> anyhow::Result<()> {
+pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Result<()> {
     let endpoint = auth::graphql_endpoint(&args.api_url);
     let client = reqwest::Client::new();
 
@@ -65,7 +66,56 @@ pub async fn run_signup(args: SignupArgs) -> anyhow::Result<()> {
         .data
         .context("signup response did not include data")?;
     auth::persist_auth_state(&data.signup.user.username, &key_path, &data.signup.token).await?;
-    println!("{}", serde_json::to_string_pretty(&data.signup)?);
+
+    #[derive(Serialize)]
+    struct SignupUserOutput {
+        username: String,
+        email: String,
+        fullname: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct SignupOutput {
+        user: SignupUserOutput,
+        token: String,
+    }
+
+    let output = SignupOutput {
+        user: SignupUserOutput {
+            username: data.signup.user.username,
+            email: data.signup.user.email,
+            fullname: data.signup.user.fullname,
+        },
+        token: data.signup.token,
+    };
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}");
+            table.add_row(crate::output::row(vec![
+                String::from("FIELD"),
+                String::from("VALUE"),
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("username"),
+                output.user.username,
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("email"),
+                output.user.email,
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("fullname"),
+                output.user.fullname.unwrap_or_default(),
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("token"),
+                output.token,
+            ]));
+            print!("{table}");
+        }
+    }
 
     Ok(())
 }

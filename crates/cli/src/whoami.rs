@@ -1,8 +1,9 @@
 use anyhow::{Context, anyhow};
 use clap::Args;
 use graphql_client::GraphQLQuery;
+use serde::Serialize;
 
-use crate::auth;
+use crate::{auth, output::OutputFormat};
 
 #[derive(Args, Debug)]
 pub struct WhoamiArgs {
@@ -18,7 +19,7 @@ pub struct WhoamiArgs {
 )]
 struct Me;
 
-pub async fn run_whoami(args: WhoamiArgs) -> anyhow::Result<()> {
+pub async fn run_whoami(args: WhoamiArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, &args.api_url).await?;
     let endpoint = auth::graphql_endpoint(&args.api_url);
@@ -48,6 +49,43 @@ pub async fn run_whoami(args: WhoamiArgs) -> anyhow::Result<()> {
     }
 
     let data = response.data.context("me response did not include data")?;
-    println!("{}", serde_json::to_string_pretty(&data.me)?);
+
+    #[derive(Serialize)]
+    struct WhoamiOutput {
+        username: String,
+        email: String,
+        fullname: Option<String>,
+    }
+
+    let output = WhoamiOutput {
+        username: data.me.username,
+        email: data.me.email,
+        fullname: data.me.fullname,
+    };
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}");
+            table.add_row(crate::output::row(vec![
+                String::from("FIELD"),
+                String::from("VALUE"),
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("username"),
+                output.username,
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("email"),
+                output.email,
+            ]));
+            table.add_row(crate::output::row(vec![
+                String::from("fullname"),
+                output.fullname.unwrap_or_default(),
+            ]));
+            print!("{table}");
+        }
+    }
+
     Ok(())
 }
