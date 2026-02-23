@@ -180,6 +180,7 @@ name = "api"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-stream",
  "axum",
  "base64",
  "cdb",
@@ -189,6 +190,7 @@ dependencies = [
  "http",
  "juniper",
  "lazy_static",
+ "ldb",
  "rand 0.9.2",
  "rdb",
  "regex",

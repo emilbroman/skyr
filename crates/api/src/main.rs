@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, pin::Pin, sync::Arc};
 
 mod challenge;
 
@@ -10,15 +10,14 @@ use axum::{
 };
 use chrono::Utc;
 use clap::Parser;
-use futures_util::{StreamExt, TryStreamExt};
-use juniper::{
-    EmptySubscription, FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar,
-};
+use futures_util::{Stream, StreamExt, TryStreamExt};
+use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
 
 pub struct Context {
     udb_client: udb::Client,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
+    ldb_brokers: String,
     challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
 }
@@ -473,6 +472,21 @@ impl Deployment {
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })
     }
+
+    #[graphql(name = "lastLogs")]
+    async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
+        let amount = amount.unwrap_or(20).max(0) as u64;
+        load_deployment_logs(context, self.deployment.fqid(), amount)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    "Failed to fetch deployment logs for {}: {}",
+                    self.deployment.fqid(),
+                    error
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
 }
 
 pub struct Resource {
@@ -620,6 +634,144 @@ impl From<cdb::DeploymentState> for DeploymentState {
     }
 }
 
+#[derive(Clone, Copy, Debug, juniper::GraphQLEnum)]
+enum Severity {
+    #[graphql(name = "INFO")]
+    Info,
+    #[graphql(name = "WARNING")]
+    Warning,
+    #[graphql(name = "ERROR")]
+    Err,
+}
+
+impl From<ldb::Severity> for Severity {
+    fn from(severity: ldb::Severity) -> Self {
+        match severity {
+            ldb::Severity::Info => Severity::Info,
+            ldb::Severity::Warning => Severity::Warning,
+            ldb::Severity::Error => Severity::Err,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Log {
+    severity: Severity,
+    timestamp: i32,
+    message: String,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Log {
+    fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    fn timestamp(&self) -> i32 {
+        self.timestamp
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+pub struct Subscription;
+
+type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
+
+#[juniper::graphql_subscription(Context = Context)]
+impl Subscription {
+    async fn deployment_logs(
+        context: &Context,
+        deployment_id: String,
+        initial_amount: Option<i32>,
+    ) -> LogStream {
+        let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
+
+        let consumer = match ldb::ClientBuilder::new()
+            .brokers(context.ldb_brokers.clone())
+            .build_consumer()
+            .await
+        {
+            Ok(consumer) => consumer,
+            Err(error) => {
+                tracing::error!("Failed to build ldb consumer for subscription: {}", error);
+                return Box::pin(futures_util::stream::empty());
+            }
+        };
+
+        let namespace = consumer.namespace(deployment_id);
+        let mut inner = match namespace
+            .tail(ldb::TailConfig {
+                follow: true,
+                start_from: ldb::StartFrom::End(initial_amount),
+            })
+            .await
+        {
+            Ok(stream) => Box::pin(stream),
+            Err(error) => {
+                tracing::error!("Failed to tail deployment logs subscription: {}", error);
+                return Box::pin(futures_util::stream::empty());
+            }
+        };
+
+        Box::pin(async_stream::stream! {
+            while let Some(item) = inner.next().await {
+                match item {
+                    Ok((timestamp, severity, message)) => {
+                        yield Log {
+                            severity: severity.into(),
+                            timestamp: normalize_timestamp(timestamp),
+                            message,
+                        };
+                    }
+                    Err(error) => {
+                        tracing::warn!("Error while streaming deployment logs: {}", error);
+                        break;
+                    }
+                }
+            }
+        })
+    }
+}
+
+async fn load_deployment_logs(
+    context: &Context,
+    deployment_id: String,
+    amount: u64,
+) -> anyhow::Result<Vec<Log>> {
+    let consumer = ldb::ClientBuilder::new()
+        .brokers(context.ldb_brokers.clone())
+        .build_consumer()
+        .await?;
+    let namespace = consumer.namespace(deployment_id);
+    let mut stream = namespace
+        .tail(ldb::TailConfig {
+            follow: false,
+            start_from: ldb::StartFrom::End(amount),
+        })
+        .await?;
+
+    let mut logs = Vec::new();
+    while let Some(item) = stream.next().await {
+        let (timestamp, severity, message) = item?;
+        logs.push(Log {
+            severity: severity.into(),
+            timestamp: normalize_timestamp(timestamp),
+            message,
+        });
+    }
+
+    Ok(logs)
+}
+
+fn normalize_timestamp(timestamp_millis: u64) -> i32 {
+    // GraphQL Int is 32-bit. We expose seconds since epoch to stay within range.
+    let seconds = timestamp_millis / 1_000;
+    i32::try_from(seconds).unwrap_or(i32::MAX)
+}
+
 #[derive(Clone, Debug)]
 #[graphql_scalar(with = json_scalar, parse_token(String), name = "JSON")]
 pub struct JsonValue(pub serde_json::Value);
@@ -715,10 +867,10 @@ fn input_to_json<S: ScalarValue>(value: &InputValue<S>) -> Result<serde_json::Va
     }
 }
 
-pub type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
+pub type Schema = RootNode<'static, Query, Mutation, Subscription>;
 
 pub fn schema() -> Schema {
-    Schema::new(Query, Mutation, EmptySubscription::new())
+    Schema::new(Query, Mutation, Subscription)
 }
 
 #[derive(Parser, Debug)]
@@ -734,6 +886,8 @@ struct Cli {
     rdb_hostname: String,
     #[arg(long, default_value = "localhost")]
     udb_hostname: String,
+    #[arg(long, default_value = "localhost")]
+    ldb_hostname: String,
     #[arg(long)]
     challenge_salt: Option<String>,
     #[arg(long)]
@@ -771,6 +925,7 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.rdb_hostname)
         .build()
         .await?;
+    let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
@@ -782,6 +937,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(challenger))
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
+        .layer(Extension(ldb_brokers))
         .layer(Extension(udb_client));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
@@ -802,6 +958,7 @@ async fn graphql_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
+    Extension(ldb_brokers): Extension<String>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
@@ -829,6 +986,7 @@ async fn graphql_handler(
                     udb_client,
                     cdb_client,
                     rdb_client,
+                    ldb_brokers,
                     challenger,
                     user: Some(user),
                 };
@@ -841,6 +999,7 @@ async fn graphql_handler(
         udb_client,
         cdb_client,
         rdb_client,
+        ldb_brokers,
         challenger,
         user: None,
     };

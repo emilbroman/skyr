@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.102"
+async-stream = "0.3.6"
 axum = { version = "0.7.9", features = ["macros"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.42", features = ["clock"] }
@@ -24,3 +25,4 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 cdb = { path = "../cdb" }
 rdb = { path = "../rdb" }
 udb = { path = "../udb" }
+ldb = { path = "../ldb" }

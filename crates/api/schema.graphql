@@ -1,6 +1,7 @@
 schema {
   query: Query
   mutation: Mutation
+  subscription: Subscription
 }
 
 enum DeploymentState {
@@ -8,6 +9,12 @@ enum DeploymentState {
   UNDESIRED
   LINGERING
   DESIRED
+}
+
+enum Severity {
+  INFO
+  WARNING
+  ERROR
 }
 
 scalar JSON
@@ -23,6 +30,13 @@ type Deployment {
   createdAt: String!
   state: DeploymentState!
   resources: [Resource!]!
+  lastLogs(amount: Int): [Log!]!
+}
+
+type Log {
+  severity: Severity!
+  timestamp: Int!
+  message: String!
 }
 
 type Mutation {
@@ -51,6 +65,10 @@ type Resource {
   outputs: JSON
   owner: Deployment
   dependencies: [Resource!]!
+}
+
+type Subscription {
+  deploymentLogs(deploymentId: String!, initialAmount: Int): Log!
 }
 
 type User {
