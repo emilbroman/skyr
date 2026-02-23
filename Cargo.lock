@@ -185,6 +185,7 @@ dependencies = [
  "cdb",
  "chrono",
  "clap",
+ "futures-util",
  "http",
  "juniper",
  "lazy_static",

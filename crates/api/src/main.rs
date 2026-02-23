@@ -10,6 +10,7 @@ use axum::{
 };
 use chrono::Utc;
 use clap::Parser;
+use futures_util::{StreamExt, TryStreamExt};
 use juniper::{EmptySubscription, FieldResult, RootNode};
 
 pub struct Context {
@@ -65,6 +66,25 @@ impl Query {
 
         Ok(context.challenger.challenge(Utc::now(), &username))
     }
+
+    async fn repositories(context: &Context) -> FieldResult<Vec<Repository>> {
+        let (_, user) = context.check_auth().await?;
+        context
+            .cdb_client
+            .repositories_by_organization(user.username.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list repositories: {}", e);
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .map(|repository| repository.map(|repository| Repository { repository }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read repository row: {}", e);
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
 }
 
 pub struct Mutation;
@@ -75,6 +95,50 @@ lazy_static::lazy_static! {
 
 #[juniper::graphql_object(Context = Context)]
 impl Mutation {
+    async fn create_repository(
+        context: &Context,
+        organization: String,
+        repository: String,
+    ) -> FieldResult<Repository> {
+        let (_, user) = context.check_auth().await?;
+
+        if organization != user.username {
+            return Err(juniper::FieldError::new(
+                "Permission denied",
+                juniper::Value::Null,
+            ));
+        }
+
+        if !USERNAME_REGEX.is_match(&repository) {
+            return Err(juniper::FieldError::new(
+                "Invalid repository name",
+                juniper::Value::Null,
+            ));
+        }
+
+        let name = cdb::RepositoryName {
+            organization,
+            repository,
+        };
+
+        let repository = context
+            .cdb_client
+            .repo(name)
+            .create()
+            .await
+            .map_err(|e| match e {
+                cdb::CreateRepositoryError::AlreadyExists => {
+                    juniper::FieldError::new("Repository already exists", juniper::Value::Null)
+                }
+                _ => {
+                    tracing::error!("Failed to create repository: {}", e);
+                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                }
+            })?;
+
+        Ok(Repository { repository })
+    }
+
     async fn signup(
         context: &Context,
         username: String,
@@ -256,6 +320,78 @@ impl User {
 
     fn fullname(&self) -> Option<&str> {
         self.user.fullname.as_ref().map(|s| s.as_str())
+    }
+}
+
+pub struct Repository {
+    repository: cdb::Repository,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Repository {
+    fn name(&self) -> String {
+        self.repository.name.repository.clone()
+    }
+
+    async fn deployments(&self, context: &Context) -> FieldResult<Vec<Deployment>> {
+        context
+            .cdb_client
+            .repo(self.repository.name.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to list deployments for {}: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .map(|d| d.map(|deployment| Deployment { deployment }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to read deployments for {}: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
+}
+
+pub struct Deployment {
+    deployment: cdb::Deployment,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Deployment {
+    fn state(&self) -> DeploymentState {
+        self.deployment.state.into()
+    }
+}
+
+#[derive(Clone, Copy, juniper::GraphQLEnum)]
+enum DeploymentState {
+    #[graphql(name = "DOWN")]
+    Down,
+    #[graphql(name = "UNDESIRED")]
+    Undesired,
+    #[graphql(name = "LINGERING")]
+    Lingering,
+    #[graphql(name = "DESIRED")]
+    Desired,
+}
+
+impl From<cdb::DeploymentState> for DeploymentState {
+    fn from(state: cdb::DeploymentState) -> Self {
+        match state {
+            cdb::DeploymentState::Down => DeploymentState::Down,
+            cdb::DeploymentState::Undesired => DeploymentState::Undesired,
+            cdb::DeploymentState::Lingering => DeploymentState::Lingering,
+            cdb::DeploymentState::Desired => DeploymentState::Desired,
+        }
     }
 }
 
