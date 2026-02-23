@@ -4,13 +4,17 @@ mod challenge;
 
 use axum::{
     Json as AxumJson, Router,
-    extract::Extension,
-    response::Html,
-    routing::{get, post},
+    extract::{
+        Extension,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::{Html, IntoResponse, Response},
+    routing::get,
 };
 use chrono::Utc;
 use clap::Parser;
 use futures_util::{Stream, StreamExt, TryStreamExt};
+use http::StatusCode;
 use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
 
 pub struct Context {
@@ -871,6 +875,47 @@ fn input_to_json<S: ScalarValue>(value: &InputValue<S>) -> Result<serde_json::Va
     }
 }
 
+fn serialize_execution_errors(
+    errors: &[juniper::ExecutionError<juniper::DefaultScalarValue>],
+) -> serde_json::Value {
+    serde_json::to_value(errors).unwrap_or_else(|error| {
+        serde_json::json!([{
+            "message": format!("failed to serialize execution errors: {error}")
+        }])
+    })
+}
+
+fn graphql_value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Scalar(scalar) => {
+            if let Some(value) = scalar.as_str() {
+                serde_json::Value::String(value.to_string())
+            } else if let Some(value) = scalar.as_bool() {
+                serde_json::Value::Bool(value)
+            } else if let Some(value) = scalar.as_int() {
+                serde_json::Value::Number(serde_json::Number::from(value))
+            } else if let Some(value) = scalar.as_float() {
+                serde_json::Number::from_f64(value)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                serde_json::Value::String(scalar.to_string())
+            }
+        }
+        Value::List(values) => {
+            serde_json::Value::Array(values.iter().map(graphql_value_to_json).collect::<Vec<_>>())
+        }
+        Value::Object(values) => {
+            let mut object = serde_json::Map::with_capacity(values.field_count());
+            for (name, value) in values.iter() {
+                object.insert(name.to_string(), graphql_value_to_json(value));
+            }
+            serde_json::Value::Object(object)
+        }
+    }
+}
+
 pub type Schema = RootNode<'static, Query, Mutation, Subscription>;
 
 pub fn schema() -> Schema {
@@ -935,7 +980,7 @@ async fn main() -> anyhow::Result<()> {
     let schema = Arc::new(schema());
 
     let app = Router::new()
-        .route("/graphql", post(graphql_handler))
+        .route("/graphql", get(graphql_ws_handler).post(graphql_handler))
         .route("/graphiql", get(graphiql))
         .layer(Extension(schema))
         .layer(Extension(challenger))
@@ -1011,5 +1056,379 @@ async fn graphql_handler(
 }
 
 async fn graphiql() -> Html<String> {
-    Html(juniper::http::graphiql::graphiql_source("/graphql", None))
+    Html(juniper::http::graphiql::graphiql_source(
+        "/graphql",
+        Some("/graphql"),
+    ))
+}
+
+#[axum::debug_handler]
+async fn graphql_ws_handler(
+    ws: WebSocketUpgrade,
+    Extension(schema): Extension<Arc<Schema>>,
+    Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(rdb_client): Extension<rdb::Client>,
+    Extension(ldb_brokers): Extension<String>,
+    Extension(mut udb_client): Extension<udb::Client>,
+    headers: http::header::HeaderMap,
+) -> Response {
+    let auth_header = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|v| String::from_utf8(v.to_vec()).ok());
+
+    let user = if let Some(token) = auth_header {
+        match udb_client.lookup_token(token).await {
+            Err(udb::LookupTokenError::InvalidToken) => {
+                return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
+            }
+            Err(e) => {
+                tracing::error!("Failed to lookup token for websocket: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+                    .into_response();
+            }
+            Ok(user) => Some(user),
+        }
+    } else {
+        None
+    };
+
+    let context = Context {
+        udb_client,
+        cdb_client,
+        rdb_client,
+        ldb_brokers,
+        challenger,
+        user,
+    };
+
+    ws.protocols(["graphql-transport-ws"])
+        .on_upgrade(move |socket| graphql_ws_connection(socket, schema, context))
+}
+
+async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, context: Context) {
+    let mut initialized = false;
+
+    while let Some(message) = socket.recv().await {
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!("GraphQL websocket receive error: {}", error);
+                break;
+            }
+        };
+
+        match message {
+            WsMessage::Text(text) => {
+                let payload: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        tracing::warn!("GraphQL websocket invalid json message: {}", error);
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "error",
+                                "payload": [{
+                                    "message": format!("invalid websocket message: {error}")
+                                }]
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                let Some(message_type) = payload
+                    .get("type")
+                    .and_then(|message_type| message_type.as_str())
+                else {
+                    if !send_ws_json(
+                        &mut socket,
+                        serde_json::json!({
+                            "type": "error",
+                            "payload": [{
+                                "message": "missing websocket message type"
+                            }]
+                        }),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                    continue;
+                };
+
+                match message_type {
+                    "connection_init" => {
+                        initialized = true;
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "connection_ack"
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    "ping" => {
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "pong"
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    "subscribe" => {
+                        if !initialized {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "connection_init must be sent before subscribe"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        let Some(subscription_id) = payload
+                            .get("id")
+                            .and_then(|id| id.as_str())
+                            .map(ToOwned::to_owned)
+                        else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscribe message missing id"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        let Some(request_payload) = payload.get("payload") else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscribe message missing payload"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        let request: juniper::http::GraphQLRequest =
+                            match serde_json::from_value(request_payload.clone()) {
+                                Ok(request) => request,
+                                Err(error) => {
+                                    if !send_ws_json(
+                                    &mut socket,
+                                    serde_json::json!({
+                                        "id": subscription_id,
+                                        "type": "error",
+                                        "payload": [{
+                                            "message": format!("invalid subscribe payload: {error}")
+                                        }]
+                                    }),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                                    continue;
+                                }
+                            };
+
+                        let stream_result =
+                            juniper::http::resolve_into_stream(&request, &schema, &context).await;
+
+                        let (subscription_value, initial_errors) = match stream_result {
+                            Ok(result) => result,
+                            Err(error) => {
+                                if !send_ws_json(
+                                    &mut socket,
+                                    serde_json::json!({
+                                        "id": subscription_id,
+                                        "type": "error",
+                                        "payload": [{
+                                            "message": format!("{error}")
+                                        }]
+                                    }),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+
+                        if !initial_errors.is_empty() {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": serialize_execution_errors(&initial_errors)
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        let Some(fields) = subscription_value.into_object() else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription did not return a stream field"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Some((field_name, field_value)) = fields.into_iter().next() else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription did not return any stream fields"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Value::Scalar(mut stream) = field_value else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription field was not a stream"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        while let Some(item) = stream.next().await {
+                            let event = match item {
+                                Ok(value) => serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "next",
+                                    "payload": {
+                                        "data": {
+                                            field_name.clone(): graphql_value_to_json(&value)
+                                        }
+                                    }
+                                }),
+                                Err(error) => serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "next",
+                                    "payload": {
+                                        "errors": serialize_execution_errors(std::slice::from_ref(&error))
+                                    }
+                                }),
+                            };
+
+                            if !send_ws_json(&mut socket, event).await {
+                                return;
+                            }
+                        }
+
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "id": subscription_id,
+                                "type": "complete"
+                            }),
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    "complete" | "pong" => {}
+                    other => {
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "error",
+                                "payload": [{
+                                    "message": format!("unsupported websocket message type: {other}")
+                                }]
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            WsMessage::Ping(bytes) => {
+                if socket.send(WsMessage::Pong(bytes)).await.is_err() {
+                    break;
+                }
+            }
+            WsMessage::Pong(_) => {}
+            WsMessage::Close(_) => break,
+            WsMessage::Binary(_) => {}
+        }
+    }
+}
+
+async fn send_ws_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
+    socket
+        .send(WsMessage::Text(value.to_string().into()))
+        .await
+        .is_ok()
 }
