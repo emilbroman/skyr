@@ -205,6 +205,8 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
                         if let Err(err) = ensure_repo_access(user, &repo) {
                             Err(err)
+                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
+                            Err(err)
                         } else {
                             CommandHandler {
                                 log: log.clone(),
@@ -218,6 +220,8 @@ impl Handler for ConfigHandler {
                     }
                     (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
                         if let Err(err) = ensure_repo_access(user, &repo) {
+                            Err(err)
+                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
                             Err(err)
                         } else {
                             CommandHandler {
@@ -240,7 +244,7 @@ impl Handler for ConfigHandler {
                     }
                     Err(e) => {
                         channel
-                            .extended_data(1, e.to_string().as_bytes())
+                            .extended_data(1, format!("{e}\n").as_bytes())
                             .await
                             .unwrap_or_default();
                         channel.exit_status(1).await.unwrap_or_default();
@@ -290,6 +294,16 @@ fn ensure_repo_access(user: &udb::User, repo: &RepositoryName) -> anyhow::Result
     }
 
     Ok(())
+}
+
+async fn ensure_repo_exists(client: &cdb::Client, repo: &RepositoryName) -> anyhow::Result<()> {
+    match client.repo(repo.clone()).get().await {
+        Ok(_) => Ok(()),
+        Err(cdb::RepositoryQueryError::NotFound) => {
+            bail!("repository '{}' does not exist", repo);
+        }
+        Err(err) => Err(anyhow!("failed to query repository '{}': {}", repo, err)),
+    }
 }
 
 struct CommandHandler<'a> {
