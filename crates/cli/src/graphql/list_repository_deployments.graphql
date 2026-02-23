@@ -1,0 +1,8 @@
+query ListRepositoryDeployments {
+  repositories {
+    name
+    deployments {
+      state
+    }
+  }
+}

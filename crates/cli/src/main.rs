@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod auth;
 mod fs_source;
 mod repl;
+mod repo;
 mod run;
 mod signin;
 mod signup;
@@ -21,6 +22,7 @@ enum Program {
     Signin(signin::SigninArgs),
     Signup(signup::SignupArgs),
     Whoami(whoami::WhoamiArgs),
+    Repo(repo::RepoArgs),
 }
 
 #[tokio::main]
@@ -40,6 +42,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Program::Whoami(args) => {
             whoami::run_whoami(args).await?;
+        }
+        Program::Repo(args) => {
+            repo::run_repo(args).await?;
         }
     }
 

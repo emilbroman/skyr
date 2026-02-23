@@ -1,0 +1,5 @@
+mutation CreateRepository($organization: String!, $repository: String!) {
+  createRepository(organization: $organization, repository: $repository) {
+    name
+  }
+}
