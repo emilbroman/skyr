@@ -489,6 +489,36 @@ impl Resource {
         &self.resource.id
     }
 
+    fn inputs(&self) -> FieldResult<Option<JsonValue>> {
+        self.resource
+            .inputs
+            .as_ref()
+            .map(|record| {
+                serde_json::to_value(record)
+                    .map(JsonValue)
+                    .map_err(|error| {
+                        tracing::error!("Failed to serialize resource inputs to JSON: {error}");
+                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    })
+            })
+            .transpose()
+    }
+
+    fn outputs(&self) -> FieldResult<Option<JsonValue>> {
+        self.resource
+            .outputs
+            .as_ref()
+            .map(|record| {
+                serde_json::to_value(record)
+                    .map(JsonValue)
+                    .map_err(|error| {
+                        tracing::error!("Failed to serialize resource outputs to JSON: {error}");
+                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    })
+            })
+            .transpose()
+    }
+
     async fn owner(&self, context: &Context) -> FieldResult<Option<Deployment>> {
         let Some(owner) = self.resource.owner.as_deref() else {
             return Ok(None);

@@ -10,6 +10,8 @@ enum DeploymentState {
   DESIRED
 }
 
+scalar JSON
+
 type AuthSuccess {
   user: User!
   token: String!
@@ -45,6 +47,8 @@ type Repository {
 type Resource {
   type: String!
   id: String!
+  inputs: JSON
+  outputs: JSON
   owner: Deployment
 }
 
