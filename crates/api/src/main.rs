@@ -565,6 +565,35 @@ impl Resource {
             .find(|deployment| deployment.fqid() == owner)
             .map(|deployment| Deployment { deployment }))
     }
+
+    async fn dependencies(&self, context: &Context) -> FieldResult<Vec<Resource>> {
+        let mut dependencies = Vec::with_capacity(self.resource.dependencies.len());
+
+        for dependency in &self.resource.dependencies {
+            let resource = context
+                .rdb_client
+                .namespace(self.resource.namespace.clone())
+                .resource(dependency.ty.clone(), dependency.id.clone())
+                .get()
+                .await
+                .map_err(|error| {
+                    tracing::error!(
+                        "Failed to load dependency {}/{} in namespace {}: {}",
+                        dependency.ty,
+                        dependency.id,
+                        self.resource.namespace,
+                        error
+                    );
+                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                })?;
+
+            if let Some(resource) = resource {
+                dependencies.push(Resource { resource });
+            }
+        }
+
+        Ok(dependencies)
+    }
 }
 
 #[derive(Clone, Copy, juniper::GraphQLEnum)]

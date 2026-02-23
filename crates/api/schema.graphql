@@ -50,6 +50,7 @@ type Resource {
   inputs: JSON
   outputs: JSON
   owner: Deployment
+  dependencies: [Resource!]!
 }
 
 type User {
