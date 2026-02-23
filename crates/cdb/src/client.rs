@@ -7,10 +7,7 @@ use crate::{
     DeploymentId,
     deployment::{Deployment, InvalidDeploymentState},
 };
-use crate::{
-    DeploymentState,
-    repository_name::{InvalidRepositoryName, RepositoryName},
-};
+use crate::{DeploymentState, Repository, repository_name::RepositoryName};
 use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
@@ -70,30 +67,31 @@ prepared_statements! {
     }
 
     TableStatements {
-        create_deployments_table = r#"
-            CREATE TABLE IF NOT EXISTS cdb.deployments (
+        create_repositories_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.repositories (
+                organization TEXT,
                 repository TEXT,
-                ref_name TEXT,
-                commit_hash BLOB,
                 created_at TIMESTAMP,
-                state TEXT,
-                PRIMARY KEY ((repository), ref_name, commit_hash)
+                PRIMARY KEY ((organization), repository)
             )
         "#,
 
-        create_active_deployments_table = r#"
-            CREATE TABLE IF NOT EXISTS cdb.active_deployments (
+        create_deployments_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.deployments (
+                organization TEXT,
                 repository TEXT,
+                created_at TIMESTAMP,
                 ref_name TEXT,
                 commit_hash BLOB,
-                deployment_id TEXT,
-                PRIMARY KEY ((repository), ref_name, commit_hash)
-            )
+                state TEXT,
+                PRIMARY KEY ((organization, repository), created_at, ref_name, commit_hash)
+            ) WITH CLUSTERING ORDER BY (created_at DESC, ref_name ASC, commit_hash ASC)
         "#,
 
         create_deployments_by_id_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.deployments_by_id (
                 deployment_id TEXT,
+                organization TEXT,
                 repository TEXT,
                 ref_name TEXT,
                 commit_hash BLOB,
@@ -103,55 +101,82 @@ prepared_statements! {
             )
         "#,
 
+        create_active_deployments_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.active_deployments (
+                organization TEXT,
+                repository TEXT,
+                ref_name TEXT,
+                commit_hash BLOB,
+                deployment_id TEXT,
+                PRIMARY KEY ((organization), repository, ref_name, commit_hash)
+            )
+        "#,
+
         create_objects_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.objects (
+                organization TEXT,
                 repository TEXT,
                 hash BLOB,
                 contents BLOB,
-                PRIMARY KEY ((repository), hash)
+                PRIMARY KEY ((organization, repository), hash)
             )
         "#,
 
         create_supercessions_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.supercessions (
+                organization TEXT,
                 repository TEXT,
                 ref_name TEXT,
                 superceding_commit_hash BLOB,
                 superceded_commit_hash BLOB,
-                PRIMARY KEY ((repository), ref_name, superceding_commit_hash)
+                PRIMARY KEY ((organization), repository, ref_name, superceding_commit_hash)
             )
         "#,
     }
 
     PreparedStatements {
+        find_repository = r#"
+            SELECT created_at
+            FROM cdb.repositories
+            WHERE organization = ?
+            AND repository = ?
+        "#,
+
+        set_repository = r#"
+            INSERT INTO cdb.repositories (organization, repository, created_at)
+            VALUES (?, ?, ?)
+        "#,
+
         read_object = r#"
             SELECT contents FROM cdb.objects
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
             AND hash = ?
         "#,
 
         write_object = r#"
-            INSERT INTO cdb.objects (repository, hash, contents)
-            VALUES (?, ?, ?)
+            INSERT INTO cdb.objects (organization, repository, hash, contents)
+            VALUES (?, ?, ?, ?)
         "#,
 
-        find_deployment = r#"
-            SELECT created_at, state FROM cdb.deployments
-            WHERE repository = ?
-            AND ref_name = ?
-            AND commit_hash = ?
+        find_deployment_by_id = r#"
+            SELECT organization, repository, ref_name, commit_hash, created_at, state
+            FROM cdb.deployments_by_id
+            WHERE deployment_id = ?
         "#,
 
         find_deployments_by_ids = r#"
-            SELECT repository, ref_name, commit_hash, created_at, state
+            SELECT organization, repository, ref_name, commit_hash, created_at, state
             FROM cdb.deployments_by_id
             WHERE deployment_id IN ?
         "#,
 
         list_deployments_by_repo = r#"
-            SELECT ref_name, commit_hash, created_at, state
+            SELECT created_at, ref_name, commit_hash, state
             FROM cdb.deployments
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
+            ORDER BY created_at DESC
         "#,
 
         list_active_deployments = r#"
@@ -159,37 +184,47 @@ prepared_statements! {
             FROM cdb.active_deployments
         "#,
 
+        list_repositories_by_org = r#"
+            SELECT repository, created_at
+            FROM cdb.repositories
+            WHERE organization = ?
+            ORDER BY repository ASC
+        "#,
+
         list_active_deployments_by_repo = r#"
             SELECT deployment_id
             FROM cdb.active_deployments
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
         "#,
 
         set_deployment = r#"
-            INSERT INTO cdb.deployments (repository, ref_name, commit_hash, created_at, state)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO cdb.deployments (organization, repository, created_at, ref_name, commit_hash, state)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
 
         set_deployment_by_id = r#"
             INSERT INTO cdb.deployments_by_id (
                 deployment_id,
+                organization,
                 repository,
                 ref_name,
                 commit_hash,
                 created_at,
                 state
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         "#,
 
         set_active_deployment = r#"
-            INSERT INTO cdb.active_deployments (repository, ref_name, commit_hash, deployment_id)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO cdb.active_deployments (organization, repository, ref_name, commit_hash, deployment_id)
+            VALUES (?, ?, ?, ?, ?)
         "#,
 
         unset_active_deployment = r#"
             DELETE FROM cdb.active_deployments
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
             AND ref_name = ?
             AND commit_hash = ?
         "#,
@@ -197,7 +232,8 @@ prepared_statements! {
         create_supercession = r#"
             UPDATE cdb.supercessions
             SET superceded_commit_hash = ?
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
             AND ref_name = ?
             AND superceding_commit_hash = ?
         "#,
@@ -205,7 +241,8 @@ prepared_statements! {
         get_superceded_commit = r#"
             SELECT superceded_commit_hash
             FROM cdb.supercessions
-            WHERE repository = ?
+            WHERE organization = ?
+            AND repository = ?
             AND ref_name = ?
             AND superceding_commit_hash = ?
         "#,
@@ -238,7 +275,8 @@ impl ClientBuilder {
 
         let statements = TableStatements::new(&session).await?;
 
-        let (r0, r1, r2, r3, r4) = futures::join!(
+        let (r0, r1, r2, r3, r4, r5) = futures::join!(
+            session.execute_unpaged(&statements.create_repositories_table, ()),
             session.execute_unpaged(&statements.create_deployments_table, ()),
             session.execute_unpaged(&statements.create_active_deployments_table, ()),
             session.execute_unpaged(&statements.create_deployments_by_id_table, ()),
@@ -250,6 +288,7 @@ impl ClientBuilder {
         r2?;
         r3?;
         r4?;
+        r5?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -282,6 +321,25 @@ pub struct RepositoryClient {
 }
 
 impl RepositoryClient {
+    pub async fn get(&self) -> Result<Repository, RepositoryQueryError> {
+        self.client.repository(&self.name).await
+    }
+
+    pub async fn create(&self) -> Result<Repository, CreateRepositoryError> {
+        match self.get().await {
+            Ok(_) => Err(CreateRepositoryError::AlreadyExists),
+            Err(RepositoryQueryError::NotFound) => {
+                let repository = Repository {
+                    name: self.name.clone(),
+                    created_at: Utc::now(),
+                };
+                self.client.set_repository(repository.clone()).await?;
+                Ok(repository)
+            }
+            Err(e) => Err(CreateRepositoryError::Query(e)),
+        }
+    }
+
     pub fn deployment(&self, id: DeploymentId) -> DeploymentClient {
         DeploymentClient {
             repo: self.clone(),
@@ -307,12 +365,17 @@ pub enum LoadObjectError {
 
 impl RepositoryClient {
     async fn read_object(&self, hash: ObjectId) -> Result<Vec<u8>, LoadObjectError> {
+        let repo = &self.name;
         let pager = self
             .client
             .session
             .execute_iter(
                 self.client.statements.read_object.clone(),
-                (self.name.to_string(), hash.as_bytes()),
+                (
+                    repo.organization.as_str(),
+                    repo.repository.as_str(),
+                    hash.as_bytes(),
+                ),
             )
             .await?;
 
@@ -336,12 +399,18 @@ impl RepositoryClient {
     pub async fn write_object(&self, id: ObjectId, object: Object) -> Result<(), WriteObjectError> {
         let mut data = vec![];
         object.write_to(&mut data)?;
+        let repo = &self.name;
 
         self.client
             .session
             .execute_unpaged(
                 &self.client.statements.write_object,
-                (self.name.to_string(), id.as_slice(), data),
+                (
+                    repo.organization.as_str(),
+                    repo.repository.as_str(),
+                    id.as_slice(),
+                    data,
+                ),
             )
             .await?;
 
@@ -523,32 +592,75 @@ pub enum FileError {
 }
 
 impl Client {
+    pub async fn set_repository(&self, repository: Repository) -> Result<(), ExecutionError> {
+        self.session
+            .execute_unpaged(
+                &self.statements.set_repository,
+                (
+                    repository.name.organization.as_str(),
+                    repository.name.repository.as_str(),
+                    repository.created_at,
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    pub async fn repository(
+        &self,
+        name: &RepositoryName,
+    ) -> Result<Repository, RepositoryQueryError> {
+        let pager = self
+            .session
+            .execute_iter(
+                self.statements.find_repository.clone(),
+                (name.organization.as_str(), name.repository.as_str()),
+            )
+            .await?;
+
+        match pager.rows_stream::<(DateTime<Utc>,)>()?.next().await {
+            None => Err(RepositoryQueryError::NotFound),
+            Some(Err(e)) => Err(e.into()),
+            Some(Ok((created_at,))) => Ok(Repository {
+                name: name.clone(),
+                created_at,
+            }),
+        }
+    }
+
     pub async fn deployment(
         &self,
         repo: &RepositoryName,
         deployment_id: &DeploymentId,
     ) -> Result<Deployment, DeploymentQueryError> {
+        let fqid = format!("{}/{}", repo, deployment_id);
         let pager = self
             .session
-            .execute_iter(
-                self.statements.find_deployment.clone(),
-                (
-                    repo.to_string(),
-                    &deployment_id.ref_name,
-                    deployment_id.commit_hash.as_slice(),
-                ),
-            )
+            .execute_iter(self.statements.find_deployment_by_id.clone(), (fqid,))
             .await?;
 
-        match pager.rows_stream::<(DateTime<Utc>, String)>()?.next().await {
+        match pager
+            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .next()
+            .await
+        {
             None => Err(DeploymentQueryError::NotFound),
             Some(Err(e)) => Err(e.into()),
-            Some(Ok((created_at, state))) => Ok(Deployment {
-                repository: repo.clone(),
-                id: deployment_id.clone(),
-                created_at,
-                state: state.parse()?,
-            }),
+            Some(Ok((organization, repository, ref_name, commit_hash, created_at, state))) => {
+                if organization != repo.organization || repository != repo.repository {
+                    return Err(DeploymentQueryError::NotFound);
+                }
+
+                Ok(Deployment {
+                    repository: repo.clone(),
+                    id: DeploymentId {
+                        ref_name,
+                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
+                    },
+                    created_at,
+                    state: state.parse()?,
+                })
+            }
         }
     }
 
@@ -577,11 +689,14 @@ impl Client {
             .await?;
 
         Ok(deployments
-            .rows_stream::<(String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
-                let (repository, ref_name, commit_hash, created_at, state) = r?;
+                let (organization, repository, ref_name, commit_hash, created_at, state) = r?;
                 Ok::<_, DeploymentQueryError>(Deployment {
-                    repository: repository.parse()?,
+                    repository: RepositoryName {
+                        organization,
+                        repository,
+                    },
                     id: DeploymentId {
                         ref_name,
                         commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
@@ -591,6 +706,34 @@ impl Client {
                 })
             })
             .boxed())
+    }
+
+    pub async fn repositories_by_organization(
+        &self,
+        organization: impl Into<String>,
+    ) -> Result<impl Stream<Item = Result<Repository, RepositoryQueryError>>, RepositoryQueryError>
+    {
+        let organization = organization.into();
+        let pager = self
+            .session
+            .execute_iter(
+                self.statements.list_repositories_by_org.clone(),
+                (organization.as_str(),),
+            )
+            .await?;
+
+        Ok(pager
+            .rows_stream::<(String, DateTime<Utc>)>()?
+            .map(move |row| {
+                let (repository, created_at) = row?;
+                Ok::<_, RepositoryQueryError>(Repository {
+                    name: RepositoryName {
+                        organization: organization.clone(),
+                        repository,
+                    },
+                    created_at,
+                })
+            }))
     }
 }
 
@@ -607,7 +750,10 @@ impl RepositoryClient {
                     .statements
                     .list_active_deployments_by_repo
                     .clone(),
-                (self.name.to_string(),),
+                (
+                    self.name.organization.as_str(),
+                    self.name.repository.as_str(),
+                ),
             )
             .await?;
 
@@ -631,11 +777,14 @@ impl RepositoryClient {
             .await?;
 
         Ok(deployments
-            .rows_stream::<(String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
-                let (repository, ref_name, commit_hash, created_at, state) = r?;
+                let (organization, repository, ref_name, commit_hash, created_at, state) = r?;
                 Ok::<_, DeploymentQueryError>(Deployment {
-                    repository: repository.parse()?,
+                    repository: RepositoryName {
+                        organization,
+                        repository,
+                    },
                     id: DeploymentId {
                         ref_name,
                         commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
@@ -656,15 +805,18 @@ impl RepositoryClient {
             .session
             .execute_iter(
                 self.client.statements.list_deployments_by_repo.clone(),
-                (self.name.to_string(),),
+                (
+                    self.name.organization.as_str(),
+                    self.name.repository.as_str(),
+                ),
             )
             .await?;
 
         let repo = self.name.clone();
         Ok(pager
-            .rows_stream::<(String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(DateTime<Utc>, String, Vec<u8>, String)>()?
             .map(move |r| {
-                let (ref_name, commit_hash, created_at, state) = r?;
+                let (created_at, ref_name, commit_hash, state) = r?;
                 Ok::<_, DeploymentQueryError>(Deployment {
                     repository: repo.clone(),
                     id: DeploymentId {
@@ -676,6 +828,33 @@ impl RepositoryClient {
                 })
             }))
     }
+}
+
+#[derive(Error, Debug)]
+pub enum RepositoryQueryError {
+    #[error("failed to execute: {0}")]
+    ScyllaPager(#[from] PagerExecutionError),
+
+    #[error("failed to parse row: {0}")]
+    ScyllaTypeCheck(#[from] TypeCheckError),
+
+    #[error("failed to load row: {0}")]
+    ScyllaNextRow(#[from] NextRowError),
+
+    #[error("repository not found")]
+    NotFound,
+}
+
+#[derive(Error, Debug)]
+pub enum CreateRepositoryError {
+    #[error("failed to execute statement: {0}")]
+    Execute(#[from] ExecutionError),
+
+    #[error("failed to query repository: {0}")]
+    Query(RepositoryQueryError),
+
+    #[error("repository already exists")]
+    AlreadyExists,
 }
 
 #[derive(Error, Debug)]
@@ -701,9 +880,6 @@ pub enum DeploymentQueryError {
     #[error("{0}")]
     InvalidState(#[from] InvalidDeploymentState),
 
-    #[error("{0}")]
-    InvalidRepositoryName(#[from] InvalidRepositoryName),
-
     #[error("deployment not found")]
     NotFound,
 }
@@ -711,14 +887,16 @@ pub enum DeploymentQueryError {
 impl Client {
     pub async fn set_deployment(&self, deployment: Deployment) -> Result<(), SetDeploymentError> {
         let deployment_id = deployment.fqid();
+        let repository = &deployment.repository;
         let (dep, dep_by_id, active_dep) = futures::join!(
             self.session.execute_unpaged(
                 &self.statements.set_deployment,
                 (
-                    deployment.repository.to_string(),
+                    repository.organization.as_str(),
+                    repository.repository.as_str(),
+                    deployment.created_at,
                     &deployment.id.ref_name,
                     deployment.id.commit_hash.as_slice(),
-                    deployment.created_at,
                     deployment.state.to_string(),
                 ),
             ),
@@ -726,7 +904,8 @@ impl Client {
                 &self.statements.set_deployment_by_id,
                 (
                     deployment_id.clone(),
-                    deployment.repository.to_string(),
+                    repository.organization.as_str(),
+                    repository.repository.as_str(),
                     &deployment.id.ref_name,
                     deployment.id.commit_hash.as_slice(),
                     deployment.created_at,
@@ -739,7 +918,8 @@ impl Client {
                         .execute_unpaged(
                             &self.statements.unset_active_deployment,
                             (
-                                deployment.repository.to_string(),
+                                repository.organization.as_str(),
+                                repository.repository.as_str(),
                                 &deployment.id.ref_name,
                                 deployment.id.commit_hash.as_slice(),
                             ),
@@ -750,7 +930,8 @@ impl Client {
                         .execute_unpaged(
                             &self.statements.set_active_deployment,
                             (
-                                deployment.repository.to_string(),
+                                repository.organization.as_str(),
+                                repository.repository.as_str(),
                                 &deployment.id.ref_name,
                                 deployment.id.commit_hash.as_slice(),
                                 deployment_id.clone(),
@@ -790,7 +971,8 @@ impl DeploymentClient {
                 &self.repo.client.statements.create_supercession,
                 (
                     self.id.commit_hash.as_bytes(),
-                    self.repo.name.to_string(),
+                    self.repo.name.organization.as_str(),
+                    self.repo.name.repository.as_str(),
                     &self.id.ref_name,
                     commit_hash.as_bytes(),
                 ),
@@ -807,7 +989,8 @@ impl DeploymentClient {
             .execute_unpaged(
                 &self.repo.client.statements.get_superceded_commit,
                 (
-                    self.repo.name.to_string(),
+                    self.repo.name.organization.as_str(),
+                    self.repo.name.repository.as_str(),
                     &self.id.ref_name,
                     self.id.commit_hash.as_bytes(),
                 ),
