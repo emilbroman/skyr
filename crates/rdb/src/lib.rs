@@ -83,6 +83,13 @@ prepared_statements! {
             FROM rdb.resources
             WHERE namespace = ?
         "#,
+        list_resources_by_owner = r#"
+            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, owner
+            FROM rdb.resources
+            WHERE namespace = ?
+            AND owner = ?
+            ALLOW FILTERING
+        "#,
         set_resource_input = r#"
             UPDATE rdb.resources
             SET inputs_json = ?,
@@ -196,6 +203,43 @@ impl NamespaceClient {
             .execute_iter(
                 self.client.statements.list_resources.clone(),
                 (self.namespace.as_str(),),
+            )
+            .await?;
+
+        let namespace = self.namespace.clone();
+        Ok(pager
+            .rows_stream::<(
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            )>()?
+            .map(move |row| {
+                let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row?;
+                Ok::<_, ResourceError>(Resource {
+                    namespace: namespace.clone(),
+                    resource_type,
+                    id,
+                    inputs: decode_record(inputs_json)?,
+                    outputs: decode_record(outputs_json)?,
+                    dependencies: decode_dependencies(dependencies_json)?,
+                    owner,
+                })
+            }))
+    }
+
+    pub async fn list_resources_by_owner(
+        &self,
+        owner: &str,
+    ) -> Result<impl Stream<Item = Result<Resource, ResourceError>>, ResourceError> {
+        let pager = self
+            .client
+            .session
+            .execute_iter(
+                self.client.statements.list_resources_by_owner.clone(),
+                (self.namespace.as_str(), owner),
             )
             .await?;
 
