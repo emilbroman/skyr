@@ -486,6 +486,53 @@ impl Resource {
     fn id(&self) -> &str {
         &self.resource.id
     }
+
+    async fn owner(&self, context: &Context) -> FieldResult<Option<Deployment>> {
+        let Some(owner) = self.resource.owner.as_deref() else {
+            return Ok(None);
+        };
+
+        let mut parts = owner.splitn(3, '/');
+        let organization = parts.next();
+        let repository = parts.next();
+        let deployment_id = parts.next();
+        let (Some(organization), Some(repository), Some(_deployment_id)) =
+            (organization, repository, deployment_id)
+        else {
+            tracing::warn!("invalid resource owner fqid format: {owner}");
+            return Ok(None);
+        };
+
+        let repository_name = cdb::RepositoryName {
+            organization: organization.to_string(),
+            repository: repository.to_string(),
+        };
+
+        let deployments = context
+            .cdb_client
+            .repo(repository_name.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to list deployments for owner repository {repository_name}: {e}"
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to read deployments for owner repository {repository_name}: {e}"
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?;
+
+        Ok(deployments
+            .into_iter()
+            .find(|deployment| deployment.fqid() == owner)
+            .map(|deployment| Deployment { deployment }))
+    }
 }
 
 #[derive(Clone, Copy, juniper::GraphQLEnum)]

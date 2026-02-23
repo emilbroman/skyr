@@ -45,6 +45,7 @@ type Repository {
 type Resource {
   type: String!
   id: String!
+  owner: Deployment
 }
 
 type User {
