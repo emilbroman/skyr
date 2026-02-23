@@ -129,7 +129,7 @@ prepared_statements! {
                 ref_name TEXT,
                 superceding_commit_hash BLOB,
                 superceded_commit_hash BLOB,
-                PRIMARY KEY ((organization), repository, ref_name, superceding_commit_hash)
+                PRIMARY KEY ((organization), repository, ref_name, superceded_commit_hash)
             )
         "#,
     }
@@ -231,20 +231,30 @@ prepared_statements! {
 
         create_supercession = r#"
             UPDATE cdb.supercessions
-            SET superceded_commit_hash = ?
+            SET superceding_commit_hash = ?
             WHERE organization = ?
             AND repository = ?
             AND ref_name = ?
-            AND superceding_commit_hash = ?
+            AND superceded_commit_hash = ?
         "#,
 
-        get_superceded_commit = r#"
+        get_superceded_commits = r#"
             SELECT superceded_commit_hash
             FROM cdb.supercessions
             WHERE organization = ?
             AND repository = ?
             AND ref_name = ?
             AND superceding_commit_hash = ?
+            ALLOW FILTERING
+        "#,
+
+        get_superceding_commit = r#"
+            SELECT superceding_commit_hash
+            FROM cdb.supercessions
+            WHERE organization = ?
+            AND repository = ?
+            AND ref_name = ?
+            AND superceded_commit_hash = ?
         "#,
     }
 }
@@ -970,24 +980,55 @@ impl DeploymentClient {
             .execute_unpaged(
                 &self.repo.client.statements.create_supercession,
                 (
-                    self.id.commit_hash.as_bytes(),
+                    commit_hash.as_bytes(),
                     self.repo.name.organization.as_str(),
                     self.repo.name.repository.as_str(),
                     &self.id.ref_name,
-                    commit_hash.as_bytes(),
+                    self.id.commit_hash.as_bytes(),
                 ),
             )
             .await?;
         Ok(())
     }
 
-    pub async fn get_superceded(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
+    pub async fn superceded(&self) -> Result<Vec<DeploymentClient>, DeploymentQueryError> {
+        let pager = self
+            .repo
+            .client
+            .session
+            .execute_iter(
+                self.repo.client.statements.get_superceded_commits.clone(),
+                (
+                    self.repo.name.organization.as_str(),
+                    self.repo.name.repository.as_str(),
+                    &self.id.ref_name,
+                    self.id.commit_hash.as_bytes(),
+                ),
+            )
+            .await?;
+
+        let superceded = pager
+            .rows_stream::<(Vec<u8>,)>()?
+            .map(|row| {
+                let (commit_hash,) = row?;
+                Ok::<_, DeploymentQueryError>(self.repo.deployment(DeploymentId {
+                    ref_name: self.id.ref_name.clone(),
+                    commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
+                }))
+            })
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        Ok(superceded)
+    }
+
+    pub async fn get_superceding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
         let r = self
             .repo
             .client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.get_superceded_commit,
+                &self.repo.client.statements.get_superceding_commit,
                 (
                     self.repo.name.organization.as_str(),
                     self.repo.name.repository.as_str(),
@@ -1000,10 +1041,10 @@ impl DeploymentClient {
         Ok(r.into_rows_result()?
             .single_row::<(Vec<u8>,)>()
             .ok()
-            .map(|(superceded,)| {
+            .map(|(superceding,)| {
                 self.repo.deployment(DeploymentId {
                     ref_name: self.id.ref_name.clone(),
-                    commit_hash: ObjectId::from_bytes_or_panic(&superceded),
+                    commit_hash: ObjectId::from_bytes_or_panic(&superceding),
                 })
             }))
     }
