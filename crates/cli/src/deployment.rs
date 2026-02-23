@@ -5,6 +5,9 @@ use serde::Serialize;
 
 use crate::{auth, output::OutputFormat, repo};
 
+#[allow(non_camel_case_types)]
+type JSON = serde_json::Value;
+
 #[derive(Args, Debug)]
 pub struct DeploymentsArgs {
     #[command(subcommand)]
@@ -46,6 +49,22 @@ struct DeploymentOutput {
     commit: String,
     created_at: String,
     state: String,
+    resources: Vec<ResourceOutput>,
+}
+
+#[derive(Serialize)]
+struct ResourceOutput {
+    r#type: String,
+    id: String,
+    inputs: Option<serde_json::Value>,
+    outputs: Option<serde_json::Value>,
+    dependencies: Vec<ResourceDependencyOutput>,
+}
+
+#[derive(Serialize)]
+struct ResourceDependencyOutput {
+    r#type: String,
+    id: String,
 }
 
 async fn list_deployments(
@@ -98,18 +117,37 @@ async fn list_deployments(
             commit: deployment.commit.to_owned(),
             created_at: deployment.created_at.to_owned(),
             state: format!("{:?}", deployment.state),
+            resources: deployment
+                .resources
+                .into_iter()
+                .map(|resource| ResourceOutput {
+                    r#type: resource.type_.to_owned(),
+                    id: resource.id,
+                    inputs: resource.inputs,
+                    outputs: resource.outputs,
+                    dependencies: resource
+                        .dependencies
+                        .into_iter()
+                        .map(|dependency| ResourceDependencyOutput {
+                            r#type: dependency.type_,
+                            id: dependency.id,
+                        })
+                        .collect::<Vec<_>>(),
+                })
+                .collect::<Vec<_>>(),
         })
         .collect::<Vec<_>>();
 
     match format {
         OutputFormat::Json => crate::output::print_json(&deployments)?,
         OutputFormat::Text => {
-            let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}");
+            let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}  {:>}");
             table.add_row(crate::output::row(vec![
                 String::from("REF"),
                 String::from("COMMIT"),
                 String::from("CREATED"),
                 String::from("STATE"),
+                String::from("RESOURCES"),
             ]));
             for deployment in deployments {
                 table.add_row(crate::output::row(vec![
@@ -117,6 +155,7 @@ async fn list_deployments(
                     crate::output::shorten_commit_hash(&deployment.commit),
                     crate::output::format_created_at(&deployment.created_at),
                     deployment.state,
+                    deployment.resources.len().to_string(),
                 ]));
             }
             print!("{table}");

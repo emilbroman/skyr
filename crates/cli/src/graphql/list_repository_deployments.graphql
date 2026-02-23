@@ -6,6 +6,16 @@ query ListRepositoryDeployments {
       commit
       createdAt
       state
+      resources {
+        type
+        id
+        inputs
+        outputs
+        dependencies {
+          type
+          id
+        }
+      }
     }
   }
 }
