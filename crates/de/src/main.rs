@@ -6,9 +6,8 @@ use std::{
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
-use ldb::Severity;
 use sclc::SourceRepo;
-use slog::{Drain, Logger, debug, error, info, o};
+use slog::{Drain, Logger, debug, error, info, o, warn};
 use tokio::{
     sync::mpsc,
     sync::oneshot::{self, error::TryRecvError},
@@ -154,7 +153,6 @@ struct Worker {
 enum EvalCompleteness {
     Complete,
     Partial,
-    Unviable,
 }
 
 impl Worker {
@@ -198,8 +196,11 @@ impl Worker {
 
                 match completeness {
                     EvalCompleteness::Complete => {
-                        if let Some(superceded) = self.client.get_superceded().await? {
-                            superceded.set(DeploymentState::Undesired).await?;
+                        for superceded in self.client.superceded().await? {
+                            let superceded_deployment = superceded.get().await?;
+                            if superceded_deployment.state == DeploymentState::Lingering {
+                                superceded.set(DeploymentState::Undesired).await?;
+                            }
                         }
                     }
                     EvalCompleteness::Partial => {
@@ -207,16 +208,6 @@ impl Worker {
                             &self.log,
                             "evaluation incomplete; deferring superceded deployment teardown"
                         );
-                    }
-                    EvalCompleteness::Unviable => {
-                        info!(
-                            &self.log,
-                            "evaluation unviable; setting deployment DOWN and restoring superceded"
-                        );
-                        self.client.set(DeploymentState::Down).await?;
-                        if let Some(superceded) = self.client.get_superceded().await? {
-                            superceded.set(DeploymentState::Desired).await?;
-                        }
                     }
                 }
 
@@ -269,14 +260,6 @@ impl Worker {
                     });
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
-                    self.log_message(
-                        Severity::Info,
-                        format!(
-                            "Queued DESTROY for resource {}.{}",
-                            resource.resource_type, resource.id
-                        ),
-                    )
-                    .await;
 
                     info!(&self.log, "queued destroy";
                         "type" => resource.resource_type.clone(),
@@ -293,6 +276,9 @@ impl Worker {
                 if owned_resources.is_empty() {
                     info!(&self.log, "no more resources, setting state to DOWN");
                     self.client.set(DeploymentState::Down).await?;
+                    self.log_publisher
+                        .info(format!("No more resources, deployment is DOWN"))
+                        .await;
                     return Ok(());
                 }
 
@@ -300,17 +286,37 @@ impl Worker {
                     info!(&self.log, "teardown waiting on living dependents";
                         "blocked_resources" => blocked
                     );
-                    self.log_message(
-                        Severity::Warning,
-                        format!("Teardown blocked by {blocked} resources with living dependents"),
-                    )
-                    .await;
+                    self.log_publisher
+                        .info(format!("{blocked} resources still have living dependents"))
+                        .await;
                 }
                 Ok(())
             }
 
             DeploymentState::Lingering => {
                 info!(&self.log, "lingering...");
+                let mut cursor = self.client.clone();
+                let mut seen = HashSet::new();
+
+                while let Some(superceding) = cursor.get_superceding().await? {
+                    let superceding_deployment = superceding.get().await?;
+                    let commit_hash = superceding_deployment.id.commit_hash.clone();
+
+                    if !seen.insert(commit_hash) {
+                        warn!(&self.log, "detected supercession cycle while lingering");
+                        break;
+                    }
+
+                    if superceding_deployment.state == DeploymentState::Desired {
+                        self.client
+                            .mark_superceded_by(superceding_deployment.id.commit_hash)
+                            .await?;
+                        break;
+                    }
+
+                    cursor = superceding;
+                }
+
                 Ok(())
             }
         }
@@ -326,9 +332,25 @@ impl Worker {
                 "diag" => diag.to_string()
             );
         }
+
+        for diag in diagnosed.diags().iter() {
+            let (module_id, span) = diag.locate();
+
+            self.log_publisher
+                .log(
+                    match diag.level() {
+                        sclc::DiagLevel::Error => ldb::Severity::Error,
+                        sclc::DiagLevel::Warning => ldb::Severity::Warning,
+                    },
+                    format!("{module_id}:{span}: {diag}"),
+                )
+                .await
+                .unwrap_or_default();
+        }
+
         if diagnosed.diags().has_errors() {
             info!(&self.log, "compile produced errors; skipping evaluation");
-            return Ok(EvalCompleteness::Unviable);
+            return Ok(EvalCompleteness::Partial);
         }
 
         let mut program = diagnosed.into_inner();
@@ -411,13 +433,14 @@ impl Worker {
                             error!(log, "failed to publish create message";
                                 "error" => error.to_string()
                             );
-                            publish_worker_log(
-                                &log,
-                                &log_publisher,
-                                Severity::Error,
-                                format!("Failed to enqueue CREATE {}.{}: {}", id.ty, id.id, error),
-                            )
-                            .await;
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue CREATE {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
+
                             continue;
                         }
 
@@ -426,13 +449,6 @@ impl Worker {
                             "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
                         );
-                        publish_worker_log(
-                            &log,
-                            &log_publisher,
-                            Severity::Info,
-                            format!("Enqueued CREATE {}.{}", id.ty, id.id),
-                        )
-                        .await;
                     }
                     sclc::Effect::UpdateResource {
                         id,
@@ -489,13 +505,13 @@ impl Worker {
                             error!(log, "failed to publish update message";
                                 "error" => error.to_string()
                             );
-                            publish_worker_log(
-                                &log,
-                                &log_publisher,
-                                Severity::Error,
-                                format!("Failed to enqueue UPDATE {}.{}: {}", id.ty, id.id, error),
-                            )
-                            .await;
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue UPDATE {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
                             continue;
                         }
 
@@ -504,13 +520,6 @@ impl Worker {
                             "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
                         );
-                        publish_worker_log(
-                            &log,
-                            &log_publisher,
-                            Severity::Info,
-                            format!("Enqueued UPDATE {}.{}", id.ty, id.id),
-                        )
-                        .await;
                     }
                     sclc::Effect::TouchResource {
                         id,
@@ -557,13 +566,13 @@ impl Worker {
                             error!(log, "failed to publish touch adopt message";
                                 "error" => error.to_string()
                             );
-                            publish_worker_log(
-                                &log,
-                                &log_publisher,
-                                Severity::Error,
-                                format!("Failed to enqueue ADOPT {}.{}: {}", id.ty, id.id, error),
-                            )
-                            .await;
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue ADOPT {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
                             continue;
                         }
 
@@ -572,13 +581,6 @@ impl Worker {
                             "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
                         );
-                        publish_worker_log(
-                            &log,
-                            &log_publisher,
-                            Severity::Info,
-                            format!("Enqueued ADOPT {}.{}", id.ty, id.id),
-                        )
-                        .await;
                     }
                 }
             }
@@ -594,22 +596,5 @@ impl Worker {
         drop(eval);
         let completeness = effects_task.await?;
         Ok(completeness)
-    }
-
-    async fn log_message(&self, severity: Severity, message: String) {
-        if let Err(error) = self.log_publisher.log(severity, message).await {
-            error!(self.log, "failed to publish deployment log"; "error" => error.to_string());
-        }
-    }
-}
-
-async fn publish_worker_log(
-    log: &Logger,
-    publisher: &ldb::NamespacePublisher,
-    severity: Severity,
-    message: String,
-) {
-    if let Err(error) = publisher.log(severity, message).await {
-        error!(log, "failed to publish deployment log"; "error" => error.to_string());
     }
 }
