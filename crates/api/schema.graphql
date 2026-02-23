@@ -16,6 +16,9 @@ type AuthSuccess {
 }
 
 type Deployment {
+  ref: String!
+  commit: String!
+  createdAt: String!
   state: DeploymentState!
 }
 

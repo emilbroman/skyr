@@ -367,6 +367,20 @@ pub struct Deployment {
 
 #[juniper::graphql_object(Context = Context)]
 impl Deployment {
+    #[graphql(name = "ref")]
+    fn r#ref(&self) -> &str {
+        &self.deployment.id.ref_name
+    }
+
+    fn commit(&self) -> String {
+        self.deployment.id.commit_hash.to_string()
+    }
+
+    #[graphql(name = "createdAt")]
+    fn created_at(&self) -> String {
+        self.deployment.created_at.to_rfc3339()
+    }
+
     fn state(&self) -> DeploymentState {
         self.deployment.state.into()
     }
