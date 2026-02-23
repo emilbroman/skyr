@@ -25,6 +25,7 @@ type AuthSuccess {
 }
 
 type Deployment {
+  id: String!
   ref: String!
   commit: String!
   createdAt: String!

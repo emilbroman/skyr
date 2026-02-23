@@ -426,6 +426,10 @@ pub struct Deployment {
 
 #[juniper::graphql_object(Context = Context)]
 impl Deployment {
+    fn id(&self) -> String {
+        self.deployment.fqid()
+    }
+
     #[graphql(name = "ref")]
     fn r#ref(&self) -> &str {
         &self.deployment.id.ref_name
