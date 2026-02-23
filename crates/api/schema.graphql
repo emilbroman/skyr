@@ -39,6 +39,7 @@ type Query {
 type Repository {
   name: String!
   deployments: [Deployment!]!
+  resources: [Resource!]!
 }
 
 type Resource {

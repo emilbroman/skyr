@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 mod challenge;
 
@@ -358,6 +358,64 @@ impl Repository {
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })
+    }
+
+    async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
+        let deployments = context
+            .cdb_client
+            .repo(self.repository.name.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to list deployments for {} while listing resources: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to read deployments for {} while listing resources: {}",
+                    self.repository.name,
+                    e
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?;
+
+        let namespaces = deployments
+            .into_iter()
+            .map(|deployment| format!("{}/{}", deployment.repository, deployment.id.ref_name))
+            .collect::<BTreeSet<_>>();
+
+        let mut resources = Vec::new();
+        for namespace in namespaces {
+            let namespace_resources = context
+                .rdb_client
+                .namespace(namespace.clone())
+                .list_resources()
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to list resources for repository namespace {namespace}: {e}"
+                    );
+                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                })?
+                .map(|resource| resource.map(|resource| Resource { resource }))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to load resources for repository namespace {namespace}: {e}"
+                    );
+                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                })?;
+            resources.extend(namespace_resources);
+        }
+
+        Ok(resources)
     }
 }
 
