@@ -694,37 +694,49 @@ impl Subscription {
         context: &Context,
         deployment_id: String,
         initial_amount: Option<i32>,
-    ) -> LogStream {
+    ) -> juniper::FieldResult<LogStream> {
+        let (_, user) = context.check_auth().await?;
+
+        let organization = deployment_organization(&deployment_id).ok_or_else(|| {
+            juniper::FieldError::new("invalid deployment id", juniper::Value::Null)
+        })?;
+
+        if organization != user.username {
+            tracing::warn!(
+                "Rejected deployment logs subscription for deployment outside user organization: deployment={} user={}",
+                deployment_id,
+                user.username
+            );
+            return Err(juniper::FieldError::new(
+                "deployment outside user organization",
+                juniper::Value::Null,
+            ));
+        }
+
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let consumer = match ldb::ClientBuilder::new()
+        let consumer = ldb::ClientBuilder::new()
             .brokers(context.ldb_brokers.clone())
             .build_consumer()
             .await
-        {
-            Ok(consumer) => consumer,
-            Err(error) => {
-                tracing::error!("Failed to build ldb consumer for subscription: {}", error);
-                return Box::pin(futures_util::stream::empty());
-            }
-        };
+            .map_err(|e| {
+                tracing::error!("Failed to build ldb consumer for subscription: {}", e);
+                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            })?;
 
         let namespace = consumer.namespace(deployment_id);
-        let mut inner = match namespace
+        let mut inner = namespace
             .tail(ldb::TailConfig {
                 follow: true,
                 start_from: ldb::StartFrom::End(initial_amount),
             })
             .await
-        {
-            Ok(stream) => Box::pin(stream),
-            Err(error) => {
-                tracing::error!("Failed to tail deployment logs subscription: {}", error);
-                return Box::pin(futures_util::stream::empty());
-            }
-        };
+            .map_err(|e| {
+                tracing::error!("Failed to tail deployment logs subscription: {e}");
+                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            })?;
 
-        Box::pin(async_stream::stream! {
+        Ok(Box::pin(async_stream::stream! {
             while let Some(item) = inner.next().await {
                 match item {
                     Ok((timestamp, severity, message)) => {
@@ -740,7 +752,7 @@ impl Subscription {
                     }
                 }
             }
-        })
+        }))
     }
 }
 
@@ -778,6 +790,15 @@ fn normalize_timestamp(timestamp_millis: u64) -> i32 {
     // GraphQL Int is 32-bit. We expose seconds since epoch to stay within range.
     let seconds = timestamp_millis / 1_000;
     i32::try_from(seconds).unwrap_or(i32::MAX)
+}
+
+fn deployment_organization(deployment_id: &str) -> Option<&str> {
+    let (organization, rest) = deployment_id.split_once('/')?;
+    let (repository, _tail) = rest.split_once('/')?;
+    if organization.is_empty() || repository.is_empty() {
+        return None;
+    }
+    Some(organization)
 }
 
 #[derive(Clone, Debug)]
