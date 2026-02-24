@@ -140,22 +140,9 @@ impl rtp::Plugin for ArtifactPlugin {
     async fn update_resource(
         &mut self,
         id: sclc::ResourceId,
-        prev_inputs: sclc::Record,
+        _prev_inputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        if prev_inputs != inputs {
-            warn!(
-                resource_type = id.ty.as_str(),
-                resource_id = id.id.as_str(),
-                "artifact update rejected because inputs changed"
-            );
-            anyhow::bail!(
-                "artifact resources are immutable; inputs changed for {}.{}",
-                id.ty,
-                id.id
-            );
-        }
-
         let result = self.materialize_artifact(id.clone(), inputs).await;
         if let Err(error) = &result {
             error!(
