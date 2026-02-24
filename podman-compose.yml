@@ -3,7 +3,7 @@ services:
     image: scylladb/scylla
     ports:
       - 9042:9042
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
       interval: 10s
@@ -16,7 +16,7 @@ services:
     ports:
       - 15672:15672
       - 5672:5672
-    restart: unless-stopped
+    restart: always
     healthcheck:
       test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
       interval: 10s
@@ -28,13 +28,41 @@ services:
     image: redis:8-alpine
     ports:
       - 6379:6379
-    restart: unless-stopped
+    restart: always
 
   redpanda:
     image: redpandadata/redpanda:v25.3.7
+    command:
+      [
+        "redpanda",
+        "start",
+        "--kafka-addr",
+        "internal://0.0.0.0:9092",
+        "--advertise-kafka-addr",
+        "internal://redpanda:9092",
+        "--overprovisioned",
+        "--smp",
+        "1",
+        "--memory",
+        "1G",
+        "--reserve-memory",
+        "0M",
+        "--check=false",
+      ]
     ports:
       - 9092:9092
-    restart: unless-stopped
+    restart: always
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - 9000:9000
+      - 9001:9001
+    restart: always
 
   api:
     image: skyr:latest
@@ -53,10 +81,20 @@ services:
         "redis",
         "--ldb-hostname",
         "redpanda",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-presign-endpoint-url",
+        "http://localhost:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
         "--challenge-salt",
         "local-dev-challenge-salt",
       ]
-    restart: unless-stopped
+    restart: always
     ports:
       - 8080:8080
 
@@ -75,7 +113,7 @@ services:
         "--udb-hostname",
         "redis",
       ]
-    restart: unless-stopped
+    restart: always
     ports:
       - 2222:2222
     volumes:
@@ -96,13 +134,31 @@ services:
         "--ldb-hostname",
         "redpanda",
       ]
-    restart: unless-stopped
+    restart: always
 
   plugin-std-random:
     image: skyr:latest
     entrypoint: ["/plugin_std_random"]
     command: ["--bind", "tcp://0.0.0.0:50051"]
-    restart: unless-stopped
+    restart: always
+
+  plugin-std-artifact:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_artifact"]
+    command:
+      [
+        "--bind",
+        "tcp://0.0.0.0:50052",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
+      ]
+    restart: always
 
   rte-0:
     image: skyr:latest
@@ -118,12 +174,14 @@ services:
         "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
+        "--plugin",
+        "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--worker-index",
         "0",
         "--worker-count",
         "3",
       ]
-    restart: unless-stopped
+    restart: always
 
   rte-1:
     image: skyr:latest
@@ -139,12 +197,14 @@ services:
         "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
+        "--plugin",
+        "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--worker-index",
         "1",
         "--worker-count",
         "3",
       ]
-    restart: unless-stopped
+    restart: always
 
   rte-2:
     image: skyr:latest
@@ -160,9 +220,11 @@ services:
         "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
+        "--plugin",
+        "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--worker-index",
         "2",
         "--worker-count",
         "3",
       ]
-    restart: unless-stopped
+    restart: always
