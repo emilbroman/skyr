@@ -480,25 +480,6 @@ async fn worker_loop_iteration(
                 return Ok(true);
             }
 
-            let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
-            else {
-                warn!(log, "invalid resource type for adopt";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone()
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-            let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                warn!(log, "no plugin configured for resource type";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "plugin" => plugin_name.to_owned()
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-
             let prev_inputs = match current.inputs {
                 Some(inputs) => inputs,
                 None => {
@@ -526,38 +507,68 @@ async fn worker_loop_iteration(
                     }
                 };
 
-            let id = sclc::ResourceId {
-                ty: message.resource.resource_type.clone(),
-                id: message.resource.resource_id.clone(),
-            };
-            info!(log, "calling plugin update_resource for adopt";
-                "plugin" => plugin_name.to_owned(),
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
-            );
-            let resource = match plugin
-                .update_resource(id, prev_inputs, desired_inputs)
-                .await
-            {
-                Ok(resource) => resource,
-                Err(error) => {
-                    warn!(log, "update_resource plugin call failed for adopt";
+            let mut inputs_to_persist = prev_inputs.clone();
+            let mut outputs_to_persist = current.outputs.clone();
+
+            if prev_inputs != desired_inputs {
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for adopt";
                         "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                        "resource_type" => message.resource.resource_type.clone()
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
-                }
-            };
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                info!(log, "calling plugin update_resource for adopt";
+                    "plugin" => plugin_name.to_owned(),
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+                let resource = match plugin
+                    .update_resource(id, prev_inputs, desired_inputs)
+                    .await
+                {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        warn!(log, "update_resource plugin call failed for adopt";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        return Ok(true);
+                    }
+                };
+                inputs_to_persist = resource.inputs;
+                outputs_to_persist = Some(resource.outputs);
+            } else {
+                info!(log, "skipping plugin update_resource for adopt with unchanged inputs";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+            }
 
             if let Err(error) = resource_client
-                .set_input(
-                    resource.inputs.clone(),
-                    message.to_owner_deployment_id.clone(),
-                )
+                .set_input(inputs_to_persist, message.to_owner_deployment_id.clone())
                 .await
             {
                 warn!(log, "failed to persist adopted resource inputs";
@@ -580,15 +591,23 @@ async fn worker_loop_iteration(
                 delivery.nack(false).await?;
                 return Ok(true);
             }
-            if let Err(error) = resource_client.set_output(resource.outputs).await {
-                warn!(log, "failed to persist adopted resource outputs";
+            if let Some(outputs) = outputs_to_persist {
+                if let Err(error) = resource_client.set_output(outputs).await {
+                    warn!(log, "failed to persist adopted resource outputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            } else {
+                warn!(log, "adopted resource has no outputs to persist";
                     "namespace" => message.resource.namespace.clone(),
                     "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                    "resource_id" => message.resource.resource_id.clone()
                 );
-                delivery.nack(false).await?;
-                return Ok(true);
             }
 
             info!(log, "adopted resource";
@@ -663,25 +682,6 @@ async fn worker_loop_iteration(
                 return Ok(true);
             }
 
-            let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
-            else {
-                warn!(log, "invalid resource type for restore";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone()
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-            let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                warn!(log, "no plugin configured for resource type";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "plugin" => plugin_name.to_owned()
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-
             let prev_inputs = match current.inputs {
                 Some(inputs) => inputs,
                 None => {
@@ -709,35 +709,68 @@ async fn worker_loop_iteration(
                     }
                 };
 
-            let id = sclc::ResourceId {
-                ty: message.resource.resource_type.clone(),
-                id: message.resource.resource_id.clone(),
-            };
-            info!(log, "calling plugin update_resource for restore";
-                "plugin" => plugin_name.to_owned(),
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
-            );
-            let resource = match plugin
-                .update_resource(id, prev_inputs, desired_inputs)
-                .await
-            {
-                Ok(resource) => resource,
-                Err(error) => {
-                    warn!(log, "update_resource plugin call failed for restore";
+            let mut inputs_to_persist = prev_inputs.clone();
+            let mut outputs_to_persist = current.outputs.clone();
+
+            if prev_inputs != desired_inputs {
+                let Some(plugin_name) =
+                    plugin_name_for_resource_type(&message.resource.resource_type)
+                else {
+                    warn!(log, "invalid resource type for restore";
                         "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                        "resource_type" => message.resource.resource_type.clone()
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
-                }
-            };
+                };
+                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
+                    warn!(log, "no plugin configured for resource type";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "plugin" => plugin_name.to_owned()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                };
+
+                let id = sclc::ResourceId {
+                    ty: message.resource.resource_type.clone(),
+                    id: message.resource.resource_id.clone(),
+                };
+                info!(log, "calling plugin update_resource for restore";
+                    "plugin" => plugin_name.to_owned(),
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+                let resource = match plugin
+                    .update_resource(id, prev_inputs, desired_inputs)
+                    .await
+                {
+                    Ok(resource) => resource,
+                    Err(error) => {
+                        warn!(log, "update_resource plugin call failed for restore";
+                            "namespace" => message.resource.namespace.clone(),
+                            "resource_type" => message.resource.resource_type.clone(),
+                            "resource_id" => message.resource.resource_id.clone(),
+                            "error" => error.to_string()
+                        );
+                        delivery.nack(false).await?;
+                        return Ok(true);
+                    }
+                };
+                inputs_to_persist = resource.inputs;
+                outputs_to_persist = Some(resource.outputs);
+            } else {
+                info!(log, "skipping plugin update_resource for restore with unchanged inputs";
+                    "namespace" => message.resource.namespace.clone(),
+                    "resource_type" => message.resource.resource_type.clone(),
+                    "resource_id" => message.resource.resource_id.clone()
+                );
+            }
 
             if let Err(error) = resource_client
-                .set_input(resource.inputs.clone(), message.owner_deployment_id.clone())
+                .set_input(inputs_to_persist, message.owner_deployment_id.clone())
                 .await
             {
                 warn!(log, "failed to persist restored resource inputs";
@@ -760,15 +793,23 @@ async fn worker_loop_iteration(
                 delivery.nack(false).await?;
                 return Ok(true);
             }
-            if let Err(error) = resource_client.set_output(resource.outputs).await {
-                warn!(log, "failed to persist restored resource outputs";
+            if let Some(outputs) = outputs_to_persist {
+                if let Err(error) = resource_client.set_output(outputs).await {
+                    warn!(log, "failed to persist restored resource outputs";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone(),
+                        "error" => error.to_string()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            } else {
+                warn!(log, "restored resource has no outputs to persist";
                     "namespace" => message.resource.namespace.clone(),
                     "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                    "resource_id" => message.resource.resource_id.clone()
                 );
-                delivery.nack(false).await?;
-                return Ok(true);
             }
 
             info!(log, "restored resource";
