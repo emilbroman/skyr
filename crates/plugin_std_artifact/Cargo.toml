@@ -1,0 +1,15 @@
+[package]
+name = "plugin_std_artifact"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+async-trait = "0.1.89"
+clap = { version = "4.5.48", features = ["derive"] }
+rtp = { path = "../rtp" }
+sclc = { path = "../sclc" }
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
+adb = { path = "../adb" }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
