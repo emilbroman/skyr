@@ -1,24 +1,27 @@
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, pin::Pin, sync::Arc};
 
 mod challenge;
 
 use axum::{
     Json as AxumJson, Router,
-    extract::Extension,
-    response::Html,
-    routing::{get, post},
+    extract::{
+        Extension,
+        ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
+    },
+    response::{Html, IntoResponse, Response},
+    routing::get,
 };
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use clap::Parser;
-use futures_util::{StreamExt, TryStreamExt};
-use juniper::{
-    EmptySubscription, FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar,
-};
+use futures_util::{Stream, StreamExt, TryStreamExt};
+use http::StatusCode;
+use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
 
 pub struct Context {
     udb_client: udb::Client,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
+    ldb_brokers: String,
     challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
 }
@@ -427,6 +430,10 @@ pub struct Deployment {
 
 #[juniper::graphql_object(Context = Context)]
 impl Deployment {
+    fn id(&self) -> String {
+        self.deployment.fqid()
+    }
+
     #[graphql(name = "ref")]
     fn r#ref(&self) -> &str {
         &self.deployment.id.ref_name
@@ -469,6 +476,21 @@ impl Deployment {
             .map_err(|e| {
                 tracing::error!(
                     "Failed to load resources for deployment namespace {namespace} and owner {owner}: {e}"
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
+
+    #[graphql(name = "lastLogs")]
+    async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
+        let amount = amount.unwrap_or(20).max(0) as u64;
+        load_deployment_logs(context, self.deployment.fqid(), amount)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    "Failed to fetch deployment logs for {}: {}",
+                    self.deployment.fqid(),
+                    error
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })
@@ -620,6 +642,167 @@ impl From<cdb::DeploymentState> for DeploymentState {
     }
 }
 
+#[derive(Clone, Copy, Debug, juniper::GraphQLEnum)]
+enum Severity {
+    #[graphql(name = "INFO")]
+    Info,
+    #[graphql(name = "WARNING")]
+    Warning,
+    #[graphql(name = "ERROR")]
+    Err,
+}
+
+impl From<ldb::Severity> for Severity {
+    fn from(severity: ldb::Severity) -> Self {
+        match severity {
+            ldb::Severity::Info => Severity::Info,
+            ldb::Severity::Warning => Severity::Warning,
+            ldb::Severity::Error => Severity::Err,
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Log {
+    severity: Severity,
+    timestamp: String,
+    message: String,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Log {
+    fn severity(&self) -> Severity {
+        self.severity
+    }
+
+    fn timestamp(&self) -> &str {
+        &self.timestamp
+    }
+
+    fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+pub struct Subscription;
+
+type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
+
+#[juniper::graphql_subscription(Context = Context)]
+impl Subscription {
+    async fn deployment_logs(
+        context: &Context,
+        deployment_id: String,
+        initial_amount: Option<i32>,
+    ) -> juniper::FieldResult<LogStream> {
+        let (_, user) = context.check_auth().await?;
+
+        let organization = deployment_organization(&deployment_id).ok_or_else(|| {
+            juniper::FieldError::new("invalid deployment id", juniper::Value::Null)
+        })?;
+
+        if organization != user.username {
+            tracing::warn!(
+                "Rejected deployment logs subscription for deployment outside user organization: deployment={} user={}",
+                deployment_id,
+                user.username
+            );
+            return Err(juniper::FieldError::new(
+                "deployment outside user organization",
+                juniper::Value::Null,
+            ));
+        }
+
+        let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
+
+        let consumer = ldb::ClientBuilder::new()
+            .brokers(context.ldb_brokers.clone())
+            .build_consumer()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to build ldb consumer for subscription: {}", e);
+                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            })?;
+
+        let namespace = consumer.namespace(deployment_id);
+        let mut inner = namespace
+            .tail(ldb::TailConfig {
+                follow: true,
+                start_from: ldb::StartFrom::End(initial_amount),
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to tail deployment logs subscription: {e}");
+                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            })?;
+
+        Ok(Box::pin(async_stream::stream! {
+            while let Some(item) = inner.next().await {
+                match item {
+                    Ok((timestamp, severity, message)) => {
+                        yield Log {
+                            severity: severity.into(),
+                            timestamp: format_timestamp(timestamp),
+                            message,
+                        };
+                    }
+                    Err(error) => {
+                        tracing::warn!("Error while streaming deployment logs: {}", error);
+                        break;
+                    }
+                }
+            }
+        }))
+    }
+}
+
+async fn load_deployment_logs(
+    context: &Context,
+    deployment_id: String,
+    amount: u64,
+) -> anyhow::Result<Vec<Log>> {
+    let consumer = ldb::ClientBuilder::new()
+        .brokers(context.ldb_brokers.clone())
+        .build_consumer()
+        .await?;
+    let namespace = consumer.namespace(deployment_id);
+    let mut stream = namespace
+        .tail(ldb::TailConfig {
+            follow: false,
+            start_from: ldb::StartFrom::End(amount),
+        })
+        .await?;
+
+    let mut logs = Vec::new();
+    while let Some(item) = stream.next().await {
+        let (timestamp, severity, message) = item?;
+        logs.push(Log {
+            severity: severity.into(),
+            timestamp: format_timestamp(timestamp),
+            message,
+        });
+    }
+
+    Ok(logs)
+}
+
+fn format_timestamp(timestamp_millis: u64) -> String {
+    let timestamp_millis = i64::try_from(timestamp_millis).unwrap_or(i64::MAX);
+    Utc.timestamp_millis_opt(timestamp_millis)
+        .single()
+        .map(|timestamp| timestamp.to_rfc3339())
+        .unwrap_or_else(|| String::from("9999-12-31T23:59:59.999+00:00"))
+}
+
+fn deployment_organization(deployment_id: &str) -> Option<&str> {
+    let (organization, rest) = deployment_id.split_once('/')?;
+    let (repository, _tail) = rest.split_once('/')?;
+    if organization.is_empty() || repository.is_empty() {
+        return None;
+    }
+    Some(organization)
+}
+
 #[derive(Clone, Debug)]
 #[graphql_scalar(with = json_scalar, parse_token(String), name = "JSON")]
 pub struct JsonValue(pub serde_json::Value);
@@ -715,10 +898,51 @@ fn input_to_json<S: ScalarValue>(value: &InputValue<S>) -> Result<serde_json::Va
     }
 }
 
-pub type Schema = RootNode<'static, Query, Mutation, EmptySubscription<Context>>;
+fn serialize_execution_errors(
+    errors: &[juniper::ExecutionError<juniper::DefaultScalarValue>],
+) -> serde_json::Value {
+    serde_json::to_value(errors).unwrap_or_else(|error| {
+        serde_json::json!([{
+            "message": format!("failed to serialize execution errors: {error}")
+        }])
+    })
+}
+
+fn graphql_value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Null => serde_json::Value::Null,
+        Value::Scalar(scalar) => {
+            if let Some(value) = scalar.as_str() {
+                serde_json::Value::String(value.to_string())
+            } else if let Some(value) = scalar.as_bool() {
+                serde_json::Value::Bool(value)
+            } else if let Some(value) = scalar.as_int() {
+                serde_json::Value::Number(serde_json::Number::from(value))
+            } else if let Some(value) = scalar.as_float() {
+                serde_json::Number::from_f64(value)
+                    .map(serde_json::Value::Number)
+                    .unwrap_or(serde_json::Value::Null)
+            } else {
+                serde_json::Value::String(scalar.to_string())
+            }
+        }
+        Value::List(values) => {
+            serde_json::Value::Array(values.iter().map(graphql_value_to_json).collect::<Vec<_>>())
+        }
+        Value::Object(values) => {
+            let mut object = serde_json::Map::with_capacity(values.field_count());
+            for (name, value) in values.iter() {
+                object.insert(name.to_string(), graphql_value_to_json(value));
+            }
+            serde_json::Value::Object(object)
+        }
+    }
+}
+
+pub type Schema = RootNode<'static, Query, Mutation, Subscription>;
 
 pub fn schema() -> Schema {
-    Schema::new(Query, Mutation, EmptySubscription::new())
+    Schema::new(Query, Mutation, Subscription)
 }
 
 #[derive(Parser, Debug)]
@@ -734,6 +958,8 @@ struct Cli {
     rdb_hostname: String,
     #[arg(long, default_value = "localhost")]
     udb_hostname: String,
+    #[arg(long, default_value = "localhost")]
+    ldb_hostname: String,
     #[arg(long)]
     challenge_salt: Option<String>,
     #[arg(long)]
@@ -771,17 +997,19 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.rdb_hostname)
         .build()
         .await?;
+    let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
     let schema = Arc::new(schema());
 
     let app = Router::new()
-        .route("/graphql", post(graphql_handler))
+        .route("/graphql", get(graphql_ws_handler).post(graphql_handler))
         .route("/graphiql", get(graphiql))
         .layer(Extension(schema))
         .layer(Extension(challenger))
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
+        .layer(Extension(ldb_brokers))
         .layer(Extension(udb_client));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
@@ -802,6 +1030,7 @@ async fn graphql_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
+    Extension(ldb_brokers): Extension<String>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
@@ -829,6 +1058,7 @@ async fn graphql_handler(
                     udb_client,
                     cdb_client,
                     rdb_client,
+                    ldb_brokers,
                     challenger,
                     user: Some(user),
                 };
@@ -841,6 +1071,7 @@ async fn graphql_handler(
         udb_client,
         cdb_client,
         rdb_client,
+        ldb_brokers,
         challenger,
         user: None,
     };
@@ -848,5 +1079,379 @@ async fn graphql_handler(
 }
 
 async fn graphiql() -> Html<String> {
-    Html(juniper::http::graphiql::graphiql_source("/graphql", None))
+    Html(juniper::http::graphiql::graphiql_source(
+        "/graphql",
+        Some("/graphql"),
+    ))
+}
+
+#[axum::debug_handler]
+async fn graphql_ws_handler(
+    ws: WebSocketUpgrade,
+    Extension(schema): Extension<Arc<Schema>>,
+    Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(rdb_client): Extension<rdb::Client>,
+    Extension(ldb_brokers): Extension<String>,
+    Extension(mut udb_client): Extension<udb::Client>,
+    headers: http::header::HeaderMap,
+) -> Response {
+    let auth_header = headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|v| String::from_utf8(v.to_vec()).ok());
+
+    let user = if let Some(token) = auth_header {
+        match udb_client.lookup_token(token).await {
+            Err(udb::LookupTokenError::InvalidToken) => {
+                return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
+            }
+            Err(e) => {
+                tracing::error!("Failed to lookup token for websocket: {}", e);
+                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
+                    .into_response();
+            }
+            Ok(user) => Some(user),
+        }
+    } else {
+        None
+    };
+
+    let context = Context {
+        udb_client,
+        cdb_client,
+        rdb_client,
+        ldb_brokers,
+        challenger,
+        user,
+    };
+
+    ws.protocols(["graphql-transport-ws"])
+        .on_upgrade(move |socket| graphql_ws_connection(socket, schema, context))
+}
+
+async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, context: Context) {
+    let mut initialized = false;
+
+    while let Some(message) = socket.recv().await {
+        let message = match message {
+            Ok(message) => message,
+            Err(error) => {
+                tracing::warn!("GraphQL websocket receive error: {}", error);
+                break;
+            }
+        };
+
+        match message {
+            WsMessage::Text(text) => {
+                let payload: serde_json::Value = match serde_json::from_str(&text) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        tracing::warn!("GraphQL websocket invalid json message: {}", error);
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "error",
+                                "payload": [{
+                                    "message": format!("invalid websocket message: {error}")
+                                }]
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                let Some(message_type) = payload
+                    .get("type")
+                    .and_then(|message_type| message_type.as_str())
+                else {
+                    if !send_ws_json(
+                        &mut socket,
+                        serde_json::json!({
+                            "type": "error",
+                            "payload": [{
+                                "message": "missing websocket message type"
+                            }]
+                        }),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                    continue;
+                };
+
+                match message_type {
+                    "connection_init" => {
+                        initialized = true;
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "connection_ack"
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    "ping" => {
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "pong"
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                    "subscribe" => {
+                        if !initialized {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "connection_init must be sent before subscribe"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        let Some(subscription_id) = payload
+                            .get("id")
+                            .and_then(|id| id.as_str())
+                            .map(ToOwned::to_owned)
+                        else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscribe message missing id"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        let Some(request_payload) = payload.get("payload") else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscribe message missing payload"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        let request: juniper::http::GraphQLRequest =
+                            match serde_json::from_value(request_payload.clone()) {
+                                Ok(request) => request,
+                                Err(error) => {
+                                    if !send_ws_json(
+                                    &mut socket,
+                                    serde_json::json!({
+                                        "id": subscription_id,
+                                        "type": "error",
+                                        "payload": [{
+                                            "message": format!("invalid subscribe payload: {error}")
+                                        }]
+                                    }),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                                    continue;
+                                }
+                            };
+
+                        let stream_result =
+                            juniper::http::resolve_into_stream(&request, &schema, &context).await;
+
+                        let (subscription_value, initial_errors) = match stream_result {
+                            Ok(result) => result,
+                            Err(error) => {
+                                if !send_ws_json(
+                                    &mut socket,
+                                    serde_json::json!({
+                                        "id": subscription_id,
+                                        "type": "error",
+                                        "payload": [{
+                                            "message": format!("{error}")
+                                        }]
+                                    }),
+                                )
+                                .await
+                                {
+                                    break;
+                                }
+                                continue;
+                            }
+                        };
+
+                        if !initial_errors.is_empty() {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": serialize_execution_errors(&initial_errors)
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        }
+
+                        let Some(fields) = subscription_value.into_object() else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription did not return a stream field"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Some((field_name, field_value)) = fields.into_iter().next() else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription did not return any stream fields"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+                        let Value::Scalar(mut stream) = field_value else {
+                            if !send_ws_json(
+                                &mut socket,
+                                serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "error",
+                                    "payload": [{
+                                        "message": "subscription field was not a stream"
+                                    }]
+                                }),
+                            )
+                            .await
+                            {
+                                break;
+                            }
+                            continue;
+                        };
+
+                        while let Some(item) = stream.next().await {
+                            let event = match item {
+                                Ok(value) => serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "next",
+                                    "payload": {
+                                        "data": {
+                                            field_name.clone(): graphql_value_to_json(&value)
+                                        }
+                                    }
+                                }),
+                                Err(error) => serde_json::json!({
+                                    "id": subscription_id,
+                                    "type": "next",
+                                    "payload": {
+                                        "errors": serialize_execution_errors(std::slice::from_ref(&error))
+                                    }
+                                }),
+                            };
+
+                            if !send_ws_json(&mut socket, event).await {
+                                return;
+                            }
+                        }
+
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "id": subscription_id,
+                                "type": "complete"
+                            }),
+                        )
+                        .await
+                        {
+                            return;
+                        }
+                    }
+                    "complete" | "pong" => {}
+                    other => {
+                        if !send_ws_json(
+                            &mut socket,
+                            serde_json::json!({
+                                "type": "error",
+                                "payload": [{
+                                    "message": format!("unsupported websocket message type: {other}")
+                                }]
+                            }),
+                        )
+                        .await
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            WsMessage::Ping(bytes) => {
+                if socket.send(WsMessage::Pong(bytes)).await.is_err() {
+                    break;
+                }
+            }
+            WsMessage::Pong(_) => {}
+            WsMessage::Close(_) => break,
+            WsMessage::Binary(_) => {}
+        }
+    }
+}
+
+async fn send_ws_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
+    socket
+        .send(WsMessage::Text(value.to_string().into()))
+        .await
+        .is_ok()
 }

@@ -1,0 +1,13 @@
+[package]
+name = "ldb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-stream = "0.3.6"
+base64 = "0.22.1"
+chrono = { version = "0.4.43", features = ["clock"] }
+futures-util = "0.3.31"
+rskafka = "0.5.0"
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["time"] }

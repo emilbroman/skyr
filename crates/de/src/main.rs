@@ -7,7 +7,7 @@ use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
 use sclc::SourceRepo;
-use slog::{Drain, Logger, debug, error, info, o};
+use slog::{Drain, Logger, debug, error, info, o, warn};
 use tokio::{
     sync::mpsc,
     sync::oneshot::{self, error::TryRecvError},
@@ -26,6 +26,9 @@ enum Program {
 
         #[clap(long = "rtq-hostname", default_value = "localhost")]
         rtq_hostname: String,
+
+        #[clap(long = "ldb-hostname", default_value = "localhost")]
+        ldb_hostname: String,
     },
 }
 
@@ -42,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
             cdb_hostname,
             rdb_hostname,
             rtq_hostname,
+            ldb_hostname,
         } => {
             info!(log, "starting deployment engine daemon");
 
@@ -59,6 +63,10 @@ async fn main() -> anyhow::Result<()> {
                 .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
                 .build_publisher()
                 .await?;
+            let ldb_publisher = ldb::ClientBuilder::new()
+                .brokers(format!("{}:9092", ldb_hostname))
+                .build_publisher()
+                .await?;
 
             let mut workers = BTreeMap::new();
 
@@ -70,6 +78,7 @@ async fn main() -> anyhow::Result<()> {
                     cdb_client.clone(),
                     rdb_client.clone(),
                     rtq_publisher.clone(),
+                    ldb_publisher.clone(),
                     &mut workers,
                 )
                 .await
@@ -93,6 +102,7 @@ async fn process(
     client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
+    ldb_publisher: ldb::Publisher,
     workers: &mut BTreeMap<String, oneshot::Sender<()>>,
 ) -> anyhow::Result<()> {
     let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
@@ -114,6 +124,7 @@ async fn process(
                 client: client.repo(deployment.repository).deployment(deployment.id),
                 namespace: rdb_client.namespace(namespace),
                 rtq_publisher: rtq_publisher.clone(),
+                log_publisher: ldb_publisher.namespace(id.clone()),
             };
 
             task::spawn(worker.run_loop(rx));
@@ -135,13 +146,13 @@ struct Worker {
     client: DeploymentClient,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
+    log_publisher: ldb::NamespacePublisher,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EvalCompleteness {
     Complete,
     Partial,
-    Unviable,
 }
 
 impl Worker {
@@ -185,8 +196,11 @@ impl Worker {
 
                 match completeness {
                     EvalCompleteness::Complete => {
-                        if let Some(superceded) = self.client.get_superceded().await? {
-                            superceded.set(DeploymentState::Undesired).await?;
+                        for superceded in self.client.superceded().await? {
+                            let superceded_deployment = superceded.get().await?;
+                            if superceded_deployment.state == DeploymentState::Lingering {
+                                superceded.set(DeploymentState::Undesired).await?;
+                            }
                         }
                     }
                     EvalCompleteness::Partial => {
@@ -194,16 +208,6 @@ impl Worker {
                             &self.log,
                             "evaluation incomplete; deferring superceded deployment teardown"
                         );
-                    }
-                    EvalCompleteness::Unviable => {
-                        info!(
-                            &self.log,
-                            "evaluation unviable; setting deployment DOWN and restoring superceded"
-                        );
-                        self.client.set(DeploymentState::Down).await?;
-                        if let Some(superceded) = self.client.get_superceded().await? {
-                            superceded.set(DeploymentState::Desired).await?;
-                        }
                     }
                 }
 
@@ -272,6 +276,9 @@ impl Worker {
                 if owned_resources.is_empty() {
                     info!(&self.log, "no more resources, setting state to DOWN");
                     self.client.set(DeploymentState::Down).await?;
+                    self.log_publisher
+                        .info(format!("No more resources, deployment is DOWN"))
+                        .await;
                     return Ok(());
                 }
 
@@ -279,12 +286,37 @@ impl Worker {
                     info!(&self.log, "teardown waiting on living dependents";
                         "blocked_resources" => blocked
                     );
+                    self.log_publisher
+                        .info(format!("{blocked} resources still have living dependents"))
+                        .await;
                 }
                 Ok(())
             }
 
             DeploymentState::Lingering => {
                 info!(&self.log, "lingering...");
+                let mut cursor = self.client.clone();
+                let mut seen = HashSet::new();
+
+                while let Some(superceding) = cursor.get_superceding().await? {
+                    let superceding_deployment = superceding.get().await?;
+                    let commit_hash = superceding_deployment.id.commit_hash.clone();
+
+                    if !seen.insert(commit_hash) {
+                        warn!(&self.log, "detected supercession cycle while lingering");
+                        break;
+                    }
+
+                    if superceding_deployment.state == DeploymentState::Desired {
+                        self.client
+                            .mark_superceded_by(superceding_deployment.id.commit_hash)
+                            .await?;
+                        break;
+                    }
+
+                    cursor = superceding;
+                }
+
                 Ok(())
             }
         }
@@ -300,9 +332,25 @@ impl Worker {
                 "diag" => diag.to_string()
             );
         }
+
+        for diag in diagnosed.diags().iter() {
+            let (module_id, span) = diag.locate();
+
+            self.log_publisher
+                .log(
+                    match diag.level() {
+                        sclc::DiagLevel::Error => ldb::Severity::Error,
+                        sclc::DiagLevel::Warning => ldb::Severity::Warning,
+                    },
+                    format!("{module_id}:{span}: {diag}"),
+                )
+                .await
+                .unwrap_or_default();
+        }
+
         if diagnosed.diags().has_errors() {
             info!(&self.log, "compile produced errors; skipping evaluation");
-            return Ok(EvalCompleteness::Unviable);
+            return Ok(EvalCompleteness::Partial);
         }
 
         let mut program = diagnosed.into_inner();
@@ -341,6 +389,7 @@ impl Worker {
         drop(resources);
 
         let log = self.log.clone();
+        let log_publisher = self.log_publisher.clone();
         let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(async move {
@@ -384,14 +433,22 @@ impl Worker {
                             error!(log, "failed to publish create message";
                                 "error" => error.to_string()
                             );
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue CREATE {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
+
                             continue;
                         }
 
                         info!(log, "effect create resource";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
-                        )
+                        );
                     }
                     sclc::Effect::UpdateResource {
                         id,
@@ -448,14 +505,21 @@ impl Worker {
                             error!(log, "failed to publish update message";
                                 "error" => error.to_string()
                             );
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue UPDATE {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
                             continue;
                         }
 
                         info!(log, "effect update resource";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
-                        )
+                        );
                     }
                     sclc::Effect::TouchResource {
                         id,
@@ -502,14 +566,21 @@ impl Worker {
                             error!(log, "failed to publish touch adopt message";
                                 "error" => error.to_string()
                             );
+
+                            log_publisher
+                                .error(format!(
+                                    "Failed to enqueue ADOPT {}.{}: {}",
+                                    id.ty, id.id, error
+                                ))
+                                .await;
                             continue;
                         }
 
                         info!(log, "effect touch resource adopt";
-                            "type" => id.ty,
-                            "id" => id.id,
+                            "type" => id.ty.clone(),
+                            "id" => id.id.clone(),
                             "inputs" => format!("{:?}", inputs)
-                        )
+                        );
                     }
                 }
             }

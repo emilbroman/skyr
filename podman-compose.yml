@@ -30,6 +30,12 @@ services:
       - 6379:6379
     restart: unless-stopped
 
+  redpanda:
+    image: redpandadata/redpanda:v25.3.7
+    ports:
+      - 9092:9092
+    restart: unless-stopped
+
   api:
     image: skyr:latest
     entrypoint: ["/api"]
@@ -45,6 +51,8 @@ services:
         "scylla",
         "--udb-hostname",
         "redis",
+        "--ldb-hostname",
+        "redpanda",
         "--challenge-salt",
         "local-dev-challenge-salt",
       ]
@@ -85,6 +93,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--ldb-hostname",
+        "redpanda",
       ]
     restart: unless-stopped
 
@@ -104,6 +114,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--ldb-hostname",
+        "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",
@@ -123,6 +135,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--ldb-hostname",
+        "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",
@@ -142,6 +156,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--ldb-hostname",
+        "redpanda",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--worker-index",

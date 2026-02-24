@@ -2,6 +2,7 @@ query ListRepositoryDeployments {
   repositories {
     name
     deployments {
+      id
       ref
       commit
       createdAt

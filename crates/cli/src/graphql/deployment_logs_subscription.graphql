@@ -1,0 +1,7 @@
+subscription DeploymentLogs($deploymentId: String!, $initialAmount: Int) {
+  deploymentLogs(deploymentId: $deploymentId, initialAmount: $initialAmount) {
+    severity
+    timestamp
+    message
+  }
+}
