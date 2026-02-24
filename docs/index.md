@@ -122,14 +122,3 @@ By finding all the resources owned by the `UNDESIRED` deployment, that have no l
 The `DESTROY` messages are just as idempotent as the other types of messages.
 
 When an execution of an `UNDESIRED` deployment finds no resources at all owned by the deployment, the deployment is marked as "down" and execution stops.
-
-### The resource protocol
-
-Each type of resource must define the following set of operations:
-
-- `identify(arguments) -> id`
-- `create(id, newArguments) -> state`
-- `update(id, state, oldArguments, newArguments) -> state`
-- `destroy(id, state, oldArguments)`
-
-The `identify` operation is invoked by the deployment engine, and must be side-effect free. The other three operations are invoked by the RTE
