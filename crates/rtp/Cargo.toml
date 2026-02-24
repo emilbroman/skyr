@@ -15,6 +15,7 @@ tokio-stream = { version = "0.1.17", features = ["net"] }
 tonic = { version = "0.12.3", features = ["transport"] }
 tower = "0.5.2"
 sclc = { path = "../sclc" }
+tracing = "0.1.41"
 
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"

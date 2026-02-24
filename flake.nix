@@ -22,6 +22,7 @@
             gnumake
           ];
           shellHook = ''
+            export RUSTUP_TOOLCHAIN=nightly
             rustup install nightly
             rustup component add rust-analyzer
           '';

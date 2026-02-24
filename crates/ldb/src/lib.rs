@@ -12,6 +12,7 @@ use futures_util::stream::Stream;
 use rskafka::{
     client::{
         ClientBuilder as RskafkaClientBuilder,
+        error::{Error as KafkaError, ProtocolError},
         partition::{Compression, OffsetAt, UnknownTopicHandling},
     },
     record::{Record, RecordAndOffset},
@@ -20,12 +21,15 @@ use thiserror::Error;
 
 const DEFAULT_BROKERS: &str = "127.0.0.1:9092";
 const TOPIC_PREFIX: &str = "dl-";
-const LOG_PARTITIONS: i32 = 1;
-const REPLICATION_FACTOR: i32 = 1;
 const FETCH_MAX_WAIT_MS: i32 = 1_000;
 const FETCH_MIN_BYTES: i32 = 1;
 const FETCH_MAX_BYTES: i32 = 1_000_000;
+const PRODUCE_TIMEOUT: Duration = Duration::from_secs(2);
+const TAIL_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+const TOPIC_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 const TOPIC_CREATE_TIMEOUT_MS: i32 = 5_000;
+const TOPIC_PARTITIONS: i32 = 1;
+const TOPIC_REPLICATION_FACTOR: i16 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -81,30 +85,24 @@ pub enum ConnectError {
 }
 
 #[derive(Debug, Error)]
-pub enum TopicError {
-    #[error("failed to create topic: {0}")]
-    Kafka(#[from] rskafka::client::error::Error),
-}
-
-#[derive(Debug, Error)]
 pub enum PublishError {
-    #[error("failed to ensure topic exists: {0}")]
-    Topic(#[from] TopicError),
-
     #[error("failed to write log to kafka: {0}")]
     Kafka(#[from] rskafka::client::error::Error),
 
     #[error("failed to encode current timestamp: {0}")]
     Time(#[from] std::time::SystemTimeError),
+
+    #[error("timed out while publishing log to kafka")]
+    ProduceTimeout,
 }
 
 #[derive(Debug, Error)]
 pub enum TailError {
-    #[error("failed to ensure topic exists: {0}")]
-    Topic(#[from] TopicError),
-
     #[error("failed kafka operation: {0}")]
     Kafka(#[from] rskafka::client::error::Error),
+
+    #[error("timed out while preparing log tail")]
+    SetupTimeout,
 
     #[error("log payload shorter than required 9 bytes")]
     InvalidPayload,
@@ -114,6 +112,15 @@ pub enum TailError {
 
     #[error("invalid utf8 log message: {0}")]
     Utf8(#[from] std::string::FromUtf8Error),
+}
+
+#[derive(Debug, Error)]
+pub enum NamespaceError {
+    #[error("failed kafka operation: {0}")]
+    Kafka(#[from] rskafka::client::error::Error),
+
+    #[error("timed out while ensuring namespace topic")]
+    EnsureTimeout,
 }
 
 pub struct ClientBuilder {
@@ -159,11 +166,13 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    pub fn namespace(&self, namespace: String) -> NamespacePublisher {
-        NamespacePublisher {
+    pub async fn namespace(&self, namespace: String) -> Result<NamespacePublisher, NamespaceError> {
+        let topic = topic_for_namespace(&namespace);
+        ensure_topic(&self.client, &topic).await?;
+        Ok(NamespacePublisher {
             client: self.client.clone(),
-            topic: topic_for_namespace(&namespace),
-        }
+            topic,
+        })
     }
 }
 
@@ -189,8 +198,6 @@ impl NamespacePublisher {
     }
 
     pub async fn log(&self, severity: Severity, message: String) -> Result<(), PublishError> {
-        ensure_topic(&self.client, &self.topic).await?;
-
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
         let millis = now.as_millis() as u64;
 
@@ -199,13 +206,17 @@ impl NamespacePublisher {
         payload.push(severity.as_byte());
         payload.extend_from_slice(message.as_bytes());
 
-        let partition_client = self
-            .client
-            .partition_client(&self.topic, 0, UnknownTopicHandling::Retry)
-            .await?;
+        let partition_client = tokio::time::timeout(
+            PRODUCE_TIMEOUT,
+            self.client
+                .partition_client(&self.topic, 0, UnknownTopicHandling::Retry),
+        )
+        .await
+        .map_err(|_| PublishError::ProduceTimeout)??;
 
-        partition_client
-            .produce(
+        tokio::time::timeout(
+            PRODUCE_TIMEOUT,
+            partition_client.produce(
                 vec![Record {
                     key: None,
                     value: Some(payload),
@@ -213,8 +224,10 @@ impl NamespacePublisher {
                     timestamp: Utc::now(),
                 }],
                 Compression::NoCompression,
-            )
-            .await?;
+            ),
+        )
+        .await
+        .map_err(|_| PublishError::ProduceTimeout)??;
 
         Ok(())
     }
@@ -225,11 +238,13 @@ pub struct Consumer {
 }
 
 impl Consumer {
-    pub fn namespace(&self, namespace: String) -> NamespaceConsumer {
-        NamespaceConsumer {
+    pub async fn namespace(&self, namespace: String) -> Result<NamespaceConsumer, NamespaceError> {
+        let topic = topic_for_namespace(&namespace);
+        ensure_topic(&self.client, &topic).await?;
+        Ok(NamespaceConsumer {
             client: self.client.clone(),
-            topic: topic_for_namespace(&namespace),
-        }
+            topic,
+        })
     }
 }
 
@@ -247,15 +262,20 @@ impl NamespaceConsumer {
         Pin<Box<dyn Stream<Item = Result<(u64, Severity, String), TailError>> + Send>>,
         TailError,
     > {
-        ensure_topic(&self.client, &self.topic).await?;
+        let partition_client = tokio::time::timeout(
+            TAIL_SETUP_TIMEOUT,
+            self.client
+                .partition_client(&self.topic, 0, UnknownTopicHandling::Retry),
+        )
+        .await
+        .map_err(|_| TailError::SetupTimeout)??;
 
-        let partition_client = self
-            .client
-            .partition_client(&self.topic, 0, UnknownTopicHandling::Retry)
-            .await?;
-
-        let (start_offset, end_exclusive) =
-            compute_offsets(&partition_client, config.start_from).await?;
+        let (start_offset, end_exclusive) = tokio::time::timeout(
+            TAIL_SETUP_TIMEOUT,
+            compute_offsets(&partition_client, config.start_from),
+        )
+        .await
+        .map_err(|_| TailError::SetupTimeout)??;
 
         let follow = config.follow;
         let mut next_offset = start_offset;
@@ -292,6 +312,37 @@ impl NamespaceConsumer {
     }
 }
 
+async fn ensure_topic(client: &rskafka::client::Client, topic: &str) -> Result<(), NamespaceError> {
+    let controller = client.controller_client()?;
+    let create = tokio::time::timeout(
+        TOPIC_CREATE_TIMEOUT,
+        controller.create_topic(
+            topic.to_string(),
+            TOPIC_PARTITIONS,
+            TOPIC_REPLICATION_FACTOR,
+            TOPIC_CREATE_TIMEOUT_MS,
+        ),
+    )
+    .await
+    .map_err(|_| NamespaceError::EnsureTimeout)?;
+
+    match create {
+        Ok(()) => Ok(()),
+        Err(error) if topic_already_exists_error(&error) => Ok(()),
+        Err(error) => Err(NamespaceError::Kafka(error)),
+    }
+}
+
+fn topic_already_exists_error(error: &KafkaError) -> bool {
+    matches!(
+        error,
+        KafkaError::ServerError {
+            protocol_error: ProtocolError::TopicAlreadyExists,
+            ..
+        }
+    )
+}
+
 async fn compute_offsets(
     partition_client: &rskafka::client::partition::PartitionClient,
     start_from: StartFrom,
@@ -311,30 +362,6 @@ async fn compute_offsets(
     };
 
     Ok((start, high))
-}
-
-async fn ensure_topic(client: &rskafka::client::Client, topic: &str) -> Result<(), TopicError> {
-    let controller = client.controller_client()?;
-    if let Err(error) = controller
-        .create_topic(
-            topic,
-            LOG_PARTITIONS,
-            REPLICATION_FACTOR as i16,
-            TOPIC_CREATE_TIMEOUT_MS,
-        )
-        .await
-    {
-        if !topic_exists(client, topic).await? {
-            return Err(TopicError::Kafka(error));
-        }
-    }
-
-    Ok(())
-}
-
-async fn topic_exists(client: &rskafka::client::Client, topic: &str) -> Result<bool, TopicError> {
-    let topics = client.list_topics().await?;
-    Ok(topics.iter().any(|candidate| candidate.name == topic))
 }
 
 fn decode_payload(record: &RecordAndOffset) -> Result<(u64, Severity, String), TailError> {

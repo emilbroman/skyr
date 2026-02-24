@@ -5,28 +5,21 @@ pub fn register_extern(eval: &mut crate::Eval) {
         use crate::ValueAssertions;
 
         let mut args = args.into_iter();
-        let name_arg = args
+        let config_arg = args
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let arg1_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let arg2_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let mut argument_dependencies = std::collections::BTreeSet::new();
-        argument_dependencies.extend(name_arg.dependencies.iter().cloned());
-        argument_dependencies.extend(arg1_arg.dependencies.iter().cloned());
-        argument_dependencies.extend(arg2_arg.dependencies.iter().cloned());
+        let mut argument_dependencies = config_arg.dependencies.clone();
 
-        let name = name_arg.value.assert_str()?;
-        let arg1 = arg1_arg.value.assert_int()?;
-        let arg2 = arg2_arg.value.assert_int()?;
+        let config = config_arg.value.assert_record()?;
+
+        let name = config.get("name").assert_str_ref()?;
+        let arg1 = *config.get("min").assert_int_ref()?;
+        let arg2 = *config.get("max").assert_int_ref()?;
         let min = arg1.min(arg2);
         let max = arg1.max(arg2);
         let resource_id = crate::ResourceId {
             ty: INT_RESOURCE_TYPE.to_string(),
-            id: name.clone(),
+            id: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();

@@ -166,6 +166,7 @@ pub enum Effect {
 pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<crate::ResourceId, crate::Resource>,
+    namespace: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -191,6 +192,10 @@ impl EvalCtx {
             id: id.into(),
         };
         self.resources.get(&resource_id)
+    }
+
+    pub fn namespace(&self) -> &str {
+        self.namespace.as_str()
     }
 
     pub fn resource(
@@ -273,6 +278,10 @@ pub enum EvalError {
 pub trait ValueAssertions {
     fn assert_int(self) -> Result<i64, EvalError>;
     fn assert_str(self) -> Result<String, EvalError>;
+    fn assert_record(self) -> Result<Record, EvalError>;
+    fn assert_int_ref(&self) -> Result<&i64, EvalError>;
+    fn assert_str_ref(&self) -> Result<&str, EvalError>;
+    fn assert_record_ref(&self) -> Result<&Record, EvalError>;
 }
 
 impl ValueAssertions for Value {
@@ -289,6 +298,34 @@ impl ValueAssertions for Value {
             other => Err(EvalError::UnexpectedValue(other)),
         }
     }
+
+    fn assert_record(self) -> Result<Record, EvalError> {
+        match self {
+            Value::Record(value) => Ok(value),
+            other => Err(EvalError::UnexpectedValue(other)),
+        }
+    }
+
+    fn assert_int_ref(&self) -> Result<&i64, EvalError> {
+        match self {
+            Value::Int(value) => Ok(value),
+            other => Err(EvalError::UnexpectedValue(other.clone())),
+        }
+    }
+
+    fn assert_str_ref(&self) -> Result<&str, EvalError> {
+        match self {
+            Value::Str(value) => Ok(value.as_str()),
+            other => Err(EvalError::UnexpectedValue(other.clone())),
+        }
+    }
+
+    fn assert_record_ref(&self) -> Result<&Record, EvalError> {
+        match self {
+            Value::Record(value) => Ok(value),
+            other => Err(EvalError::UnexpectedValue(other.clone())),
+        }
+    }
 }
 
 impl ValueAssertions for Option<Value> {
@@ -299,14 +336,46 @@ impl ValueAssertions for Option<Value> {
     fn assert_str(self) -> Result<String, EvalError> {
         self.unwrap_or(Value::Nil).assert_str()
     }
+
+    fn assert_record(self) -> Result<Record, EvalError> {
+        self.unwrap_or(Value::Nil).assert_record()
+    }
+
+    fn assert_int_ref(&self) -> Result<&i64, EvalError> {
+        match self {
+            Some(Value::Int(value)) => Ok(value),
+            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
+            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+        }
+    }
+
+    fn assert_str_ref(&self) -> Result<&str, EvalError> {
+        match self {
+            Some(Value::Str(value)) => Ok(value.as_str()),
+            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
+            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+        }
+    }
+
+    fn assert_record_ref(&self) -> Result<&Record, EvalError> {
+        match self {
+            Some(Value::Record(value)) => Ok(value),
+            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
+            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+        }
+    }
 }
 
 impl Eval {
-    pub fn new<S: crate::SourceRepo>(effects: mpsc::UnboundedSender<Effect>) -> Self {
+    pub fn new<S: crate::SourceRepo>(
+        effects: mpsc::UnboundedSender<Effect>,
+        namespace: impl Into<String>,
+    ) -> Self {
         let mut eval = Self {
             ctx: EvalCtx {
                 effects,
                 resources: HashMap::new(),
+                namespace: namespace.into(),
             },
             externs: HashMap::new(),
         };
@@ -570,10 +639,7 @@ impl Eval {
                 match value.value {
                     Value::Pending(_) => Ok(Self::pending_with(value.dependencies)),
                     Value::Record(record) => Ok(Self::with_dependencies(
-                        record
-                            .get(property_access.property.name.as_str())
-                            .cloned()
-                            .unwrap_or(Value::Nil),
+                        record.get(property_access.property.name.as_str()).clone(),
                         value.dependencies,
                     )),
                     _ => Ok(Self::tracked(Value::Nil)),
@@ -868,7 +934,7 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
@@ -890,7 +956,7 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
@@ -935,7 +1001,7 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
@@ -981,7 +1047,7 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
@@ -1022,7 +1088,7 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
             ty: "Std/Random.Int".to_string(),
             id: "x".to_string(),
@@ -1068,7 +1134,7 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx);
+        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
             ty: "Std/Random.Int".to_string(),
             id: "x".to_string(),

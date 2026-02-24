@@ -20,8 +20,8 @@ impl RandomPlugin {
     }
 
     fn gen_int_resource(&mut self, inputs: sclc::Record) -> anyhow::Result<sclc::Resource> {
-        let min = inputs.get("min").cloned().assert_int()?;
-        let max = inputs.get("max").cloned().assert_int()?;
+        let min = *inputs.get("min").assert_int_ref()?;
+        let max = *inputs.get("max").assert_int_ref()?;
         let result = self.rng.random_range(min..=max);
 
         let mut outputs = sclc::Record::default();

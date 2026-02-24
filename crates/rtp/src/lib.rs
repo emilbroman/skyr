@@ -7,6 +7,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Channel, Endpoint, Server};
 use tower::service_fn;
+use tracing::{debug, error, info, warn};
 
 pub mod proto {
     tonic::include_proto!("rtp.v1");
@@ -210,7 +211,13 @@ where
         &self,
         request: tonic::Request<CapabilityRequest>,
     ) -> Result<tonic::Response<CapabilityResponse>, tonic::Status> {
-        *self.peer_capabilities.write().await = Some(request.into_inner());
+        let capabilities = request.into_inner();
+        info!(
+            plugin = capabilities.plugin_name.as_str(),
+            version = capabilities.plugin_version.as_str(),
+            "received RTP capability exchange"
+        );
+        *self.peer_capabilities.write().await = Some(capabilities);
 
         Ok(tonic::Response::new(CapabilityResponse {
             protocol_version: String::from("1"),
@@ -225,8 +232,19 @@ where
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
+        info!(
+            resource_type = request.resource_type.as_str(),
+            resource_id = request.resource_id.as_str(),
+            "received create_resource RPC"
+        );
         let inputs: sclc::Record =
             serde_json::from_str(&request.resource_inputs_json).map_err(|error| {
+                warn!(
+                    resource_type = request.resource_type.as_str(),
+                    resource_id = request.resource_id.as_str(),
+                    err = %error,
+                    "invalid create_resource input payload"
+                );
                 tonic::Status::invalid_argument(format!("invalid resource_inputs_json: {error}"))
             })?;
         let resource_id = sclc::ResourceId {
@@ -239,8 +257,21 @@ where
             plugin
                 .create_resource(resource_id.clone(), inputs)
                 .await
-                .map_err(|error| tonic::Status::internal(error.to_string()))?
+                .map_err(|error| {
+                    error!(
+                        resource_type = request.resource_type.as_str(),
+                        resource_id = request.resource_id.as_str(),
+                        err = %error,
+                        "plugin create_resource failed"
+                    );
+                    tonic::Status::internal(error.to_string())
+                })?
         };
+        info!(
+            resource_type = request.resource_type.as_str(),
+            resource_id = request.resource_id.as_str(),
+            "completed create_resource RPC"
+        );
         Ok(tonic::Response::new(CreateResourceResponse {
             resource: Some(encode_resource(resource_id, resource)?),
         }))
@@ -253,14 +284,31 @@ where
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
+        info!(
+            resource_type = request.resource_type.as_str(),
+            resource_id = request.resource_id.as_str(),
+            "received update_resource RPC"
+        );
         let prev_inputs: sclc::Record = serde_json::from_str(&request.prev_resource_inputs_json)
             .map_err(|error| {
+                warn!(
+                    resource_type = request.resource_type.as_str(),
+                    resource_id = request.resource_id.as_str(),
+                    err = %error,
+                    "invalid update_resource prev input payload"
+                );
                 tonic::Status::invalid_argument(format!(
                     "invalid prev_resource_inputs_json: {error}"
                 ))
             })?;
         let inputs: sclc::Record =
             serde_json::from_str(&request.resource_inputs_json).map_err(|error| {
+                warn!(
+                    resource_type = request.resource_type.as_str(),
+                    resource_id = request.resource_id.as_str(),
+                    err = %error,
+                    "invalid update_resource input payload"
+                );
                 tonic::Status::invalid_argument(format!("invalid resource_inputs_json: {error}"))
             })?;
         let resource_id = sclc::ResourceId {
@@ -273,8 +321,21 @@ where
             plugin
                 .update_resource(resource_id.clone(), prev_inputs, inputs)
                 .await
-                .map_err(|error| tonic::Status::internal(error.to_string()))?
+                .map_err(|error| {
+                    error!(
+                        resource_type = request.resource_type.as_str(),
+                        resource_id = request.resource_id.as_str(),
+                        err = %error,
+                        "plugin update_resource failed"
+                    );
+                    tonic::Status::internal(error.to_string())
+                })?
         };
+        info!(
+            resource_type = request.resource_type.as_str(),
+            resource_id = request.resource_id.as_str(),
+            "completed update_resource RPC"
+        );
         Ok(tonic::Response::new(UpdateResourceResponse {
             resource: Some(encode_resource(resource_id, resource)?),
         }))
@@ -287,6 +348,11 @@ where
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
+        info!(
+            resource_type = request.resource_type.as_str(),
+            resource_id = request.resource_id.as_str(),
+            "received delete_resource RPC"
+        );
         let resource_id = sclc::ResourceId {
             ty: request.resource_type,
             id: request.resource_id,
@@ -294,12 +360,13 @@ where
 
         {
             let mut plugin = self.plugin.write().await;
-            plugin
-                .delete_resource(resource_id)
-                .await
-                .map_err(|error| tonic::Status::internal(error.to_string()))?;
+            plugin.delete_resource(resource_id).await.map_err(|error| {
+                error!(err = %error, "plugin delete_resource failed");
+                tonic::Status::internal(error.to_string())
+            })?;
         }
 
+        info!("completed delete_resource RPC");
         Ok(tonic::Response::new(()))
     }
 
@@ -320,10 +387,15 @@ where
         let parsed = decode_resource(resource)?;
 
         let plugin = self.plugin.read().await;
-        let healthy = plugin
-            .health(id.clone(), parsed)
-            .await
-            .map_err(|error| tonic::Status::internal(error.to_string()))?;
+        let healthy = plugin.health(id.clone(), parsed).await.map_err(|error| {
+            error!(
+                resource_type = id.ty.as_str(),
+                resource_id = id.id.as_str(),
+                err = %error,
+                "plugin health failed"
+            );
+            tonic::Status::internal(error.to_string())
+        })?;
 
         Ok(tonic::Response::new(HealthResponse {
             resource: Some(encode_resource(id, healthy)?),
@@ -338,6 +410,7 @@ where
 {
     async fn ensure_peer_capabilities(&self) -> Result<(), tonic::Status> {
         if self.peer_capabilities.read().await.is_none() {
+            warn!("rejecting RPC before capability exchange");
             return Err(tonic::Status::failed_precondition(
                 "capability exchange required",
             ));
@@ -358,6 +431,11 @@ impl PluginClient {
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        debug!(
+            resource_type = id.ty.as_str(),
+            resource_id = id.id.as_str(),
+            "sending create_resource RPC"
+        );
         let resource_inputs_json = serde_json::to_string(&inputs)?;
         let response = self
             .inner
@@ -366,7 +444,11 @@ impl PluginClient {
                 resource_id: id.id,
                 resource_inputs_json,
             })
-            .await?
+            .await
+            .map_err(|error| {
+                error!(err = %error, "create_resource RPC failed");
+                error
+            })?
             .into_inner();
 
         let resource = response.resource.context("missing resource in response")?;
@@ -386,6 +468,11 @@ impl PluginClient {
         prev_inputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        debug!(
+            resource_type = id.ty.as_str(),
+            resource_id = id.id.as_str(),
+            "sending update_resource RPC"
+        );
         let prev_resource_inputs_json = serde_json::to_string(&prev_inputs)?;
         let resource_inputs_json = serde_json::to_string(&inputs)?;
         let response = self
@@ -396,7 +483,11 @@ impl PluginClient {
                 prev_resource_inputs_json,
                 resource_inputs_json,
             })
-            .await?
+            .await
+            .map_err(|error| {
+                error!(err = %error, "update_resource RPC failed");
+                error
+            })?
             .into_inner();
 
         let resource = response.resource.context("missing resource in response")?;
@@ -411,12 +502,21 @@ impl PluginClient {
     }
 
     pub async fn delete_resource(&mut self, id: sclc::ResourceId) -> anyhow::Result<()> {
+        debug!(
+            resource_type = id.ty.as_str(),
+            resource_id = id.id.as_str(),
+            "sending delete_resource RPC"
+        );
         self.inner
             .delete_resource(DeleteResourceRequest {
                 resource_type: id.ty,
                 resource_id: id.id,
             })
-            .await?;
+            .await
+            .map_err(|error| {
+                error!(err = %error, "delete_resource RPC failed");
+                error
+            })?;
         Ok(())
     }
 
@@ -476,6 +576,7 @@ where
     F: Fn() -> P + Send + Sync + 'static,
 {
     let target: Target = target.as_ref().parse()?;
+    info!(target = ?&target, "starting RTP server");
     let factory = PluginFactory::<P, F>::new(plugin_fn);
     let service = proto::resource_transition_plugin_server::ResourceTransitionPluginServer::new(
         factory.make_connection_service(),
@@ -486,12 +587,14 @@ where
             let addr: SocketAddr = addr
                 .parse()
                 .map_err(|_| ServeError::InvalidTcpBindAddress(addr.clone()))?;
+            info!(addr = %addr, "serving RTP over TCP");
             Server::builder().add_service(service).serve(addr).await?;
         }
         Target::Unix(path) => {
             if path.exists() {
                 tokio::fs::remove_file(&path).await?;
             }
+            info!(path = %path.display(), "serving RTP over Unix socket");
             let listener = tokio::net::UnixListener::bind(path)?;
             let incoming = UnixListenerStream::new(listener);
 
@@ -508,6 +611,7 @@ where
 async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, DialError> {
     match target {
         Target::Tcp(addr) => {
+            debug!(addr = %addr, "dialing RTP over TCP");
             resolve_tcp_authority(&addr).await?;
             let client =
                 proto::resource_transition_plugin_client::ResourceTransitionPluginClient::connect(
@@ -517,6 +621,7 @@ async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, Dial
             Ok(client)
         }
         Target::Unix(path) => {
+            debug!(path = %path.display(), "dialing RTP over Unix socket");
             let endpoint = Endpoint::try_from("http://[::]:50051")?;
             let channel = endpoint
                 .connect_with_connector(service_fn(move |_| {
@@ -548,6 +653,7 @@ async fn resolve_tcp_authority(authority: &str) -> Result<(), DialError> {
 }
 
 pub async fn dial(target: Target) -> Result<PluginClient, DialError> {
+    info!(target = ?&target, "dialing RTP plugin");
     let mut inner = dial_raw(target).await?;
     let capabilities = inner
         .exchange_capabilities(CapabilityRequest {
@@ -556,6 +662,10 @@ pub async fn dial(target: Target) -> Result<PluginClient, DialError> {
         })
         .await?
         .into_inner();
+    info!(
+        protocol_version = capabilities.protocol_version.as_str(),
+        "completed RTP capability exchange"
+    );
 
     Ok(PluginClient {
         inner,

@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, pin::Pin, sync::Arc};
+use std::{collections::BTreeSet, pin::Pin, sync::Arc, time::Duration};
 
 mod challenge;
 
@@ -21,6 +21,7 @@ pub struct Context {
     udb_client: udb::Client,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
+    adb_client: adb::Client,
     ldb_brokers: String,
     challenger: Arc<challenge::Challenger>,
     user: Option<udb::UserClient>,
@@ -50,7 +51,11 @@ pub struct Query;
 #[juniper::graphql_object(Context = Context)]
 impl Query {
     async fn health(context: &Context) -> bool {
-        let _ = (&context.cdb_client, &context.rdb_client);
+        let _ = (
+            &context.cdb_client,
+            &context.rdb_client,
+            &context.adb_client,
+        );
         tokio::task::yield_now().await;
         true
     }
@@ -481,6 +486,19 @@ impl Deployment {
             })
     }
 
+    async fn artifacts(&self, context: &Context) -> FieldResult<Vec<Artifact>> {
+        let namespace = self.deployment.fqid();
+        let artifacts = context.adb_client.list(&namespace).await.map_err(|error| {
+            tracing::error!("Failed to list artifacts for deployment {namespace}: {error}");
+            juniper::FieldError::new("Internal server error", juniper::Value::Null)
+        })?;
+
+        Ok(artifacts
+            .into_iter()
+            .map(|header| Artifact { header })
+            .collect())
+    }
+
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
@@ -490,6 +508,46 @@ impl Deployment {
                 tracing::error!(
                     "Failed to fetch deployment logs for {}: {}",
                     self.deployment.fqid(),
+                    error
+                );
+                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })
+    }
+}
+
+pub struct Artifact {
+    header: adb::ArtifactHeader,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Artifact {
+    fn namespace(&self) -> &str {
+        &self.header.namespace
+    }
+
+    fn name(&self) -> &str {
+        &self.header.name
+    }
+
+    #[graphql(name = "mediaType")]
+    fn media_type(&self) -> &str {
+        &self.header.media_type
+    }
+
+    async fn url(&self, context: &Context) -> FieldResult<String> {
+        context
+            .adb_client
+            .presign_read_url(
+                &self.header.namespace,
+                &self.header.name,
+                Duration::from_secs(900),
+            )
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    "Failed to presign artifact URL for {}/{}: {}",
+                    self.header.namespace,
+                    self.header.name,
                     error
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
@@ -724,7 +782,10 @@ impl Subscription {
                 juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
             })?;
 
-        let namespace = consumer.namespace(deployment_id);
+        let namespace = consumer.namespace(deployment_id).await.map_err(|e| {
+            tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
+            juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+        })?;
         let mut inner = namespace
             .tail(ldb::TailConfig {
                 follow: true,
@@ -765,7 +826,7 @@ async fn load_deployment_logs(
         .brokers(context.ldb_brokers.clone())
         .build_consumer()
         .await?;
-    let namespace = consumer.namespace(deployment_id);
+    let namespace = consumer.namespace(deployment_id).await?;
     let mut stream = namespace
         .tail(ldb::TailConfig {
             follow: false,
@@ -960,6 +1021,18 @@ struct Cli {
     udb_hostname: String,
     #[arg(long, default_value = "localhost")]
     ldb_hostname: String,
+    #[arg(long, default_value = "http://127.0.0.1:9000")]
+    adb_endpoint_url: String,
+    #[arg(long)]
+    adb_presign_endpoint_url: Option<String>,
+    #[arg(long, default_value = "skyr-artifacts")]
+    adb_bucket: String,
+    #[arg(long, default_value = "minioadmin")]
+    adb_access_key_id: String,
+    #[arg(long, default_value = "minioadmin")]
+    adb_secret_access_key: String,
+    #[arg(long, default_value = "us-east-1")]
+    adb_region: String,
     #[arg(long)]
     challenge_salt: Option<String>,
     #[arg(long)]
@@ -997,6 +1070,17 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.rdb_hostname)
         .build()
         .await?;
+    let mut adb_builder = adb::ClientBuilder::new()
+        .bucket(cli.adb_bucket)
+        .endpoint_url(cli.adb_endpoint_url)
+        .region(cli.adb_region)
+        .access_key_id(cli.adb_access_key_id)
+        .secret_access_key(cli.adb_secret_access_key)
+        .create_bucket_if_missing(true);
+    if let Some(adb_presign_endpoint_url) = cli.adb_presign_endpoint_url {
+        adb_builder = adb_builder.presign_endpoint_url(adb_presign_endpoint_url);
+    }
+    let adb_client = adb_builder.build().await?;
     let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
 
@@ -1009,6 +1093,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(challenger))
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
+        .layer(Extension(adb_client))
         .layer(Extension(ldb_brokers))
         .layer(Extension(udb_client));
 
@@ -1030,6 +1115,7 @@ async fn graphql_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
+    Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_brokers): Extension<String>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
@@ -1058,6 +1144,7 @@ async fn graphql_handler(
                     udb_client,
                     cdb_client,
                     rdb_client,
+                    adb_client,
                     ldb_brokers,
                     challenger,
                     user: Some(user),
@@ -1071,6 +1158,7 @@ async fn graphql_handler(
         udb_client,
         cdb_client,
         rdb_client,
+        adb_client,
         ldb_brokers,
         challenger,
         user: None,
@@ -1092,6 +1180,7 @@ async fn graphql_ws_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
+    Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_brokers): Extension<String>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
@@ -1121,6 +1210,7 @@ async fn graphql_ws_handler(
         udb_client,
         cdb_client,
         rdb_client,
+        adb_client,
         ldb_brokers,
         challenger,
         user,

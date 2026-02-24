@@ -170,7 +170,7 @@ pub async fn run_repl() -> anyhow::Result<()> {
             }
         }
     });
-    let eval = sclc::Eval::new::<FsSource>(effects_tx);
+    let eval = sclc::Eval::new::<FsSource>(effects_tx, String::from("cli/repl"));
     let mut repl = Repl::new(eval);
     let mut editor = DefaultEditor::new()?;
 

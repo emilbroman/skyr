@@ -26,3 +26,4 @@ cdb = { path = "../cdb" }
 rdb = { path = "../rdb" }
 udb = { path = "../udb" }
 ldb = { path = "../ldb" }
+adb = { path = "../adb" }

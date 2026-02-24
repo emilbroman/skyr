@@ -19,6 +19,13 @@ enum Severity {
 
 scalar JSON
 
+type Artifact {
+  namespace: String!
+  name: String!
+  mediaType: String!
+  url: String!
+}
+
 type AuthSuccess {
   user: User!
   token: String!
@@ -31,6 +38,7 @@ type Deployment {
   createdAt: String!
   state: DeploymentState!
   resources: [Resource!]!
+  artifacts: [Artifact!]!
   lastLogs(amount: Int): [Log!]!
 }
 

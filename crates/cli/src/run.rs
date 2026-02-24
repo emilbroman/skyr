@@ -26,7 +26,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .collect::<sclc::ModuleId>();
 
     let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let eval = sclc::Eval::new::<FsSource>(effects_tx);
+    let eval = sclc::Eval::new::<FsSource>(effects_tx, package_id.to_string());
     let effects_task = task::spawn(async move {
         while let Some(effect) = effects_rx.recv().await {
             match effect {
