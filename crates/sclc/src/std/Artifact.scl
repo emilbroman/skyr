@@ -1,0 +1,7 @@
+export let File = extern "Std/Artifact.File": fn({
+    name: Str,
+    type: Str?,
+    contents: Str,
+}) {
+    url: Str
+}

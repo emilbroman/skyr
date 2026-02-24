@@ -222,12 +222,14 @@ pub struct Dict {
 }
 
 impl Record {
+    const CONST_NIL: Value = Value::Nil;
+
     pub fn insert(&mut self, name: String, value: Value) {
         self.fields.insert(name, value);
     }
 
-    pub fn get(&self, name: &str) -> Option<&Value> {
-        self.fields.get(name)
+    pub fn get(&self, name: &str) -> &Value {
+        self.fields.get(name).unwrap_or(&Self::CONST_NIL)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Value)> {
