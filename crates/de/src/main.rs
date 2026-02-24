@@ -119,12 +119,25 @@ async fn process(
             let (tx, rx) = oneshot::channel();
             let namespace = format!("{}/{}", deployment.repository, deployment.id.ref_name);
 
+            let log_publisher = match ldb_publisher.namespace(id.clone()).await {
+                Ok(log_publisher) => log_publisher,
+                Err(error) => {
+                    error!(
+                        log,
+                        "failed to create deployment log publisher topic";
+                        "dep" => id.clone(),
+                        "error" => error.to_string()
+                    );
+                    continue;
+                }
+            };
+
             let worker = Worker {
                 log: log.new(o!("dep" => deployment.fqid())),
                 client: client.repo(deployment.repository).deployment(deployment.id),
                 namespace: rdb_client.namespace(namespace),
                 rtq_publisher: rtq_publisher.clone(),
-                log_publisher: ldb_publisher.namespace(id.clone()),
+                log_publisher,
             };
 
             task::spawn(worker.run_loop(rx));
@@ -363,7 +376,7 @@ impl Worker {
         let owner_deployment_id = self.client.fqid();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
-        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx);
+        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_id.clone());
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
