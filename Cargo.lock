@@ -4255,6 +4255,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_std_container"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "rtp",
+ "sclc",
+ "scop",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "plugin_std_random"
 version = "0.1.0"
 dependencies = [
@@ -5242,6 +5257,22 @@ dependencies = [
  "tokio",
  "unicode-segmentation",
 ]
+
+[[package]]
+name = "scoc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "scop",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "scop"
+version = "0.1.0"
 
 [[package]]
 name = "scopeguard"

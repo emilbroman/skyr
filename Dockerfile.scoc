@@ -1,0 +1,19 @@
+FROM skyr:latest AS binaries
+
+FROM alpine:3.21
+
+# Install containerd and CNI plugins
+RUN apk add --no-cache containerd containerd-ctr
+
+# Copy SCOC binary from main skyr image
+COPY --from=binaries /scoc /usr/local/bin/scoc
+
+# Configure containerd for local registry access
+RUN mkdir -p /etc/containerd
+COPY containerd-config.toml /etc/containerd/config.toml
+
+# Entrypoint script to start containerd and SCOC
+COPY scoc-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

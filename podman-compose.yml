@@ -64,6 +64,22 @@ services:
       - 9001:9001
     restart: always
 
+  oci-registry:
+    image: registry:2
+    ports:
+      - 5000:5000
+    restart: always
+
+  buildkit:
+    image: moby/buildkit:latest
+    privileged: true
+    restart: always
+    command:
+      - --addr
+      - tcp://0.0.0.0:1234
+    ports:
+      - 1234:1234
+
   api:
     image: skyr:latest
     entrypoint: ["/api"]
@@ -160,6 +176,22 @@ services:
       ]
     restart: always
 
+  plugin-std-container:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_container"]
+    command:
+      [
+        "--bind",
+        "tcp://0.0.0.0:50053",
+        "--ndb-hostname",
+        "redis",
+        "--buildkit-addr",
+        "tcp://buildkit:1234",
+        "--registry-url",
+        "http://oci-registry:5000",
+      ]
+    restart: always
+
   rte-0:
     image: skyr:latest
     entrypoint: ["/rte"]
@@ -176,6 +208,8 @@ services:
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
+        "--plugin",
+        "Std/Container@tcp://plugin-std-container:50053",
         "--worker-index",
         "0",
         "--worker-count",
@@ -199,6 +233,8 @@ services:
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
+        "--plugin",
+        "Std/Container@tcp://plugin-std-container:50053",
         "--worker-index",
         "1",
         "--worker-count",
@@ -222,9 +258,41 @@ services:
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
+        "--plugin",
+        "Std/Container@tcp://plugin-std-container:50053",
         "--worker-index",
         "2",
         "--worker-count",
         "3",
       ]
+    restart: always
+
+  scoc-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.scoc
+    privileged: true
+    environment:
+      - SCOC_NODE_NAME=scoc-1
+      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
+    restart: always
+
+  scoc-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.scoc
+    privileged: true
+    environment:
+      - SCOC_NODE_NAME=scoc-2
+      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
+    restart: always
+
+  scoc-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.scoc
+    privileged: true
+    environment:
+      - SCOC_NODE_NAME=scoc-3
+      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
     restart: always
