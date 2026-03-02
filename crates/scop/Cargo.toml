@@ -1,0 +1,7 @@
+[package]
+name = "scop"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Will be populated in Phase 2 with tonic, prost, etc.
