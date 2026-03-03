@@ -20,6 +20,7 @@
             rustup
             cargo
             gnumake
+            protobuf
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
