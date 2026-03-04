@@ -1,7 +1,9 @@
-use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use tokio::sync::Mutex;
 
 mod cri;
 
@@ -17,14 +19,31 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run the SCOC agent daemon.
+    /// Run the SCOC conduit daemon.
     Daemon {
+        /// Unique name for this node.
         #[arg(long)]
         node_name: String,
+        /// Address to bind the Conduit server to.
+        #[arg(long, default_value = "0.0.0.0:50054")]
+        bind: String,
+        /// External address for the plugin to connect to (e.g., "http://node-1:50054").
         #[arg(long)]
-        plugin_addr: String,
+        conduit_address: String,
+        /// Orchestrator address (container plugin).
+        #[arg(long)]
+        orchestrator_address: String,
         #[arg(long, default_value = "/run/containerd/containerd.sock")]
         containerd_socket: String,
+        /// CPU capacity in millicores (e.g., 4000 = 4 cores).
+        #[arg(long, default_value = "4000")]
+        cpu_millis: i64,
+        /// Memory capacity in bytes.
+        #[arg(long, default_value = "8589934592")]
+        memory_bytes: i64,
+        /// Maximum number of pods.
+        #[arg(long, default_value = "100")]
+        max_pods: i32,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -119,14 +138,16 @@ enum ContainerAction {
     },
 }
 
-/// SCOP Agent implementation backed by CRI.
-struct CriAgent {
-    cri: CriClient,
+/// SCOP Conduit implementation backed by CRI.
+struct CriConduit {
+    cri: Arc<Mutex<CriClient>>,
 }
 
-impl CriAgent {
+impl CriConduit {
     fn new(cri: CriClient) -> Self {
-        Self { cri }
+        Self {
+            cri: Arc::new(Mutex::new(cri)),
+        }
     }
 
     /// Convert SCOP PodConfig to CRI PodSandboxConfig.
@@ -186,49 +207,90 @@ impl CriAgent {
 }
 
 #[scop::tonic::async_trait]
-impl scop::Agent for CriAgent {
+impl scop::Conduit for CriConduit {
     async fn run_pod(
-        &mut self,
-        config: scop::PodConfig,
-    ) -> anyhow::Result<scop::RunPodResponse> {
+        &self,
+        request: scop::RunPodRequest,
+    ) -> Result<scop::RunPodResponse, scop::tonic::Status> {
+        let config = request.config.unwrap_or_default();
         let cri_config = Self::to_cri_pod_config(&config);
-        let pod_id = self.cri.run_pod_sandbox(cri_config).await?;
+        let mut cri = self.cri.lock().await;
+        let pod_id = cri
+            .run_pod_sandbox(cri_config)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
         Ok(scop::RunPodResponse { pod_id })
     }
 
-    async fn stop_pod(&mut self, pod_id: String) -> anyhow::Result<()> {
-        self.cri.stop_pod_sandbox(&pod_id).await
+    async fn stop_pod(
+        &self,
+        request: scop::StopPodRequest,
+    ) -> Result<scop::StopPodResponse, scop::tonic::Status> {
+        let mut cri = self.cri.lock().await;
+        cri.stop_pod_sandbox(&request.pod_id)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
+        Ok(scop::StopPodResponse {})
     }
 
-    async fn remove_pod(&mut self, pod_id: String) -> anyhow::Result<()> {
-        self.cri.remove_pod_sandbox(&pod_id).await
+    async fn remove_pod(
+        &self,
+        request: scop::RemovePodRequest,
+    ) -> Result<scop::RemovePodResponse, scop::tonic::Status> {
+        let mut cri = self.cri.lock().await;
+        cri.remove_pod_sandbox(&request.pod_id)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
+        Ok(scop::RemovePodResponse {})
     }
 
     async fn create_container(
-        &mut self,
-        pod_id: String,
-        config: scop::ContainerConfig,
-        pod_config: scop::PodConfig,
-    ) -> anyhow::Result<scop::CreateContainerResponse> {
+        &self,
+        request: scop::CreateContainerRequest,
+    ) -> Result<scop::CreateContainerResponse, scop::tonic::Status> {
+        let config = request.config.unwrap_or_default();
+        let pod_config = request.pod_config.unwrap_or_default();
         let cri_pod_config = Self::to_cri_pod_config(&pod_config);
         let cri_container_config = Self::to_cri_container_config(&config);
-        let container_id = self
-            .cri
-            .create_container(&pod_id, &cri_pod_config, cri_container_config)
-            .await?;
+        let mut cri = self.cri.lock().await;
+        let container_id = cri
+            .create_container(&request.pod_id, &cri_pod_config, cri_container_config)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
         Ok(scop::CreateContainerResponse { container_id })
     }
 
-    async fn start_container(&mut self, container_id: String) -> anyhow::Result<()> {
-        self.cri.start_container(&container_id).await
+    async fn start_container(
+        &self,
+        request: scop::StartContainerRequest,
+    ) -> Result<scop::StartContainerResponse, scop::tonic::Status> {
+        let mut cri = self.cri.lock().await;
+        cri.start_container(&request.container_id)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
+        Ok(scop::StartContainerResponse {})
     }
 
-    async fn stop_container(&mut self, container_id: String, timeout: i64) -> anyhow::Result<()> {
-        self.cri.stop_container(&container_id, timeout).await
+    async fn stop_container(
+        &self,
+        request: scop::StopContainerRequest,
+    ) -> Result<scop::StopContainerResponse, scop::tonic::Status> {
+        let mut cri = self.cri.lock().await;
+        cri.stop_container(&request.container_id, request.timeout)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
+        Ok(scop::StopContainerResponse {})
     }
 
-    async fn remove_container(&mut self, container_id: String) -> anyhow::Result<()> {
-        self.cri.remove_container(&container_id).await
+    async fn remove_container(
+        &self,
+        request: scop::RemoveContainerRequest,
+    ) -> Result<scop::RemoveContainerResponse, scop::tonic::Status> {
+        let mut cri = self.cri.lock().await;
+        cri.remove_container(&request.container_id)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
+        Ok(scop::RemoveContainerResponse {})
     }
 }
 
@@ -240,40 +302,120 @@ async fn main() -> Result<()> {
     match args.command {
         Command::Daemon {
             node_name,
-            plugin_addr,
+            bind,
+            conduit_address,
+            orchestrator_address,
             containerd_socket,
+            cpu_millis,
+            memory_bytes,
+            max_pods,
         } => {
-            tracing::info!("SCOC agent starting");
+            tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
-            tracing::info!("  plugin_addr: {}", plugin_addr);
+            tracing::info!("  bind: {}", bind);
+            tracing::info!("  conduit_address: {}", conduit_address);
+            tracing::info!("  orchestrator_address: {}", orchestrator_address);
             tracing::info!("  containerd_socket: {}", containerd_socket);
 
             // Verify CRI connectivity at startup
-            {
+            let cri = {
                 let mut cri = CriClient::connect(&containerd_socket).await?;
                 let version = cri.version().await?;
                 tracing::info!("containerd version: {}", version);
+                cri
+            };
+
+            // Create the conduit
+            let conduit = CriConduit::new(cri);
+
+            // Connect to orchestrator and register
+            tracing::info!("Registering with orchestrator at {}", orchestrator_address);
+            let mut orchestrator =
+                scop::OrchestratorClient::connect(orchestrator_address.clone()).await?;
+
+            let register_response = orchestrator
+                .register_node(scop::RegisterNodeRequest {
+                    node_name: node_name.clone(),
+                    conduit_address: conduit_address.clone(),
+                    capacity: Some(scop::NodeCapacity {
+                        cpu_millis,
+                        memory_bytes,
+                        max_pods,
+                    }),
+                    labels: Default::default(),
+                })
+                .await?
+                .into_inner();
+
+            if !register_response.success {
+                anyhow::bail!(
+                    "Failed to register with orchestrator: {}",
+                    register_response.error
+                );
+            }
+            tracing::info!("Registered with orchestrator");
+
+            // Spawn heartbeat task
+            let node_name_heartbeat = node_name.clone();
+            let orchestrator_address_heartbeat = orchestrator_address.clone();
+            let heartbeat_handle = tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+
+                    match scop::OrchestratorClient::connect(orchestrator_address_heartbeat.clone())
+                        .await
+                    {
+                        Ok(mut client) => {
+                            if let Err(e) = client
+                                .heartbeat(scop::HeartbeatRequest {
+                                    node_name: node_name_heartbeat.clone(),
+                                    usage: None,
+                                })
+                                .await
+                            {
+                                tracing::warn!("Heartbeat failed: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to connect for heartbeat: {}", e);
+                        }
+                    }
+                }
+            });
+
+            // Start Conduit server in a separate task
+            let bind_target = format!("http://{}", bind);
+            let server_handle = tokio::spawn(async move {
+                scop::serve_conduit(&bind_target, conduit).await
+            });
+
+            // Wait for shutdown signal
+            tokio::select! {
+                result = server_handle => {
+                    if let Err(e) = result {
+                        tracing::error!("Conduit server error: {}", e);
+                    }
+                }
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::info!("Received shutdown signal");
+                }
             }
 
-            // Connect to plugin via SCOP with reconnection loop
-            let labels = HashMap::new();
+            // Cancel heartbeat task
+            heartbeat_handle.abort();
 
-            loop {
-                // Create fresh CRI client and agent for each connection attempt
-                let cri = CriClient::connect(&containerd_socket).await?;
-                let agent = CriAgent::new(cri);
-
-                tracing::info!("connecting to plugin at {}", plugin_addr);
-                match scop::dial(&plugin_addr, &node_name, labels.clone(), agent).await {
-                    Ok(()) => {
-                        tracing::info!("connection closed gracefully");
-                        break;
-                    }
-                    Err(e) => {
-                        tracing::error!("connection error: {}", e);
-                        tracing::info!("reconnecting in 5 seconds...");
-                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    }
+            // Unregister from orchestrator
+            tracing::info!("Unregistering from orchestrator");
+            if let Ok(mut client) =
+                scop::OrchestratorClient::connect(orchestrator_address).await
+            {
+                if let Err(e) = client
+                    .unregister_node(scop::UnregisterNodeRequest {
+                        node_name: node_name.clone(),
+                    })
+                    .await
+                {
+                    tracing::error!("Failed to unregister: {}", e);
                 }
             }
         }

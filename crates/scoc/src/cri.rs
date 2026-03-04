@@ -21,6 +21,7 @@ use tower::service_fn;
 use tracing::{debug, info};
 
 /// A CRI client connected to a container runtime via Unix socket.
+#[derive(Clone)]
 pub struct CriClient {
     runtime: RuntimeServiceClient<Channel>,
     images: ImageServiceClient<Channel>,
