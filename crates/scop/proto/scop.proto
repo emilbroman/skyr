@@ -5,97 +5,127 @@ package scop.v1;
 // Skyr Container Orchestrator Protocol (SCOP)
 //
 // This protocol defines communication between the container plugin and
-// worker node agents (SCOC). The agent connects to the plugin and registers
-// itself, then receives commands to manage pods and containers via CRI.
+// worker node conduits (SCOC). There are two services:
+//
+// 1. Orchestrator (served by container plugin):
+//    - Conduits connect to register themselves and advertise their address
+//    - Registration is persisted in the node registry for all plugin replicas
+//
+// 2. Conduit (served by SCOC):
+//    - Plugin connects to execute pod/container operations
+//    - Each operation is a first-class RPC
 
-// The main SCOP service. Agents (SCOC) connect to this service running
-// in the container plugin.
-service ContainerOrchestrator {
-  // Session opens a bidirectional stream between the agent and plugin.
-  // The agent sends a NodeRegistration as the first message, then
-  // receives commands from the plugin and sends back responses.
-  rpc Session(stream AgentMessage) returns (stream PluginMessage);
+// ============================================================================
+// Orchestrator Service (served by container plugin)
+// ============================================================================
+
+// The Orchestrator service handles node registration. Conduits (SCOC) connect
+// to one of the container plugin replicas to register themselves.
+service Orchestrator {
+  // RegisterNode registers a conduit with the orchestrator.
+  // The conduit advertises its address and resource capacity.
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Heartbeat keeps the node registration alive.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // UnregisterNode removes a node from the registry.
+  rpc UnregisterNode(UnregisterNodeRequest) returns (UnregisterNodeResponse);
 }
 
-// Messages sent from agent (SCOC) to plugin.
-message AgentMessage {
-  oneof message {
-    NodeRegistration registration = 1;
-    CommandResponse response = 2;
-  }
-}
-
-// Initial registration message from agent to plugin.
-message NodeRegistration {
+// Request to register a node with the orchestrator.
+message RegisterNodeRequest {
   // Unique name for this node.
   string node_name = 1;
+  // Address where the Conduit service is hosted (e.g., "http://node-1:50053").
+  string conduit_address = 2;
+  // Resource capacity available for container workloads.
+  NodeCapacity capacity = 3;
   // Labels for node selection/scheduling.
-  map<string, string> labels = 2;
+  map<string, string> labels = 4;
 }
 
-// Response to a command from the plugin.
-message CommandResponse {
-  // The request ID this response corresponds to.
-  string request_id = 1;
-  // The response payload.
-  oneof result {
-    // Success response.
-    CommandSuccess success = 2;
-    // Error response.
-    CommandError error = 3;
-  }
+// Resource capacity of a node.
+message NodeCapacity {
+  // CPU capacity in millicores (e.g., 4000 = 4 cores).
+  int64 cpu_millis = 1;
+  // Memory capacity in bytes.
+  int64 memory_bytes = 2;
+  // Maximum number of pods this node can run.
+  int32 max_pods = 3;
 }
 
-// Successful command result.
-message CommandSuccess {
-  oneof result {
-    RunPodResponse run_pod = 1;
-    StopPodResponse stop_pod = 2;
-    RemovePodResponse remove_pod = 3;
-    CreateContainerResponse create_container = 4;
-    StartContainerResponse start_container = 5;
-    StopContainerResponse stop_container = 6;
-    RemoveContainerResponse remove_container = 7;
-  }
-}
-
-// Error response.
-message CommandError {
-  string message = 1;
-}
-
-// Messages sent from plugin to agent (SCOC).
-message PluginMessage {
-  oneof message {
-    // Acknowledgment of node registration.
-    RegistrationAck registration_ack = 1;
-    // Command to execute.
-    Command command = 2;
-  }
-}
-
-// Acknowledgment of successful registration.
-message RegistrationAck {
+// Response to node registration.
+message RegisterNodeResponse {
   // Whether registration was successful.
   bool success = 1;
   // Error message if registration failed.
   string error = 2;
 }
 
-// A command from the plugin to execute on the node.
-message Command {
-  // Unique ID for this request (for correlating responses).
-  string request_id = 1;
-  // The command to execute.
-  oneof command {
-    RunPodRequest run_pod = 2;
-    StopPodRequest stop_pod = 3;
-    RemovePodRequest remove_pod = 4;
-    CreateContainerRequest create_container = 5;
-    StartContainerRequest start_container = 6;
-    StopContainerRequest stop_container = 7;
-    RemoveContainerRequest remove_container = 8;
-  }
+// Heartbeat request to keep registration alive.
+message HeartbeatRequest {
+  // Name of the node sending the heartbeat.
+  string node_name = 1;
+  // Current resource usage (optional).
+  NodeUsage usage = 2;
+}
+
+// Current resource usage of a node.
+message NodeUsage {
+  // CPU usage in millicores.
+  int64 cpu_millis = 1;
+  // Memory usage in bytes.
+  int64 memory_bytes = 2;
+  // Current number of running pods.
+  int32 running_pods = 3;
+}
+
+// Heartbeat response.
+message HeartbeatResponse {
+  // Whether the heartbeat was acknowledged.
+  bool acknowledged = 1;
+}
+
+// Request to unregister a node.
+message UnregisterNodeRequest {
+  // Name of the node to unregister.
+  string node_name = 1;
+}
+
+// Response to node unregistration.
+message UnregisterNodeResponse {
+  // Whether unregistration was successful.
+  bool success = 1;
+}
+
+// ============================================================================
+// Conduit Service (served by SCOC)
+// ============================================================================
+
+// The Conduit service handles pod and container operations. The container
+// plugin connects to conduits when it needs to execute operations on a node.
+service Conduit {
+  // RunPod creates and starts a pod sandbox.
+  rpc RunPod(RunPodRequest) returns (RunPodResponse);
+
+  // StopPod stops a running pod sandbox.
+  rpc StopPod(StopPodRequest) returns (StopPodResponse);
+
+  // RemovePod removes a pod sandbox.
+  rpc RemovePod(RemovePodRequest) returns (RemovePodResponse);
+
+  // CreateContainer creates a container within a pod.
+  rpc CreateContainer(CreateContainerRequest) returns (CreateContainerResponse);
+
+  // StartContainer starts a created container.
+  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
+
+  // StopContainer stops a running container.
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+
+  // RemoveContainer removes a container.
+  rpc RemoveContainer(RemoveContainerRequest) returns (RemoveContainerResponse);
 }
 
 // ============================================================================
