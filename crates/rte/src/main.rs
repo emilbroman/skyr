@@ -336,7 +336,7 @@ async fn worker_loop_iteration(
                     message.resource.resource_type.clone(),
                     message.resource.resource_id.clone(),
                 );
-            match resource_client.get().await {
+            let current = match resource_client.get().await {
                 Ok(Some(resource)) => {
                     if resource.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
                         info!(log, "dropping delete for non-matching owner";
@@ -349,6 +349,7 @@ async fn worker_loop_iteration(
                         delivery.ack().await?;
                         return Ok(true);
                     }
+                    resource
                 }
                 Ok(None) => {
                     info!(log, "dropping idempotent delete for missing resource";
@@ -369,7 +370,32 @@ async fn worker_loop_iteration(
                     delivery.nack(false).await?;
                     return Ok(true);
                 }
-            }
+            };
+
+            let inputs = match current.inputs {
+                Some(inputs) => inputs,
+                None => {
+                    warn!(log, "missing current inputs for delete";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            };
+            let outputs = match current.outputs {
+                Some(outputs) => outputs,
+                None => {
+                    warn!(log, "missing current outputs for delete";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            };
 
             let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
             else {
@@ -400,7 +426,7 @@ async fn worker_loop_iteration(
                 "resource_type" => message.resource.resource_type.clone(),
                 "resource_id" => message.resource.resource_id.clone()
             );
-            if let Err(error) = plugin.delete_resource(id).await {
+            if let Err(error) = plugin.delete_resource(id, inputs, outputs).await {
                 warn!(log, "delete_resource plugin call failed";
                     "namespace" => message.resource.namespace.clone(),
                     "resource_type" => message.resource.resource_type.clone(),
@@ -492,6 +518,18 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
+            let prev_outputs = match current.outputs.clone() {
+                Some(outputs) => outputs,
+                None => {
+                    warn!(log, "missing current outputs for adopt";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            };
             let desired_inputs: sclc::Record =
                 match serde_json::from_value(message.desired_inputs.clone()) {
                     Ok(inputs) => inputs,
@@ -542,7 +580,7 @@ async fn worker_loop_iteration(
                     "resource_id" => message.resource.resource_id.clone()
                 );
                 let resource = match plugin
-                    .update_resource(id, prev_inputs, desired_inputs)
+                    .update_resource(id, prev_inputs, prev_outputs, desired_inputs)
                     .await
                 {
                     Ok(resource) => resource,
@@ -694,6 +732,18 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
+            let prev_outputs = match current.outputs.clone() {
+                Some(outputs) => outputs,
+                None => {
+                    warn!(log, "missing current outputs for restore";
+                        "namespace" => message.resource.namespace.clone(),
+                        "resource_type" => message.resource.resource_type.clone(),
+                        "resource_id" => message.resource.resource_id.clone()
+                    );
+                    delivery.nack(false).await?;
+                    return Ok(true);
+                }
+            };
             let desired_inputs: sclc::Record =
                 match serde_json::from_value(message.desired_inputs.clone()) {
                     Ok(inputs) => inputs,
@@ -744,7 +794,7 @@ async fn worker_loop_iteration(
                     "resource_id" => message.resource.resource_id.clone()
                 );
                 let resource = match plugin
-                    .update_resource(id, prev_inputs, desired_inputs)
+                    .update_resource(id, prev_inputs, prev_outputs, desired_inputs)
                     .await
                 {
                     Ok(resource) => resource,
