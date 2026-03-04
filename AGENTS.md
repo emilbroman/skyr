@@ -43,7 +43,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 - `crates/rtq`: RabbitMQ-backed resource transition queue with Create/Restore/Adopt/Destroy messages.
 - `crates/rtp`: gRPC-based resource transition plugin protocol with TCP and Unix socket support.
-- `crates/scop`: Placeholder for Skyr Container Orchestrator Protocol (Phase 2).
+- `crates/scop`: Skyr Container Orchestrator Protocol with bidirectional gRPC streaming for plugin-agent communication.
 
 ### Compiler & Language
 
@@ -200,7 +200,20 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Pod sandbox operations: `run_pod_sandbox`, `stop_pod_sandbox`, `remove_pod_sandbox`.
   - Container operations: `create_container`, `start_container`, `stop_container`, `remove_container`.
   - CLI subcommands for testing: `version`, `pod run/stop/remove`, `container create/start/stop/remove`.
-  - Daemon mode placeholder for future SCOP plugin connection (Phase 2+).
+  - Daemon mode: Implements `scop::Agent` trait, connects to container plugin via SCOP.
+  - Auto-reconnection loop with 5s backoff on connection failure.
+
+### SCOP (`crates/scop`)
+
+- Skyr Container Orchestrator Protocol:
+  - Bidirectional gRPC streaming between plugin and agents.
+  - `Agent` trait: Implemented by SCOC to handle commands (run/stop/remove pod, create/start/stop/remove container).
+  - `Orchestrator` trait: Implemented by container plugin for node lifecycle callbacks.
+  - `NodeHandle`: Stored by plugin to send commands to connected nodes.
+  - `dial()`: Agent function to connect to plugin with auto-registration.
+  - `serve()`: Plugin function to listen for agent connections.
+  - Target support: TCP (`http://host:port`) and Unix socket (`unix:///path`).
+  - Request/response correlation via unique request IDs.
 
 ### Plugins
 
@@ -216,8 +229,12 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Idempotent creates (treats existing artifacts as success).
 
 - `plugin_std_container`:
-  - Skeleton implementation (Phase 4).
-  - CLI args: `--bind`, `--ndb-hostname`, `--buildkit-addr`, `--registry-url`.
+  - Phase 3 implementation: SCOP server and node registration.
+  - Implements `scop::Orchestrator` trait for node lifecycle management.
+  - Stores connected nodes in-memory (`NodeHandle`) and persists to Redis.
+  - Redis key prefixes: `n:` for node data, `nodes` set for node names.
+  - CLI args: `--bind`, `--node-registry-hostname`, `--buildkit-addr`, `--registry-url`.
+  - Phase 4 (TODO): RTP server for resource management.
 
 ## Gaps Against `docs/index.md`
 
@@ -228,6 +245,8 @@ Implemented:
 - RTP plugin protocol with gRPC communication.
 - Artifact storage and logging infrastructure.
 - Container orchestrator CRI client (Phase 1).
+- SCOP protocol with bidirectional gRPC streaming (Phase 2).
+- Container plugin SCOP server and node registration (Phase 3).
 
 Not implemented yet (high impact):
 
@@ -236,8 +255,9 @@ Not implemented yet (high impact):
 - Health check / drift detection behavior.
 - Proper lingering/undesired cleanup based on dependency ownership in RDB.
 - Fine-grained authorization policy in SCS beyond username+pubkey presence checks.
-- SCOP protocol for container plugin communication (Phase 2).
-- Full container plugin implementation (Phase 4).
+- Container plugin RTP server for resource management (Phase 4).
+- Standard library interface for Pod/Container resources (Phase 5).
+- Buildkit integration for image builds (Phase 6).
 
 ## Practical Guidance for Future Agents
 
@@ -247,8 +267,9 @@ Not implemented yet (high impact):
   1. Extend DE to emit RTQ transition intents based on compiled/evaluated SCL config.
   2. Implement dependency propagation in SCLC evaluator.
   3. Add health check / drift detection in RTE.
-  4. Implement SCOP protocol in `crates/scop` (Phase 2).
-  5. Complete container plugin in `crates/plugin_std_container` (Phase 4).
+  4. Complete container plugin RTP server (Phase 4).
+  5. Implement Pod/Container resources in SCLC standard library (Phase 5).
+  6. Add Buildkit integration for Image resources (Phase 6).
 - Keep deployment state transitions coherent across `scs` and `de`.
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
 - In `sclc`, parse functions return `Diagnosed<Option<_>>` and report syntax errors via diagnostics instead of `Result<_, ParseError>`.

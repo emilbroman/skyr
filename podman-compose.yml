@@ -183,7 +183,7 @@ services:
       [
         "--bind",
         "tcp://0.0.0.0:50053",
-        "--ndb-hostname",
+        "--node-registry-hostname",
         "redis",
         "--buildkit-addr",
         "tcp://buildkit:1234",
