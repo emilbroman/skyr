@@ -40,10 +40,8 @@ message CreateResourceResponse {
 }
 
 message UpdateResourceRequest {
-  string resource_type = 1;
-  string resource_id = 2;
-  string prev_resource_inputs_json = 3;
-  string resource_inputs_json = 4;
+  Resource resource = 1;
+  string inputs_json = 2;
 }
 
 message UpdateResourceResponse {
@@ -51,8 +49,7 @@ message UpdateResourceResponse {
 }
 
 message DeleteResourceRequest {
-  string resource_type = 1;
-  string resource_id = 2;
+  Resource resource = 1;
 }
 
 message HealthRequest {

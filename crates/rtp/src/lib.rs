@@ -34,11 +34,17 @@ pub trait Plugin: Send + Sync + 'static {
         &mut self,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource>;
 
-    async fn delete_resource(&mut self, id: sclc::ResourceId) -> anyhow::Result<()> {
-        let _ = id;
+    async fn delete_resource(
+        &mut self,
+        id: sclc::ResourceId,
+        inputs: sclc::Record,
+        outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        let _ = (id, inputs, outputs);
         Ok(())
     }
 
@@ -284,47 +290,58 @@ where
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
+        let current = request
+            .resource
+            .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
+        let resource_id = sclc::ResourceId {
+            ty: current.r#type.clone(),
+            id: current.id.clone(),
+        };
         info!(
-            resource_type = request.resource_type.as_str(),
-            resource_id = request.resource_id.as_str(),
+            resource_type = resource_id.ty.as_str(),
+            resource_id = resource_id.id.as_str(),
             "received update_resource RPC"
         );
-        let prev_inputs: sclc::Record = serde_json::from_str(&request.prev_resource_inputs_json)
-            .map_err(|error| {
+        let prev_inputs: sclc::Record =
+            serde_json::from_str(&current.inputs_json).map_err(|error| {
                 warn!(
-                    resource_type = request.resource_type.as_str(),
-                    resource_id = request.resource_id.as_str(),
+                    resource_type = resource_id.ty.as_str(),
+                    resource_id = resource_id.id.as_str(),
                     err = %error,
                     "invalid update_resource prev input payload"
                 );
-                tonic::Status::invalid_argument(format!(
-                    "invalid prev_resource_inputs_json: {error}"
-                ))
+                tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
+            })?;
+        let prev_outputs: sclc::Record =
+            serde_json::from_str(&current.outputs_json).map_err(|error| {
+                warn!(
+                    resource_type = resource_id.ty.as_str(),
+                    resource_id = resource_id.id.as_str(),
+                    err = %error,
+                    "invalid update_resource prev output payload"
+                );
+                tonic::Status::invalid_argument(format!("invalid resource.outputs_json: {error}"))
             })?;
         let inputs: sclc::Record =
-            serde_json::from_str(&request.resource_inputs_json).map_err(|error| {
+            serde_json::from_str(&request.inputs_json).map_err(|error| {
                 warn!(
-                    resource_type = request.resource_type.as_str(),
-                    resource_id = request.resource_id.as_str(),
+                    resource_type = resource_id.ty.as_str(),
+                    resource_id = resource_id.id.as_str(),
                     err = %error,
                     "invalid update_resource input payload"
                 );
-                tonic::Status::invalid_argument(format!("invalid resource_inputs_json: {error}"))
+                tonic::Status::invalid_argument(format!("invalid inputs_json: {error}"))
             })?;
-        let resource_id = sclc::ResourceId {
-            ty: request.resource_type.clone(),
-            id: request.resource_id.clone(),
-        };
 
         let resource = {
             let mut plugin = self.plugin.write().await;
             plugin
-                .update_resource(resource_id.clone(), prev_inputs, inputs)
+                .update_resource(resource_id.clone(), prev_inputs, prev_outputs, inputs)
                 .await
                 .map_err(|error| {
                     error!(
-                        resource_type = request.resource_type.as_str(),
-                        resource_id = request.resource_id.as_str(),
+                        resource_type = resource_id.ty.as_str(),
+                        resource_id = resource_id.id.as_str(),
                         err = %error,
                         "plugin update_resource failed"
                     );
@@ -332,8 +349,8 @@ where
                 })?
         };
         info!(
-            resource_type = request.resource_type.as_str(),
-            resource_id = request.resource_id.as_str(),
+            resource_type = resource_id.ty.as_str(),
+            resource_id = resource_id.id.as_str(),
             "completed update_resource RPC"
         );
         Ok(tonic::Response::new(UpdateResourceResponse {
@@ -348,22 +365,48 @@ where
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
+        let current = request
+            .resource
+            .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
+        let resource_id = sclc::ResourceId {
+            ty: current.r#type.clone(),
+            id: current.id.clone(),
+        };
         info!(
-            resource_type = request.resource_type.as_str(),
-            resource_id = request.resource_id.as_str(),
+            resource_type = resource_id.ty.as_str(),
+            resource_id = resource_id.id.as_str(),
             "received delete_resource RPC"
         );
-        let resource_id = sclc::ResourceId {
-            ty: request.resource_type,
-            id: request.resource_id,
-        };
+        let inputs: sclc::Record =
+            serde_json::from_str(&current.inputs_json).map_err(|error| {
+                warn!(
+                    resource_type = resource_id.ty.as_str(),
+                    resource_id = resource_id.id.as_str(),
+                    err = %error,
+                    "invalid delete_resource input payload"
+                );
+                tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
+            })?;
+        let outputs: sclc::Record =
+            serde_json::from_str(&current.outputs_json).map_err(|error| {
+                warn!(
+                    resource_type = resource_id.ty.as_str(),
+                    resource_id = resource_id.id.as_str(),
+                    err = %error,
+                    "invalid delete_resource output payload"
+                );
+                tonic::Status::invalid_argument(format!("invalid resource.outputs_json: {error}"))
+            })?;
 
         {
             let mut plugin = self.plugin.write().await;
-            plugin.delete_resource(resource_id).await.map_err(|error| {
-                error!(err = %error, "plugin delete_resource failed");
-                tonic::Status::internal(error.to_string())
-            })?;
+            plugin
+                .delete_resource(resource_id, inputs, outputs)
+                .await
+                .map_err(|error| {
+                    error!(err = %error, "plugin delete_resource failed");
+                    tonic::Status::internal(error.to_string())
+                })?;
         }
 
         info!("completed delete_resource RPC");
@@ -466,6 +509,7 @@ impl PluginClient {
         &mut self,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(
@@ -473,15 +517,19 @@ impl PluginClient {
             resource_id = id.id.as_str(),
             "sending update_resource RPC"
         );
-        let prev_resource_inputs_json = serde_json::to_string(&prev_inputs)?;
-        let resource_inputs_json = serde_json::to_string(&inputs)?;
+        let current_inputs_json = serde_json::to_string(&prev_inputs)?;
+        let current_outputs_json = serde_json::to_string(&prev_outputs)?;
+        let inputs_json = serde_json::to_string(&inputs)?;
         let response = self
             .inner
             .update_resource(UpdateResourceRequest {
-                resource_type: id.ty,
-                resource_id: id.id,
-                prev_resource_inputs_json,
-                resource_inputs_json,
+                resource: Some(Resource {
+                    r#type: id.ty,
+                    id: id.id,
+                    inputs_json: current_inputs_json,
+                    outputs_json: current_outputs_json,
+                }),
+                inputs_json,
             })
             .await
             .map_err(|error| {
@@ -501,16 +549,27 @@ impl PluginClient {
         })
     }
 
-    pub async fn delete_resource(&mut self, id: sclc::ResourceId) -> anyhow::Result<()> {
+    pub async fn delete_resource(
+        &mut self,
+        id: sclc::ResourceId,
+        inputs: sclc::Record,
+        outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
         debug!(
             resource_type = id.ty.as_str(),
             resource_id = id.id.as_str(),
             "sending delete_resource RPC"
         );
+        let inputs_json = serde_json::to_string(&inputs)?;
+        let outputs_json = serde_json::to_string(&outputs)?;
         self.inner
             .delete_resource(DeleteResourceRequest {
-                resource_type: id.ty,
-                resource_id: id.id,
+                resource: Some(Resource {
+                    r#type: id.ty,
+                    id: id.id,
+                    inputs_json,
+                    outputs_json,
+                }),
             })
             .await
             .map_err(|error| {
