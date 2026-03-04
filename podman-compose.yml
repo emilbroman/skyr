@@ -182,7 +182,7 @@ services:
     command:
       [
         "--bind",
-        "tcp://0.0.0.0:50053",
+        "0.0.0.0:50053",
         "--node-registry-hostname",
         "redis",
         "--buildkit-addr",
@@ -274,7 +274,9 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-1
-      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
+      - SCOC_BIND=0.0.0.0:50054
+      - SCOC_CONDUIT_ADDRESS=http://scoc-1:50054
+      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
     restart: always
 
   scoc-2:
@@ -284,7 +286,9 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-2
-      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
+      - SCOC_BIND=0.0.0.0:50054
+      - SCOC_CONDUIT_ADDRESS=http://scoc-2:50054
+      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
     restart: always
 
   scoc-3:
@@ -294,5 +298,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-3
-      - SCOC_PLUGIN_ADDR=tcp://plugin-std-container:50053
+      - SCOC_BIND=0.0.0.0:50054
+      - SCOC_CONDUIT_ADDRESS=http://scoc-3:50054
+      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
     restart: always

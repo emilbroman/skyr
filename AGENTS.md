@@ -43,7 +43,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 - `crates/rtq`: RabbitMQ-backed resource transition queue with Create/Restore/Adopt/Destroy messages.
 - `crates/rtp`: gRPC-based resource transition plugin protocol with TCP and Unix socket support.
-- `crates/scop`: Skyr Container Orchestrator Protocol with bidirectional gRPC streaming for plugin-agent communication.
+- `crates/scop`: Skyr Container Orchestrator Protocol with bidirectional gRPC streaming for plugin-conduit communication.
 
 ### Compiler & Language
 
@@ -200,18 +200,21 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Pod sandbox operations: `run_pod_sandbox`, `stop_pod_sandbox`, `remove_pod_sandbox`.
   - Container operations: `create_container`, `start_container`, `stop_container`, `remove_container`.
   - CLI subcommands for testing: `version`, `pod run/stop/remove`, `container create/start/stop/remove`.
-  - Daemon mode: Implements `scop::Agent` trait, connects to container plugin via SCOP.
-  - Auto-reconnection loop with 5s backoff on connection failure.
+  - Daemon mode: Implements `scop::Conduit` trait, serves SCOP on a TCP port.
+  - On startup, registers itself in the node registry (Redis) with its external address.
+  - On shutdown, unregisters from the node registry.
+  - CLI args: `--node-name`, `--bind`, `--external-address`, `--node-registry-hostname`, `--containerd-socket`.
 
 ### SCOP (`crates/scop`)
 
 - Skyr Container Orchestrator Protocol:
-  - Bidirectional gRPC streaming between plugin and agents.
-  - `Agent` trait: Implemented by SCOC to handle commands (run/stop/remove pod, create/start/stop/remove container).
-  - `Orchestrator` trait: Implemented by container plugin for node lifecycle callbacks.
-  - `NodeHandle`: Stored by plugin to send commands to connected nodes.
-  - `dial()`: Agent function to connect to plugin with auto-registration.
-  - `serve()`: Plugin function to listen for agent connections.
+  - Bidirectional gRPC streaming between plugin and conduits.
+  - gRPC service: `Conduit` with `Session(stream PluginMessage) returns (stream ConduitMessage)`.
+  - `Conduit` trait: Implemented by SCOC to handle commands (run/stop/remove pod, create/start/stop/remove container).
+  - `ConduitFactory` trait: Creates conduit instances for each incoming connection.
+  - `Session`: Handle returned to plugin after connecting, used to send commands.
+  - `serve()`: Conduit function to listen for plugin connections (used by SCOC).
+  - `dial()`: Plugin function to connect to a conduit (used by container plugin).
   - Target support: TCP (`http://host:port`) and Unix socket (`unix:///path`).
   - Request/response correlation via unique request IDs.
 
@@ -229,11 +232,12 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Idempotent creates (treats existing artifacts as success).
 
 - `plugin_std_container`:
-  - Phase 3 implementation: SCOP server and node registration.
-  - Implements `scop::Orchestrator` trait for node lifecycle management.
-  - Stores connected nodes in-memory (`NodeHandle`) and persists to Redis.
+  - Phase 3 implementation: SCOP client and node registry lookup.
+  - Connects to SCOC conduits via `scop::dial()` when it needs to run commands.
+  - Looks up node addresses from the node registry (Redis).
+  - Caches sessions to connected nodes for reuse.
   - Redis key prefixes: `n:` for node data, `nodes` set for node names.
-  - CLI args: `--bind`, `--node-registry-hostname`, `--buildkit-addr`, `--registry-url`.
+  - CLI args: `--node-registry-hostname`, `--buildkit-addr`, `--registry-url`.
   - Phase 4 (TODO): RTP server for resource management.
 
 ## Gaps Against `docs/index.md`
@@ -246,7 +250,8 @@ Implemented:
 - Artifact storage and logging infrastructure.
 - Container orchestrator CRI client (Phase 1).
 - SCOP protocol with bidirectional gRPC streaming (Phase 2).
-- Container plugin SCOP server and node registration (Phase 3).
+- SCOP conduit server in SCOC with node registry registration (Phase 3).
+- Container plugin SCOP client with node registry lookup (Phase 3).
 
 Not implemented yet (high impact):
 

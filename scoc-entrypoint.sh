@@ -33,8 +33,13 @@ while [ ! -S /run/containerd/containerd.sock ]; do
   sleep 0.1
 done
 
-# Start SCOC agent
+# Start SCOC conduit server
 exec /usr/local/bin/scoc daemon \
   --node-name "${SCOC_NODE_NAME}" \
-  --plugin-addr "${SCOC_PLUGIN_ADDR}" \
-  --containerd-socket /run/containerd/containerd.sock
+  --bind "${SCOC_BIND:-0.0.0.0:50054}" \
+  --conduit-address "${SCOC_CONDUIT_ADDRESS}" \
+  --orchestrator-address "${SCOC_ORCHESTRATOR_ADDRESS}" \
+  --containerd-socket /run/containerd/containerd.sock \
+  --cpu-millis "${SCOC_CPU_MILLIS:-4000}" \
+  --memory-bytes "${SCOC_MEMORY_BYTES:-8589934592}" \
+  --max-pods "${SCOC_MAX_PODS:-100}"
