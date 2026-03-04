@@ -5423,6 +5423,22 @@ dependencies = [
 [[package]]
 name = "scop"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "http 1.4.0",
+ "hyper-util",
+ "prost 0.13.5",
+ "protoc-bin-vendored",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tonic 0.12.3",
+ "tonic-build 0.12.3",
+ "tower 0.5.3",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "scopeguard"
