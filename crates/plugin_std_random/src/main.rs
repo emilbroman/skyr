@@ -51,6 +51,7 @@ impl rtp::Plugin for RandomPlugin {
         &mut self,
         id: sclc::ResourceId,
         _prev_inputs: sclc::Record,
+        _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         match id.ty.as_str() {
