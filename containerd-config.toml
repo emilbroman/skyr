@@ -1,6 +1,21 @@
 version = 2
 
 [plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.k8s.io/pause:3.9"
+  # Disable cgroup for nested container testing
+  disable_cgroup = true
+
+  [plugins."io.containerd.grpc.v1.cri".containerd]
+    snapshotter = "native"
+    default_runtime_name = "crun"
+
+    # Use crun for better nested container support
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.crun]
+      runtime_type = "io.containerd.runc.v2"
+      [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.crun.options]
+        BinaryName = "/usr/bin/crun"
+        SystemdCgroup = false
+
   [plugins."io.containerd.grpc.v1.cri".registry]
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
       [plugins."io.containerd.grpc.v1.cri".registry.mirrors."oci-registry:5000"]
