@@ -19,8 +19,11 @@ COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
 COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
 COPY crates/udb/Cargo.toml crates/udb/Cargo.toml
+COPY crates/scop/Cargo.toml crates/scop/Cargo.toml
+COPY crates/scoc/Cargo.toml crates/scoc/Cargo.toml
+COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ldb/src crates/plugin_std_artifact/src crates/plugin_std_random/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/udb/src; \
+    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ldb/src crates/plugin_std_artifact/src crates/plugin_std_random/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
@@ -35,7 +38,10 @@ RUN set -eu; \
     printf 'fn main() {}\n' > crates/cli/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
     printf 'fn main() {}\n' > crates/scs/src/main.rs; \
-    printf 'pub fn _stub() {}\n' > crates/udb/src/lib.rs
+    printf 'pub fn _stub() {}\n' > crates/udb/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/scop/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/scoc/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_container/src/main.rs
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS deps
@@ -46,9 +52,9 @@ FROM deps AS build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN set -eu; \
-    cargo build --release -p scs -p de -p rte -p plugin_std_random -p plugin_std_artifact -p api; \
+    cargo build --release -p scs -p de -p rte -p plugin_std_random -p plugin_std_artifact -p plugin_std_container -p scoc -p api; \
     mkdir -p /artifacts; \
-    for bin in scs de rte plugin_std_random plugin_std_artifact api; do \
+    for bin in scs de rte plugin_std_random plugin_std_artifact plugin_std_container scoc api; do \
       path="$(find /src /home/rust /root /volume /target -type f -path "*/release/${bin}" 2>/dev/null | head -n1 || true)"; \
       if [ -z "${path}" ]; then \
         echo "failed to locate built binary: ${bin}" >&2; \
@@ -57,10 +63,15 @@ RUN set -eu; \
       cp "${path}" "/artifacts/${bin}"; \
     done
 
+FROM moby/buildkit:latest AS buildkit
+
 FROM scratch
 COPY --from=build /artifacts/scs /scs
 COPY --from=build /artifacts/de /de
 COPY --from=build /artifacts/rte /rte
 COPY --from=build /artifacts/plugin_std_random /plugin_std_random
 COPY --from=build /artifacts/plugin_std_artifact /plugin_std_artifact
+COPY --from=build /artifacts/plugin_std_container /plugin_std_container
+COPY --from=build /artifacts/scoc /scoc
 COPY --from=build /artifacts/api /api
+COPY --from=buildkit /usr/bin/buildctl /usr/bin/buildctl

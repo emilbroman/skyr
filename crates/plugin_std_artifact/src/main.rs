@@ -141,6 +141,7 @@ impl rtp::Plugin for ArtifactPlugin {
         &mut self,
         id: sclc::ResourceId,
         _prev_inputs: sclc::Record,
+        _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let result = self.materialize_artifact(id.clone(), inputs).await;
@@ -155,7 +156,12 @@ impl rtp::Plugin for ArtifactPlugin {
         result
     }
 
-    async fn delete_resource(&mut self, id: sclc::ResourceId) -> anyhow::Result<()> {
+    async fn delete_resource(
+        &mut self,
+        id: sclc::ResourceId,
+        _inputs: sclc::Record,
+        _outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
         if id.ty != ARTIFACT_RESOURCE_TYPE {
             anyhow::bail!("unsupported resource type: {}", id.ty);
         }

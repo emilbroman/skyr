@@ -26,6 +26,7 @@ macro_rules! std_modules {
 
 std_modules! {
     artifact => "Artifact.scl",
+    container => "Container.scl",
     encoding => "Encoding.scl",
     num => "Num.scl",
     random => "Random.scl",

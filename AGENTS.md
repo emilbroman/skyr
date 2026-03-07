@@ -5,27 +5,59 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 ## Reality Check (as of current code)
 
 - `docs/index.md` describes a full orchestrator with reconciliation, RTQ/RTE processing, and resource lifecycle operations.
-- The repository currently has an early vertical slice:
+- The repository now has substantial infrastructure:
   - Git-over-SSH config server (`scs`) that can receive and upload Git data.
   - Public API service (`api`) exposing GraphQL auth/signup/me endpoints.
   - User database client (`udb`) backed by Redis for users, tokens, and SSH pubkey fingerprints.
   - Configuration/deployment database client (`cdb`) with Cassandra schema and typed APIs.
   - Deployment poller/worker loop (`de`) with state transitions and SCL file loading.
-  - Skeletons for SCL compiler/runtime data model (`sclc`), resource DB (`rdb`), RTQ (`rtq`), and RTE (`rte`).
-- Core reconciliation and resource protocol behavior described in docs is mostly not implemented yet.
+  - Full SCL compiler/runtime (`sclc`) with lexer/parser/AST/type-checker/eval.
+  - Resource database (`rdb`) with inputs/outputs/dependencies/owner tracking.
+  - Resource transition queue (`rtq`) with RabbitMQ-backed message passing.
+  - Resource transition engine (`rte`) that processes transitions and invokes plugins.
+  - Plugin protocol (`rtp`) with gRPC-based communication.
+  - Artifact storage (`adb`) with S3-backed artifact database.
+  - Log database (`ldb`) with Kafka-backed structured logging.
+  - Container orchestrator conduit (`scoc`) with CRI client for containerd.
+- Core reconciliation (DE emitting RTQ messages based on compiled config) is still pending.
 
 ## Workspace Structure
 
-- `crates/api`: GraphQL API service (signup, bearer-token auth, and `me` query) backed by `udb`.
+### Core Services
+
+- `crates/api`: GraphQL API service (signup, bearer-token auth, `me` query, deployment artifacts) backed by `udb`.
 - `crates/scs`: SSH Git server and packfile handling, writes Git objects and deployment states to CDB.
+- `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
+- `crates/rte`: Resource transition engine daemon processing RTQ messages and invoking plugins.
+- `crates/cli`: CLI/REPL binary for SCL (compiled as `skyr`).
+
+### Data Layer
+
 - `crates/udb`: Redis-backed user database client for users, pubkeys, and short-lived bearer tokens.
 - `crates/cdb`: Cassandra-backed API for repositories, objects, deployments, active deployments, supercession links.
-- `crates/de`: Daemon that watches active deployments and runs per-deployment reconcile loops.
+- `crates/rdb`: Cassandra-backed resource database with inputs, outputs, dependencies, and owner tracking.
+- `crates/adb`: S3-backed artifact database with write, read, list, and presigned URL support.
+- `crates/ldb`: Kafka-backed log database with publish/consume and severity levels.
+
+### Protocol Layer
+
+- `crates/rtq`: RabbitMQ-backed resource transition queue with Create/Restore/Adopt/Destroy messages.
+- `crates/rtp`: gRPC-based resource transition plugin protocol with TCP and Unix socket support.
+- `crates/scop`: Skyr Container Orchestrator Protocol with bidirectional gRPC streaming for plugin-conduit communication.
+
+### Compiler & Language
+
 - `crates/sclc`: SCL front-end + runtime pieces (lexer/parser/AST/type-checker/eval), with a std package and compile pipeline.
-- `crates/cli`: CLI/REPL binary for SCL (compiled as `skyr`).
-- `crates/rdb`: Cassandra schema for resources plus basic ResourceClient CRUD for get/set/delete of inputs/outputs.
-- `crates/rte`: Daemon shell only; no RTQ consumption or transition logic.
-- `crates/rtq`: Placeholder crate (`src/lib.rs` is effectively empty).
+
+### Plugins
+
+- `crates/plugin_std_random`: RTP plugin implementing `Std/Random.Int` resource type.
+- `crates/plugin_std_artifact`: RTP plugin implementing `Std/Artifact.File` resource type via ADB.
+- `crates/plugin_std_container`: Container plugin with Image/Pod/Container resource management (Phases 4-6 complete).
+
+### Container Infrastructure
+
+- `crates/scoc`: Skyr Container Orchestrator Conduit with CRI client for containerd communication.
 
 ## Implemented Behavior by Area
 
@@ -36,7 +68,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - `git-upload-pack`
 - Auth validates both:
   - that the SSH username exists in `udb`
-  - that the connecting key fingerprint exists in that user’s stored pubkey set
+  - that the connecting key fingerprint exists in that user's stored pubkey set
 - On push:
   - Parses refs update commands.
   - Parses incoming packfiles, resolves deltas, writes Git objects into CDB.
@@ -53,6 +85,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - Supports:
   - `signup(username, email)` mutation (creates user and issues a bearer token via `udb`)
   - `me` query (requires bearer token, resolves the authenticated user)
+  - Deployment artifacts exposure
 - Treat this as an early public-API stub; broader domain surface and hardening are still pending.
 
 ### UDB (`crates/udb`)
@@ -97,22 +130,137 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 - `compile()` opens `Main.scl`, resolves imports, and type checks, returning `Diagnosed<Program<_>>` with accumulated diagnostics.
 - Parser now reports syntax errors as diagnostics (`SyntaxError`), and REPL lines can be empty (`ReplLine { statement: None }`).
 
-### RDB / RTQ / RTE
+### RDB (`crates/rdb`)
 
-- `rdb`:
-  - Cassandra table definitions exist (`rdb.resources`).
-  - `ResourceClient` supports `get`, `set_input`, `set_output`, and `delete`.
-- `rtq`: no queue client implementation yet.
-- `rte`: daemon loop exists but does no work.
+- Cassandra-backed resource database with full CRUD:
+  - `ResourceClient` supports `get`, `set_input`, `set_output`, `set_dependencies`, and `delete`.
+  - `NamespaceClient` supports `list_resources` and `list_resources_by_owner`.
+  - Resources have `inputs`, `outputs`, `dependencies`, and `owner` fields.
+  - Dependencies stored as JSON array of `ResourceId` objects.
+
+### RTQ (`crates/rtq`)
+
+- RabbitMQ-backed message queue with full implementation:
+  - Message types: `Create`, `Restore`, `Adopt`, `Destroy`.
+  - Each message contains `ResourceRef` (namespace, resource_type, resource_id).
+  - `Publisher` for enqueuing messages with consistent-hash sharding.
+  - `Consumer` with worker configuration for shard ownership.
+  - 32 shards for parallelism, configurable worker index/count.
+  - JSON serialization for protocol messages.
+
+### RTE (`crates/rte`)
+
+- Resource transition engine daemon with full message processing:
+  - Connects to RTQ as consumer with configurable worker shards.
+  - Dials RTP plugins based on `--plugin NAME@TARGET` CLI args.
+  - Processes all 4 message types:
+    - `Create`: Calls plugin `create_resource`, persists inputs/outputs/dependencies to RDB.
+    - `Destroy`: Validates owner, calls plugin `delete_resource`, removes from RDB.
+    - `Adopt`: Transfers ownership, optionally calls `update_resource` if inputs differ.
+    - `Restore`: Re-applies desired inputs via `update_resource` if they differ.
+  - Idempotency: Drops duplicate creates for existing resources, drops deletes for missing/non-owned resources.
+  - LDB integration: Logs transition events to deployment log topics.
+
+### RTP (`crates/rtp`)
+
+- gRPC-based resource transition plugin protocol:
+  - Protobuf-defined service in `proto/rtp.v1`.
+  - `Plugin` trait with `create_resource`, `update_resource`, `delete_resource`, `health` methods.
+  - Server: `serve()` function for TCP and Unix socket targets.
+  - Client: `dial()` function with capability exchange handshake.
+  - `PluginClient` wraps gRPC client with typed methods.
+  - Per-connection plugin instances via factory pattern.
+
+### ADB (`crates/adb`)
+
+- S3-backed artifact database:
+  - `write()`: Stores artifacts with namespace/name key and media type.
+  - `read()`, `read_to_bytes()`, `read_header()`: Retrieve artifacts.
+  - `list()`: List all artifacts in a namespace.
+  - `presign_read_url()`: Generate time-limited presigned URLs.
+  - `private_read_url()`: Generate internal URLs for service-to-service access.
+  - Conditional writes (`if-none-match`) for idempotent creates.
+  - Configurable endpoint, bucket, credentials, region.
+
+### LDB (`crates/ldb`)
+
+- Kafka-backed log database:
+  - `Publisher` and `Consumer` with namespace-scoped topics.
+  - `Severity` levels: Info, Warning, Error.
+  - `NamespacePublisher` with `info()`, `warn()`, `error()`, `log()` methods.
+  - `NamespaceConsumer` with `tail()` streaming method.
+  - `TailConfig` for follow mode and start position (from end or beginning).
+  - Topic names: `dl-{base64(namespace)}` format.
+  - Binary payload format: 8-byte timestamp + 1-byte severity + UTF-8 message.
+
+### SCOC (`crates/scoc`)
+
+- Skyr Container Orchestrator Conduit with CRI client:
+  - Connects to containerd via Unix socket (default: `/run/containerd/containerd.sock`).
+  - Pod sandbox operations: `run_pod_sandbox`, `stop_pod_sandbox`, `remove_pod_sandbox`.
+  - Container operations: `create_container`, `start_container`, `stop_container`, `remove_container`.
+  - CLI subcommands for testing: `version`, `pod run/stop/remove`, `container create/start/stop/remove`.
+  - Daemon mode: Implements `scop::Conduit` trait, serves SCOP on a TCP port.
+  - On startup, registers itself in the node registry (Redis) with its external address.
+  - On shutdown, unregisters from the node registry.
+  - CLI args: `--node-name`, `--bind`, `--external-address`, `--node-registry-hostname`, `--containerd-socket`.
+
+### SCOP (`crates/scop`)
+
+- Skyr Container Orchestrator Protocol:
+  - Bidirectional gRPC streaming between plugin and conduits.
+  - gRPC service: `Conduit` with `Session(stream PluginMessage) returns (stream ConduitMessage)`.
+  - `Conduit` trait: Implemented by SCOC to handle commands (run/stop/remove pod, create/start/stop/remove container).
+  - `ConduitFactory` trait: Creates conduit instances for each incoming connection.
+  - `Session`: Handle returned to plugin after connecting, used to send commands.
+  - `serve()`: Conduit function to listen for plugin connections (used by SCOC).
+  - `dial()`: Plugin function to connect to a conduit (used by container plugin).
+  - Target support: TCP (`http://host:port`) and Unix socket (`unix:///path`).
+  - Request/response correlation via unique request IDs.
+
+### Plugins
+
+- `plugin_std_random`:
+  - Implements `Std/Random.Int` resource type.
+  - Inputs: `min`, `max` (integers).
+  - Outputs: `result` (random integer in range).
+
+- `plugin_std_artifact`:
+  - Implements `Std/Artifact.File` resource type via ADB.
+  - Inputs: `namespace`, `name`, `contents`, optional `type` (media type).
+  - Outputs: `namespace`, `name`, `media_type`, `url` (private URL).
+  - Idempotent creates (treats existing artifacts as success).
+
+- `plugin_std_container`:
+  - Full implementation with RTP server and SCOP client (Phases 4-6 complete).
+  - Resource types: `Std/Container.Image`, `Std/Container.Pod`, `Std/Container.Pod.Container`.
+  - Image resources: Builds images via BuildKit from Git context, pushes to registry.
+  - Pod resources: Creates pod sandboxes on worker nodes via SCOP.
+  - Container resources: Creates containers within pods, starts them automatically.
+  - Connects to SCOC conduits via `scop::dial()` when it needs to run commands.
+  - Looks up node addresses from the node registry (Redis).
+  - CLI args: `--bind`, `--rtp-bind`, `--node-registry-hostname`, `--cdb-hostnames`, `--buildkit-addr`, `--registry-url`.
 
 ## Gaps Against `docs/index.md`
 
+Implemented:
+
+- RTQ message model (`CREATE`, `RESTORE`, `ADOPT`, `DESTROY`) with sharded queues.
+- RTE workers processing transitions and writing outputs/ownership into RDB.
+- RTP plugin protocol with gRPC communication.
+- Artifact storage and logging infrastructure.
+- Container orchestrator CRI client (Phase 1).
+- SCOP protocol with bidirectional gRPC streaming (Phase 2).
+- SCOP conduit server in SCOC with node registry registration (Phase 3).
+- Container plugin SCOP client with node registry lookup (Phase 3).
+- Container plugin RTP server for resource management (Phase 4).
+- Standard library interface for Image/Pod/Container resources (Phase 5).
+- BuildKit integration for image builds (Phase 6).
+
 Not implemented yet (high impact):
 
-- RTQ message model (`CREATE`, `RESTORE`, `ADOPT`, `DESTROY`) and idempotent enqueue/dequeue behavior.
-- RTE workers processing transitions and writing outputs/ownership into RDB.
-- SCL language semantics: imports, expression evaluation, pending values, dependency tracking.
-- DAG execution/reconciliation loop in DE (currently compile-only, no resource operations).
+- DAG execution/reconciliation loop in DE (currently compile-only, no RTQ emissions).
+- DE emitting transition intents based on compiled/evaluated SCL config.
 - Health check / drift detection behavior.
 - Proper lingering/undesired cleanup based on dependency ownership in RDB.
 - Fine-grained authorization policy in SCS beyond username+pubkey presence checks.
@@ -120,25 +268,46 @@ Not implemented yet (high impact):
 ## Practical Guidance for Future Agents
 
 - Treat `docs/index.md` as target design, not current behavior.
-- For bug fixes in existing behavior, start in `scs` and `cdb`; those crates carry most real logic.
-- For feature work aligned to docs, expected sequence is:
-  1. Define RTQ API and message contract in `crates/rtq`.
-  2. Implement RDB resource CRUD in `crates/rdb`.
-  3. Extend DE to emit transition intents based on compiled/evaluated config.
-  4. Implement RTE consumption/execution path and idempotency handling.
-  5. Expand SCLC from file-loader to parser/evaluator with dependency propagation.
+- For bug fixes in existing behavior, start in `scs`, `cdb`, `rte`, or `rtq`; those crates carry most real logic.
+- For feature work aligned to docs, the remaining sequence is:
+  1. Extend DE to emit RTQ transition intents based on compiled/evaluated SCL config.
+  2. Implement dependency propagation in SCLC evaluator.
+  3. Add health check / drift detection in RTE.
 - Keep deployment state transitions coherent across `scs` and `de`.
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
 - In `sclc`, parse functions return `Diagnosed<Option<_>>` and report syntax errors via diagnostics instead of `Result<_, ParseError>`.
 - In `scl`, the REPL ignores empty lines and uses `Diagnosed` reporting helpers for parse/type diagnostics.
 - Whenever the GraphQL server is updated in a way that impacts the schema, regenerate the `crates/api/schema.graphql` file by running `cargo run -p api -- --write-schema`.
+- When writing new RTP plugins, follow the pattern in `plugin_std_random` or `plugin_std_artifact`.
+- For ADB operations, configure endpoint/bucket via CLI args or environment variables.
+- For LDB logging, use `NamespacePublisher` with deployment ID as namespace.
 
 ## Running Locally (Quick Test)
 
-- Run `podman compose up` to start Cassandra, RabbitMQ, and Redis.
+Infrastructure services (via `podman-compose.yml`):
+- ScyllaDB (Cassandra-compatible) on port 9042
+- RabbitMQ on ports 5672 (AMQP) and 15672 (management UI)
+- Redis on port 6379
+- Redpanda (Kafka-compatible) on port 9092
+- MinIO (S3-compatible) on ports 9000 (API) and 9001 (console)
+- OCI Registry on port 5000
+- BuildKit on port 1234
+
+Application services:
+- `api`: GraphQL API on port 8080
+- `scs`: SSH Git server on port 2222
+- `de`: Deployment engine
+- `rte-{0,1,2}`: Resource transition engine workers (3 instances)
+- `plugin-std-random`: Random plugin on port 50051
+- `plugin-std-artifact`: Artifact plugin on port 50052
+- `plugin-std-container`: Container plugin on port 50053
+- `scoc-{1,2,3}`: Container orchestrator conduit nodes
+
+To start everything: `podman compose up` (requires building `skyr:latest` image first).
+
+For manual testing:
 - Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222`.
-- Start the `scs` program with `daemon --address 127.0.0.1:2222` so it matches the `test-repo/` remote.
-- Start the deployment engine with `cargo run -p de -- daemon` to process deployments.
+- Start individual services with `cargo run -p <crate> -- daemon` with appropriate flags.
 
 ## Environment Notes
 

@@ -1,0 +1,256 @@
+syntax = "proto3";
+
+package scop.v1;
+
+// Skyr Container Orchestrator Protocol (SCOP)
+//
+// This protocol defines communication between the container plugin and
+// worker node conduits (SCOC). There are two services:
+//
+// 1. Orchestrator (served by container plugin):
+//    - Conduits connect to register themselves and advertise their address
+//    - Registration is persisted in the node registry for all plugin replicas
+//
+// 2. Conduit (served by SCOC):
+//    - Plugin connects to execute pod/container operations
+//    - Each operation is a first-class RPC
+
+// ============================================================================
+// Orchestrator Service (served by container plugin)
+// ============================================================================
+
+// The Orchestrator service handles node registration. Conduits (SCOC) connect
+// to one of the container plugin replicas to register themselves.
+service Orchestrator {
+  // RegisterNode registers a conduit with the orchestrator.
+  // The conduit advertises its address and resource capacity.
+  rpc RegisterNode(RegisterNodeRequest) returns (RegisterNodeResponse);
+
+  // Heartbeat keeps the node registration alive.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // UnregisterNode removes a node from the registry.
+  rpc UnregisterNode(UnregisterNodeRequest) returns (UnregisterNodeResponse);
+}
+
+// Request to register a node with the orchestrator.
+message RegisterNodeRequest {
+  // Unique name for this node.
+  string node_name = 1;
+  // Address where the Conduit service is hosted (e.g., "http://node-1:50053").
+  string conduit_address = 2;
+  // Resource capacity available for container workloads.
+  NodeCapacity capacity = 3;
+  // Labels for node selection/scheduling.
+  map<string, string> labels = 4;
+}
+
+// Resource capacity of a node.
+message NodeCapacity {
+  // CPU capacity in millicores (e.g., 4000 = 4 cores).
+  int64 cpu_millis = 1;
+  // Memory capacity in bytes.
+  int64 memory_bytes = 2;
+  // Maximum number of pods this node can run.
+  int32 max_pods = 3;
+}
+
+// Response to node registration.
+message RegisterNodeResponse {
+  // Whether registration was successful.
+  bool success = 1;
+  // Error message if registration failed.
+  string error = 2;
+}
+
+// Heartbeat request to keep registration alive.
+message HeartbeatRequest {
+  // Name of the node sending the heartbeat.
+  string node_name = 1;
+  // Current resource usage (optional).
+  NodeUsage usage = 2;
+}
+
+// Current resource usage of a node.
+message NodeUsage {
+  // CPU usage in millicores.
+  int64 cpu_millis = 1;
+  // Memory usage in bytes.
+  int64 memory_bytes = 2;
+  // Current number of running pods.
+  int32 running_pods = 3;
+}
+
+// Heartbeat response.
+message HeartbeatResponse {
+  // Whether the heartbeat was acknowledged.
+  bool acknowledged = 1;
+}
+
+// Request to unregister a node.
+message UnregisterNodeRequest {
+  // Name of the node to unregister.
+  string node_name = 1;
+}
+
+// Response to node unregistration.
+message UnregisterNodeResponse {
+  // Whether unregistration was successful.
+  bool success = 1;
+}
+
+// ============================================================================
+// Conduit Service (served by SCOC)
+// ============================================================================
+
+// The Conduit service handles pod and container operations. The container
+// plugin connects to conduits when it needs to execute operations on a node.
+service Conduit {
+  // RunPod creates and starts a pod sandbox.
+  rpc RunPod(RunPodRequest) returns (RunPodResponse);
+
+  // StopPod stops a running pod sandbox.
+  rpc StopPod(StopPodRequest) returns (StopPodResponse);
+
+  // RemovePod removes a pod sandbox.
+  rpc RemovePod(RemovePodRequest) returns (RemovePodResponse);
+
+  // CreateContainer creates a container within a pod.
+  rpc CreateContainer(CreateContainerRequest) returns (CreateContainerResponse);
+
+  // StartContainer starts a created container.
+  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
+
+  // StopContainer stops a running container.
+  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
+
+  // RemoveContainer removes a container.
+  rpc RemoveContainer(RemoveContainerRequest) returns (RemoveContainerResponse);
+}
+
+// ============================================================================
+// Pod Messages
+// ============================================================================
+
+// Request to create and run a pod.
+message RunPodRequest {
+  PodConfig config = 1;
+}
+
+// Response from running a pod.
+message RunPodResponse {
+  // The ID of the created pod.
+  string pod_id = 1;
+}
+
+// Request to stop a pod.
+message StopPodRequest {
+  string pod_id = 1;
+}
+
+// Response from stopping a pod.
+message StopPodResponse {}
+
+// Request to remove a pod.
+message RemovePodRequest {
+  string pod_id = 1;
+}
+
+// Response from removing a pod.
+message RemovePodResponse {}
+
+// Configuration for a pod.
+message PodConfig {
+  // Metadata for the pod.
+  PodMetadata metadata = 1;
+  // Labels for the pod.
+  map<string, string> labels = 2;
+  // Annotations for the pod.
+  map<string, string> annotations = 3;
+}
+
+// Metadata for a pod.
+message PodMetadata {
+  // Name of the pod.
+  string name = 1;
+  // UID of the pod.
+  string uid = 2;
+  // Namespace of the pod.
+  string namespace = 3;
+}
+
+// ============================================================================
+// Container Messages
+// ============================================================================
+
+// Request to create a container in a pod.
+message CreateContainerRequest {
+  // ID of the pod to create the container in.
+  string pod_id = 1;
+  // Configuration for the container.
+  ContainerConfig config = 2;
+  // Configuration of the pod (for reference).
+  PodConfig pod_config = 3;
+}
+
+// Response from creating a container.
+message CreateContainerResponse {
+  // The ID of the created container.
+  string container_id = 1;
+}
+
+// Request to start a container.
+message StartContainerRequest {
+  string container_id = 1;
+}
+
+// Response from starting a container.
+message StartContainerResponse {}
+
+// Request to stop a container.
+message StopContainerRequest {
+  string container_id = 1;
+  // Timeout in seconds before forcefully stopping.
+  int64 timeout = 2;
+}
+
+// Response from stopping a container.
+message StopContainerResponse {}
+
+// Request to remove a container.
+message RemoveContainerRequest {
+  string container_id = 1;
+}
+
+// Response from removing a container.
+message RemoveContainerResponse {}
+
+// Configuration for a container.
+message ContainerConfig {
+  // Metadata for the container.
+  ContainerMetadata metadata = 1;
+  // Image to use.
+  string image = 2;
+  // Command to run (entrypoint).
+  repeated string command = 3;
+  // Arguments to the command.
+  repeated string args = 4;
+  // Environment variables.
+  repeated KeyValue envs = 5;
+  // Labels.
+  map<string, string> labels = 6;
+  // Annotations.
+  map<string, string> annotations = 7;
+}
+
+// Metadata for a container.
+message ContainerMetadata {
+  // Name of the container.
+  string name = 1;
+}
+
+// Key-value pair for environment variables.
+message KeyValue {
+  string key = 1;
+  string value = 2;
+}

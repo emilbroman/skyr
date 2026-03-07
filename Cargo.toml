@@ -7,6 +7,7 @@ members = [
   "crates/de",
   "crates/ldb",
   "crates/plugin_std_artifact",
+  "crates/plugin_std_container",
   "crates/plugin_std_random",
   "crates/rdb",
   "crates/rtp",
@@ -14,6 +15,8 @@ members = [
   "crates/rtq",
   "crates/cli",
   "crates/sclc",
+  "crates/scoc",
+  "crates/scop",
   "crates/scs",
   "crates/udb",
 ]
