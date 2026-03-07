@@ -588,25 +588,66 @@ async fn main() -> Result<()> {
                 }
             };
 
-            // Register with orchestrator to get our pod CIDR
+            // Connect to orchestrator and register (with retries)
             tracing::info!("Registering with orchestrator at {}", orchestrator_address);
-            let mut orchestrator =
-                scop::OrchestratorClient::connect(orchestrator_address.clone()).await?;
-
-            let register_response = orchestrator
-                .register_node(scop::RegisterNodeRequest {
-                    node_name: node_name.clone(),
-                    conduit_address: conduit_address.clone(),
-                    capacity: Some(scop::NodeCapacity {
-                        cpu_millis,
-                        memory_bytes,
-                        max_pods,
-                    }),
-                    labels: Default::default(),
-                    pod_netmask,
-                })
-                .await?
-                .into_inner();
+            let mut retries = 0;
+            let max_retries = 30;
+            let register_response = loop {
+                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
+                    Ok(mut orchestrator) => {
+                        match orchestrator
+                            .register_node(scop::RegisterNodeRequest {
+                                node_name: node_name.clone(),
+                                conduit_address: conduit_address.clone(),
+                                capacity: Some(scop::NodeCapacity {
+                                    cpu_millis,
+                                    memory_bytes,
+                                    max_pods,
+                                }),
+                                labels: Default::default(),
+                                pod_netmask,
+                            })
+                            .await
+                        {
+                            Ok(response) => break response.into_inner(),
+                            Err(e) => {
+                                retries += 1;
+                                if retries >= max_retries {
+                                    anyhow::bail!(
+                                        "Failed to register with orchestrator after {} retries: {}",
+                                        max_retries,
+                                        e
+                                    );
+                                }
+                                tracing::warn!(
+                                    "Registration failed (attempt {}/{}): {}, retrying...",
+                                    retries,
+                                    max_retries,
+                                    e
+                                );
+                                tokio::time::sleep(Duration::from_secs(2)).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        retries += 1;
+                        if retries >= max_retries {
+                            anyhow::bail!(
+                                "Failed to connect to orchestrator after {} retries: {}",
+                                max_retries,
+                                e
+                            );
+                        }
+                        tracing::warn!(
+                            "Connection to orchestrator failed (attempt {}/{}): {}, retrying...",
+                            retries,
+                            max_retries,
+                            e
+                        );
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                    }
+                }
+            };
 
             if !register_response.success {
                 anyhow::bail!(

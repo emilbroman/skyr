@@ -1,6 +1,14 @@
 #!/bin/sh
 set -e
 
+# Create a wrapper for crun that forces rootless mode
+# This prevents crun from trying to set oom_score_adj which requires CAP_SYS_RESOURCE
+cat > /usr/local/bin/crun-rootless <<'WRAPPER'
+#!/bin/sh
+exec /usr/bin/crun --rootless=true "$@"
+WRAPPER
+chmod +x /usr/local/bin/crun-rootless
+
 # Setup cgroup delegation for cgroupv2
 # The container gets its own cgroup namespace, so we need to:
 # 1. Create a child cgroup for our services
@@ -28,10 +36,18 @@ fi
 # Start containerd in background
 containerd &
 
-# Wait for containerd socket
+# Wait for containerd socket to exist
 while [ ! -S /run/containerd/containerd.sock ]; do
   sleep 0.1
 done
+
+# Wait for containerd to be ready to accept connections
+# The socket file may exist before containerd is fully listening
+echo "Waiting for containerd to be ready..."
+until ctr version > /dev/null 2>&1; do
+  sleep 0.2
+done
+echo "containerd is ready"
 
 # Start SCOC conduit server
 exec /usr/local/bin/scoc daemon \

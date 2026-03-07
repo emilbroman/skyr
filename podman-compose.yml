@@ -289,6 +289,8 @@ services:
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
       - SCOC_LDB_BROKERS=redpanda:9092
     restart: always
+    depends_on:
+      - plugin-std-container
 
   scoc-2:
     image: skyr-scoc:latest
@@ -300,6 +302,8 @@ services:
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
       - SCOC_LDB_BROKERS=redpanda:9092
     restart: always
+    depends_on:
+      - plugin-std-container
 
   scoc-3:
     image: skyr-scoc:latest
@@ -311,6 +315,8 @@ services:
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
       - SCOC_LDB_BROKERS=redpanda:9092
     restart: always
+    depends_on:
+      - plugin-std-container
 
 volumes:
   tmpfs:
