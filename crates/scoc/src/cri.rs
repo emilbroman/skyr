@@ -7,13 +7,13 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use hyper_util::rt::TokioIo;
 use k8s_cri::v1::{
-    ContainerConfig, ContainerMetadata, CreateContainerRequest, CreateContainerResponse,
-    LinuxContainerConfig, LinuxContainerSecurityContext, LinuxPodSandboxConfig,
-    LinuxSandboxSecurityContext, NamespaceMode, NamespaceOption, PodSandboxConfig,
-    PodSandboxMetadata, RemoveContainerRequest, RemovePodSandboxRequest, RunPodSandboxRequest,
-    RunPodSandboxResponse, StartContainerRequest, StopContainerRequest, StopPodSandboxRequest,
-    VersionRequest, image_service_client::ImageServiceClient,
-    runtime_service_client::RuntimeServiceClient,
+    AuthConfig, ContainerConfig, ContainerMetadata, CreateContainerRequest,
+    CreateContainerResponse, ImageSpec, LinuxContainerConfig, LinuxContainerSecurityContext,
+    LinuxPodSandboxConfig, LinuxSandboxSecurityContext, NamespaceMode, NamespaceOption,
+    PodSandboxConfig, PodSandboxMetadata, PullImageRequest, RemoveContainerRequest,
+    RemovePodSandboxRequest, RunPodSandboxRequest, RunPodSandboxResponse, StartContainerRequest,
+    StopContainerRequest, StopPodSandboxRequest, VersionRequest,
+    image_service_client::ImageServiceClient, runtime_service_client::RuntimeServiceClient,
 };
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -203,6 +203,34 @@ impl CriClient {
 
         info!(container_id = %container_id, "container removed");
         Ok(())
+    }
+
+    /// Pull an image from a registry.
+    ///
+    /// This ensures the image is available in the CRI namespace (k8s.io) so that
+    /// containers can be created with it. Images pulled via other tools (like `ctr`
+    /// without a namespace flag, or `podman`) may not be visible to CRI.
+    pub async fn pull_image(&mut self, image: &str, auth: Option<&AuthConfig>) -> Result<String> {
+        info!(image = %image, "pulling image");
+
+        let response = self
+            .images
+            .pull_image(PullImageRequest {
+                image: Some(ImageSpec {
+                    image: image.to_string(),
+                    annotations: Default::default(),
+                    user_specified_image: String::new(),
+                    runtime_handler: String::new(),
+                }),
+                auth: auth.cloned(),
+                sandbox_config: None,
+            })
+            .await
+            .context("pull_image failed")?
+            .into_inner();
+
+        info!(image = %image, image_ref = %response.image_ref, "image pulled");
+        Ok(response.image_ref)
     }
 
     /// Get a reference to the image service client for image operations.

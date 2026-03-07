@@ -253,6 +253,12 @@ impl scop::Conduit for CriConduit {
         let cri_pod_config = Self::to_cri_pod_config(&pod_config);
         let cri_container_config = Self::to_cri_container_config(&config);
         let mut cri = self.cri.lock().await;
+
+        // Pull the image first to ensure it's available in the CRI namespace
+        cri.pull_image(&config.image, None)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(format!("failed to pull image: {}", e)))?;
+
         let container_id = cri
             .create_container(&request.pod_id, &cri_pod_config, cri_container_config)
             .await
@@ -463,6 +469,10 @@ async fn main() -> Result<()> {
                 containerd_socket,
             } => {
                 let mut cri = CriClient::connect(&containerd_socket).await?;
+
+                // Pull the image first to ensure it's in the CRI namespace
+                cri.pull_image(&image, None).await?;
+
                 // Create a minimal pod config for the container creation call
                 let pod_config = cri::test_pod_config("pod", "default");
                 let container_config = cri::test_container_config(&name, &image);
