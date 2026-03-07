@@ -63,6 +63,8 @@ RUN set -eu; \
       cp "${path}" "/artifacts/${bin}"; \
     done
 
+FROM moby/buildkit:latest AS buildkit
+
 FROM scratch
 COPY --from=build /artifacts/scs /scs
 COPY --from=build /artifacts/de /de
@@ -72,3 +74,4 @@ COPY --from=build /artifacts/plugin_std_artifact /plugin_std_artifact
 COPY --from=build /artifacts/plugin_std_container /plugin_std_container
 COPY --from=build /artifacts/scoc /scoc
 COPY --from=build /artifacts/api /api
+COPY --from=buildkit /usr/bin/buildctl /usr/bin/buildctl
