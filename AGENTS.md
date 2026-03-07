@@ -53,7 +53,7 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
 
 - `crates/plugin_std_random`: RTP plugin implementing `Std/Random.Int` resource type.
 - `crates/plugin_std_artifact`: RTP plugin implementing `Std/Artifact.File` resource type via ADB.
-- `crates/plugin_std_container`: Container plugin skeleton (Phase 4).
+- `crates/plugin_std_container`: Container plugin with Image/Pod/Container resource management (Phases 4-6 complete).
 
 ### Container Infrastructure
 
@@ -232,13 +232,14 @@ This file summarizes what is implemented today versus what `docs/index.md` descr
   - Idempotent creates (treats existing artifacts as success).
 
 - `plugin_std_container`:
-  - Phase 3 implementation: SCOP client and node registry lookup.
+  - Full implementation with RTP server and SCOP client (Phases 4-6 complete).
+  - Resource types: `Std/Container.Image`, `Std/Container.Pod`, `Std/Container.Pod.Container`.
+  - Image resources: Builds images via BuildKit from Git context, pushes to registry.
+  - Pod resources: Creates pod sandboxes on worker nodes via SCOP.
+  - Container resources: Creates containers within pods, starts them automatically.
   - Connects to SCOC conduits via `scop::dial()` when it needs to run commands.
   - Looks up node addresses from the node registry (Redis).
-  - Caches sessions to connected nodes for reuse.
-  - Redis key prefixes: `n:` for node data, `nodes` set for node names.
-  - CLI args: `--node-registry-hostname`, `--buildkit-addr`, `--registry-url`.
-  - Phase 4 (TODO): RTP server for resource management.
+  - CLI args: `--bind`, `--rtp-bind`, `--node-registry-hostname`, `--cdb-hostnames`, `--buildkit-addr`, `--registry-url`.
 
 ## Gaps Against `docs/index.md`
 
@@ -252,6 +253,9 @@ Implemented:
 - SCOP protocol with bidirectional gRPC streaming (Phase 2).
 - SCOP conduit server in SCOC with node registry registration (Phase 3).
 - Container plugin SCOP client with node registry lookup (Phase 3).
+- Container plugin RTP server for resource management (Phase 4).
+- Standard library interface for Image/Pod/Container resources (Phase 5).
+- BuildKit integration for image builds (Phase 6).
 
 Not implemented yet (high impact):
 
@@ -260,9 +264,6 @@ Not implemented yet (high impact):
 - Health check / drift detection behavior.
 - Proper lingering/undesired cleanup based on dependency ownership in RDB.
 - Fine-grained authorization policy in SCS beyond username+pubkey presence checks.
-- Container plugin RTP server for resource management (Phase 4).
-- Standard library interface for Pod/Container resources (Phase 5).
-- Buildkit integration for image builds (Phase 6).
 
 ## Practical Guidance for Future Agents
 
@@ -272,9 +273,6 @@ Not implemented yet (high impact):
   1. Extend DE to emit RTQ transition intents based on compiled/evaluated SCL config.
   2. Implement dependency propagation in SCLC evaluator.
   3. Add health check / drift detection in RTE.
-  4. Complete container plugin RTP server (Phase 4).
-  5. Implement Pod/Container resources in SCLC standard library (Phase 5).
-  6. Add Buildkit integration for Image resources (Phase 6).
 - Keep deployment state transitions coherent across `scs` and `de`.
 - When changing schema in `cdb`/`rdb`, update table creation + prepared statements together.
 - In `sclc`, parse functions return `Diagnosed<Option<_>>` and report syntax errors via diagnostics instead of `Result<_, ParseError>`.
