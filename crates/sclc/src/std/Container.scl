@@ -3,12 +3,39 @@
 // Usage:
 //   import Std/Container
 //
+//   let img = Container.Image({
+//     name: "my-image",
+//     context: ".",
+//     containerfile: "Dockerfile",
+//   })
+//
 //   let pod = Container.Pod({ name: "my-pod" })
 //   let container = pod.Container({
 //     name: "my-container",
-//     image: "nginx:latest",
+//     image: img.fullname,
 //   })
 
+// Image resource - builds a container image using BuildKit
+//
+// The image is built from a context directory in the deployment's Git tree
+// and pushed to the Skyr container registry. The resource ID is derived from
+// the Git tree hash of the context directory combined with other inputs,
+// ensuring rebuilds only happen when the source changes.
+export let Image = extern "Std/Container.Image": fn({
+    // Image name (without registry prefix, e.g., "my-app")
+    name: Str,
+    // Path to the build context directory relative to repo root (e.g., ".")
+    context: Str,
+    // Path to the Containerfile/Dockerfile relative to context (e.g., "Dockerfile")
+    containerfile: Str,
+}) {
+    // Full image reference including registry and digest (e.g., "registry:5000/my-app@sha256:...")
+    fullname: Str,
+    // Image digest (e.g., "sha256:...")
+    digest: Str,
+}
+
+// Pod resource - creates a pod sandbox on a worker node
 export let Pod = extern "Std/Container.Pod": fn({
     name: Str,
 }) {

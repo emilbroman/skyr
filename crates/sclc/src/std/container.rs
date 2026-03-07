@@ -1,18 +1,93 @@
 //! Std/Container - Container orchestration resources
 //!
-//! This module provides Pod and Container resources for container orchestration.
+//! This module provides Image, Pod, and Container resources for container orchestration.
 //!
 //! Resource types:
+//! - `Std/Container.Image` - Container image build via BuildKit
 //! - `Std/Container.Pod` - Pod sandbox lifecycle
 //! - `Std/Container.Pod.Container` - Container lifecycle within a pod
 
 use crate::{EvalCtx, ExternFnValue, Record, ResourceId, TrackedValue, Value, ValueAssertions};
 
+const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
 const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
 
 pub fn register_extern(eval: &mut crate::Eval) {
+    eval.add_extern_fn(IMAGE_RESOURCE_TYPE, image_extern_fn);
     eval.add_extern_fn(POD_RESOURCE_TYPE, pod_extern_fn);
+}
+
+/// Extern function for building container images via BuildKit.
+///
+/// Input: `{ name: Str, context: Str, containerfile: Str }`
+/// Output: `{ fullname: Str, digest: Str }`
+fn image_extern_fn(
+    args: Vec<TrackedValue>,
+    eval_ctx: &EvalCtx,
+) -> Result<TrackedValue, crate::EvalError> {
+    let mut args = args.into_iter();
+    let config_arg = args
+        .next()
+        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+    let mut argument_dependencies = config_arg.dependencies.clone();
+
+    let config = config_arg.value.assert_record()?;
+
+    // Extract inputs
+    let name = config.get("name").assert_str_ref()?.to_owned();
+    let context = config.get("context").assert_str_ref()?.to_owned();
+    let containerfile = config.get("containerfile").assert_str_ref()?.to_owned();
+
+    // The resource ID is based on the image name
+    // (the plugin will compute a content-based ID from the Git tree hash)
+    let resource_id = ResourceId {
+        ty: IMAGE_RESOURCE_TYPE.to_string(),
+        id: name.clone(),
+    };
+
+    // Build inputs for the RTP plugin
+    let mut inputs = Record::default();
+    inputs.insert(String::from("name"), Value::Str(name.clone()));
+    inputs.insert(String::from("context"), Value::Str(context));
+    inputs.insert(String::from("containerfile"), Value::Str(containerfile));
+    // Pass the namespace so the plugin can fetch the Git context
+    inputs.insert(
+        String::from("namespace"),
+        Value::Str(eval_ctx.namespace().to_owned()),
+    );
+
+    let Some(outputs) = eval_ctx.resource(
+        IMAGE_RESOURCE_TYPE,
+        &name,
+        &inputs,
+        argument_dependencies.clone(),
+    )?
+    else {
+        // Resource is pending
+        argument_dependencies.insert(resource_id);
+        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+    };
+
+    // Extract outputs from the plugin
+    let fullname = outputs
+        .get("fullname")
+        .assert_str_ref()
+        .unwrap_or("")
+        .to_owned();
+    let digest = outputs
+        .get("digest")
+        .assert_str_ref()
+        .unwrap_or("")
+        .to_owned();
+
+    // Build the result record
+    let mut result = Record::default();
+    result.insert(String::from("fullname"), Value::Str(fullname));
+    result.insert(String::from("digest"), Value::Str(digest));
+
+    argument_dependencies.insert(resource_id);
+    Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
 }
 
 /// Extern function for creating Pod resources.
