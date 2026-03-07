@@ -209,7 +209,7 @@ services:
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--plugin",
-        "Std/Container@tcp://plugin-std-container:50053",
+        "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",
         "0",
         "--worker-count",
@@ -234,7 +234,7 @@ services:
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--plugin",
-        "Std/Container@tcp://plugin-std-container:50053",
+        "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",
         "1",
         "--worker-count",
@@ -259,7 +259,7 @@ services:
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--plugin",
-        "Std/Container@tcp://plugin-std-container:50053",
+        "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",
         "2",
         "--worker-count",
@@ -268,9 +268,7 @@ services:
     restart: always
 
   scoc-1:
-    build:
-      context: .
-      dockerfile: Dockerfile.scoc
+    image: skyr-scoc:latest
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-1
@@ -280,9 +278,7 @@ services:
     restart: always
 
   scoc-2:
-    build:
-      context: .
-      dockerfile: Dockerfile.scoc
+    image: skyr-scoc:latest
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-2
@@ -292,9 +288,7 @@ services:
     restart: always
 
   scoc-3:
-    build:
-      context: .
-      dockerfile: Dockerfile.scoc
+    image: skyr-scoc:latest
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-3
