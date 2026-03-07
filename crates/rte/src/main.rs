@@ -919,7 +919,7 @@ async fn dial_plugins(
 }
 
 fn plugin_name_for_resource_type(resource_type: &str) -> Option<&str> {
-    resource_type.rsplit_once('.').map(|(prefix, _)| prefix)
+    resource_type.split_once('.').map(|(prefix, _)| prefix)
 }
 
 fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::ResourceId> {
