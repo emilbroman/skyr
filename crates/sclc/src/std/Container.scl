@@ -1,0 +1,27 @@
+// Std/Container - Container orchestration resources
+//
+// Usage:
+//   import Std/Container
+//
+//   let pod = Container.Pod({ name: "my-pod" })
+//   let container = pod.Container({
+//     name: "my-container",
+//     image: "nginx:latest",
+//   })
+
+export let Pod = extern "Std/Container.Pod": fn({
+    name: Str,
+}) {
+    podId: Str,
+    node: Str,
+    name: Str,
+    namespace: Str,
+    Container: fn({
+        name: Str,
+        image: Str,
+    }) {
+        containerId: Str,
+        name: Str,
+        image: Str,
+    }
+}
