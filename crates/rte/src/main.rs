@@ -1,9 +1,9 @@
 use clap::Parser;
 use ldb::Severity;
-use slog::{Drain, Logger, error, info, o, warn};
 use std::collections::HashMap;
 use std::str::FromStr;
 use tokio::task;
+use tracing::Instrument;
 
 #[derive(Parser)]
 enum Program {
@@ -61,11 +61,12 @@ impl FromStr for PluginSpec {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let log = slog::Logger::root(drain, o!());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     match Program::parse() {
         Program::Daemon {
@@ -77,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
             local_workers,
             plugin,
         } => {
-            info!(log, "starting resource transition engine daemon");
+            tracing::info!("starting resource transition engine daemon");
 
             if local_workers == 0 {
                 anyhow::bail!("--local-workers must be at least 1");
@@ -101,7 +102,7 @@ async fn main() -> anyhow::Result<()> {
                 .brokers(format!("{}:9092", ldb_hostname))
                 .build_publisher()
                 .await?;
-            let plugins = dial_plugins(&log, &plugin).await?;
+            let plugins = dial_plugins(&plugin).await?;
             let mut handles = Vec::new();
 
             for offset in 0..local_workers {
@@ -116,20 +117,22 @@ async fn main() -> anyhow::Result<()> {
                     .build_consumer(worker_cfg)
                     .await?;
 
-                let worker_log = log.new(o!("worker" => format!("{}/{}", index, worker_count)));
-                info!(
-                    worker_log,
-                    "started rtq consumer";
-                    "shards" => format!("{:?}", consumer.owned_shards())
+                let span = tracing::info_span!("worker", worker = %format!("{}/{}", index, worker_count));
+                tracing::info!(
+                    parent: &span,
+                    shards = ?consumer.owned_shards(),
+                    "started rtq consumer",
                 );
 
-                handles.push(task::spawn(worker_loop(
-                    worker_log,
-                    consumer,
-                    rdb_client.clone(),
-                    ldb_publisher.clone(),
-                    plugins.clone(),
-                )));
+                handles.push(task::spawn(
+                    worker_loop(
+                        consumer,
+                        rdb_client.clone(),
+                        ldb_publisher.clone(),
+                        plugins.clone(),
+                    )
+                    .instrument(span),
+                ));
             }
 
             for handle in handles {
@@ -142,7 +145,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn worker_loop(
-    log: Logger,
     mut consumer: rtq::Consumer,
     rdb_client: rdb::Client,
     ldb_publisher: ldb::Publisher,
@@ -150,12 +152,12 @@ async fn worker_loop(
 ) {
     loop {
         let keep_running =
-            match worker_loop_iteration(&log, &mut consumer, &rdb_client, &ldb_publisher, &plugins)
+            match worker_loop_iteration(&mut consumer, &rdb_client, &ldb_publisher, &plugins)
                 .await
             {
                 Ok(keep_running) => keep_running,
                 Err(error) => {
-                    error!(log, "worker loop iteration failed"; "error" => error.to_string());
+                    tracing::error!(error = %error, "worker loop iteration failed");
                     true
                 }
             };
@@ -167,24 +169,24 @@ async fn worker_loop(
 }
 
 async fn worker_loop_iteration(
-    log: &Logger,
     consumer: &mut rtq::Consumer,
     rdb_client: &rdb::Client,
     ldb_publisher: &ldb::Publisher,
     plugins: &HashMap<String, rtp::PluginClient>,
 ) -> anyhow::Result<bool> {
-    info!(log, "polling rtq consumer for next message");
+    tracing::info!("polling rtq consumer for next message");
     let Some(delivery) = consumer.next().await? else {
-        warn!(log, "rtq consumer stream closed");
+        tracing::warn!("rtq consumer stream closed");
         return Ok(false);
     };
     let (message_type, resource) = message_meta(&delivery.message);
-    info!(log, "received rtq message";
-        "message_type" => message_type,
-        "namespace" => resource.namespace.clone(),
-        "resource_type" => resource.resource_type.clone(),
-        "resource_id" => resource.resource_id.clone(),
-        "redelivered" => delivery.redelivered()
+    tracing::info!(
+        message_type,
+        namespace = %resource.namespace,
+        resource_type = %resource.resource_type,
+        resource_id = %resource.resource_id,
+        redelivered = delivery.redelivered(),
+        "received rtq message",
     );
 
     match &delivery.message {
@@ -197,21 +199,23 @@ async fn worker_loop_iteration(
                 );
             match resource_client.get().await {
                 Ok(Some(_)) => {
-                    info!(log, "dropping idempotent create for existing resource";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::info!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "dropping idempotent create for existing resource",
                     );
                     delivery.ack().await?;
                     return Ok(true);
                 }
                 Ok(None) => {}
                 Err(error) => {
-                    warn!(log, "failed to read resource state before create";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to read resource state before create",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -220,18 +224,20 @@ async fn worker_loop_iteration(
 
             let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
             else {
-                warn!(log, "invalid resource type for create";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    "invalid resource type for create",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             };
             let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                warn!(log, "no plugin configured for resource type";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "plugin" => plugin_name.to_owned()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    plugin = plugin_name,
+                    "no plugin configured for resource type",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
@@ -240,11 +246,12 @@ async fn worker_loop_iteration(
             let inputs: sclc::Record = match serde_json::from_value(message.inputs.clone()) {
                 Ok(inputs) => inputs,
                 Err(error) => {
-                    warn!(log, "invalid create inputs json";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "invalid create inputs json",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -255,20 +262,22 @@ async fn worker_loop_iteration(
                 ty: message.resource.resource_type.clone(),
                 id: message.resource.resource_id.clone(),
             };
-            info!(log, "calling plugin create_resource";
-                "plugin" => plugin_name.to_owned(),
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
+            tracing::info!(
+                plugin = plugin_name,
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "calling plugin create_resource",
             );
             let resource = match plugin.create_resource(id, inputs).await {
                 Ok(resource) => resource,
                 Err(error) => {
-                    warn!(log, "create_resource plugin call failed";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "create_resource plugin call failed",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -279,11 +288,12 @@ async fn worker_loop_iteration(
                 .set_input(resource.inputs.clone(), message.owner_deployment_id.clone())
                 .await
             {
-                warn!(log, "failed to persist created resource inputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist created resource inputs",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
@@ -291,34 +301,36 @@ async fn worker_loop_iteration(
 
             let dependencies = dependencies_from_refs(&message.dependencies);
             if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                warn!(log, "failed to persist created resource dependencies";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist created resource dependencies",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
 
             if let Err(error) = resource_client.set_output(resource.outputs).await {
-                warn!(log, "failed to persist created resource outputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist created resource outputs",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
 
-            info!(log, "created resource";
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
+            tracing::info!(
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "created resource",
             );
             log_deployment_event(
-                &log,
                 &ldb_publisher,
                 &message.owner_deployment_id,
                 Severity::Info,
@@ -339,12 +351,13 @@ async fn worker_loop_iteration(
             let current = match resource_client.get().await {
                 Ok(Some(resource)) => {
                     if resource.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
-                        info!(log, "dropping delete for non-matching owner";
-                            "namespace" => message.resource.namespace.clone(),
-                            "resource_type" => message.resource.resource_type.clone(),
-                            "resource_id" => message.resource.resource_id.clone(),
-                            "message_owner" => message.owner_deployment_id.clone(),
-                            "current_owner" => resource.owner
+                        tracing::info!(
+                            namespace = %message.resource.namespace,
+                            resource_type = %message.resource.resource_type,
+                            resource_id = %message.resource.resource_id,
+                            message_owner = %message.owner_deployment_id,
+                            current_owner = ?resource.owner,
+                            "dropping delete for non-matching owner",
                         );
                         delivery.ack().await?;
                         return Ok(true);
@@ -352,20 +365,22 @@ async fn worker_loop_iteration(
                     resource
                 }
                 Ok(None) => {
-                    info!(log, "dropping idempotent delete for missing resource";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::info!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "dropping idempotent delete for missing resource",
                     );
                     delivery.ack().await?;
                     return Ok(true);
                 }
                 Err(error) => {
-                    warn!(log, "failed to read resource state before delete";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to read resource state before delete",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -375,10 +390,11 @@ async fn worker_loop_iteration(
             let inputs = match current.inputs {
                 Some(inputs) => inputs,
                 None => {
-                    warn!(log, "missing current inputs for delete";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current inputs for delete",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -387,10 +403,11 @@ async fn worker_loop_iteration(
             let outputs = match current.outputs {
                 Some(outputs) => outputs,
                 None => {
-                    warn!(log, "missing current outputs for delete";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current outputs for delete",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -399,18 +416,20 @@ async fn worker_loop_iteration(
 
             let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
             else {
-                warn!(log, "invalid resource type for delete";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    "invalid resource type for delete",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             };
             let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                warn!(log, "no plugin configured for resource type";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "plugin" => plugin_name.to_owned()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    plugin = plugin_name,
+                    "no plugin configured for resource type",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
@@ -420,41 +439,44 @@ async fn worker_loop_iteration(
                 ty: message.resource.resource_type.clone(),
                 id: message.resource.resource_id.clone(),
             };
-            info!(log, "calling plugin delete_resource";
-                "plugin" => plugin_name.to_owned(),
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
+            tracing::info!(
+                plugin = plugin_name,
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "calling plugin delete_resource",
             );
             if let Err(error) = plugin.delete_resource(id, inputs, outputs).await {
-                warn!(log, "delete_resource plugin call failed";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "delete_resource plugin call failed",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
 
             if let Err(error) = resource_client.delete().await {
-                warn!(log, "failed to delete resource from rdb";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to delete resource from rdb",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
 
-            info!(log, "deleted resource";
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone()
+            tracing::info!(
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "deleted resource",
             );
             log_deployment_event(
-                &log,
                 &ldb_publisher,
                 &message.owner_deployment_id,
                 Severity::Info,
@@ -475,32 +497,35 @@ async fn worker_loop_iteration(
             let current = match resource_client.get().await {
                 Ok(Some(resource)) => resource,
                 Ok(None) => {
-                    info!(log, "dropping adopt for missing resource";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::info!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "dropping adopt for missing resource",
                     );
                     delivery.ack().await?;
                     return Ok(true);
                 }
                 Err(error) => {
-                    warn!(log, "failed to read resource state before adopt";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to read resource state before adopt",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 }
             };
             if current.owner.as_deref() != Some(message.from_owner_deployment_id.as_str()) {
-                info!(log, "dropping adopt for non-matching owner";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "from_owner" => message.from_owner_deployment_id.clone(),
-                    "current_owner" => current.owner
+                tracing::info!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    from_owner = %message.from_owner_deployment_id,
+                    current_owner = ?current.owner,
+                    "dropping adopt for non-matching owner",
                 );
                 delivery.ack().await?;
                 return Ok(true);
@@ -509,10 +534,11 @@ async fn worker_loop_iteration(
             let prev_inputs = match current.inputs {
                 Some(inputs) => inputs,
                 None => {
-                    warn!(log, "missing current inputs for adopt";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current inputs for adopt",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -521,10 +547,11 @@ async fn worker_loop_iteration(
             let prev_outputs = match current.outputs.clone() {
                 Some(outputs) => outputs,
                 None => {
-                    warn!(log, "missing current outputs for adopt";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current outputs for adopt",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -534,11 +561,12 @@ async fn worker_loop_iteration(
                 match serde_json::from_value(message.desired_inputs.clone()) {
                     Ok(inputs) => inputs,
                     Err(error) => {
-                        warn!(log, "invalid adopt desired_inputs json";
-                            "namespace" => message.resource.namespace.clone(),
-                            "resource_type" => message.resource.resource_type.clone(),
-                            "resource_id" => message.resource.resource_id.clone(),
-                            "error" => error.to_string()
+                        tracing::warn!(
+                            namespace = %message.resource.namespace,
+                            resource_type = %message.resource.resource_type,
+                            resource_id = %message.resource.resource_id,
+                            error = %error,
+                            "invalid adopt desired_inputs json",
                         );
                         delivery.nack(false).await?;
                         return Ok(true);
@@ -552,18 +580,20 @@ async fn worker_loop_iteration(
                 let Some(plugin_name) =
                     plugin_name_for_resource_type(&message.resource.resource_type)
                 else {
-                    warn!(log, "invalid resource type for adopt";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        "invalid resource type for adopt",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 };
                 let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                    warn!(log, "no plugin configured for resource type";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "plugin" => plugin_name.to_owned()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        plugin = plugin_name,
+                        "no plugin configured for resource type",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -573,11 +603,12 @@ async fn worker_loop_iteration(
                     ty: message.resource.resource_type.clone(),
                     id: message.resource.resource_id.clone(),
                 };
-                info!(log, "calling plugin update_resource for adopt";
-                    "plugin" => plugin_name.to_owned(),
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::info!(
+                    plugin = plugin_name,
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "calling plugin update_resource for adopt",
                 );
                 let resource = match plugin
                     .update_resource(id, prev_inputs, prev_outputs, desired_inputs)
@@ -585,11 +616,12 @@ async fn worker_loop_iteration(
                 {
                     Ok(resource) => resource,
                     Err(error) => {
-                        warn!(log, "update_resource plugin call failed for adopt";
-                            "namespace" => message.resource.namespace.clone(),
-                            "resource_type" => message.resource.resource_type.clone(),
-                            "resource_id" => message.resource.resource_id.clone(),
-                            "error" => error.to_string()
+                        tracing::warn!(
+                            namespace = %message.resource.namespace,
+                            resource_type = %message.resource.resource_type,
+                            resource_id = %message.resource.resource_id,
+                            error = %error,
+                            "update_resource plugin call failed for adopt",
                         );
                         delivery.nack(false).await?;
                         return Ok(true);
@@ -598,10 +630,11 @@ async fn worker_loop_iteration(
                 inputs_to_persist = resource.inputs;
                 outputs_to_persist = Some(resource.outputs);
             } else {
-                info!(log, "skipping plugin update_resource for adopt with unchanged inputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::info!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "skipping plugin update_resource for adopt with unchanged inputs",
                 );
             }
 
@@ -609,51 +642,56 @@ async fn worker_loop_iteration(
                 .set_input(inputs_to_persist, message.to_owner_deployment_id.clone())
                 .await
             {
-                warn!(log, "failed to persist adopted resource inputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist adopted resource inputs",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
             let dependencies = dependencies_from_refs(&message.dependencies);
             if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                warn!(log, "failed to persist adopted resource dependencies";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist adopted resource dependencies",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
             if let Some(outputs) = outputs_to_persist {
                 if let Err(error) = resource_client.set_output(outputs).await {
-                    warn!(log, "failed to persist adopted resource outputs";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to persist adopted resource outputs",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 }
             } else {
-                warn!(log, "adopted resource has no outputs to persist";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "adopted resource has no outputs to persist",
                 );
             }
 
-            info!(log, "adopted resource";
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone(),
-                "from_owner" => message.from_owner_deployment_id.clone(),
-                "to_owner" => message.to_owner_deployment_id.clone()
+            tracing::info!(
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                from_owner = %message.from_owner_deployment_id,
+                to_owner = %message.to_owner_deployment_id,
+                "adopted resource",
             );
             let summary = format!(
                 "ADOPT applied for {}.{} from {} to {}",
@@ -663,7 +701,6 @@ async fn worker_loop_iteration(
                 message.to_owner_deployment_id
             );
             log_deployment_event(
-                &log,
                 &ldb_publisher,
                 &message.from_owner_deployment_id,
                 Severity::Info,
@@ -671,7 +708,6 @@ async fn worker_loop_iteration(
             )
             .await;
             log_deployment_event(
-                &log,
                 &ldb_publisher,
                 &message.to_owner_deployment_id,
                 Severity::Info,
@@ -689,32 +725,35 @@ async fn worker_loop_iteration(
             let current = match resource_client.get().await {
                 Ok(Some(resource)) => resource,
                 Ok(None) => {
-                    info!(log, "dropping restore for missing resource";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::info!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "dropping restore for missing resource",
                     );
                     delivery.ack().await?;
                     return Ok(true);
                 }
                 Err(error) => {
-                    warn!(log, "failed to read resource state before restore";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to read resource state before restore",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 }
             };
             if current.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
-                info!(log, "dropping restore for non-matching owner";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "message_owner" => message.owner_deployment_id.clone(),
-                    "current_owner" => current.owner
+                tracing::info!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    message_owner = %message.owner_deployment_id,
+                    current_owner = ?current.owner,
+                    "dropping restore for non-matching owner",
                 );
                 delivery.ack().await?;
                 return Ok(true);
@@ -723,10 +762,11 @@ async fn worker_loop_iteration(
             let prev_inputs = match current.inputs {
                 Some(inputs) => inputs,
                 None => {
-                    warn!(log, "missing current inputs for restore";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current inputs for restore",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -735,10 +775,11 @@ async fn worker_loop_iteration(
             let prev_outputs = match current.outputs.clone() {
                 Some(outputs) => outputs,
                 None => {
-                    warn!(log, "missing current outputs for restore";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        "missing current outputs for restore",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -748,11 +789,12 @@ async fn worker_loop_iteration(
                 match serde_json::from_value(message.desired_inputs.clone()) {
                     Ok(inputs) => inputs,
                     Err(error) => {
-                        warn!(log, "invalid restore desired_inputs json";
-                            "namespace" => message.resource.namespace.clone(),
-                            "resource_type" => message.resource.resource_type.clone(),
-                            "resource_id" => message.resource.resource_id.clone(),
-                            "error" => error.to_string()
+                        tracing::warn!(
+                            namespace = %message.resource.namespace,
+                            resource_type = %message.resource.resource_type,
+                            resource_id = %message.resource.resource_id,
+                            error = %error,
+                            "invalid restore desired_inputs json",
                         );
                         delivery.nack(false).await?;
                         return Ok(true);
@@ -766,18 +808,20 @@ async fn worker_loop_iteration(
                 let Some(plugin_name) =
                     plugin_name_for_resource_type(&message.resource.resource_type)
                 else {
-                    warn!(log, "invalid resource type for restore";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        "invalid resource type for restore",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 };
                 let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                    warn!(log, "no plugin configured for resource type";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "plugin" => plugin_name.to_owned()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        plugin = plugin_name,
+                        "no plugin configured for resource type",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
@@ -787,11 +831,12 @@ async fn worker_loop_iteration(
                     ty: message.resource.resource_type.clone(),
                     id: message.resource.resource_id.clone(),
                 };
-                info!(log, "calling plugin update_resource for restore";
-                    "plugin" => plugin_name.to_owned(),
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::info!(
+                    plugin = plugin_name,
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "calling plugin update_resource for restore",
                 );
                 let resource = match plugin
                     .update_resource(id, prev_inputs, prev_outputs, desired_inputs)
@@ -799,11 +844,12 @@ async fn worker_loop_iteration(
                 {
                     Ok(resource) => resource,
                     Err(error) => {
-                        warn!(log, "update_resource plugin call failed for restore";
-                            "namespace" => message.resource.namespace.clone(),
-                            "resource_type" => message.resource.resource_type.clone(),
-                            "resource_id" => message.resource.resource_id.clone(),
-                            "error" => error.to_string()
+                        tracing::warn!(
+                            namespace = %message.resource.namespace,
+                            resource_type = %message.resource.resource_type,
+                            resource_id = %message.resource.resource_id,
+                            error = %error,
+                            "update_resource plugin call failed for restore",
                         );
                         delivery.nack(false).await?;
                         return Ok(true);
@@ -812,10 +858,11 @@ async fn worker_loop_iteration(
                 inputs_to_persist = resource.inputs;
                 outputs_to_persist = Some(resource.outputs);
             } else {
-                info!(log, "skipping plugin update_resource for restore with unchanged inputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::info!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "skipping plugin update_resource for restore with unchanged inputs",
                 );
             }
 
@@ -823,53 +870,57 @@ async fn worker_loop_iteration(
                 .set_input(inputs_to_persist, message.owner_deployment_id.clone())
                 .await
             {
-                warn!(log, "failed to persist restored resource inputs";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist restored resource inputs",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
             let dependencies = dependencies_from_refs(&message.dependencies);
             if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                warn!(log, "failed to persist restored resource dependencies";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone(),
-                    "error" => error.to_string()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    error = %error,
+                    "failed to persist restored resource dependencies",
                 );
                 delivery.nack(false).await?;
                 return Ok(true);
             }
             if let Some(outputs) = outputs_to_persist {
                 if let Err(error) = resource_client.set_output(outputs).await {
-                    warn!(log, "failed to persist restored resource outputs";
-                        "namespace" => message.resource.namespace.clone(),
-                        "resource_type" => message.resource.resource_type.clone(),
-                        "resource_id" => message.resource.resource_id.clone(),
-                        "error" => error.to_string()
+                    tracing::warn!(
+                        namespace = %message.resource.namespace,
+                        resource_type = %message.resource.resource_type,
+                        resource_id = %message.resource.resource_id,
+                        error = %error,
+                        "failed to persist restored resource outputs",
                     );
                     delivery.nack(false).await?;
                     return Ok(true);
                 }
             } else {
-                warn!(log, "restored resource has no outputs to persist";
-                    "namespace" => message.resource.namespace.clone(),
-                    "resource_type" => message.resource.resource_type.clone(),
-                    "resource_id" => message.resource.resource_id.clone()
+                tracing::warn!(
+                    namespace = %message.resource.namespace,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    "restored resource has no outputs to persist",
                 );
             }
 
-            info!(log, "restored resource";
-                "namespace" => message.resource.namespace.clone(),
-                "resource_type" => message.resource.resource_type.clone(),
-                "resource_id" => message.resource.resource_id.clone(),
-                "owner" => message.owner_deployment_id.clone()
+            tracing::info!(
+                namespace = %message.resource.namespace,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                owner = %message.owner_deployment_id,
+                "restored resource",
             );
             log_deployment_event(
-                &log,
                 &ldb_publisher,
                 &message.owner_deployment_id,
                 Severity::Info,
@@ -884,11 +935,12 @@ async fn worker_loop_iteration(
 
     // Placeholder behavior until transition execution is implemented.
     delivery.ack().await?;
-    info!(log, "acknowledged rtq message";
-        "message_type" => message_type,
-        "namespace" => resource.namespace.clone(),
-        "resource_type" => resource.resource_type.clone(),
-        "resource_id" => resource.resource_id.clone()
+    tracing::info!(
+        message_type,
+        namespace = %resource.namespace,
+        resource_type = %resource.resource_type,
+        resource_id = %resource.resource_id,
+        "acknowledged rtq message",
     );
     Ok(true)
 }
@@ -903,15 +955,15 @@ fn message_meta(message: &rtq::Message) -> (&'static str, &rtq::ResourceRef) {
 }
 
 async fn dial_plugins(
-    log: &Logger,
     plugin_specs: &[PluginSpec],
 ) -> anyhow::Result<HashMap<String, rtp::PluginClient>> {
     let mut plugins = HashMap::new();
     for spec in plugin_specs {
         let client = rtp::dial(spec.target.clone()).await?;
-        info!(log, "dialed plugin";
-            "name" => spec.name.to_string(),
-            "target" => format!("{:?}", spec.target)
+        tracing::info!(
+            name = %spec.name,
+            target = ?spec.target,
+            "dialed plugin",
         );
         plugins.insert(spec.name.to_string(), client);
     }
@@ -933,7 +985,6 @@ fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::Resour
 }
 
 async fn log_deployment_event(
-    log: &Logger,
     publisher: &ldb::Publisher,
     deployment_id: &str,
     severity: Severity,
@@ -942,17 +993,19 @@ async fn log_deployment_event(
     let namespace_publisher = match publisher.namespace(deployment_id.to_string()).await {
         Ok(namespace_publisher) => namespace_publisher,
         Err(error) => {
-            warn!(log, "failed to prepare deployment log publisher";
-                "deployment_id" => deployment_id.to_string(),
-                "error" => error.to_string()
+            tracing::warn!(
+                deployment_id,
+                error = %error,
+                "failed to prepare deployment log publisher",
             );
             return;
         }
     };
     if let Err(error) = namespace_publisher.log(severity, message).await {
-        warn!(log, "failed to publish deployment log event";
-            "deployment_id" => deployment_id.to_string(),
-            "error" => error.to_string()
+        tracing::warn!(
+            deployment_id,
+            error = %error,
+            "failed to publish deployment log event",
         );
     }
 }

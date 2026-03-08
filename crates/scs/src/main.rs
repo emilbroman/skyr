@@ -16,9 +16,9 @@ use russh::{
     keys::{PrivateKey, ssh_key::PublicKey},
     server::{self, Auth, Config, Handler, Server},
 };
-use slog::{Drain, Logger, debug, info, o};
 use tokio::{io::AsyncReadExt, sync::mpsc, task};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+use tracing::Instrument;
 
 #[derive(Parser)]
 enum Program {
@@ -39,11 +39,12 @@ enum Program {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let log = slog::Logger::root(drain, o!());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     match Program::parse() {
         Program::Daemon {
@@ -61,9 +62,8 @@ async fn main() -> anyhow::Result<()> {
                 .build()
                 .await?;
 
-            info!(log, "listening on {address}");
+            tracing::info!("listening on {address}");
             ConfigServer {
-                log,
                 client,
                 udb_client,
             }
@@ -92,7 +92,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 struct ConfigServer {
-    log: Logger,
     client: cdb::Client,
     udb_client: udb::Client,
 }
@@ -101,8 +100,9 @@ impl Server for ConfigServer {
     type Handler = ConfigHandler;
 
     fn new_client(&mut self, peer_addr: Option<SocketAddr>) -> Self::Handler {
+        let span = tracing::info_span!("peer", peer = ?peer_addr);
         ConfigHandler {
-            log: self.log.new(o!("peer" => peer_addr)),
+            span,
             channels: Default::default(),
             user: None,
             client: self.client.clone(),
@@ -126,7 +126,7 @@ enum ChannelCommand {
 }
 
 struct ConfigHandler {
-    log: Logger,
+    span: tracing::Span,
     channels: BTreeMap<ChannelId, mpsc::Sender<Result<ChannelCommand, clap::Error>>>,
     user: Option<udb::User>,
     client: cdb::Client,
@@ -141,6 +141,7 @@ impl Handler for ConfigHandler {
         username: &str,
         public_key: &PublicKey,
     ) -> Result<Auth, Self::Error> {
+        let _guard = self.span.enter();
         let fingerprint = public_key.fingerprint(Default::default()).to_string();
         let mut user_client = self.udb_client.user(username);
         let user = match user_client.get().await {
@@ -154,9 +155,10 @@ impl Handler for ConfigHandler {
         };
 
         let Some(user) = user else {
-            info!(
-                self.log,
-                "rejecting auth for unknown user"; "username" => username, "fingerprint" => fingerprint
+            tracing::info!(
+                username,
+                fingerprint,
+                "rejecting auth for unknown user",
             );
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
@@ -171,9 +173,10 @@ impl Handler for ConfigHandler {
             .map_err(|err| anyhow!("failed to check pubkey for user {username}: {err}"))?;
 
         if !fingerprint_allowed {
-            info!(
-                self.log,
-                "rejecting auth for unknown pubkey"; "username" => username, "fingerprint" => fingerprint
+            tracing::info!(
+                username,
+                fingerprint,
+                "rejecting auth for unknown pubkey",
             );
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
@@ -181,7 +184,7 @@ impl Handler for ConfigHandler {
             });
         }
 
-        info!(self.log, "accepted auth"; "username" => username, "fingerprint" => fingerprint);
+        tracing::info!(username, fingerprint, "accepted auth");
         self.user = Some(user);
         Ok(Auth::Accept)
     }
@@ -194,7 +197,7 @@ impl Handler for ConfigHandler {
         let (tx, mut rx) = mpsc::channel(1);
         let channel_id = channel.id();
         self.channels.insert(channel_id, tx);
-        let log = self.log.new(o!("ch" => u32::from(channel_id)));
+        let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
         let user = self.user.clone();
         let client = self.client.clone();
         task::spawn(async move {
@@ -209,7 +212,6 @@ impl Handler for ConfigHandler {
                             Err(err)
                         } else {
                             CommandHandler {
-                                log: log.clone(),
                                 _user: user,
                                 channel: &mut channel,
                                 client: client.repo(repo),
@@ -225,7 +227,6 @@ impl Handler for ConfigHandler {
                             Err(err)
                         } else {
                             CommandHandler {
-                                log: log.clone(),
                                 _user: user,
                                 channel: &mut channel,
                                 client: client.repo(repo),
@@ -253,7 +254,7 @@ impl Handler for ConfigHandler {
             }
 
             channel.close().await.unwrap_or_default();
-        });
+        }.instrument(span));
         Ok(true)
     }
 
@@ -307,7 +308,6 @@ async fn ensure_repo_exists(client: &cdb::Client, repo: &RepositoryName) -> anyh
 }
 
 struct CommandHandler<'a> {
-    log: Logger,
     channel: &'a mut Channel<server::Msg>,
     _user: &'a udb::User,
     client: cdb::RepositoryClient,
@@ -908,7 +908,7 @@ impl<'a> CommandHandler<'a> {
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
-                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        tracing::debug!("writing {} {}", object.kind(), id);
                         self.client.write_object(id, object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
@@ -933,7 +933,7 @@ impl<'a> CommandHandler<'a> {
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
-                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        tracing::debug!("writing {} {}", object.kind(), id);
                         self.client.write_object(id, object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
@@ -960,7 +960,7 @@ impl<'a> CommandHandler<'a> {
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
-                        debug!(self.log, "writing {} {}", object.kind(), id);
+                        tracing::debug!("writing {} {}", object.kind(), id);
                         self.client.write_object(id, object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
