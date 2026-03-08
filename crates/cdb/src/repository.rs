@@ -1,9 +1,8 @@
 use chrono::{DateTime, Utc};
-
-use crate::repository_name::RepositoryName;
+use ids::RepoQid;
 
 #[derive(Clone, Debug)]
 pub struct Repository {
-    pub name: RepositoryName,
+    pub name: RepoQid,
     pub created_at: DateTime<Utc>,
 }

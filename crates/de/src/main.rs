@@ -110,18 +110,19 @@ async fn process(
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
         let deployment = deployment?;
-        let id = deployment.fqid();
-        if !untouched.remove(&id) {
-            tracing::debug!(dep = %id, "new deployment to process");
+        let deployment_qid = deployment.deployment_qid().to_string();
+        if !untouched.remove(&deployment_qid) {
+            tracing::debug!(dep = %deployment_qid, "new deployment to process");
 
             let (tx, rx) = oneshot::channel();
-            let namespace = format!("{}/{}", deployment.repository, deployment.id.ref_name);
+            // Resources are namespaced by environment QID.
+            let environment_qid = deployment.environment_qid().to_string();
 
-            let log_publisher = match ldb_publisher.namespace(id.clone()).await {
+            let log_publisher = match ldb_publisher.namespace(deployment_qid.clone()).await {
                 Ok(log_publisher) => log_publisher,
                 Err(error) => {
                     tracing::error!(
-                        dep = %id,
+                        dep = %deployment_qid,
                         error = %error,
                         "failed to create deployment log publisher topic",
                     );
@@ -129,18 +130,20 @@ async fn process(
                 }
             };
 
-            let dep_id = deployment.fqid();
             let worker = Worker {
-                client: client.repo(deployment.repository).deployment(deployment.id),
-                namespace: rdb_client.namespace(namespace),
+                client: client.repo(deployment.repo.clone()).deployment(
+                    deployment.environment.clone(),
+                    deployment.deployment.clone(),
+                ),
+                namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
             };
 
-            let span = tracing::info_span!("worker", dep = %dep_id);
+            let span = tracing::info_span!("worker", dep = %deployment_qid);
             task::spawn(worker.run_loop(rx).instrument(span));
 
-            workers.insert(id, tx);
+            workers.insert(deployment_qid, tx);
         }
     }
 
@@ -222,7 +225,7 @@ impl Worker {
             DeploymentState::Undesired => {
                 tracing::info!("tearing down");
 
-                let owner = deployment.fqid();
+                let owner_deployment_qid = deployment.deployment_qid().to_string();
                 let mut all_resources = Vec::new();
                 let mut resources = self.namespace.list_resources().await?;
                 while let Some(resource) = resources.try_next().await? {
@@ -231,7 +234,7 @@ impl Worker {
 
                 let owned_resources = all_resources
                     .iter()
-                    .filter(|resource| resource.owner.as_deref() == Some(owner.as_str()))
+                    .filter(|resource| resource.owner.as_deref() == Some(owner_deployment_qid.as_str()))
                     .collect::<Vec<_>>();
                 let mut emitted = 0usize;
                 let mut blocked = 0usize;
@@ -262,7 +265,7 @@ impl Worker {
                             resource_type: resource.resource_type.clone(),
                             resource_id: resource.id.clone(),
                         },
-                        owner_deployment_id: owner.clone(),
+                        owner_deployment_qid: owner_deployment_qid.clone(),
                     });
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
@@ -308,16 +311,16 @@ impl Worker {
 
                 while let Some(superceding) = cursor.get_superceding().await? {
                     let superceding_deployment = superceding.get().await?;
-                    let commit_hash = superceding_deployment.id.commit_hash.clone();
+                    let commit_hash = superceding_deployment.deployment.clone();
 
-                    if !seen.insert(commit_hash) {
+                    if !seen.insert(commit_hash.clone()) {
                         tracing::warn!("detected supercession cycle while lingering");
                         break;
                     }
 
                     if superceding_deployment.state == DeploymentState::Desired {
                         self.client
-                            .mark_superceded_by(superceding_deployment.id.commit_hash)
+                            .mark_superceded_by(&superceding_deployment.deployment)
                             .await?;
                         break;
                     }
@@ -369,10 +372,10 @@ impl Worker {
             .cloned()
             .chain(std::iter::once(String::from("Main")))
             .collect::<sclc::ModuleId>();
-        let owner_deployment_id = self.client.fqid();
+        let owner_deployment_qid = self.client.deployment_qid().to_string();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
-        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_id.clone());
+        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
@@ -380,7 +383,7 @@ impl Worker {
                 ty: resource.resource_type.clone(),
                 id: resource.id.clone(),
             };
-            if resource.owner.as_deref() != Some(owner_deployment_id.as_str()) {
+            if resource.owner.as_deref() != Some(owner_deployment_qid.as_str()) {
                 if let Some(owner) = resource.owner.clone() {
                     unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
                 }
@@ -416,7 +419,7 @@ impl Worker {
                                 resource_type: id.ty.clone(),
                                 resource_id: id.id.clone(),
                             },
-                            owner_deployment_id: owner_deployment_id.clone(),
+                            owner_deployment_qid: owner_deployment_qid.clone(),
                             inputs: match serde_json::to_value(&inputs) {
                                 Ok(value) => value,
                                 Err(error) => {
@@ -487,7 +490,7 @@ impl Worker {
                                 resource_id: dependency.id,
                             })
                             .collect::<Vec<_>>();
-                        let message = if let Some(from_owner_deployment_id) =
+                        let message = if let Some(from_owner_deployment_qid) =
                             unowned_resource_owner_by_id.get(&id).cloned()
                         {
                             rtq::Message::Adopt(rtq::AdoptMessage {
@@ -496,8 +499,8 @@ impl Worker {
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
-                                from_owner_deployment_id,
-                                to_owner_deployment_id: owner_deployment_id.clone(),
+                                from_owner_deployment_qid,
+                                to_owner_deployment_qid: owner_deployment_qid.clone(),
                                 desired_inputs,
                                 dependencies,
                             })
@@ -508,7 +511,7 @@ impl Worker {
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
-                                owner_deployment_id: owner_deployment_id.clone(),
+                                owner_deployment_qid: owner_deployment_qid.clone(),
                                 desired_inputs,
                                 dependencies,
                             })
@@ -540,7 +543,7 @@ impl Worker {
                         inputs,
                         dependencies,
                     } => {
-                        let Some(from_owner_deployment_id) =
+                        let Some(from_owner_deployment_qid) =
                             unowned_resource_owner_by_id.get(&id).cloned()
                         else {
                             continue;
@@ -572,8 +575,8 @@ impl Worker {
                                 resource_type: id.ty.clone(),
                                 resource_id: id.id.clone(),
                             },
-                            from_owner_deployment_id,
-                            to_owner_deployment_id: owner_deployment_id.clone(),
+                            from_owner_deployment_qid,
+                            to_owner_deployment_qid: owner_deployment_qid.clone(),
                             desired_inputs,
                             dependencies,
                         });

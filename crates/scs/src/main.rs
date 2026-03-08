@@ -7,7 +7,8 @@ use std::{
 };
 
 use anyhow::{anyhow, bail};
-use cdb::{DeploymentId, DeploymentState, RepositoryName};
+use cdb::DeploymentState;
+use ids::{EnvironmentId, RepoQid};
 use clap::Parser;
 use gix_protocol::futures_lite::AsyncWriteExt;
 use gix_ref::Reference;
@@ -116,12 +117,12 @@ enum ChannelCommand {
     #[command(name = "git-receive-pack")]
     ReceivePack {
         #[arg()]
-        repo: RepositoryName,
+        repo: RepoQid,
     },
     #[command(name = "git-upload-pack")]
     UploadPack {
         #[arg()]
-        repo: RepositoryName,
+        repo: RepoQid,
     },
 }
 
@@ -284,8 +285,8 @@ impl Handler for ConfigHandler {
     }
 }
 
-fn ensure_repo_access(user: &udb::User, repo: &RepositoryName) -> anyhow::Result<()> {
-    if repo.organization != user.username {
+fn ensure_repo_access(user: &udb::User, repo: &RepoQid) -> anyhow::Result<()> {
+    if repo.org.as_str() != user.username {
         bail!(
             "permission denied: user '{}' cannot access repository '{}'; expected organization '{}'",
             user.username,
@@ -297,7 +298,7 @@ fn ensure_repo_access(user: &udb::User, repo: &RepositoryName) -> anyhow::Result
     Ok(())
 }
 
-async fn ensure_repo_exists(client: &cdb::Client, repo: &RepositoryName) -> anyhow::Result<()> {
+async fn ensure_repo_exists(client: &cdb::Client, repo: &RepoQid) -> anyhow::Result<()> {
     match client.repo(repo.clone()).get().await {
         Ok(_) => Ok(()),
         Err(cdb::RepositoryQueryError::NotFound) => {
@@ -977,11 +978,13 @@ impl<'a> CommandHandler<'a> {
 
         let mut results = Vec::new();
         for update in updates.iter() {
+            let environment_id = EnvironmentId::from_git_ref(&update.name)
+                .map_err(|e| anyhow!("invalid git ref '{}': {}", update.name, e))?;
+
             if update.new != null_oid {
-                let deployment = self.client.deployment(DeploymentId {
-                    ref_name: update.name.clone(),
-                    commit_hash: update.new,
-                });
+                let deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
+                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+                let deployment = self.client.deployment(environment_id.clone(), deployment_id);
                 deployment.set(DeploymentState::Desired).await?;
             }
 
@@ -991,13 +994,14 @@ impl<'a> CommandHandler<'a> {
                 } else {
                     DeploymentState::Lingering
                 };
-                let deployment = self.client.deployment(DeploymentId {
-                    ref_name: update.name.clone(),
-                    commit_hash: update.old,
-                });
+                let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
+                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+                let deployment = self.client.deployment(environment_id.clone(), old_deployment_id);
+                let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
+                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
                 let (r1, r2) = futures::join!(
                     deployment.set(state),
-                    deployment.mark_superceded_by(update.new),
+                    deployment.mark_superceded_by(&new_deployment_id),
                 );
                 r1?;
                 r2?;
@@ -1042,9 +1046,13 @@ impl<'a> CommandHandler<'a> {
                 continue;
             }
 
+            let git_ref = deployment.environment.to_git_ref();
+            let commit_oid = gix_hash::ObjectId::from_hex(
+                deployment.deployment.as_str().as_bytes(),
+            )?;
             refs.push(Reference {
-                name: gix_ref::FullName::try_from(deployment.id.ref_name.as_str())?,
-                target: gix_ref::Target::Object(deployment.id.commit_hash),
+                name: gix_ref::FullName::try_from(git_ref.as_str())?,
+                target: gix_ref::Target::Object(commit_oid),
                 peeled: None,
             });
         }

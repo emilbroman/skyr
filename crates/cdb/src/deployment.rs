@@ -1,35 +1,35 @@
 use std::{fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use gix_hash::ObjectId;
+use ids::{DeploymentId, DeploymentQid, EnvironmentId, EnvironmentQid, RepoQid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::repository_name::RepositoryName;
-
+/// A deployment is a revision of an environment. It represents a specific commit
+/// being applied to a particular environment (Git ref) within a repository.
 #[derive(Clone, Debug)]
 pub struct Deployment {
-    pub repository: RepositoryName,
-    pub id: DeploymentId,
+    /// The repository this deployment belongs to.
+    pub repo: RepoQid,
+    /// The environment (Git ref) this deployment targets.
+    pub environment: EnvironmentId,
+    /// The deployment ID (commit hash).
+    pub deployment: DeploymentId,
+    /// When this deployment was created.
     pub created_at: DateTime<Utc>,
+    /// Current lifecycle state.
     pub state: DeploymentState,
 }
 
 impl Deployment {
-    pub fn fqid(&self) -> String {
-        format!("{}/{}", self.repository, self.id)
+    /// Returns the fully qualified deployment identifier.
+    pub fn deployment_qid(&self) -> DeploymentQid {
+        self.environment_qid().deployment(self.deployment.clone())
     }
-}
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct DeploymentId {
-    pub ref_name: String,
-    pub commit_hash: ObjectId,
-}
-
-impl fmt::Display for DeploymentId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.ref_name, self.commit_hash)
+    /// Returns the fully qualified environment identifier.
+    pub fn environment_qid(&self) -> EnvironmentQid {
+        self.repo.environment(self.environment.clone())
     }
 }
 

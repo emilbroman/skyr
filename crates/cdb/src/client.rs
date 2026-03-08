@@ -3,16 +3,14 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    DeploymentId,
-    deployment::{Deployment, InvalidDeploymentState},
-};
-use crate::{DeploymentState, Repository, repository_name::RepositoryName};
+use crate::deployment::{Deployment, InvalidDeploymentState};
+use crate::{DeploymentState, Repository};
 use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use gix_hash::ObjectId;
 use gix_object::{Blob, Commit, Object, Tree, WriteTo};
+use ids::{DeploymentId, EnvironmentId, RepoQid};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
@@ -81,23 +79,23 @@ prepared_statements! {
                 organization TEXT,
                 repository TEXT,
                 created_at TIMESTAMP,
-                ref_name TEXT,
+                environment_id TEXT,
                 commit_hash BLOB,
                 state TEXT,
-                PRIMARY KEY ((organization, repository), created_at, ref_name, commit_hash)
-            ) WITH CLUSTERING ORDER BY (created_at DESC, ref_name ASC, commit_hash ASC)
+                PRIMARY KEY ((organization, repository), created_at, environment_id, commit_hash)
+            ) WITH CLUSTERING ORDER BY (created_at DESC, environment_id ASC, commit_hash ASC)
         "#,
 
         create_deployments_by_id_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.deployments_by_id (
-                deployment_id TEXT,
+                deployment_qid TEXT,
                 organization TEXT,
                 repository TEXT,
-                ref_name TEXT,
+                environment_id TEXT,
                 commit_hash BLOB,
                 created_at TIMESTAMP,
                 state TEXT,
-                PRIMARY KEY ((deployment_id))
+                PRIMARY KEY ((deployment_qid))
             )
         "#,
 
@@ -105,10 +103,10 @@ prepared_statements! {
             CREATE TABLE IF NOT EXISTS cdb.active_deployments (
                 organization TEXT,
                 repository TEXT,
-                ref_name TEXT,
+                environment_id TEXT,
                 commit_hash BLOB,
-                deployment_id TEXT,
-                PRIMARY KEY ((organization), repository, ref_name, commit_hash)
+                deployment_qid TEXT,
+                PRIMARY KEY ((organization), repository, environment_id, commit_hash)
             )
         "#,
 
@@ -126,10 +124,10 @@ prepared_statements! {
             CREATE TABLE IF NOT EXISTS cdb.supercessions (
                 organization TEXT,
                 repository TEXT,
-                ref_name TEXT,
+                environment_id TEXT,
                 superceding_commit_hash BLOB,
                 superceded_commit_hash BLOB,
-                PRIMARY KEY ((organization), repository, ref_name, superceded_commit_hash)
+                PRIMARY KEY ((organization), repository, environment_id, superceded_commit_hash)
             )
         "#,
     }
@@ -159,20 +157,20 @@ prepared_statements! {
             VALUES (?, ?, ?, ?)
         "#,
 
-        find_deployment_by_id = r#"
-            SELECT organization, repository, ref_name, commit_hash, created_at, state
+        find_deployment_by_qid = r#"
+            SELECT organization, repository, environment_id, commit_hash, created_at, state
             FROM cdb.deployments_by_id
-            WHERE deployment_id = ?
+            WHERE deployment_qid = ?
         "#,
 
-        find_deployments_by_ids = r#"
-            SELECT organization, repository, ref_name, commit_hash, created_at, state
+        find_deployments_by_qids = r#"
+            SELECT organization, repository, environment_id, commit_hash, created_at, state
             FROM cdb.deployments_by_id
-            WHERE deployment_id IN ?
+            WHERE deployment_qid IN ?
         "#,
 
         list_deployments_by_repo = r#"
-            SELECT created_at, ref_name, commit_hash, state
+            SELECT created_at, environment_id, commit_hash, state
             FROM cdb.deployments
             WHERE organization = ?
             AND repository = ?
@@ -180,7 +178,7 @@ prepared_statements! {
         "#,
 
         list_active_deployments = r#"
-            SELECT deployment_id
+            SELECT deployment_qid
             FROM cdb.active_deployments
         "#,
 
@@ -192,23 +190,23 @@ prepared_statements! {
         "#,
 
         list_active_deployments_by_repo = r#"
-            SELECT deployment_id
+            SELECT deployment_qid
             FROM cdb.active_deployments
             WHERE organization = ?
             AND repository = ?
         "#,
 
         set_deployment = r#"
-            INSERT INTO cdb.deployments (organization, repository, created_at, ref_name, commit_hash, state)
+            INSERT INTO cdb.deployments (organization, repository, created_at, environment_id, commit_hash, state)
             VALUES (?, ?, ?, ?, ?, ?)
         "#,
 
         set_deployment_by_id = r#"
             INSERT INTO cdb.deployments_by_id (
-                deployment_id,
+                deployment_qid,
                 organization,
                 repository,
-                ref_name,
+                environment_id,
                 commit_hash,
                 created_at,
                 state
@@ -217,7 +215,7 @@ prepared_statements! {
         "#,
 
         set_active_deployment = r#"
-            INSERT INTO cdb.active_deployments (organization, repository, ref_name, commit_hash, deployment_id)
+            INSERT INTO cdb.active_deployments (organization, repository, environment_id, commit_hash, deployment_qid)
             VALUES (?, ?, ?, ?, ?)
         "#,
 
@@ -225,7 +223,7 @@ prepared_statements! {
             DELETE FROM cdb.active_deployments
             WHERE organization = ?
             AND repository = ?
-            AND ref_name = ?
+            AND environment_id = ?
             AND commit_hash = ?
         "#,
 
@@ -234,7 +232,7 @@ prepared_statements! {
             SET superceding_commit_hash = ?
             WHERE organization = ?
             AND repository = ?
-            AND ref_name = ?
+            AND environment_id = ?
             AND superceded_commit_hash = ?
         "#,
 
@@ -243,7 +241,7 @@ prepared_statements! {
             FROM cdb.supercessions
             WHERE organization = ?
             AND repository = ?
-            AND ref_name = ?
+            AND environment_id = ?
             AND superceding_commit_hash = ?
             ALLOW FILTERING
         "#,
@@ -253,7 +251,7 @@ prepared_statements! {
             FROM cdb.supercessions
             WHERE organization = ?
             AND repository = ?
-            AND ref_name = ?
+            AND environment_id = ?
             AND superceded_commit_hash = ?
         "#,
     }
@@ -316,7 +314,7 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn repo(&self, name: RepositoryName) -> RepositoryClient {
+    pub fn repo(&self, name: RepoQid) -> RepositoryClient {
         RepositoryClient {
             client: self.clone(),
             name,
@@ -327,10 +325,14 @@ impl Client {
 #[derive(Clone)]
 pub struct RepositoryClient {
     client: Client,
-    name: RepositoryName,
+    name: RepoQid,
 }
 
 impl RepositoryClient {
+    pub fn repo_qid(&self) -> &RepoQid {
+        &self.name
+    }
+
     pub async fn get(&self) -> Result<Repository, RepositoryQueryError> {
         self.client.repository(&self.name).await
     }
@@ -350,10 +352,15 @@ impl RepositoryClient {
         }
     }
 
-    pub fn deployment(&self, id: DeploymentId) -> DeploymentClient {
+    pub fn deployment(
+        &self,
+        environment: EnvironmentId,
+        deployment: DeploymentId,
+    ) -> DeploymentClient {
         DeploymentClient {
             repo: self.clone(),
-            id,
+            environment,
+            deployment,
         }
     }
 }
@@ -382,8 +389,8 @@ impl RepositoryClient {
             .execute_iter(
                 self.client.statements.read_object.clone(),
                 (
-                    repo.organization.as_str(),
-                    repo.repository.as_str(),
+                    repo.org.as_str(),
+                    repo.repo.as_str(),
                     hash.as_bytes(),
                 ),
             )
@@ -416,8 +423,8 @@ impl RepositoryClient {
             .execute_unpaged(
                 &self.client.statements.write_object,
                 (
-                    repo.organization.as_str(),
-                    repo.repository.as_str(),
+                    repo.org.as_str(),
+                    repo.repo.as_str(),
                     id.as_slice(),
                     data,
                 ),
@@ -473,23 +480,53 @@ impl RepositoryClient {
     }
 }
 
+/// Client for interacting with a specific deployment (environment + commit).
 #[derive(Clone)]
 pub struct DeploymentClient {
     repo: RepositoryClient,
-    id: DeploymentId,
+    environment: EnvironmentId,
+    deployment: DeploymentId,
 }
 
 impl DeploymentClient {
-    pub fn repository_name(&self) -> &RepositoryName {
+    /// Returns the repository QID for this deployment.
+    pub fn repo_qid(&self) -> &RepoQid {
         &self.repo.name
     }
 
-    pub fn fqid(&self) -> String {
-        format!("{}/{}", self.repo.name, self.id)
+    /// Returns the environment ID for this deployment.
+    pub fn environment_id(&self) -> &EnvironmentId {
+        &self.environment
+    }
+
+    /// Returns the deployment ID (commit hash) for this deployment.
+    pub fn deployment_id(&self) -> &DeploymentId {
+        &self.deployment
+    }
+
+    /// Returns the fully qualified deployment identifier.
+    pub fn deployment_qid(&self) -> ids::DeploymentQid {
+        self.repo
+            .name
+            .environment(self.environment.clone())
+            .deployment(self.deployment.clone())
+    }
+
+    /// Returns the fully qualified environment identifier.
+    pub fn environment_qid(&self) -> ids::EnvironmentQid {
+        self.repo.name.environment(self.environment.clone())
+    }
+
+    /// Returns the commit hash as a `gix_hash::ObjectId`.
+    pub fn commit_hash(&self) -> ObjectId {
+        ObjectId::from_bytes_or_panic(&self.deployment.to_bytes())
     }
 
     pub async fn get(&self) -> Result<Deployment, DeploymentQueryError> {
-        self.repo.client.deployment(&self.repo.name, &self.id).await
+        self.repo
+            .client
+            .find_deployment(&self.repo.name, &self.environment, &self.deployment)
+            .await
     }
 
     pub async fn set(&self, state: DeploymentState) -> Result<(), SetDeploymentError> {
@@ -508,8 +545,9 @@ impl DeploymentClient {
         }
 
         let deployment = Deployment {
-            repository: self.repo.name.clone(),
-            id: self.id.clone(),
+            repo: self.repo.name.clone(),
+            environment: self.environment.clone(),
+            deployment: self.deployment.clone(),
             created_at: prev_state
                 .as_ref()
                 .map(|s| s.created_at.clone())
@@ -523,7 +561,7 @@ impl DeploymentClient {
     }
 
     pub async fn read_dir(&self, path: Option<impl AsRef<Path>>) -> Result<Tree, FileError> {
-        let commit = self.repo.read_commit(self.id.commit_hash).await?;
+        let commit = self.repo.read_commit(self.commit_hash()).await?;
         let mut tree = self.repo.read_tree(commit.tree).await?;
 
         let mut result_buf = PathBuf::new();
@@ -601,14 +639,42 @@ pub enum FileError {
     NotAFile(PathBuf),
 }
 
+/// Helper to convert a `DeploymentId` (40-char hex) to `gix_hash::ObjectId`.
+fn deployment_id_to_oid(id: &DeploymentId) -> ObjectId {
+    ObjectId::from_bytes_or_panic(&id.to_bytes())
+}
+
+/// Helper to construct a `Deployment` from raw DB row values.
+fn deployment_from_row(
+    organization: String,
+    repository: String,
+    environment_id: String,
+    commit_hash: Vec<u8>,
+    created_at: DateTime<Utc>,
+    state: String,
+) -> Result<Deployment, DeploymentQueryError> {
+    let deploy_id = DeploymentId::from_bytes(&commit_hash)
+        .map_err(|_| DeploymentQueryError::NotFound)?;
+    Ok(Deployment {
+        repo: RepoQid::new(
+            ids::OrgId::new_unchecked(organization),
+            ids::RepoId::new_unchecked(repository),
+        ),
+        environment: EnvironmentId::new_unchecked(environment_id),
+        deployment: deploy_id,
+        created_at,
+        state: state.parse()?,
+    })
+}
+
 impl Client {
     pub async fn set_repository(&self, repository: Repository) -> Result<(), ExecutionError> {
         self.session
             .execute_unpaged(
                 &self.statements.set_repository,
                 (
-                    repository.name.organization.as_str(),
-                    repository.name.repository.as_str(),
+                    repository.name.org.as_str(),
+                    repository.name.repo.as_str(),
                     repository.created_at,
                 ),
             )
@@ -618,13 +684,13 @@ impl Client {
 
     pub async fn repository(
         &self,
-        name: &RepositoryName,
+        name: &RepoQid,
     ) -> Result<Repository, RepositoryQueryError> {
         let pager = self
             .session
             .execute_iter(
                 self.statements.find_repository.clone(),
-                (name.organization.as_str(), name.repository.as_str()),
+                (name.org.as_str(), name.repo.as_str()),
             )
             .await?;
 
@@ -638,15 +704,19 @@ impl Client {
         }
     }
 
-    pub async fn deployment(
+    pub async fn find_deployment(
         &self,
-        repo: &RepositoryName,
-        deployment_id: &DeploymentId,
+        repo: &RepoQid,
+        environment: &EnvironmentId,
+        deployment: &DeploymentId,
     ) -> Result<Deployment, DeploymentQueryError> {
-        let fqid = format!("{}/{}", repo, deployment_id);
+        let qid = repo
+            .environment(environment.clone())
+            .deployment(deployment.clone())
+            .to_string();
         let pager = self
             .session
-            .execute_iter(self.statements.find_deployment_by_id.clone(), (fqid,))
+            .execute_iter(self.statements.find_deployment_by_qid.clone(), (qid,))
             .await?;
 
         match pager
@@ -656,20 +726,11 @@ impl Client {
         {
             None => Err(DeploymentQueryError::NotFound),
             Some(Err(e)) => Err(e.into()),
-            Some(Ok((organization, repository, ref_name, commit_hash, created_at, state))) => {
-                if organization != repo.organization || repository != repo.repository {
+            Some(Ok((organization, repository, environment_id, commit_hash, created_at, state))) => {
+                if organization != repo.org.as_str() || repository != repo.repo.as_str() {
                     return Err(DeploymentQueryError::NotFound);
                 }
-
-                Ok(Deployment {
-                    repository: repo.clone(),
-                    id: DeploymentId {
-                        ref_name,
-                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
-                    },
-                    created_at,
-                    state: state.parse()?,
-                })
+                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
             }
         }
     }
@@ -683,37 +744,26 @@ impl Client {
             .execute_iter(self.statements.list_active_deployments.clone(), ())
             .await?;
 
-        let ids = pager
+        let qids = pager
             .rows_stream::<(String,)>()?
             .map(|r| r.map(|r| r.0))
             .try_collect::<Vec<_>>()
             .await?;
 
-        if ids.is_empty() {
+        if qids.is_empty() {
             return Ok(stream::empty().boxed());
         }
 
         let deployments = self
             .session
-            .execute_iter(self.statements.find_deployments_by_ids.clone(), (ids,))
+            .execute_iter(self.statements.find_deployments_by_qids.clone(), (qids,))
             .await?;
 
         Ok(deployments
             .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
-                let (organization, repository, ref_name, commit_hash, created_at, state) = r?;
-                Ok::<_, DeploymentQueryError>(Deployment {
-                    repository: RepositoryName {
-                        organization,
-                        repository,
-                    },
-                    id: DeploymentId {
-                        ref_name,
-                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
-                    },
-                    created_at,
-                    state: state.parse()?,
-                })
+                let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
+                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
             })
             .boxed())
     }
@@ -737,10 +787,10 @@ impl Client {
             .map(move |row| {
                 let (repository, created_at) = row?;
                 Ok::<_, RepositoryQueryError>(Repository {
-                    name: RepositoryName {
-                        organization: organization.clone(),
-                        repository,
-                    },
+                    name: RepoQid::new(
+                        ids::OrgId::new_unchecked(organization.clone()),
+                        ids::RepoId::new_unchecked(repository),
+                    ),
                     created_at,
                 })
             }))
@@ -761,19 +811,19 @@ impl RepositoryClient {
                     .list_active_deployments_by_repo
                     .clone(),
                 (
-                    self.name.organization.as_str(),
-                    self.name.repository.as_str(),
+                    self.name.org.as_str(),
+                    self.name.repo.as_str(),
                 ),
             )
             .await?;
 
-        let ids = pager
+        let qids = pager
             .rows_stream::<(String,)>()?
             .map(|r| r.map(|r| r.0))
             .try_collect::<Vec<_>>()
             .await?;
 
-        if ids.is_empty() {
+        if qids.is_empty() {
             return Ok(stream::empty().boxed());
         }
 
@@ -781,27 +831,16 @@ impl RepositoryClient {
             .client
             .session
             .execute_iter(
-                self.client.statements.find_deployments_by_ids.clone(),
-                (ids,),
+                self.client.statements.find_deployments_by_qids.clone(),
+                (qids,),
             )
             .await?;
 
         Ok(deployments
             .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
-                let (organization, repository, ref_name, commit_hash, created_at, state) = r?;
-                Ok::<_, DeploymentQueryError>(Deployment {
-                    repository: RepositoryName {
-                        organization,
-                        repository,
-                    },
-                    id: DeploymentId {
-                        ref_name,
-                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
-                    },
-                    created_at,
-                    state: state.parse()?,
-                })
+                let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
+                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
             })
             .boxed())
     }
@@ -816,8 +855,8 @@ impl RepositoryClient {
             .execute_iter(
                 self.client.statements.list_deployments_by_repo.clone(),
                 (
-                    self.name.organization.as_str(),
-                    self.name.repository.as_str(),
+                    self.name.org.as_str(),
+                    self.name.repo.as_str(),
                 ),
             )
             .await?;
@@ -826,13 +865,13 @@ impl RepositoryClient {
         Ok(pager
             .rows_stream::<(DateTime<Utc>, String, Vec<u8>, String)>()?
             .map(move |r| {
-                let (created_at, ref_name, commit_hash, state) = r?;
+                let (created_at, environment_id, commit_hash, state) = r?;
+                let deploy_id = DeploymentId::from_bytes(&commit_hash)
+                    .map_err(|_| DeploymentQueryError::NotFound)?;
                 Ok::<_, DeploymentQueryError>(Deployment {
-                    repository: repo.clone(),
-                    id: DeploymentId {
-                        ref_name,
-                        commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
-                    },
+                    repo: repo.clone(),
+                    environment: EnvironmentId::new_unchecked(environment_id),
+                    deployment: deploy_id,
                     created_at,
                     state: state.parse()?,
                 })
@@ -896,28 +935,29 @@ pub enum DeploymentQueryError {
 
 impl Client {
     pub async fn set_deployment(&self, deployment: Deployment) -> Result<(), SetDeploymentError> {
-        let deployment_id = deployment.fqid();
-        let repository = &deployment.repository;
+        let deployment_qid = deployment.deployment_qid().to_string();
+        let repo = &deployment.repo;
+        let commit_hash_bytes = deployment_id_to_oid(&deployment.deployment);
         let (dep, dep_by_id, active_dep) = futures::join!(
             self.session.execute_unpaged(
                 &self.statements.set_deployment,
                 (
-                    repository.organization.as_str(),
-                    repository.repository.as_str(),
+                    repo.org.as_str(),
+                    repo.repo.as_str(),
                     deployment.created_at,
-                    &deployment.id.ref_name,
-                    deployment.id.commit_hash.as_slice(),
+                    deployment.environment.as_str(),
+                    commit_hash_bytes.as_slice(),
                     deployment.state.to_string(),
                 ),
             ),
             self.session.execute_unpaged(
                 &self.statements.set_deployment_by_id,
                 (
-                    deployment_id.clone(),
-                    repository.organization.as_str(),
-                    repository.repository.as_str(),
-                    &deployment.id.ref_name,
-                    deployment.id.commit_hash.as_slice(),
+                    deployment_qid.clone(),
+                    repo.org.as_str(),
+                    repo.repo.as_str(),
+                    deployment.environment.as_str(),
+                    commit_hash_bytes.as_slice(),
                     deployment.created_at,
                     deployment.state.to_string(),
                 ),
@@ -928,10 +968,10 @@ impl Client {
                         .execute_unpaged(
                             &self.statements.unset_active_deployment,
                             (
-                                repository.organization.as_str(),
-                                repository.repository.as_str(),
-                                &deployment.id.ref_name,
-                                deployment.id.commit_hash.as_slice(),
+                                repo.org.as_str(),
+                                repo.repo.as_str(),
+                                deployment.environment.as_str(),
+                                commit_hash_bytes.as_slice(),
                             ),
                         )
                         .await
@@ -940,11 +980,11 @@ impl Client {
                         .execute_unpaged(
                             &self.statements.set_active_deployment,
                             (
-                                repository.organization.as_str(),
-                                repository.repository.as_str(),
-                                &deployment.id.ref_name,
-                                deployment.id.commit_hash.as_slice(),
-                                deployment_id.clone(),
+                                repo.org.as_str(),
+                                repo.repo.as_str(),
+                                deployment.environment.as_str(),
+                                commit_hash_bytes.as_slice(),
+                                deployment_qid.clone(),
                             ),
                         )
                         .await
@@ -972,19 +1012,21 @@ pub enum SetDeploymentError {
 impl DeploymentClient {
     pub async fn mark_superceded_by(
         &self,
-        commit_hash: ObjectId,
+        superceding_commit: &DeploymentId,
     ) -> Result<(), SetDeploymentError> {
+        let superceding_oid = deployment_id_to_oid(superceding_commit);
+        let this_oid = self.commit_hash();
         self.repo
             .client
             .session
             .execute_unpaged(
                 &self.repo.client.statements.create_supercession,
                 (
-                    commit_hash.as_bytes(),
-                    self.repo.name.organization.as_str(),
-                    self.repo.name.repository.as_str(),
-                    &self.id.ref_name,
-                    self.id.commit_hash.as_bytes(),
+                    superceding_oid.as_bytes(),
+                    self.repo.name.org.as_str(),
+                    self.repo.name.repo.as_str(),
+                    self.environment.as_str(),
+                    this_oid.as_bytes(),
                 ),
             )
             .await?;
@@ -992,6 +1034,7 @@ impl DeploymentClient {
     }
 
     pub async fn superceded(&self) -> Result<Vec<DeploymentClient>, DeploymentQueryError> {
+        let this_oid = self.commit_hash();
         let pager = self
             .repo
             .client
@@ -999,10 +1042,10 @@ impl DeploymentClient {
             .execute_iter(
                 self.repo.client.statements.get_superceded_commits.clone(),
                 (
-                    self.repo.name.organization.as_str(),
-                    self.repo.name.repository.as_str(),
-                    &self.id.ref_name,
-                    self.id.commit_hash.as_bytes(),
+                    self.repo.name.org.as_str(),
+                    self.repo.name.repo.as_str(),
+                    self.environment.as_str(),
+                    this_oid.as_bytes(),
                 ),
             )
             .await?;
@@ -1011,10 +1054,12 @@ impl DeploymentClient {
             .rows_stream::<(Vec<u8>,)>()?
             .map(|row| {
                 let (commit_hash,) = row?;
-                Ok::<_, DeploymentQueryError>(self.repo.deployment(DeploymentId {
-                    ref_name: self.id.ref_name.clone(),
-                    commit_hash: ObjectId::from_bytes_or_panic(&commit_hash),
-                }))
+                let deploy_id = DeploymentId::from_bytes(&commit_hash)
+                    .map_err(|_| DeploymentQueryError::NotFound)?;
+                Ok::<_, DeploymentQueryError>(self.repo.deployment(
+                    self.environment.clone(),
+                    deploy_id,
+                ))
             })
             .try_collect::<Vec<_>>()
             .await?;
@@ -1023,6 +1068,7 @@ impl DeploymentClient {
     }
 
     pub async fn get_superceding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
+        let this_oid = self.commit_hash();
         let r = self
             .repo
             .client
@@ -1030,10 +1076,10 @@ impl DeploymentClient {
             .execute_unpaged(
                 &self.repo.client.statements.get_superceding_commit,
                 (
-                    self.repo.name.organization.as_str(),
-                    self.repo.name.repository.as_str(),
-                    &self.id.ref_name,
-                    self.id.commit_hash.as_bytes(),
+                    self.repo.name.org.as_str(),
+                    self.repo.name.repo.as_str(),
+                    self.environment.as_str(),
+                    this_oid.as_bytes(),
                 ),
             )
             .await?;
@@ -1041,11 +1087,12 @@ impl DeploymentClient {
         Ok(r.into_rows_result()?
             .single_row::<(Vec<u8>,)>()
             .ok()
-            .map(|(superceding,)| {
-                self.repo.deployment(DeploymentId {
-                    ref_name: self.id.ref_name.clone(),
-                    commit_hash: ObjectId::from_bytes_or_panic(&superceding),
-                })
+            .and_then(|(superceding,)| {
+                let deploy_id = DeploymentId::from_bytes(&superceding).ok()?;
+                Some(self.repo.deployment(
+                    self.environment.clone(),
+                    deploy_id,
+                ))
             }))
     }
 }

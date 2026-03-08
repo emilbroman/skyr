@@ -65,7 +65,7 @@ impl ResourceRef {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CreateMessage {
     pub resource: ResourceRef,
-    pub owner_deployment_id: String,
+    pub owner_deployment_qid: String,
     pub inputs: Value,
     pub dependencies: Vec<ResourceRef>,
 }
@@ -73,7 +73,7 @@ pub struct CreateMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RestoreMessage {
     pub resource: ResourceRef,
-    pub owner_deployment_id: String,
+    pub owner_deployment_qid: String,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
 }
@@ -81,8 +81,8 @@ pub struct RestoreMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AdoptMessage {
     pub resource: ResourceRef,
-    pub from_owner_deployment_id: String,
-    pub to_owner_deployment_id: String,
+    pub from_owner_deployment_qid: String,
+    pub to_owner_deployment_qid: String,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
 }
@@ -90,7 +90,7 @@ pub struct AdoptMessage {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DestroyMessage {
     pub resource: ResourceRef,
-    pub owner_deployment_id: String,
+    pub owner_deployment_qid: String,
 }
 
 #[derive(Debug, Error)]

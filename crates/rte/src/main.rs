@@ -285,7 +285,7 @@ async fn worker_loop_iteration(
             };
 
             if let Err(error) = resource_client
-                .set_input(resource.inputs.clone(), message.owner_deployment_id.clone())
+                .set_input(resource.inputs.clone(), message.owner_deployment_qid.clone())
                 .await
             {
                 tracing::warn!(
@@ -332,7 +332,7 @@ async fn worker_loop_iteration(
             );
             log_deployment_event(
                 &ldb_publisher,
-                &message.owner_deployment_id,
+                &message.owner_deployment_qid,
                 Severity::Info,
                 format!(
                     "CREATE applied for {}.{}",
@@ -350,12 +350,12 @@ async fn worker_loop_iteration(
                 );
             let current = match resource_client.get().await {
                 Ok(Some(resource)) => {
-                    if resource.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
+                    if resource.owner.as_deref() != Some(message.owner_deployment_qid.as_str()) {
                         tracing::info!(
                             namespace = %message.resource.namespace,
                             resource_type = %message.resource.resource_type,
                             resource_id = %message.resource.resource_id,
-                            message_owner = %message.owner_deployment_id,
+                            message_owner = %message.owner_deployment_qid,
                             current_owner = ?resource.owner,
                             "dropping delete for non-matching owner",
                         );
@@ -478,7 +478,7 @@ async fn worker_loop_iteration(
             );
             log_deployment_event(
                 &ldb_publisher,
-                &message.owner_deployment_id,
+                &message.owner_deployment_qid,
                 Severity::Info,
                 format!(
                     "DESTROY applied for {}.{}",
@@ -518,12 +518,12 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
-            if current.owner.as_deref() != Some(message.from_owner_deployment_id.as_str()) {
+            if current.owner.as_deref() != Some(message.from_owner_deployment_qid.as_str()) {
                 tracing::info!(
                     namespace = %message.resource.namespace,
                     resource_type = %message.resource.resource_type,
                     resource_id = %message.resource.resource_id,
-                    from_owner = %message.from_owner_deployment_id,
+                    from_owner = %message.from_owner_deployment_qid,
                     current_owner = ?current.owner,
                     "dropping adopt for non-matching owner",
                 );
@@ -639,7 +639,7 @@ async fn worker_loop_iteration(
             }
 
             if let Err(error) = resource_client
-                .set_input(inputs_to_persist, message.to_owner_deployment_id.clone())
+                .set_input(inputs_to_persist, message.to_owner_deployment_qid.clone())
                 .await
             {
                 tracing::warn!(
@@ -689,27 +689,27 @@ async fn worker_loop_iteration(
                 namespace = %message.resource.namespace,
                 resource_type = %message.resource.resource_type,
                 resource_id = %message.resource.resource_id,
-                from_owner = %message.from_owner_deployment_id,
-                to_owner = %message.to_owner_deployment_id,
+                from_owner = %message.from_owner_deployment_qid,
+                to_owner = %message.to_owner_deployment_qid,
                 "adopted resource",
             );
             let summary = format!(
                 "ADOPT applied for {}.{} from {} to {}",
                 message.resource.resource_type,
                 message.resource.resource_id,
-                message.from_owner_deployment_id,
-                message.to_owner_deployment_id
+                message.from_owner_deployment_qid,
+                message.to_owner_deployment_qid
             );
             log_deployment_event(
                 &ldb_publisher,
-                &message.from_owner_deployment_id,
+                &message.from_owner_deployment_qid,
                 Severity::Info,
                 summary.clone(),
             )
             .await;
             log_deployment_event(
                 &ldb_publisher,
-                &message.to_owner_deployment_id,
+                &message.to_owner_deployment_qid,
                 Severity::Info,
                 summary,
             )
@@ -746,12 +746,12 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
-            if current.owner.as_deref() != Some(message.owner_deployment_id.as_str()) {
+            if current.owner.as_deref() != Some(message.owner_deployment_qid.as_str()) {
                 tracing::info!(
                     namespace = %message.resource.namespace,
                     resource_type = %message.resource.resource_type,
                     resource_id = %message.resource.resource_id,
-                    message_owner = %message.owner_deployment_id,
+                    message_owner = %message.owner_deployment_qid,
                     current_owner = ?current.owner,
                     "dropping restore for non-matching owner",
                 );
@@ -867,7 +867,7 @@ async fn worker_loop_iteration(
             }
 
             if let Err(error) = resource_client
-                .set_input(inputs_to_persist, message.owner_deployment_id.clone())
+                .set_input(inputs_to_persist, message.owner_deployment_qid.clone())
                 .await
             {
                 tracing::warn!(
@@ -917,12 +917,12 @@ async fn worker_loop_iteration(
                 namespace = %message.resource.namespace,
                 resource_type = %message.resource.resource_type,
                 resource_id = %message.resource.resource_id,
-                owner = %message.owner_deployment_id,
+                owner = %message.owner_deployment_qid,
                 "restored resource",
             );
             log_deployment_event(
                 &ldb_publisher,
-                &message.owner_deployment_id,
+                &message.owner_deployment_qid,
                 Severity::Info,
                 format!(
                     "RESTORE applied for {}.{}",
@@ -986,15 +986,15 @@ fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::Resour
 
 async fn log_deployment_event(
     publisher: &ldb::Publisher,
-    deployment_id: &str,
+    deployment_qid: &str,
     severity: Severity,
     message: String,
 ) {
-    let namespace_publisher = match publisher.namespace(deployment_id.to_string()).await {
+    let namespace_publisher = match publisher.namespace(deployment_qid.to_string()).await {
         Ok(namespace_publisher) => namespace_publisher,
         Err(error) => {
             tracing::warn!(
-                deployment_id,
+                deployment_qid,
                 error = %error,
                 "failed to prepare deployment log publisher",
             );
@@ -1003,7 +1003,7 @@ async fn log_deployment_event(
     };
     if let Err(error) = namespace_publisher.log(severity, message).await {
         tracing::warn!(
-            deployment_id,
+            deployment_qid,
             error = %error,
             "failed to publish deployment log event",
         );
