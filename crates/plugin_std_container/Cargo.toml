@@ -14,6 +14,7 @@ cdb = { path = "../cdb" }
 clap = { version = "4.5", features = ["derive"] }
 gix-hash = "0.22.0"
 gix-object = "0.56.0"
+ldb = { path = "../ldb" }
 redis = { version = "0.32.5", features = ["aio", "tokio-comp"] }
 rtp = { path = "../rtp" }
 sclc = { path = "../sclc" }

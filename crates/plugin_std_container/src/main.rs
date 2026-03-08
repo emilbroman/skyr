@@ -51,6 +51,10 @@ struct Args {
     /// Container registry URL.
     #[arg(long)]
     registry_url: String,
+
+    /// LDB hostname for deployment log streaming.
+    #[arg(long)]
+    ldb_hostname: String,
 }
 
 // Resource type constants
@@ -68,6 +72,8 @@ struct ContainerPluginInner {
     buildkit_addr: String,
     /// Container registry URL.
     registry_url: String,
+    /// LDB publisher for deployment log streaming.
+    ldb_publisher: ldb::Publisher,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -84,6 +90,7 @@ impl ContainerPlugin {
         cdb: cdb::Client,
         buildkit_addr: String,
         registry_url: String,
+        ldb_publisher: ldb::Publisher,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -91,6 +98,7 @@ impl ContainerPlugin {
                 cdb,
                 buildkit_addr,
                 registry_url,
+                ldb_publisher,
             }),
         }
     }
@@ -209,6 +217,14 @@ impl ContainerPlugin {
             "extracted git context"
         );
 
+        // Create an LDB namespace publisher for this deployment
+        let log_publisher = self
+            .inner
+            .ldb_publisher
+            .namespace(namespace.clone())
+            .await
+            .map_err(|e| PluginError::Internal(format!("failed to create log publisher: {e}")))?;
+
         // Build and push the image
         let result = buildkit::build_and_push(
             &self.inner.buildkit_addr,
@@ -216,6 +232,7 @@ impl ContainerPlugin {
             &containerfile,
             &name,
             &self.inner.registry_url,
+            &log_publisher,
         )
         .await?;
 
@@ -1252,6 +1269,7 @@ async fn main() -> Result<()> {
     info!("  cdb_hostnames: {:?}", args.cdb_hostnames);
     info!("  buildkit_addr: {}", args.buildkit_addr);
     info!("  registry_url: {}", args.registry_url);
+    info!("  ldb_hostname: {}", args.ldb_hostname);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -1270,12 +1288,21 @@ async fn main() -> Result<()> {
 
     info!("Connected to CDB");
 
+    // Connect to LDB
+    let ldb_publisher = ldb::ClientBuilder::new()
+        .brokers(format!("{}:9092", args.ldb_hostname))
+        .build_publisher()
+        .await?;
+
+    info!("Connected to LDB");
+
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
         node_registry,
         cdb,
         args.buildkit_addr.clone(),
         args.registry_url.clone(),
+        ldb_publisher,
     );
 
     // Clone for the RTP server (since ContainerPlugin is Clone via Arc)

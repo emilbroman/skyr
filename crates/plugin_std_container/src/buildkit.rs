@@ -14,8 +14,9 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::PluginError;
 
@@ -47,6 +48,7 @@ pub async fn build_and_push(
     containerfile: &str,
     image_name: &str,
     registry_url: &str,
+    log: &ldb::NamespacePublisher,
 ) -> Result<BuildResult, PluginError> {
     // Parse the registry URL to extract the host:port
     let registry_host = parse_registry_host(registry_url)?;
@@ -71,7 +73,7 @@ pub async fn build_and_push(
     //   --output type=image,name=<image_ref>,push=true \
     //   --metadata-file /dev/stdout
 
-    let output = Command::new("/usr/bin/buildctl")
+    let mut child = Command::new("/usr/bin/buildctl")
         .arg("--addr")
         .arg(buildkit_addr)
         .arg("build")
@@ -90,28 +92,64 @@ pub async fn build_and_push(
         ))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
+        .spawn()
         .map_err(|e| PluginError::ImageBuild(format!("failed to run buildctl: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    // Stream stdout and stderr lines to LDB as they arrive.
+    // We only retain the digest (if found) and the last stderr line for error reporting,
+    // rather than accumulating all output.
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+
+    let stdout_log = log.clone();
+    let stderr_log = log.clone();
+
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout_pipe).lines();
+        let mut digest = None;
+        while let Ok(Some(line)) = lines.next_line().await {
+            if digest.is_none() {
+                digest = try_extract_digest(&line);
+            }
+            stdout_log.info(line).await;
+        }
+        digest
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr_pipe).lines();
+        let mut digest = None;
+        let mut last_line = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if digest.is_none() {
+                digest = try_extract_digest(&line);
+            }
+            stderr_log.error(line.clone()).await;
+            last_line = line;
+        }
+        (digest, last_line)
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| PluginError::ImageBuild(format!("failed to wait for buildctl: {e}")))?;
+
+    let stdout_digest = stdout_task.await.unwrap_or_default();
+    let (stderr_digest, last_stderr) = stderr_task.await.unwrap_or_default();
+
+    if !status.success() {
         return Err(PluginError::ImageBuild(format!(
             "buildctl failed with status {}: {}",
-            output.status, stderr
+            status, last_stderr
         )));
     }
 
-    // Parse the output to get the digest
-    // buildctl outputs something like: "exporting to image" and the digest is in the output
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    debug!(stdout = %stdout, stderr = %stderr, "buildctl output");
-
-    // Extract the digest from the output
-    // The format varies, but typically includes "sha256:..." in the output
-    let digest = extract_digest(&stdout, &stderr)?;
+    let digest = stdout_digest.or(stderr_digest).ok_or_else(|| {
+        PluginError::ImageBuild(
+            "could not extract image digest from buildctl output".to_string(),
+        )
+    })?;
 
     // Build the full image reference with digest
     let fullname = format!("{}@{}", image_ref, digest);
@@ -145,44 +183,24 @@ fn parse_registry_host(registry_url: &str) -> Result<String, PluginError> {
     Ok(host.to_string())
 }
 
-/// Extract the image digest from buildctl output.
-fn extract_digest(stdout: &str, stderr: &str) -> Result<String, PluginError> {
-    // BuildKit outputs the digest in various formats depending on the version
-    // Common patterns:
-    // - "sha256:abc123..." somewhere in the output
-    // - "digest: sha256:abc123..."
-    // - In metadata JSON output
-
-    // Search in both stdout and stderr
-    let combined = format!("{}\n{}", stdout, stderr);
-
-    // Look for sha256: pattern
-    for line in combined.lines() {
-        if let Some(pos) = line.find("sha256:") {
-            // Extract the digest (sha256: followed by 64 hex chars)
-            let rest = &line[pos..];
-
-            // Skip the "sha256:" prefix (7 chars) and count hex digits
-            if rest.len() >= 7 {
-                let hex_part = &rest[7..];
-                let hex_len = hex_part
-                    .chars()
-                    .take_while(|c| c.is_ascii_hexdigit())
-                    .count();
-
-                if hex_len >= 64 {
-                    // "sha256:" (7) + 64 hex chars = 71
-                    let digest = &rest[..7 + hex_len.min(64)];
-                    return Ok(digest.to_string());
-                }
-            }
-        }
+/// Try to extract a sha256 image digest from a single line of output.
+fn try_extract_digest(line: &str) -> Option<String> {
+    let pos = line.find("sha256:")?;
+    let rest = &line[pos..];
+    if rest.len() < 7 {
+        return None;
     }
-
-    // If we can't find the digest, return an error
-    Err(PluginError::ImageBuild(
-        "could not extract image digest from buildctl output".to_string(),
-    ))
+    let hex_part = &rest[7..];
+    let hex_len = hex_part
+        .chars()
+        .take_while(|c| c.is_ascii_hexdigit())
+        .count();
+    if hex_len >= 64 {
+        // "sha256:" (7) + 64 hex chars = 71
+        Some(rest[..7 + hex_len.min(64)].to_string())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -210,16 +228,19 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_digest() {
+    fn test_try_extract_digest() {
         // sha256: (7) + 64 hex chars = 71 total
-        let output = "exporting to image sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 done";
-        let digest = extract_digest(output, "").unwrap();
+        let line = "exporting to image sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 done";
+        let digest = try_extract_digest(line).unwrap();
         assert!(digest.starts_with("sha256:"));
         assert_eq!(digest.len(), 71);
 
-        let output2 = "pushing manifest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let digest2 = extract_digest(output2, "").unwrap();
+        let line2 = "pushing manifest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let digest2 = try_extract_digest(line2).unwrap();
         assert!(digest2.starts_with("sha256:"));
         assert_eq!(digest2.len(), 71);
+
+        assert!(try_extract_digest("no digest here").is_none());
+        assert!(try_extract_digest("sha256:tooshort").is_none());
     }
 }
