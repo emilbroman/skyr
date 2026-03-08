@@ -21,6 +21,9 @@
             cargo
             gnumake
             protobuf
+            qemu
+            cdrtools
+            curl
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly

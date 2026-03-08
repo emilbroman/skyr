@@ -1,4 +1,4 @@
-.PHONY: image scoc-image deps compose dev
+.PHONY: image scoc-image deps compose dev vms vms-down deps-vm compose-vm
 
 image:
 	podman build -t skyr:latest -t localhost/skyr:latest .
@@ -15,6 +15,24 @@ deps:
 
 compose: image scoc-image deps
 	podman compose up api scs de rte-0 rte-1 rte-2 plugin-std-random plugin-std-artifact plugin-std-container scoc-1 scoc-2 scoc-3
+
+vms:
+	vm/start.sh
+
+vms-down:
+	vm/stop.sh
+
+deps-vm:
+	podman compose up -d scylla rabbitmq redis redpanda minio oci-registry
+	@echo "Waiting for scylla to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_scylla_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+	@echo "Waiting for rabbitmq to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_rabbitmq_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+
+compose-vm: image deps-vm vms
+	podman compose -f podman-compose.yml -f podman-compose.vm.yml up \
+		api scs de rte-0 rte-1 rte-2 \
+		plugin-std-random plugin-std-artifact plugin-std-container
 
 dev:
 	nix develop -c cargo watch -s 'set -e; \

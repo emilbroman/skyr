@@ -1,0 +1,32 @@
+## Compose override for VM mode.
+##
+## When using QEMU VMs for BuildKit and SCOC nodes instead of containers,
+## layer this file on top of podman-compose.yml:
+##
+##   podman compose -f podman-compose.yml -f podman-compose.vm.yml up ...
+##
+## This overrides plugin-std-container to point BuildKit at the host
+## (where the QEMU VM is listening) and exposes the orchestrator port
+## so that SCOC VMs can register.
+
+services:
+  plugin-std-container:
+    command:
+      [
+        "--bind",
+        "0.0.0.0:50053",
+        "--rtp-bind",
+        "tcp://0.0.0.0:50054",
+        "--node-registry-hostname",
+        "redis",
+        "--cdb-hostnames",
+        "scylla:9042",
+        "--buildkit-addr",
+        "tcp://host.containers.internal:1234",
+        "--registry-url",
+        "http://oci-registry:5000",
+      ]
+    ports:
+      - "50053:50053"
+    extra_hosts:
+      - "host.containers.internal:host-gateway"

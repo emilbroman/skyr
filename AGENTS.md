@@ -305,6 +305,41 @@ Application services:
 
 To start everything: `podman compose up` (requires building `skyr:latest` image first).
 
+### VM Mode (QEMU)
+
+For proper container orchestration testing, BuildKit and SCOC nodes can run in QEMU VMs
+instead of containers. This avoids the issues with nested containers and privileged mode.
+
+Prerequisites (provided by `nix develop`):
+- `qemu` (system emulators)
+- `cdrtools` (for `mkisofs`)
+- `curl`
+- `podman` (for building the SCOC binary via cross-compilation container)
+
+Make targets:
+- `make vms`: Start 1 BuildKit VM + 3 SCOC worker VMs (downloads Alpine cloud image on first run)
+- `make vms-down`: Stop all VMs
+- `make compose-vm`: Full stack with VMs (builds image, starts infra, starts VMs, starts app services)
+
+VM networking:
+- BuildKit VM: `tcp://127.0.0.1:1234` (host) → port 1234 in VM
+- SCOC-1 VM: `http://127.0.0.1:50061` (host) → port 50054 in VM
+- SCOC-2 VM: `http://127.0.0.1:50062` (host) → port 50054 in VM
+- SCOC-3 VM: `http://127.0.0.1:50063` (host) → port 50054 in VM
+- VMs reach host/podman services via QEMU gateway `10.0.2.2`
+- Podman containers reach VMs via `host.containers.internal:<port>`
+
+The `podman-compose.vm.yml` override configures `plugin-std-container` to use the VM-hosted
+BuildKit (via `host.containers.internal:1234`) and exposes port 50053 so SCOC VMs can register.
+
+State is stored in `.vm/` (gitignored). Delete `.vm/scoc` to force SCOC binary rebuild.
+
+Configuration (via environment variables):
+- `ALPINE_RELEASE`: Alpine version (default: 3.21.4)
+- `BUILDKIT_VERSION`: BuildKit version (default: 0.21.1)
+- `VM_MEMORY`: RAM per VM (default: 2G)
+- `VM_CPUS`: vCPUs per VM (default: 2)
+
 For manual testing:
 - Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222`.
 - Start individual services with `cargo run -p <crate> -- daemon` with appropriate flags.
@@ -312,7 +347,7 @@ For manual testing:
 ## Environment Notes
 
 - `cargo` is not available in the current shell session by default.
-- `flake.nix` defines a dev shell including `rustup` and `cargo`; use that shell before Rust builds/checks if needed.
+- `flake.nix` defines a dev shell including `rustup`, `cargo`, `qemu`, `cdrtools`, and `curl`; use that shell before Rust builds/checks if needed.
 - Running tests/builds typically uses `nix develop -c cargo ...`.
 
 # GitHub

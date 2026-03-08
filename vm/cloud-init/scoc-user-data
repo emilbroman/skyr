@@ -1,0 +1,63 @@
+#!/bin/sh
+set -e
+
+# Install packages
+apk update
+apk add containerd containerd-ctr crun iptables
+
+# Mount payload ISO with SCOC binary and configs
+mkdir -p /mnt/payload
+mount -t iso9660 -o ro LABEL=PAYLOAD /mnt/payload
+cp /mnt/payload/scoc /usr/local/bin/scoc
+chmod +x /usr/local/bin/scoc
+mkdir -p /etc/containerd
+cp /mnt/payload/containerd-config.toml /etc/containerd/config.toml
+
+# Read environment configuration
+. /mnt/payload/scoc-env
+umount /mnt/payload
+
+# Create pod log directory
+mkdir -p /var/log/pods
+
+# Setup cgroup delegation for cgroupv2
+if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+  mkdir -p /sys/fs/cgroup/init.scope
+  echo $$ > /sys/fs/cgroup/init.scope/cgroup.procs 2>/dev/null || true
+  for controller in $(cat /sys/fs/cgroup/cgroup.controllers); do
+    echo "+${controller}" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+  done
+  mkdir -p /sys/fs/cgroup/k8s.io
+  for controller in $(cat /sys/fs/cgroup/k8s.io/cgroup.controllers 2>/dev/null); do
+    echo "+${controller}" > /sys/fs/cgroup/k8s.io/cgroup.subtree_control 2>/dev/null || true
+  done
+fi
+
+# Enable and start containerd
+rc-update add containerd boot
+rc-service containerd start
+
+# Wait for containerd socket
+for i in $(seq 1 60); do
+  [ -S /run/containerd/containerd.sock ] && break
+  sleep 1
+done
+
+# Create OpenRC service for SCOC (variables expanded from scoc-env)
+cat > /etc/init.d/scoc <<EOF
+#!/sbin/openrc-run
+name="scoc"
+description="Skyr Container Orchestrator Conduit"
+command="/usr/local/bin/scoc"
+command_args="daemon --node-name ${SCOC_NODE_NAME} --bind ${SCOC_BIND} --conduit-address ${SCOC_CONDUIT_ADDRESS} --orchestrator-address ${SCOC_ORCHESTRATOR_ADDRESS} --containerd-socket /run/containerd/containerd.sock --cpu-millis ${SCOC_CPU_MILLIS} --memory-bytes ${SCOC_MEMORY_BYTES} --max-pods ${SCOC_MAX_PODS}"
+command_background=true
+pidfile="/run/scoc.pid"
+output_log="/var/log/scoc.log"
+error_log="/var/log/scoc.log"
+depend() {
+  need containerd
+}
+EOF
+chmod +x /etc/init.d/scoc
+rc-update add scoc default
+rc-service scoc start

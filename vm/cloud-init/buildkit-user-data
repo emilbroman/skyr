@@ -1,0 +1,33 @@
+#!/bin/sh
+set -e
+
+# Install minimal dependencies
+apk update
+apk add iptables
+
+# Mount payload ISO with BuildKit binaries
+mkdir -p /mnt/payload
+mount -t iso9660 -o ro LABEL=PAYLOAD /mnt/payload
+cp /mnt/payload/bin/buildkitd /usr/local/bin/buildkitd
+cp /mnt/payload/bin/buildctl /usr/local/bin/buildctl
+chmod +x /usr/local/bin/buildkitd /usr/local/bin/buildctl
+umount /mnt/payload
+
+# Create buildkit state directory
+mkdir -p /var/lib/buildkit
+
+# Create OpenRC service for buildkitd
+cat > /etc/init.d/buildkitd <<'EOF'
+#!/sbin/openrc-run
+name="buildkitd"
+description="BuildKit daemon"
+command="/usr/local/bin/buildkitd"
+command_args="--addr tcp://0.0.0.0:1234 --oci-worker-no-process-sandbox"
+command_background=true
+pidfile="/run/buildkitd.pid"
+output_log="/var/log/buildkitd.log"
+error_log="/var/log/buildkitd.log"
+EOF
+chmod +x /etc/init.d/buildkitd
+rc-update add buildkitd default
+rc-service buildkitd start
