@@ -77,6 +77,7 @@ pub async fn build_and_push(
         .arg("--addr")
         .arg(buildkit_addr)
         .arg("build")
+        .arg("--progress=plain")
         .arg("--frontend")
         .arg("dockerfile.v0")
         .arg("--local")
@@ -183,10 +184,17 @@ fn parse_registry_host(registry_url: &str) -> Result<String, PluginError> {
     Ok(host.to_string())
 }
 
-/// Try to extract a sha256 image digest from a single line of output.
+/// Try to extract a sha256 image manifest digest from a single line of output.
+///
+/// Only extracts digests from lines containing "manifest sha256:" to avoid
+/// picking up base image digests that also appear in buildkit output.
 fn try_extract_digest(line: &str) -> Option<String> {
-    let pos = line.find("sha256:")?;
-    let rest = &line[pos..];
+    // Only look for manifest-related lines to avoid extracting base image digests
+    // Common patterns:
+    // - "pushing manifest sha256:abc123..." (when push succeeds)
+    // - "exporting manifest sha256:abc123..." (local export)
+    let pos = line.find("manifest sha256:")?;
+    let rest = &line[pos + "manifest ".len()..]; // Skip "manifest " to get to "sha256:..."
     if rest.len() < 7 {
         return None;
     }
@@ -229,16 +237,25 @@ mod tests {
 
     #[test]
     fn test_try_extract_digest() {
-        // sha256: (7) + 64 hex chars = 71 total
-        let line = "exporting to image sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 done";
+        // Test extracting from "exporting manifest" line
+        let line = "#7 exporting manifest sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 done";
         let digest = try_extract_digest(line).unwrap();
         assert!(digest.starts_with("sha256:"));
         assert_eq!(digest.len(), 71);
+        assert_eq!(
+            digest,
+            "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        );
 
-        let line2 = "pushing manifest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Test extracting from "pushing manifest" line
+        let line2 = "#7 pushing manifest sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef done";
         let digest2 = try_extract_digest(line2).unwrap();
         assert!(digest2.starts_with("sha256:"));
         assert_eq!(digest2.len(), 71);
+
+        // Test that it ignores base image digests (not in manifest line)
+        let base_image_line = "#5 [1/2] FROM docker.io/library/node:25-alpine@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert!(try_extract_digest(base_image_line).is_none());
 
         assert!(try_extract_digest("no digest here").is_none());
         assert!(try_extract_digest("sha256:tooshort").is_none());
