@@ -14,6 +14,7 @@
 use std::path::Path;
 use std::process::Stdio;
 
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tracing::{debug, info};
 
@@ -47,6 +48,7 @@ pub async fn build_and_push(
     containerfile: &str,
     image_name: &str,
     registry_url: &str,
+    log: &ldb::NamespacePublisher,
 ) -> Result<BuildResult, PluginError> {
     // Parse the registry URL to extract the host:port
     let registry_host = parse_registry_host(registry_url)?;
@@ -71,7 +73,7 @@ pub async fn build_and_push(
     //   --output type=image,name=<image_ref>,push=true \
     //   --metadata-file /dev/stdout
 
-    let output = Command::new("/usr/bin/buildctl")
+    let mut child = Command::new("/usr/bin/buildctl")
         .arg("--addr")
         .arg(buildkit_addr)
         .arg("build")
@@ -90,24 +92,58 @@ pub async fn build_and_push(
         ))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .await
+        .spawn()
         .map_err(|e| PluginError::ImageBuild(format!("failed to run buildctl: {e}")))?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(PluginError::ImageBuild(format!(
-            "buildctl failed with status {}: {}",
-            output.status, stderr
-        )));
-    }
+    // Stream stdout and stderr lines to LDB as they arrive
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
 
-    // Parse the output to get the digest
-    // buildctl outputs something like: "exporting to image" and the digest is in the output
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout_log = log.clone();
+    let stderr_log = log.clone();
+
+    let stdout_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stdout_pipe).lines();
+        let mut collected = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            stdout_log.info(line.clone()).await;
+            if !collected.is_empty() {
+                collected.push('\n');
+            }
+            collected.push_str(&line);
+        }
+        collected
+    });
+
+    let stderr_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr_pipe).lines();
+        let mut collected = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            stderr_log.error(line.clone()).await;
+            if !collected.is_empty() {
+                collected.push('\n');
+            }
+            collected.push_str(&line);
+        }
+        collected
+    });
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| PluginError::ImageBuild(format!("failed to wait for buildctl: {e}")))?;
+
+    let stdout = stdout_task.await.unwrap_or_default();
+    let stderr = stderr_task.await.unwrap_or_default();
 
     debug!(stdout = %stdout, stderr = %stderr, "buildctl output");
+
+    if !status.success() {
+        return Err(PluginError::ImageBuild(format!(
+            "buildctl failed with status {}: {}",
+            status, stderr
+        )));
+    }
 
     // Extract the digest from the output
     // The format varies, but typically includes "sha256:..." in the output
