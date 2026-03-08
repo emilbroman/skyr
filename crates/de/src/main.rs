@@ -7,13 +7,13 @@ use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
 use sclc::SourceRepo;
-use slog::{Drain, Logger, debug, error, info, o, warn};
 use tokio::{
     sync::mpsc,
     sync::oneshot::{self, error::TryRecvError},
     task,
     time::{Instant, sleep_until},
 };
+use tracing::Instrument;
 
 #[derive(Parser)]
 enum Program {
@@ -34,11 +34,12 @@ enum Program {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let decorator = slog_term::TermDecorator::new().build();
-    let drain = slog_term::FullFormat::new(decorator).build().fuse();
-    let drain = slog_async::Async::new(drain).build().fuse();
-
-    let log = slog::Logger::root(drain, o!());
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
 
     match Program::parse() {
         Program::Daemon {
@@ -47,7 +48,7 @@ async fn main() -> anyhow::Result<()> {
             rtq_hostname,
             ldb_hostname,
         } => {
-            info!(log, "starting deployment engine daemon");
+            tracing::info!("starting deployment engine daemon");
 
             let cdb_client = cdb::ClientBuilder::new()
                 .known_node(&cdb_hostname)
@@ -74,7 +75,6 @@ async fn main() -> anyhow::Result<()> {
                 let next_loop = Instant::now() + Duration::from_secs(20);
 
                 if let Err(e) = process(
-                    log.clone(),
                     cdb_client.clone(),
                     rdb_client.clone(),
                     rtq_publisher.clone(),
@@ -83,11 +83,10 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await
                 {
-                    error!(log, "{e}")
+                    tracing::error!("{e}")
                 }
 
-                debug!(
-                    log,
+                tracing::debug!(
                     "will poll for new deployments again in {:.2}s",
                     (next_loop - Instant::now()).as_secs_f64()
                 );
@@ -98,7 +97,6 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn process(
-    log: Logger,
     client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
@@ -107,14 +105,14 @@ async fn process(
 ) -> anyhow::Result<()> {
     let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
 
-    debug!(log, "found {} deployments", deployments.len());
+    tracing::debug!("found {} deployments", deployments.len());
 
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
         let deployment = deployment?;
         let id = deployment.fqid();
         if !untouched.remove(&id) {
-            debug!(log, "new deployment to process: {}", deployment.fqid());
+            tracing::debug!(dep = %id, "new deployment to process");
 
             let (tx, rx) = oneshot::channel();
             let namespace = format!("{}/{}", deployment.repository, deployment.id.ref_name);
@@ -122,32 +120,32 @@ async fn process(
             let log_publisher = match ldb_publisher.namespace(id.clone()).await {
                 Ok(log_publisher) => log_publisher,
                 Err(error) => {
-                    error!(
-                        log,
-                        "failed to create deployment log publisher topic";
-                        "dep" => id.clone(),
-                        "error" => error.to_string()
+                    tracing::error!(
+                        dep = %id,
+                        error = %error,
+                        "failed to create deployment log publisher topic",
                     );
                     continue;
                 }
             };
 
+            let dep_id = deployment.fqid();
             let worker = Worker {
-                log: log.new(o!("dep" => deployment.fqid())),
                 client: client.repo(deployment.repository).deployment(deployment.id),
                 namespace: rdb_client.namespace(namespace),
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
             };
 
-            task::spawn(worker.run_loop(rx));
+            let span = tracing::info_span!("worker", dep = %dep_id);
+            task::spawn(worker.run_loop(rx).instrument(span));
 
             workers.insert(id, tx);
         }
     }
 
     for id in untouched {
-        debug!(log, "no longer watching {}", id);
+        tracing::debug!(dep = %id, "no longer watching");
         workers.remove(&id);
     }
 
@@ -155,7 +153,6 @@ async fn process(
 }
 
 struct Worker {
-    log: Logger,
     client: DeploymentClient,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
@@ -177,13 +174,12 @@ impl Worker {
                 Ok(()) | Err(TryRecvError::Closed) => return,
                 Err(TryRecvError::Empty) => {
                     if let Err(e) = self.work().await {
-                        error!(self.log, "{e}");
+                        tracing::error!("{e}");
                     }
                 }
             }
 
-            debug!(
-                self.log,
+            tracing::debug!(
                 "will reconcile in {:.2}s",
                 (next_loop - Instant::now()).as_secs_f64()
             );
@@ -196,15 +192,12 @@ impl Worker {
 
         match deployment.state {
             DeploymentState::Down => {
-                info!(
-                    &self.log,
-                    "deployment down, waiting to be decommissioned..."
-                );
+                tracing::info!("deployment down, waiting to be decommissioned...");
                 Ok(())
             }
 
             DeploymentState::Desired => {
-                info!(&self.log, "reconciling");
+                tracing::info!("reconciling");
                 let completeness = self.compile_and_evaluate().await?;
 
                 match completeness {
@@ -217,8 +210,7 @@ impl Worker {
                         }
                     }
                     EvalCompleteness::Partial => {
-                        info!(
-                            &self.log,
+                        tracing::info!(
                             "evaluation incomplete; deferring superceded deployment teardown"
                         );
                     }
@@ -228,7 +220,7 @@ impl Worker {
             }
 
             DeploymentState::Undesired => {
-                info!(&self.log, "tearing down");
+                tracing::info!("tearing down");
 
                 let owner = deployment.fqid();
                 let mut all_resources = Vec::new();
@@ -255,10 +247,11 @@ impl Worker {
                     };
                     if living_dependency_targets.contains(&resource_id) {
                         blocked += 1;
-                        info!(&self.log, "resource still has living dependents; deferring destroy";
-                            "type" => resource.resource_type.clone(),
-                            "id" => resource.id.clone(),
-                            "owner" => resource.owner.clone()
+                        tracing::info!(
+                            resource_type = %resource.resource_type,
+                            resource_id = %resource.id,
+                            owner = ?resource.owner,
+                            "resource still has living dependents; deferring destroy",
                         );
                         continue;
                     }
@@ -274,20 +267,21 @@ impl Worker {
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
 
-                    info!(&self.log, "queued destroy";
-                        "type" => resource.resource_type.clone(),
-                        "id" => resource.id.clone(),
-                        "owner" => resource.owner.clone()
+                    tracing::info!(
+                        resource_type = %resource.resource_type,
+                        resource_id = %resource.id,
+                        owner = ?resource.owner,
+                        "queued destroy",
                     );
                 }
 
                 if emitted > 0 {
-                    info!(&self.log, "queued {} destroy messages", emitted);
+                    tracing::info!("queued {} destroy messages", emitted);
                     return Ok(());
                 }
 
                 if owned_resources.is_empty() {
-                    info!(&self.log, "no more resources, setting state to DOWN");
+                    tracing::info!("no more resources, setting state to DOWN");
                     self.client.set(DeploymentState::Down).await?;
                     self.log_publisher
                         .info(format!("No more resources, deployment is DOWN"))
@@ -296,8 +290,9 @@ impl Worker {
                 }
 
                 if blocked > 0 {
-                    info!(&self.log, "teardown waiting on living dependents";
-                        "blocked_resources" => blocked
+                    tracing::info!(
+                        blocked_resources = blocked,
+                        "teardown waiting on living dependents",
                     );
                     self.log_publisher
                         .info(format!("{blocked} resources still have living dependents"))
@@ -307,7 +302,7 @@ impl Worker {
             }
 
             DeploymentState::Lingering => {
-                info!(&self.log, "lingering...");
+                tracing::info!("lingering...");
                 let mut cursor = self.client.clone();
                 let mut seen = HashSet::new();
 
@@ -316,7 +311,7 @@ impl Worker {
                     let commit_hash = superceding_deployment.id.commit_hash.clone();
 
                     if !seen.insert(commit_hash) {
-                        warn!(&self.log, "detected supercession cycle while lingering");
+                        tracing::warn!("detected supercession cycle while lingering");
                         break;
                     }
 
@@ -339,10 +334,11 @@ impl Worker {
         let diagnosed = sclc::compile(self.client.clone()).await?;
         for diag in diagnosed.diags().iter() {
             let (module_id, span) = diag.locate();
-            info!(&self.log, "compile diagnostic";
-                "module" => module_id.to_string(),
-                "span" => span.to_string(),
-                "diag" => diag.to_string()
+            tracing::info!(
+                module = %module_id,
+                span = %span,
+                diag = %diag,
+                "compile diagnostic",
             );
         }
 
@@ -362,7 +358,7 @@ impl Worker {
         }
 
         if diagnosed.diags().has_errors() {
-            info!(&self.log, "compile produced errors; skipping evaluation");
+            tracing::info!("compile produced errors; skipping evaluation");
             return Ok(EvalCompleteness::Partial);
         }
 
@@ -401,7 +397,6 @@ impl Worker {
         }
         drop(resources);
 
-        let log = self.log.clone();
         let log_publisher = self.log_publisher.clone();
         let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
@@ -425,10 +420,11 @@ impl Worker {
                             inputs: match serde_json::to_value(&inputs) {
                                 Ok(value) => value,
                                 Err(error) => {
-                                    error!(log, "failed to encode create inputs";
-                                        "type" => id.ty,
-                                        "id" => id.id,
-                                        "error" => error.to_string()
+                                    tracing::error!(
+                                        resource_type = %id.ty,
+                                        resource_id = %id.id,
+                                        error = %error,
+                                        "failed to encode create inputs",
                                     );
                                     continue;
                                 }
@@ -443,8 +439,9 @@ impl Worker {
                                 .collect(),
                         });
                         if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            error!(log, "failed to publish create message";
-                                "error" => error.to_string()
+                            tracing::error!(
+                                error = %error,
+                                "failed to publish create message",
                             );
 
                             log_publisher
@@ -457,10 +454,11 @@ impl Worker {
                             continue;
                         }
 
-                        info!(log, "effect create resource";
-                            "type" => id.ty.clone(),
-                            "id" => id.id.clone(),
-                            "inputs" => format!("{:?}", inputs)
+                        tracing::info!(
+                            resource_type = %id.ty,
+                            resource_id = %id.id,
+                            inputs = ?inputs,
+                            "effect create resource",
                         );
                     }
                     sclc::Effect::UpdateResource {
@@ -472,10 +470,11 @@ impl Worker {
                         let desired_inputs = match serde_json::to_value(&inputs) {
                             Ok(value) => value,
                             Err(error) => {
-                                error!(log, "failed to encode update inputs";
-                                    "type" => id.ty,
-                                    "id" => id.id,
-                                    "error" => error.to_string()
+                                tracing::error!(
+                                    resource_type = %id.ty,
+                                    resource_id = %id.id,
+                                    error = %error,
+                                    "failed to encode update inputs",
                                 );
                                 continue;
                             }
@@ -515,8 +514,9 @@ impl Worker {
                             })
                         };
                         if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            error!(log, "failed to publish update message";
-                                "error" => error.to_string()
+                            tracing::error!(
+                                error = %error,
+                                "failed to publish update message",
                             );
 
                             log_publisher
@@ -528,10 +528,11 @@ impl Worker {
                             continue;
                         }
 
-                        info!(log, "effect update resource";
-                            "type" => id.ty.clone(),
-                            "id" => id.id.clone(),
-                            "inputs" => format!("{:?}", inputs)
+                        tracing::info!(
+                            resource_type = %id.ty,
+                            resource_id = %id.id,
+                            inputs = ?inputs,
+                            "effect update resource",
                         );
                     }
                     sclc::Effect::TouchResource {
@@ -548,10 +549,11 @@ impl Worker {
                         let desired_inputs = match serde_json::to_value(&inputs) {
                             Ok(value) => value,
                             Err(error) => {
-                                error!(log, "failed to encode touch inputs";
-                                    "type" => id.ty,
-                                    "id" => id.id,
-                                    "error" => error.to_string()
+                                tracing::error!(
+                                    resource_type = %id.ty,
+                                    resource_id = %id.id,
+                                    error = %error,
+                                    "failed to encode touch inputs",
                                 );
                                 continue;
                             }
@@ -576,8 +578,9 @@ impl Worker {
                             dependencies,
                         });
                         if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            error!(log, "failed to publish touch adopt message";
-                                "error" => error.to_string()
+                            tracing::error!(
+                                error = %error,
+                                "failed to publish touch adopt message",
                             );
 
                             log_publisher
@@ -589,10 +592,11 @@ impl Worker {
                             continue;
                         }
 
-                        info!(log, "effect touch resource adopt";
-                            "type" => id.ty.clone(),
-                            "id" => id.id.clone(),
-                            "inputs" => format!("{:?}", inputs)
+                        tracing::info!(
+                            resource_type = %id.ty,
+                            resource_id = %id.id,
+                            inputs = ?inputs,
+                            "effect touch resource adopt",
                         );
                     }
                 }
@@ -603,7 +607,7 @@ impl Worker {
             } else {
                 EvalCompleteness::Complete
             }
-        });
+        }.instrument(tracing::Span::current()));
 
         program.evaluate(&module_id, &eval).await?;
         drop(eval);
