@@ -46,21 +46,20 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS deps
 COPY --from=planner /src/recipe.json recipe.json
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    cargo chef cook --release --recipe-path recipe.json
 
 FROM deps AS build
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN set -eu; \
+RUN --mount=type=cache,target=/opt/cargo/registry \
+    --mount=type=cache,target=/src/target \
+    set -eu; \
     cargo build --release -p scs -p de -p rte -p plugin_std_random -p plugin_std_artifact -p plugin_std_container -p scoc -p api; \
     mkdir -p /artifacts; \
     for bin in scs de rte plugin_std_random plugin_std_artifact plugin_std_container scoc api; do \
-      path="$(find /src /home/rust /root /volume /target -type f -path "*/release/${bin}" 2>/dev/null | head -n1 || true)"; \
-      if [ -z "${path}" ]; then \
-        echo "failed to locate built binary: ${bin}" >&2; \
-        exit 1; \
-      fi; \
-      cp "${path}" "/artifacts/${bin}"; \
+      cp "/src/target/${CARGO_BUILD_TARGET}/release/${bin}" "/artifacts/${bin}"; \
     done
 
 FROM moby/buildkit:latest AS buildkit

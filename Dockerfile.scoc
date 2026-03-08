@@ -9,8 +9,9 @@ RUN apk add --no-cache containerd containerd-ctr crun
 COPY --from=binaries /scoc /usr/local/bin/scoc
 
 # Configure containerd for local registry access
-RUN mkdir -p /etc/containerd
+RUN mkdir -p /etc/containerd /etc/containerd/certs.d
 COPY containerd-config.toml /etc/containerd/config.toml
+COPY certs.d/ /etc/containerd/certs.d/
 
 # Create log directory for pods
 RUN mkdir -p /var/log/pods

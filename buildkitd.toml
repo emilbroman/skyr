@@ -1,0 +1,6 @@
+# BuildKit daemon configuration for local development
+# Configures the insecure OCI registry used for container images
+
+[registry."oci-registry:5000"]
+  http = true
+  insecure = true
