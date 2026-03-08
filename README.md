@@ -6,7 +6,7 @@ For end-user documentation, see [docs/](docs/index.md).
 
 ## Architecture
 
-<!-- TODO: Add architecture diagram (architecture.png) -->
+![Architecture Diagram](./Skyr.png)
 
 Skyr is composed of several services and libraries that work together:
 
