@@ -66,6 +66,7 @@ RUN set -eu; \
 FROM moby/buildkit:latest AS buildkit
 
 FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /artifacts/scs /scs
 COPY --from=build /artifacts/de /de
 COPY --from=build /artifacts/rte /rte
