@@ -291,7 +291,6 @@ Infrastructure services (via `podman-compose.yml`):
 - Redpanda (Kafka-compatible) on port 9092
 - MinIO (S3-compatible) on ports 9000 (API) and 9001 (console)
 - OCI Registry on port 5000
-- BuildKit on port 1234
 
 Application services:
 - `api`: GraphQL API on port 8080
@@ -301,14 +300,16 @@ Application services:
 - `plugin-std-random`: Random plugin on port 50051
 - `plugin-std-artifact`: Artifact plugin on port 50052
 - `plugin-std-container`: Container plugin on port 50053
-- `scoc-{1,2,3}`: Container orchestrator conduit nodes
 
-To start everything: `podman compose up` (requires building `skyr:latest` image first).
+BuildKit and SCOC nodes run as QEMU VMs (not containers). The `plugin-std-container`
+service in compose is configured to reach them via `host.containers.internal`.
+
+To start everything: `make compose` (builds image, starts infra, starts VMs, starts app services).
 
 ### VM Mode (QEMU)
 
-For proper container orchestration testing, BuildKit and SCOC nodes can run in QEMU VMs
-instead of containers. This avoids the issues with nested containers and privileged mode.
+BuildKit and SCOC nodes run in proper QEMU VMs using Alpine Linux, avoiding
+issues with nested containers and privileged mode.
 
 Prerequisites (provided by `nix develop`):
 - `qemu` (system emulators)
@@ -319,7 +320,7 @@ Prerequisites (provided by `nix develop`):
 Make targets:
 - `make vms`: Start 1 BuildKit VM + 3 SCOC worker VMs (downloads Alpine cloud image on first run)
 - `make vms-down`: Stop all VMs
-- `make compose-vm`: Full stack with VMs (builds image, starts infra, starts VMs, starts app services)
+- `make compose`: Full stack (builds image, starts infra, starts VMs, starts app services)
 
 VM networking:
 - BuildKit VM: `tcp://127.0.0.1:1234` (host) → port 1234 in VM
@@ -328,9 +329,6 @@ VM networking:
 - SCOC-3 VM: `http://127.0.0.1:50063` (host) → port 50054 in VM
 - VMs reach host/podman services via QEMU gateway `10.0.2.2`
 - Podman containers reach VMs via `host.containers.internal:<port>`
-
-The `podman-compose.vm.yml` override configures `plugin-std-container` to use the VM-hosted
-BuildKit (via `host.containers.internal:1234`) and exposes port 50053 so SCOC VMs can register.
 
 State is stored in `.vm/` (gitignored). Delete `.vm/scoc` to force SCOC binary rebuild.
 

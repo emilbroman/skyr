@@ -70,16 +70,6 @@ services:
       - 5000:5000
     restart: always
 
-  buildkit:
-    image: moby/buildkit:latest
-    privileged: true
-    restart: always
-    command:
-      - --addr
-      - tcp://0.0.0.0:1234
-    ports:
-      - 1234:1234
-
   api:
     image: skyr:latest
     entrypoint: ["/api"]
@@ -190,11 +180,15 @@ services:
         "--cdb-hostnames",
         "scylla:9042",
         "--buildkit-addr",
-        "tcp://buildkit:1234",
+        "tcp://host.containers.internal:1234",
         "--registry-url",
         "http://oci-registry:5000",
       ]
     restart: always
+    ports:
+      - "50053:50053"
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
     volumes:
       - tmpfs:/tmp
 
@@ -271,36 +265,6 @@ services:
         "--worker-count",
         "3",
       ]
-    restart: always
-
-  scoc-1:
-    image: skyr-scoc:latest
-    privileged: true
-    environment:
-      - SCOC_NODE_NAME=scoc-1
-      - SCOC_BIND=0.0.0.0:50054
-      - SCOC_CONDUIT_ADDRESS=http://scoc-1:50054
-      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
-    restart: always
-
-  scoc-2:
-    image: skyr-scoc:latest
-    privileged: true
-    environment:
-      - SCOC_NODE_NAME=scoc-2
-      - SCOC_BIND=0.0.0.0:50054
-      - SCOC_CONDUIT_ADDRESS=http://scoc-2:50054
-      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
-    restart: always
-
-  scoc-3:
-    image: skyr-scoc:latest
-    privileged: true
-    environment:
-      - SCOC_NODE_NAME=scoc-3
-      - SCOC_BIND=0.0.0.0:50054
-      - SCOC_CONDUIT_ADDRESS=http://scoc-3:50054
-      - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
     restart: always
 
 volumes:
