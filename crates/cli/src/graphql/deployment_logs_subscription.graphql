@@ -1,5 +1,5 @@
-subscription DeploymentLogs($deploymentId: String!, $initialAmount: Int) {
-  deploymentLogs(deploymentId: $deploymentId, initialAmount: $initialAmount) {
+subscription EnvironmentLogs($environmentQid: String!, $initialAmount: Int) {
+  environmentLogs(environmentQid: $environmentQid, initialAmount: $initialAmount) {
     severity
     timestamp
     message

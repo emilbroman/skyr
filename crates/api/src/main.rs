@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, pin::Pin, sync::Arc, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 mod challenge;
 
@@ -346,8 +346,8 @@ impl Repository {
         self.repository.name.repo.to_string()
     }
 
-    async fn deployments(&self, context: &Context) -> FieldResult<Vec<Deployment>> {
-        context
+    async fn environments(&self, context: &Context) -> FieldResult<Vec<Environment>> {
+        let deployments = context
             .cdb_client
             .repo(self.repository.name.clone())
             .deployments()
@@ -360,7 +360,6 @@ impl Repository {
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?
-            .map(|d| d.map(|deployment| Deployment { deployment }))
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| {
@@ -370,65 +369,94 @@ impl Repository {
                     e
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            })?;
+
+        let mut env_map: std::collections::BTreeMap<String, Vec<cdb::Deployment>> =
+            std::collections::BTreeMap::new();
+        for deployment in deployments {
+            let env_key = deployment.environment_qid().to_string();
+            env_map.entry(env_key).or_default().push(deployment);
+        }
+
+        Ok(env_map
+            .into_iter()
+            .map(|(_, deployments)| {
+                let qid = deployments[0].environment_qid();
+                Environment { qid, deployments }
             })
+            .collect())
+    }
+}
+
+pub struct Environment {
+    qid: ids::EnvironmentQid,
+    deployments: Vec<cdb::Deployment>,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Environment {
+    fn name(&self) -> String {
+        self.qid.environment.to_string()
+    }
+
+    fn qid(&self) -> String {
+        self.qid.to_string()
+    }
+
+    fn deployments(&self) -> Vec<Deployment> {
+        self.deployments
+            .iter()
+            .map(|deployment| Deployment {
+                deployment: deployment.clone(),
+            })
+            .collect()
     }
 
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
-        let deployments = context
-            .cdb_client
-            .repo(self.repository.name.clone())
-            .deployments()
+        let namespace = self.qid.to_string();
+
+        context
+            .rdb_client
+            .namespace(namespace.clone())
+            .list_resources()
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to list deployments for {} while listing resources: {}",
-                    self.repository.name,
-                    e
+                    "Failed to list resources for environment namespace {namespace}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?
+            .map(|resource| resource.map(|resource| Resource { resource }))
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to read deployments for {} while listing resources: {}",
-                    self.repository.name,
-                    e
+                    "Failed to load resources for environment namespace {namespace}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
-            })?;
+            })
+    }
 
-        let namespaces = deployments
-            .into_iter()
-            .map(|deployment| deployment.environment_qid().to_string())
-            .collect::<BTreeSet<_>>();
+    #[graphql(name = "lastLogs")]
+    async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
+        let amount = amount.unwrap_or(20).max(0) as u64;
+        let mut all_logs = Vec::new();
 
-        let mut resources = Vec::new();
-        for namespace in namespaces {
-            let namespace_resources = context
-                .rdb_client
-                .namespace(namespace.clone())
-                .list_resources()
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        "Failed to list resources for repository namespace {namespace}: {e}"
+        for deployment in &self.deployments {
+            let deployment_qid = deployment.deployment_qid().to_string();
+            match load_deployment_logs(context, deployment_qid.clone(), amount).await {
+                Ok(logs) => all_logs.extend(logs),
+                Err(error) => {
+                    tracing::warn!(
+                        "Failed to fetch logs for deployment {deployment_qid}: {error}"
                     );
-                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
-                })?
-                .map(|resource| resource.map(|resource| Resource { resource }))
-                .try_collect::<Vec<_>>()
-                .await
-                .map_err(|e| {
-                    tracing::error!(
-                        "Failed to load resources for repository namespace {namespace}: {e}"
-                    );
-                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
-                })?;
-            resources.extend(namespace_resources);
+                }
+            }
         }
 
-        Ok(resources)
+        all_logs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        all_logs.truncate(amount as usize);
+        Ok(all_logs)
     }
 }
 
@@ -804,6 +832,128 @@ impl Subscription {
                     Err(error) => {
                         tracing::warn!("Error while streaming deployment logs: {}", error);
                         break;
+                    }
+                }
+            }
+        }))
+    }
+
+    async fn environment_logs(
+        context: &Context,
+        environment_qid: String,
+        initial_amount: Option<i32>,
+    ) -> juniper::FieldResult<LogStream> {
+        let (_, user) = context.check_auth().await?;
+
+        let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|_| {
+            juniper::FieldError::new("invalid environment QID", juniper::Value::Null)
+        })?;
+
+        let organization = env_qid.repo.org.to_string();
+        if organization != user.username {
+            tracing::warn!(
+                "Rejected environment logs subscription for environment outside user organization: environment={} user={}",
+                environment_qid,
+                user.username
+            );
+            return Err(juniper::FieldError::new(
+                "environment outside user organization",
+                juniper::Value::Null,
+            ));
+        }
+
+        let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
+
+        let consumer = ldb::ClientBuilder::new()
+            .brokers(context.ldb_brokers.clone())
+            .build_consumer()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to build ldb consumer for environment logs subscription: {e}");
+                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            })?;
+
+        let cdb_client = context.cdb_client.clone();
+
+        Ok(Box::pin(async_stream::stream! {
+            let mut merged = futures_util::stream::SelectAll::new();
+            let mut subscribed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut poll_interval = tokio::time::interval(Duration::from_secs(3));
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    Some(item) = merged.next(), if !merged.is_empty() => {
+                        match item {
+                            Ok((timestamp, severity, message)) => {
+                                let severity = Severity::from(severity);
+                                yield Log {
+                                    severity,
+                                    timestamp: format_timestamp(timestamp),
+                                    message,
+                                };
+                            }
+                            Err(error) => {
+                                tracing::warn!("Error while streaming environment logs: {}", error);
+                                break;
+                            }
+                        }
+                    }
+
+                    _ = poll_interval.tick() => {
+                        let deployments = match cdb_client
+                            .repo(env_qid.repo.clone())
+                            .deployments()
+                            .await
+                        {
+                            Ok(stream) => match stream.try_collect::<Vec<_>>().await {
+                                Ok(deployments) => deployments,
+                                Err(e) => {
+                                    tracing::warn!("Failed to read deployments while polling for environment logs: {e}");
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("Failed to list deployments while polling for environment logs: {e}");
+                                continue;
+                            }
+                        };
+
+                        for deployment in deployments {
+                            if deployment.environment_qid() != env_qid {
+                                continue;
+                            }
+                            let deployment_qid = deployment.deployment_qid().to_string();
+                            if !subscribed.insert(deployment_qid.clone()) {
+                                continue;
+                            }
+
+                            let namespace = match consumer.namespace(deployment_qid.clone()).await {
+                                Ok(ns) => ns,
+                                Err(e) => {
+                                    tracing::warn!("Failed to prepare log consumer for deployment {deployment_qid}: {e}");
+                                    subscribed.remove(&deployment_qid);
+                                    continue;
+                                }
+                            };
+                            match namespace
+                                .tail(ldb::TailConfig {
+                                    follow: true,
+                                    start_from: ldb::StartFrom::End(initial_amount),
+                                })
+                                .await
+                            {
+                                Ok(stream) => {
+                                    tracing::info!("Started log consumer for deployment {deployment_qid}");
+                                    merged.push(stream);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to tail logs for deployment {deployment_qid}: {e}");
+                                    subscribed.remove(&deployment_qid);
+                                }
+                            }
+                        }
                     }
                 }
             }

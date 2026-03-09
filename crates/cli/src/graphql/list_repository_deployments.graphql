@@ -1,20 +1,24 @@
 query ListRepositoryDeployments {
   repositories {
     name
-    deployments {
-      id
-      ref
-      commit
-      createdAt
-      state
-      resources {
-        type
+    environments {
+      name
+      qid
+      deployments {
         id
-        inputs
-        outputs
-        dependencies {
+        ref
+        commit
+        createdAt
+        state
+        resources {
           type
           id
+          inputs
+          outputs
+          dependencies {
+            type
+            id
+          }
         }
       }
     }
