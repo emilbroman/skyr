@@ -32,7 +32,7 @@ RTE connects to RTQ as a consumer with configurable worker shards and dials RTP 
 
 ### Logging
 
-All transition events are logged to deployment log topics via the [LDB](../ldb/).
+All transition events are logged to deployment QID-keyed topics via the [LDB](../ldb/). The deployment QID (e.g., `org/repo::env@deploy`) is used as the log namespace.
 
 ## Running
 

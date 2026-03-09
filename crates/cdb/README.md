@@ -20,9 +20,20 @@ SCS → CDB ← DE
 
 ### Deployment Management
 
-- Store and query deployments and active deployments.
+- Store and query deployments keyed by repository QID (`org/repo`), environment ID, and deployment ID.
 - Update deployment states (Desired, Lingering, Undesired, Down).
 - Record and look up supercession relationships between deployments.
+- Look up deployments by their full deployment QID (`org/repo::env@deploy`).
+
+### Data Model
+
+CDB uses the [IDs](../ids/) crate for all identifier types:
+
+- **`RepoQid`** (`org/repo`) — identifies a repository; partition key for most tables.
+- **`EnvironmentId`** — derived from Git refs (e.g., `main`, `tag:v1.0`); stored as the `environment_id` column.
+- **`DeploymentId`** — 40-character hex commit hash; identifies a specific deployment revision.
+
+Client hierarchy: `Client → repo(RepoQid) → RepositoryClient → deployment(EnvironmentId, DeploymentId) → DeploymentClient`.
 
 ### Configuration File Access
 
@@ -39,6 +50,7 @@ Note: the codebase consistently uses the spelling `supercede`/`supercession` in 
 
 ## Related Crates
 
+- [IDs](../ids/) — typed identifiers used throughout CDB
 - [SCS](../scs/) — writes Git objects and deployments on push
 - [DE](../de/) — reads deployments and config files
 - [API](../api/) — reads deployments and objects for the GraphQL API

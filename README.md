@@ -25,6 +25,21 @@ Supporting infrastructure:
 - **[SCOC](crates/scoc/)** — Container Orchestrator Conduit, a CRI client that communicates with containerd on cluster nodes.
 - **[SCOP](crates/scop/)** — Container Orchestrator Protocol, bidirectional gRPC streaming between the container plugin and conduit nodes.
 
+### Namespace Hierarchy
+
+Skyr uses a four-level namespace hierarchy to identify infrastructure:
+
+| Level | Description | Example |
+|-------|-------------|---------|
+| **Organization** | Top-level namespace (user's username) | `alice` |
+| **Repository** | Codebase name | `my-app` |
+| **Environment** | Instance of the resource DAG (Git branch or tag) | `main`, `tag:v1.0` |
+| **Deployment** | Revision of an environment (Git commit hash) | `a10fb43f...` |
+
+Qualified identifiers (QIDs) combine these levels: `alice/my_app::main@a10fb43f...`
+
+Separators: `/` (org/repo), `::` (repo::env), `@` (env@deploy). See [IDs](crates/ids/) for the full type system.
+
 ### Deployment Lifecycle
 
 When a user pushes a commit, the deployment goes through these states:
@@ -82,6 +97,12 @@ The RTQ carries four message types:
 | Crate | Description |
 |-------|-------------|
 | [sclc](crates/sclc/) | SCL compiler and runtime (lexer, parser, type checker, evaluator) |
+
+### Shared Libraries
+
+| Crate | Description |
+|-------|-------------|
+| [ids](crates/ids/) | Typed identifiers for the namespace hierarchy (OrgId, RepoQid, EnvironmentQid, DeploymentQid) |
 
 ### Plugins
 

@@ -52,10 +52,10 @@ impl SourceRepo for cdb::DeploymentClient {
     type Err = cdb::FileError;
 
     fn package_id(&self) -> ModuleId {
-        let repository_name = self.repository_name();
+        let repo_qid = self.repo_qid();
         [
-            repository_name.organization.clone(),
-            repository_name.repository.clone(),
+            repo_qid.org.to_string(),
+            repo_qid.repo.to_string(),
         ]
         .into_iter()
         .collect::<ModuleId>()

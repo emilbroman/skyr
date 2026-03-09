@@ -126,10 +126,13 @@ impl Mutation {
             ));
         }
 
-        let name = cdb::RepositoryName {
-            organization,
-            repository,
-        };
+        let org: ids::OrgId = organization.parse().map_err(|_| {
+            juniper::FieldError::new("Invalid organization name", juniper::Value::Null)
+        })?;
+        let repo: ids::RepoId = repository.parse().map_err(|_| {
+            juniper::FieldError::new("Invalid repository name", juniper::Value::Null)
+        })?;
+        let name = ids::RepoQid { org, repo };
 
         let repository = context
             .cdb_client
@@ -340,7 +343,7 @@ pub struct Repository {
 #[juniper::graphql_object(Context = Context)]
 impl Repository {
     fn name(&self) -> String {
-        self.repository.name.repository.clone()
+        self.repository.name.repo.to_string()
     }
 
     async fn deployments(&self, context: &Context) -> FieldResult<Vec<Deployment>> {
@@ -397,7 +400,7 @@ impl Repository {
 
         let namespaces = deployments
             .into_iter()
-            .map(|deployment| format!("{}/{}", deployment.repository, deployment.id.ref_name))
+            .map(|deployment| deployment.environment_qid().to_string())
             .collect::<BTreeSet<_>>();
 
         let mut resources = Vec::new();
@@ -436,16 +439,16 @@ pub struct Deployment {
 #[juniper::graphql_object(Context = Context)]
 impl Deployment {
     fn id(&self) -> String {
-        self.deployment.fqid()
+        self.deployment.deployment_qid().to_string()
     }
 
     #[graphql(name = "ref")]
-    fn r#ref(&self) -> &str {
-        &self.deployment.id.ref_name
+    fn r#ref(&self) -> String {
+        self.deployment.environment.to_string()
     }
 
     fn commit(&self) -> String {
-        self.deployment.id.commit_hash.to_string()
+        self.deployment.deployment.to_string()
     }
 
     #[graphql(name = "createdAt")]
@@ -458,11 +461,8 @@ impl Deployment {
     }
 
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
-        let namespace = format!(
-            "{}/{}",
-            self.deployment.repository, self.deployment.id.ref_name
-        );
-        let owner = self.deployment.fqid();
+        let namespace = self.deployment.environment_qid().to_string();
+        let owner = self.deployment.deployment_qid().to_string();
 
         context
             .rdb_client
@@ -487,7 +487,7 @@ impl Deployment {
     }
 
     async fn artifacts(&self, context: &Context) -> FieldResult<Vec<Artifact>> {
-        let namespace = self.deployment.fqid();
+        let namespace = self.deployment.deployment_qid().to_string();
         let artifacts = context.adb_client.list(&namespace).await.map_err(|error| {
             tracing::error!("Failed to list artifacts for deployment {namespace}: {error}");
             juniper::FieldError::new("Internal server error", juniper::Value::Null)
@@ -502,12 +502,12 @@ impl Deployment {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
-        load_deployment_logs(context, self.deployment.fqid(), amount)
+        load_deployment_logs(context, self.deployment.deployment_qid().to_string(), amount)
             .await
             .map_err(|error| {
                 tracing::error!(
                     "Failed to fetch deployment logs for {}: {}",
-                    self.deployment.fqid(),
+                    self.deployment.deployment_qid().to_string(),
                     error
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
@@ -605,30 +605,24 @@ impl Resource {
             return Ok(None);
         };
 
-        let mut parts = owner.splitn(3, '/');
-        let organization = parts.next();
-        let repository = parts.next();
-        let deployment_id = parts.next();
-        let (Some(organization), Some(repository), Some(_deployment_id)) =
-            (organization, repository, deployment_id)
-        else {
-            tracing::warn!("invalid resource owner fqid format: {owner}");
-            return Ok(None);
+        let deployment_qid: ids::DeploymentQid = match owner.parse() {
+            Ok(qid) => qid,
+            Err(_) => {
+                tracing::warn!("invalid resource owner deployment QID format: {owner}");
+                return Ok(None);
+            }
         };
 
-        let repository_name = cdb::RepositoryName {
-            organization: organization.to_string(),
-            repository: repository.to_string(),
-        };
+        let repo_qid = deployment_qid.repo_qid().clone();
 
         let deployments = context
             .cdb_client
-            .repo(repository_name.clone())
+            .repo(repo_qid.clone())
             .deployments()
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to list deployments for owner repository {repository_name}: {e}"
+                    "Failed to list deployments for owner repository {repo_qid}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?
@@ -636,14 +630,14 @@ impl Resource {
             .await
             .map_err(|e| {
                 tracing::error!(
-                    "Failed to read deployments for owner repository {repository_name}: {e}"
+                    "Failed to read deployments for owner repository {repo_qid}: {e}"
                 );
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?;
 
         Ok(deployments
             .into_iter()
-            .find(|deployment| deployment.fqid() == owner)
+            .find(|deployment| deployment.deployment_qid().to_string() == owner)
             .map(|deployment| Deployment { deployment }))
     }
 
@@ -855,13 +849,9 @@ fn format_timestamp(timestamp_millis: u64) -> String {
         .unwrap_or_else(|| String::from("9999-12-31T23:59:59.999+00:00"))
 }
 
-fn deployment_organization(deployment_id: &str) -> Option<&str> {
-    let (organization, rest) = deployment_id.split_once('/')?;
-    let (repository, _tail) = rest.split_once('/')?;
-    if organization.is_empty() || repository.is_empty() {
-        return None;
-    }
-    Some(organization)
+fn deployment_organization(deployment_qid: &str) -> Option<String> {
+    let qid: ids::DeploymentQid = deployment_qid.parse().ok()?;
+    Some(qid.repo_qid().org.to_string())
 }
 
 #[derive(Clone, Debug)]

@@ -4,7 +4,7 @@ Skyr is a Git-native infrastructure orchestrator. You define your infrastructure
 
 ## Core Concepts
 
-**Git as the interface.** Skyr hosts Git repositories. When you push a commit, Skyr creates a deployment and begins reconciling your infrastructure to match the desired state.
+**Git as the interface.** Skyr hosts Git repositories organized into *organizations* and *repositories*. Each branch or tag becomes an *environment*, and each commit pushed to an environment creates a *deployment*. Skyr reconciles your infrastructure to match the desired state.
 
 **Declarative configuration.** You describe *what* you want, not *how* to create it. Skyr handles the lifecycle: creating, updating, and destroying resources as your configuration evolves.
 
@@ -62,7 +62,7 @@ When your configuration changes:
 - Removed resources are destroyed
 - Unchanged resources are preserved
 
-When a deployment supersedes another (e.g., pushing a new commit to the same branch), Skyr transfers ownership of shared resources to the new deployment and cleans up orphaned resources.
+When a deployment supersedes another (e.g., pushing a new commit to the same environment), Skyr transfers ownership of shared resources to the new deployment and cleans up orphaned resources. All resources within an environment share a namespace, so adoption between deployments is seamless.
 
 ## Getting Started
 

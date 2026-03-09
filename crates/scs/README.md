@@ -23,19 +23,21 @@ SCS validates incoming SSH connections by checking:
 When a user pushes:
 1. Parses the ref update commands from the client.
 2. Parses the incoming packfile, resolves deltas, and writes Git objects (blobs, trees, commits) into CDB.
-3. Marks new refs as **Desired** (active deployment).
-4. Marks replaced refs as **Lingering** (superseded by the new deployment).
-5. Marks deleted refs as **Undesired** (scheduled for teardown).
-6. Records the supercession relationship between old and new deployments.
+3. Converts Git refs to environment IDs using `EnvironmentId::from_git_ref()` (stripping `refs/heads/` and `refs/tags/` prefixes).
+4. Marks new deployments as **Desired** (active).
+5. Marks replaced deployments as **Lingering** (superseded by the new deployment).
+6. Marks deleted environments as **Undesired** (scheduled for teardown).
+7. Records the supercession relationship between old and new deployments.
 
 ### Fetch (`git-upload-pack`)
 
 When a user fetches:
-1. Advertises active deployments that are not in the Undesired or Lingering state as refs.
+1. Advertises active deployments that are not in the Undesired or Lingering state as refs, reconstructing full Git ref paths via `EnvironmentId::to_git_ref()`.
 2. Streams a generated packfile from stored Git objects.
 
 ## Related Crates
 
+- [IDs](../ids/) — typed identifiers (RepoQid, EnvironmentId, DeploymentId) for ref conversion
 - [CDB](../cdb/) — where Git objects and deployment metadata are stored
 - [UDB](../udb/) — user authentication data
 - [DE](../de/) — picks up deployments created by SCS

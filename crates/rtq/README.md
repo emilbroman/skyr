@@ -19,7 +19,7 @@ DE → RTQ → RTE
 | **Adopt** | Transfer resource ownership between deployments |
 | **Destroy** | Delete a resource no longer needed |
 
-Each message contains a `ResourceRef` with namespace, resource type, and resource ID.
+Each message contains a `ResourceRef` with namespace, resource type, and resource ID. Create, Destroy, and Restore messages carry an `owner_deployment_qid` (a full deployment QID like `org/repo::env@deploy`). Adopt messages carry `from_owner_deployment_qid` and `to_owner_deployment_qid` to transfer ownership between deployments.
 
 ## Implementation
 

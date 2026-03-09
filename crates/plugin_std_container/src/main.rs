@@ -20,7 +20,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
-use gix_hash::ObjectId;
 use gix_object::tree::EntryKind;
 use sclc::{Value, ValueAssertions};
 use tokio::sync::RwLock;
@@ -199,11 +198,14 @@ impl ContainerPlugin {
         );
 
         // Parse namespace to get repository and deployment info
-        let (repo_name, deployment_id) = parse_namespace(&namespace)?;
+        let deployment_qid = parse_namespace(&namespace)?;
 
         // Create a DeploymentClient for this deployment
-        let repo_client = self.inner.cdb.repo(repo_name);
-        let deployment_client = repo_client.deployment(deployment_id);
+        let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
+        let deployment_client = repo_client.deployment(
+            deployment_qid.environment_qid().environment.clone(),
+            deployment_qid.deployment.clone(),
+        );
 
         // Extract the Git context to a temporary directory
         let temp_dir = tempfile::tempdir()
@@ -836,46 +838,16 @@ fn inputs_changed(prev: &sclc::Record, curr: &sclc::Record) -> bool {
     prev_json != curr_json
 }
 
-/// Parse the namespace to extract repository name and deployment ID.
+/// Parse the namespace to extract repository QID, environment ID, and deployment ID.
 ///
-/// The namespace format is: `{org}/{repo}/{ref_name}@{commit_hash}`
-/// For example: `emil/myrepo/refs/heads/main@a10fb43f8a36c9be604dac6e76bd5bb298d3ea2e`
-fn parse_namespace(namespace: &str) -> Result<(cdb::RepositoryName, cdb::DeploymentId), PluginError> {
-    // Split on '@' to separate the ref path from the commit hash
-    let (ref_path, commit_hash_str) = namespace.rsplit_once('@').ok_or_else(|| {
+/// The namespace format is a deployment QID: `{org}/{repo}::{environment}@{deployment}`
+/// For example: `emil/myrepo::main@a10fb43f8a36c9be604dac6e76bd5bb298d3ea2e`
+fn parse_namespace(namespace: &str) -> Result<ids::DeploymentQid, PluginError> {
+    namespace.parse().map_err(|e| {
         PluginError::InvalidInput(format!(
-            "invalid namespace format (missing @commit): {namespace}"
+            "invalid namespace deployment QID format '{namespace}': {e}"
         ))
-    })?;
-
-    // Parse the ref path as org/repo/ref_name
-    let parts: Vec<&str> = ref_path.splitn(3, '/').collect();
-    if parts.len() != 3 {
-        return Err(PluginError::InvalidInput(format!(
-            "invalid namespace format (expected org/repo/ref): {namespace}"
-        )));
-    }
-
-    let organization = parts[0];
-    let repository = parts[1];
-    let ref_name = parts[2];
-
-    // Parse the commit hash as an ObjectId
-    let commit_hash = ObjectId::from_hex(commit_hash_str.as_bytes()).map_err(|e| {
-        PluginError::InvalidInput(format!("invalid commit hash '{commit_hash_str}': {e}"))
-    })?;
-
-    let repo_name = cdb::RepositoryName {
-        organization: organization.to_string(),
-        repository: repository.to_string(),
-    };
-
-    let deployment_id = cdb::DeploymentId {
-        ref_name: ref_name.to_string(),
-        commit_hash,
-    };
-
-    Ok((repo_name, deployment_id))
+    })
 }
 
 /// Extract a directory from the Git tree to the filesystem.
