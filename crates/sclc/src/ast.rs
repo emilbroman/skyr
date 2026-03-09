@@ -108,6 +108,18 @@ impl Expr {
             Expr::PropertyAccess(property_access) => property_access.expr.as_ref().free_vars(),
             Expr::Exception(_) => HashSet::new(),
             Expr::Raise(raise_expr) => raise_expr.expr.as_ref().free_vars(),
+            Expr::Try(try_expr) => {
+                let mut vars = try_expr.expr.as_ref().free_vars();
+                for catch in &try_expr.catches {
+                    vars.insert(catch.exception_var.name.as_str());
+                    let mut catch_vars = catch.body.as_ref().free_vars();
+                    if let Some(catch_arg) = &catch.catch_arg {
+                        catch_vars.remove(catch_arg.name.as_str());
+                    }
+                    vars.extend(catch_vars);
+                }
+                vars
+            }
         }
     }
 }
@@ -142,6 +154,7 @@ pub enum Expr {
     PropertyAccess(PropertyAccessExpr),
     Exception(ExceptionExpr),
     Raise(RaiseExpr),
+    Try(TryExpr),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -393,6 +406,19 @@ pub struct ExceptionExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RaiseExpr {
     pub expr: Box<Loc<Expr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TryExpr {
+    pub expr: Box<Loc<Expr>>,
+    pub catches: Vec<CatchClause>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatchClause {
+    pub exception_var: Loc<Var>,
+    pub catch_arg: Option<Loc<Var>>,
+    pub body: Loc<Expr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -326,6 +326,33 @@ impl crate::Diag for NotAnException {
 }
 
 #[derive(Error, Debug)]
+#[error("catch variable must be an exception or function returning an exception, got {ty}")]
+pub struct InvalidCatchTarget {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for InvalidCatchTarget {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("catch argument provided but exception is not a function type")]
+pub struct UnexpectedCatchArg {
+    pub module_id: crate::ModuleId,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for UnexpectedCatchArg {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -1039,6 +1066,83 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 let ty = self
                     .apply_expected_type(env, expr.span(), Type::Never, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
+            ast::Expr::Try(try_expr) => {
+                let mut diags = DiagList::new();
+                let try_ty = self
+                    .check_expr(env, try_expr.expr.as_ref(), expected_type)?
+                    .unpack(&mut diags)
+                    .unfold();
+
+                for catch in &try_expr.catches {
+                    let catch_var_ty = self
+                        .check_expr(
+                            env,
+                            &crate::Loc::new(
+                                ast::Expr::Var(catch.exception_var.clone()),
+                                catch.exception_var.span(),
+                            ),
+                            None,
+                        )?
+                        .unpack(&mut diags)
+                        .unfold();
+
+                    match &catch_var_ty {
+                        Type::Exception(_) => {
+                            if catch.catch_arg.is_some() {
+                                diags.push(UnexpectedCatchArg {
+                                    module_id: env.module_id()?,
+                                    span: catch.catch_arg.as_ref().unwrap().span(),
+                                });
+                            }
+                            self.check_expr(env, &catch.body, Some(&try_ty))?
+                                .unpack(&mut diags);
+                        }
+                        Type::Fn(fn_ty) => {
+                            let ret_ty = fn_ty.ret.as_ref().clone().unfold();
+                            if !matches!(ret_ty, Type::Exception(_)) {
+                                diags.push(InvalidCatchTarget {
+                                    module_id: env.module_id()?,
+                                    ty: catch_var_ty.clone(),
+                                    span: catch.exception_var.span(),
+                                });
+                            }
+                            if let Some(catch_arg) = &catch.catch_arg {
+                                let param_ty = fn_ty
+                                    .params
+                                    .first()
+                                    .cloned()
+                                    .unwrap_or(Type::Never);
+                                let inner_env =
+                                    env.with_local(catch_arg.name.as_str(), param_ty);
+                                self.check_expr(&inner_env, &catch.body, Some(&try_ty))?
+                                    .unpack(&mut diags);
+                            } else {
+                                self.check_expr(env, &catch.body, Some(&try_ty))?
+                                    .unpack(&mut diags);
+                            }
+                        }
+                        Type::Never => {
+                            // If the type is Never (e.g., undefined variable), skip further checks
+                            self.check_expr(env, &catch.body, Some(&try_ty))?
+                                .unpack(&mut diags);
+                        }
+                        _ => {
+                            diags.push(InvalidCatchTarget {
+                                module_id: env.module_id()?,
+                                ty: catch_var_ty,
+                                span: catch.exception_var.span(),
+                            });
+                            self.check_expr(env, &catch.body, Some(&try_ty))?
+                                .unpack(&mut diags);
+                        }
+                    }
+                }
+
+                let ty = self
+                    .apply_expected_type(env, expr.span(), try_ty, expected_type)?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
