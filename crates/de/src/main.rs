@@ -261,11 +261,11 @@ impl Worker {
 
                     let message = rtq::Message::Destroy(rtq::DestroyMessage {
                         resource: rtq::ResourceRef {
-                            namespace: self.namespace.namespace().to_owned(),
+                            environment_qid: self.namespace.namespace().to_owned(),
                             resource_type: resource.resource_type.clone(),
                             resource_id: resource.id.clone(),
                         },
-                        owner_deployment_qid: owner_deployment_qid.clone(),
+                        deployment_id: deployment.deployment.to_string(),
                     });
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
@@ -372,7 +372,9 @@ impl Worker {
             .cloned()
             .chain(std::iter::once(String::from("Main")))
             .collect::<sclc::ModuleId>();
-        let owner_deployment_qid = self.client.deployment_qid().to_string();
+        let full_deployment_qid = self.client.deployment_qid();
+        let owner_deployment_qid = full_deployment_qid.to_string();
+        let deployment_id = full_deployment_qid.deployment.to_string();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
@@ -415,11 +417,11 @@ impl Worker {
                         had_effect = true;
                         let message = rtq::Message::Create(rtq::CreateMessage {
                             resource: rtq::ResourceRef {
-                                namespace: namespace_id.clone(),
+                                environment_qid: namespace_id.clone(),
                                 resource_type: id.ty.clone(),
                                 resource_id: id.id.clone(),
                             },
-                            owner_deployment_qid: owner_deployment_qid.clone(),
+                            deployment_id: deployment_id.clone(),
                             inputs: match serde_json::to_value(&inputs) {
                                 Ok(value) => value,
                                 Err(error) => {
@@ -435,7 +437,7 @@ impl Worker {
                             dependencies: dependencies
                                 .into_iter()
                                 .map(|dependency| rtq::ResourceRef {
-                                    namespace: namespace_id.clone(),
+                                    environment_qid: namespace_id.clone(),
                                     resource_type: dependency.ty,
                                     resource_id: dependency.id,
                                 })
@@ -485,33 +487,37 @@ impl Worker {
                         let dependencies = dependencies
                             .into_iter()
                             .map(|dependency| rtq::ResourceRef {
-                                namespace: namespace_id.clone(),
+                                environment_qid: namespace_id.clone(),
                                 resource_type: dependency.ty,
                                 resource_id: dependency.id,
                             })
                             .collect::<Vec<_>>();
-                        let message = if let Some(from_owner_deployment_qid) =
+                        let message = if let Some(from_owner_qid) =
                             unowned_resource_owner_by_id.get(&id).cloned()
                         {
+                            let from_deploy_id = from_owner_qid
+                                .rsplit_once('@')
+                                .map(|(_, id)| id.to_string())
+                                .unwrap_or(from_owner_qid);
                             rtq::Message::Adopt(rtq::AdoptMessage {
                                 resource: rtq::ResourceRef {
-                                    namespace: namespace_id.clone(),
+                                    environment_qid: namespace_id.clone(),
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
-                                from_owner_deployment_qid,
-                                to_owner_deployment_qid: owner_deployment_qid.clone(),
+                                from_deployment_id: from_deploy_id,
+                                to_deployment_id: deployment_id.clone(),
                                 desired_inputs,
                                 dependencies,
                             })
                         } else {
                             rtq::Message::Restore(rtq::RestoreMessage {
                                 resource: rtq::ResourceRef {
-                                    namespace: namespace_id.clone(),
+                                    environment_qid: namespace_id.clone(),
                                     resource_type: id.ty.clone(),
                                     resource_id: id.id.clone(),
                                 },
-                                owner_deployment_qid: owner_deployment_qid.clone(),
+                                deployment_id: deployment_id.clone(),
                                 desired_inputs,
                                 dependencies,
                             })
@@ -548,6 +554,10 @@ impl Worker {
                         else {
                             continue;
                         };
+                        let from_deployment_id = from_owner_deployment_qid
+                            .rsplit_once('@')
+                            .map(|(_, id)| id.to_string())
+                            .unwrap_or(from_owner_deployment_qid);
                         had_effect = true;
                         let desired_inputs = match serde_json::to_value(&inputs) {
                             Ok(value) => value,
@@ -564,19 +574,19 @@ impl Worker {
                         let dependencies = dependencies
                             .into_iter()
                             .map(|dependency| rtq::ResourceRef {
-                                namespace: namespace_id.clone(),
+                                environment_qid: namespace_id.clone(),
                                 resource_type: dependency.ty,
                                 resource_id: dependency.id,
                             })
                             .collect::<Vec<_>>();
                         let message = rtq::Message::Adopt(rtq::AdoptMessage {
                             resource: rtq::ResourceRef {
-                                namespace: namespace_id.clone(),
+                                environment_qid: namespace_id.clone(),
                                 resource_type: id.ty.clone(),
                                 resource_id: id.id.clone(),
                             },
-                            from_owner_deployment_qid,
-                            to_owner_deployment_qid: owner_deployment_qid.clone(),
+                            from_deployment_id,
+                            to_deployment_id: deployment_id.clone(),
                             desired_inputs,
                             dependencies,
                         });

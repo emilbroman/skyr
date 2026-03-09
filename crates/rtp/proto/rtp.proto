@@ -26,6 +26,10 @@ message CreateResourceRequest {
   string resource_type = 1;
   string resource_id = 2;
   string resource_inputs_json = 3;
+  // Environment QID (e.g., "MyOrg/MyRepo::main").
+  string environment_qid = 4;
+  // Deployment ID — bare 40-char hex commit hash.
+  string deployment_id = 5;
 }
 
 message Resource {
@@ -42,6 +46,8 @@ message CreateResourceResponse {
 message UpdateResourceRequest {
   Resource resource = 1;
   string inputs_json = 2;
+  string environment_qid = 3;
+  string deployment_id = 4;
 }
 
 message UpdateResourceResponse {
@@ -50,10 +56,14 @@ message UpdateResourceResponse {
 
 message DeleteResourceRequest {
   Resource resource = 1;
+  string environment_qid = 2;
+  string deployment_id = 3;
 }
 
 message HealthRequest {
   Resource resource = 1;
+  string environment_qid = 2;
+  string deployment_id = 3;
 }
 
 message HealthResponse {
