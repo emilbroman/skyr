@@ -125,7 +125,7 @@ pub async fn build_and_push(
             if digest.is_none() {
                 digest = try_extract_digest(&line);
             }
-            stderr_log.error(line.clone()).await;
+            stderr_log.info(line.clone()).await;
             last_line = line;
         }
         (digest, last_line)
