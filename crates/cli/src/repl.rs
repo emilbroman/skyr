@@ -179,7 +179,9 @@ pub async fn run_repl() -> anyhow::Result<()> {
             Ok(line) => {
                 editor.add_history_entry(&line)?;
 
-                repl.process(&line).await?;
+                if let Err(e) = repl.process(&line).await {
+                    println!("{e}");
+                }
             }
             Err(ReadlineError::Interrupted) | Err(ReadlineError::Eof) => break,
             Err(err) => return Err(err.into()),
