@@ -390,13 +390,16 @@ impl ContainerPlugin {
             .await
             .map_err(|e| PluginError::ScopOperation(e.to_string()))?;
 
-        let pod_id = response.into_inner().pod_id;
+        let inner = response.into_inner();
+        let pod_id = inner.pod_id;
+        let address = inner.address;
 
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
             pod_id = %pod_id,
             node = %node_name,
+            address = %address,
             "pod sandbox created"
         );
 
@@ -405,6 +408,7 @@ impl ContainerPlugin {
         outputs.insert(String::from("podId"), Value::Str(pod_id));
         outputs.insert(String::from("node"), Value::Str(node_name));
         outputs.insert(String::from("name"), Value::Str(name));
+        outputs.insert(String::from("address"), Value::Str(address));
 
         Ok(sclc::Resource {
             inputs,

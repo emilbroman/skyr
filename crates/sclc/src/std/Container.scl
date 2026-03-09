@@ -36,6 +36,10 @@ export let Image = extern "Std/Container.Image": fn({
 }
 
 // Pod resource - creates a pod sandbox on a worker node
+//
+// Each pod runs in its own network namespace with a unique IP address.
+// By default, all ingress traffic is denied. Use Pod.Port and allow lists
+// (in a future phase) to grant network access between pods.
 export let Pod = extern "Std/Container.Pod": fn({
     name: Str,
 }) {
@@ -43,6 +47,8 @@ export let Pod = extern "Std/Container.Pod": fn({
     node: Str,
     name: Str,
     namespace: Str,
+    // The pod's IP address within the cluster network
+    address: Str,
     Container: fn({
         name: Str,
         image: Str,
