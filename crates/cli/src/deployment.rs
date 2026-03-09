@@ -91,36 +91,40 @@ async fn list_deployments(
 ) -> anyhow::Result<()> {
     let (_, repository_name) = repo::parse_repository_path(repository)?;
 
-    let deployments =
-        query_repository_deployments(client, endpoint, token, repository_name).await?;
+    let environments =
+        query_repository_environments(client, endpoint, token, repository_name).await?;
 
-    let deployments = deployments
+    let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
-        .map(|deployment| DeploymentOutput {
-            r#ref: deployment.ref_.to_owned(),
-            commit: deployment.commit.to_owned(),
-            created_at: deployment.created_at.to_owned(),
-            state: format!("{:?}", deployment.state),
-            resources: deployment
-                .resources
-                .into_iter()
-                .map(|resource| ResourceOutput {
-                    r#type: resource.type_.to_owned(),
-                    id: resource.id,
-                    inputs: resource.inputs,
-                    outputs: resource.outputs,
-                    dependencies: resource
-                        .dependencies
+        .flat_map(|env| {
+            env.deployments.into_iter().map(|deployment| {
+                DeploymentOutput {
+                    r#ref: deployment.ref_.to_owned(),
+                    commit: deployment.commit.to_owned(),
+                    created_at: deployment.created_at.to_owned(),
+                    state: format!("{:?}", deployment.state),
+                    resources: deployment
+                        .resources
                         .into_iter()
-                        .map(|dependency| ResourceDependencyOutput {
-                            r#type: dependency.type_,
-                            id: dependency.id,
+                        .map(|resource| ResourceOutput {
+                            r#type: resource.type_.to_owned(),
+                            id: resource.id,
+                            inputs: resource.inputs,
+                            outputs: resource.outputs,
+                            dependencies: resource
+                                .dependencies
+                                .into_iter()
+                                .map(|dependency| ResourceDependencyOutput {
+                                    r#type: dependency.type_,
+                                    id: dependency.id,
+                                })
+                                .collect::<Vec<_>>(),
                         })
                         .collect::<Vec<_>>(),
-                })
-                .collect::<Vec<_>>(),
+                }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect();
 
     match format {
         OutputFormat::Json => crate::output::print_json(&deployments)?,
@@ -163,36 +167,43 @@ async fn stream_deployment_logs(
         tokio::sync::mpsc::unbounded_channel::<(String, anyhow::Result<()>)>();
 
     loop {
-        let deployments =
-            query_repository_deployments(client, endpoint, token, repository_name).await?;
-        let deployment_ids = deployments
-            .into_iter()
-            .filter(|deployment| {
-                !matches!(
-                    deployment.state,
-                    list_repository_deployments::DeploymentState::DOWN
-                )
-            })
-            .map(|deployment| deployment.id)
-            .collect::<BTreeSet<_>>();
+        let environments =
+            query_repository_environments(client, endpoint, token, repository_name).await?;
 
-        if deployment_ids.is_empty() && !saw_any {
+        let environment_qids: BTreeSet<String> = environments
+            .into_iter()
+            .filter(|env| {
+                env.deployments.iter().any(|d| {
+                    !matches!(
+                        d.state,
+                        list_repository_deployments::DeploymentState::DOWN
+                    )
+                })
+            })
+            .map(|env| env.qid)
+            .collect();
+
+        if environment_qids.is_empty() && !saw_any {
             return Err(anyhow!(
                 "repository '{}' has no active deployments (all are DOWN)",
                 repository
             ));
         }
 
-        for deployment_id in deployment_ids {
-            if subscribed.insert(deployment_id.clone()) {
+        for environment_qid in environment_qids {
+            if subscribed.insert(environment_qid.clone()) {
                 saw_any = true;
                 let ws_endpoint = ws_endpoint.clone();
                 let token = token.to_owned();
                 let task_events_tx = task_events_tx.clone();
                 tokio::spawn(async move {
-                    let result =
-                        stream_single_deployment(&ws_endpoint, &token, deployment_id.clone()).await;
-                    let _ = task_events_tx.send((deployment_id, result));
+                    let result = stream_single_environment(
+                        &ws_endpoint,
+                        &token,
+                        environment_qid.clone(),
+                    )
+                    .await;
+                    let _ = task_events_tx.send((environment_qid, result));
                 });
             }
         }
@@ -206,21 +217,21 @@ async fn stream_deployment_logs(
                 return Ok(());
             }
             event = task_events_rx.recv() => {
-                let Some((deployment_id, result)) = event else {
+                let Some((environment_qid, result)) = event else {
                     continue;
                 };
-                subscribed.remove(&deployment_id);
-                result.with_context(|| format!("log stream failed for deployment {deployment_id}"))?;
+                subscribed.remove(&environment_qid);
+                result.with_context(|| format!("log stream failed for environment {environment_qid}"))?;
             }
             _ = &mut sleep => {}
         }
     }
 }
 
-async fn stream_single_deployment(
+async fn stream_single_environment(
     ws_endpoint: &str,
     token: &str,
-    deployment_id: String,
+    environment_qid: String,
 ) -> anyhow::Result<()> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -253,8 +264,8 @@ async fn stream_single_deployment(
         .await
         .with_context(|| {
             format!(
-                "failed to send graphql websocket connection init for deployment {}",
-                deployment_id
+                "failed to send graphql websocket connection init for environment {}",
+                environment_qid
             )
         })?;
 
@@ -263,22 +274,22 @@ async fn stream_single_deployment(
     write
         .send(Message::Text(
             json!({
-                "id": deployment_id,
+                "id": environment_qid,
                 "type": "subscribe",
                 "payload": {
                     "query": include_str!("graphql/deployment_logs_subscription.graphql"),
                     "variables": {
-                        "deploymentId": deployment_id,
+                        "environmentQid": environment_qid,
                         "initialAmount": 200
                     },
-                    "operationName": "DeploymentLogs"
+                    "operationName": "EnvironmentLogs"
                 }
             })
             .to_string()
             .into(),
         ))
         .await
-        .context("failed to send deployment logs subscription")?;
+        .context("failed to send environment logs subscription")?;
 
     while let Some(message) = read.next().await {
         let message = message.context("failed to read websocket message")?;
@@ -287,7 +298,7 @@ async fn stream_single_deployment(
                 if let Some(log) = decode_log_message(&text)? {
                     println!(
                         "[{}] [{}] [{}] {}",
-                        deployment_id, log.timestamp, log.severity, log.message
+                        environment_qid, log.timestamp, log.severity, log.message
                     );
                 }
             }
@@ -383,8 +394,8 @@ fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
 
             let log = payload
                 .get("data")
-                .and_then(|data| data.get("deploymentLogs"))
-                .ok_or_else(|| anyhow!("subscription message missing deploymentLogs"))?;
+                .and_then(|data| data.get("environmentLogs"))
+                .ok_or_else(|| anyhow!("subscription message missing environmentLogs"))?;
 
             let severity = log
                 .get("severity")
@@ -417,13 +428,13 @@ fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
     }
 }
 
-async fn query_repository_deployments(
+async fn query_repository_environments(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
     repository_name: &str,
 ) -> anyhow::Result<
-    Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesDeployments>,
+    Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesEnvironments>,
 > {
     let body = ListRepositoryDeployments::build_query(list_repository_deployments::Variables {});
     let response = client
@@ -458,7 +469,7 @@ async fn query_repository_deployments(
         .find(|repo| repo.name == repository_name)
         .ok_or_else(|| anyhow!("repository '{repository_name}' not found"))?;
 
-    Ok(repository.deployments)
+    Ok(repository.environments)
 }
 
 fn graphql_ws_endpoint(graphql_endpoint: &str) -> anyhow::Result<String> {

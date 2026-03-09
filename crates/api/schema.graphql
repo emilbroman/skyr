@@ -42,6 +42,14 @@ type Deployment {
   lastLogs(amount: Int): [Log!]!
 }
 
+type Environment {
+  name: String!
+  qid: String!
+  deployments: [Deployment!]!
+  resources: [Resource!]!
+  lastLogs(amount: Int): [Log!]!
+}
+
 type Log {
   severity: Severity!
   timestamp: String!
@@ -63,8 +71,7 @@ type Query {
 
 type Repository {
   name: String!
-  deployments: [Deployment!]!
-  resources: [Resource!]!
+  environments: [Environment!]!
 }
 
 type Resource {
@@ -78,6 +85,7 @@ type Resource {
 
 type Subscription {
   deploymentLogs(deploymentId: String!, initialAmount: Int): Log!
+  environmentLogs(environmentQid: String!, initialAmount: Int): Log!
 }
 
 type User {
