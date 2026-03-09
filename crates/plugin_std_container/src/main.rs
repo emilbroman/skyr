@@ -10,6 +10,7 @@
 //! - `Std/Container.Image` - Container image build via BuildKit
 //! - `Std/Container.Pod` - Pod sandbox lifecycle
 //! - `Std/Container.Pod.Container` - Container lifecycle within a pod
+//! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
 
 mod buildkit;
 mod node_registry;
@@ -66,6 +67,7 @@ struct Args {
 const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
 const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
+const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
 
 /// Inner state shared between Orchestrator and RTP servers.
 struct ContainerPluginInner {
@@ -737,6 +739,126 @@ impl ContainerPlugin {
 
         Ok(())
     }
+
+    // =========================================================================
+    // Pod.Port Resource Handlers
+    // =========================================================================
+
+    /// Create a port resource on a pod.
+    ///
+    /// Inputs:
+    /// - `podName`: Pod name (required)
+    /// - `podNamespace`: Pod namespace (required)
+    /// - `podAddress`: Pod IP address (required)
+    /// - `port`: Port number (required)
+    /// - `protocol`: Protocol, e.g. "tcp" or "udp" (required)
+    /// - `name`: Optional port name
+    ///
+    /// Outputs:
+    /// - `address`: The pod's IP address
+    /// - `port`: The port number
+    /// - `protocol`: The protocol
+    async fn create_port(
+        &self,
+        _environment_qid: &str,
+        id: sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let pod_name = inputs
+            .get("podName")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?;
+        let pod_address = inputs
+            .get("podAddress")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("podAddress: {e}")))?
+            .to_string();
+        let port = inputs
+            .get("port")
+            .assert_int_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("port: {e}")))?;
+        let protocol = inputs
+            .get("protocol")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("protocol: {e}")))?
+            .to_string();
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            pod_name = %pod_name,
+            port = %port,
+            protocol = %protocol,
+            "creating pod port"
+        );
+
+        // Build outputs — the port resource records which address/port/protocol
+        // is now open. Actual firewall rule application is handled by SCOC when
+        // network namespaces are in place.
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("address"), Value::Str(pod_address));
+        outputs.insert(String::from("port"), Value::Int(*port));
+        outputs.insert(String::from("protocol"), Value::Str(protocol));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Update a port resource.
+    ///
+    /// Ports are immutable — any change requires recreating.
+    async fn update_port(
+        &self,
+        environment_qid: &str,
+        id: sclc::ResourceId,
+        prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        if inputs_changed(&prev_inputs, &inputs) {
+            warn!(
+                resource_type = %id.ty,
+                resource_id = %id.id,
+                "pod port inputs changed, recreating"
+            );
+            self.delete_port(id.clone(), prev_inputs, prev_outputs)
+                .await?;
+            return self.create_port(environment_qid, id, inputs).await;
+        }
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            "pod port update is a no-op (no changes)"
+        );
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs: prev_outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Delete a port resource.
+    async fn delete_port(
+        &self,
+        id: sclc::ResourceId,
+        _inputs: sclc::Record,
+        _outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        // Firewall rule cleanup will be handled by SCOC in a future phase.
+        // For now, the port resource is purely declarative.
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            "pod port deleted"
+        );
+
+        Ok(())
+    }
 }
 
 // =============================================================================
@@ -1081,6 +1203,18 @@ impl rtp::Plugin for ContainerPlugin {
                 }
                 result
             }
+            PORT_RESOURCE_TYPE => {
+                let result = self.create_port(environment_qid, id.clone(), inputs).await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "port create_resource failed"
+                    );
+                }
+                result
+            }
             _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
         }
     }
@@ -1135,6 +1269,20 @@ impl rtp::Plugin for ContainerPlugin {
                 }
                 result
             }
+            PORT_RESOURCE_TYPE => {
+                let result = self
+                    .update_port(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs)
+                    .await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "port update_resource failed"
+                    );
+                }
+                result
+            }
             _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
         }
     }
@@ -1181,6 +1329,18 @@ impl rtp::Plugin for ContainerPlugin {
                         resource_id = %id.id,
                         err = %e,
                         "container delete_resource failed"
+                    );
+                }
+                result
+            }
+            PORT_RESOURCE_TYPE => {
+                let result = self.delete_port(id.clone(), inputs, outputs).await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "port delete_resource failed"
                     );
                 }
                 result
