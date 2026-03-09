@@ -1,7 +1,7 @@
 use ordered_float::NotNan;
 use serde_json::{Map, Number, Value as JsonValue};
 
-use crate::{Dict, EvalError, Record, Value};
+use crate::{Dict, EvalError, EvalErrorKind, Record, Value};
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn("Std/Encoding.toJson", |args, _ctx| {
@@ -13,7 +13,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         first.try_map(|value| {
             let json = to_json_value(&value)?;
             let encoded = serde_json::to_string(&json)
-                .map_err(|err| EvalError::Custom(format!("failed to encode JSON: {err}")))?;
+                .map_err(|err| EvalErrorKind::Custom(format!("failed to encode JSON: {err}")))?;
             Ok(Value::Str(encoded))
         })
     });
@@ -29,7 +29,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         first.try_map(|value| {
             let input = value.assert_str()?;
             let json = serde_json::from_str::<JsonValue>(&input)
-                .map_err(|err| EvalError::Custom(format!("invalid JSON: {err}")))?;
+                .map_err(|err| EvalErrorKind::Custom(format!("invalid JSON: {err}")))?;
             from_json_value(json)
         })
     });
@@ -38,13 +38,14 @@ pub fn register_extern(eval: &mut crate::Eval) {
 fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
     match value {
         Value::Nil => Ok(JsonValue::Null),
-        Value::Pending(_) => Err(EvalError::Custom(
+        Value::Pending(_) => Err(EvalErrorKind::Custom(
             "cannot encode pending value as JSON".into(),
-        )),
+        )
+        .into()),
         Value::Int(value) => Ok(JsonValue::Number(Number::from(*value))),
         Value::Float(value) => Number::from_f64(value.into_inner())
             .map(JsonValue::Number)
-            .ok_or_else(|| EvalError::Custom("invalid float for JSON encoding".into())),
+            .ok_or_else(|| EvalErrorKind::Custom("invalid float for JSON encoding".into()).into()),
         Value::Bool(value) => Ok(JsonValue::Bool(*value)),
         Value::Str(value) => Ok(JsonValue::String(value.clone())),
         Value::List(values) => {
@@ -54,12 +55,14 @@ fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
             }
             Ok(JsonValue::Array(out))
         }
-        Value::ExternFn(_) | Value::Fn(_) => Err(EvalError::Custom(
+        Value::ExternFn(_) | Value::Fn(_) => Err(EvalErrorKind::Custom(
             "cannot encode function value as JSON".into(),
-        )),
-        Value::Exception(_) => Err(EvalError::Custom(
+        )
+        .into()),
+        Value::Exception(_) => Err(EvalErrorKind::Custom(
             "cannot encode exception value as JSON".into(),
-        )),
+        )
+        .into()),
         Value::Record(record) => Ok(JsonValue::Object(record_to_map(record)?)),
         Value::Dict(dict) => Ok(JsonValue::Object(dict_to_map(dict)?)),
     }
@@ -80,8 +83,8 @@ fn dict_to_map(dict: &Dict) -> Result<Map<String, JsonValue>, EvalError> {
             Value::Str(value) => value.clone(),
             other => {
                 let json_key = to_json_value(other)?;
-                serde_json::to_string(&json_key).map_err(|err| {
-                    EvalError::Custom(format!("failed to encode dict key as JSON: {err}"))
+                serde_json::to_string(&json_key).map_err(|err| -> EvalError {
+                    EvalErrorKind::Custom(format!("failed to encode dict key as JSON: {err}")).into()
                 })?
             }
         };
@@ -97,9 +100,9 @@ fn from_json_value(value: JsonValue) -> Result<Value, EvalError> {
         JsonValue::Number(value) => {
             let value = value
                 .as_f64()
-                .ok_or_else(|| EvalError::Custom("JSON number is out of range for f64".into()))?;
+                .ok_or_else(|| -> EvalError { EvalErrorKind::Custom("JSON number is out of range for f64".into()).into() })?;
             let value =
-                NotNan::new(value).map_err(|_| EvalError::Custom("JSON number is NaN".into()))?;
+                NotNan::new(value).map_err(|_| -> EvalError { EvalErrorKind::Custom("JSON number is NaN".into()).into() })?;
             Ok(Value::Float(value))
         }
         JsonValue::String(value) => Ok(Value::Str(value)),
