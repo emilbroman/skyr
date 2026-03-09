@@ -4,16 +4,17 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use hyper_util::rt::TokioIo;
 use k8s_cri::v1::{
     AuthConfig, ContainerConfig, ContainerMetadata, CreateContainerRequest,
-    CreateContainerResponse, ImageSpec, LinuxContainerConfig, LinuxContainerSecurityContext,
-    LinuxPodSandboxConfig, LinuxSandboxSecurityContext, NamespaceMode, NamespaceOption,
-    PodSandboxConfig, PodSandboxMetadata, PullImageRequest, RemoveContainerRequest,
-    RemovePodSandboxRequest, RunPodSandboxRequest, RunPodSandboxResponse, StartContainerRequest,
-    StopContainerRequest, StopPodSandboxRequest, VersionRequest,
-    image_service_client::ImageServiceClient, runtime_service_client::RuntimeServiceClient,
+    CreateContainerResponse, DnsConfig, ImageSpec, LinuxContainerConfig,
+    LinuxContainerSecurityContext, LinuxPodSandboxConfig, LinuxSandboxSecurityContext,
+    NamespaceMode, NamespaceOption, PodSandboxConfig, PodSandboxMetadata,
+    PodSandboxStatusRequest, PullImageRequest, RemoveContainerRequest, RemovePodSandboxRequest,
+    RunPodSandboxRequest, RunPodSandboxResponse, StartContainerRequest, StopContainerRequest,
+    StopPodSandboxRequest, VersionRequest, image_service_client::ImageServiceClient,
+    runtime_service_client::RuntimeServiceClient,
 };
 use tokio::net::UnixStream;
 use tonic::transport::{Channel, Endpoint, Uri};
@@ -119,6 +120,48 @@ impl CriClient {
 
         info!(sandbox_id = %sandbox_id, "pod sandbox removed");
         Ok(())
+    }
+
+    /// Get the network namespace path for a pod sandbox.
+    ///
+    /// Queries the CRI runtime for the sandbox status with verbose info,
+    /// extracts the sandbox PID from containerd's info map, and returns
+    /// the `/proc/<pid>/ns/net` path.
+    pub async fn pod_network_namespace(&mut self, sandbox_id: &str) -> Result<String> {
+        debug!(sandbox_id = %sandbox_id, "querying pod sandbox status for network namespace");
+
+        let response = self
+            .runtime
+            .pod_sandbox_status(PodSandboxStatusRequest {
+                pod_sandbox_id: sandbox_id.to_string(),
+                verbose: true,
+            })
+            .await
+            .context("pod_sandbox_status failed")?
+            .into_inner();
+
+        // containerd returns runtime-specific info in the `info` map.
+        // The key "info" contains a JSON blob with a "pid" field.
+        let info_json = response
+            .info
+            .get("info")
+            .context("no 'info' key in sandbox status response")?;
+
+        let info: serde_json::Value =
+            serde_json::from_str(info_json).context("failed to parse sandbox info JSON")?;
+
+        let pid = info
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .context("no 'pid' field in sandbox info")?;
+
+        if pid == 0 {
+            bail!("sandbox PID is 0 — sandbox may not be running");
+        }
+
+        let netns_path = format!("/proc/{pid}/ns/net");
+        info!(sandbox_id = %sandbox_id, pid = pid, netns = %netns_path, "found pod network namespace");
+        Ok(netns_path)
     }
 
     /// Create a container within a pod sandbox.
@@ -245,10 +288,15 @@ impl CriClient {
 }
 
 /// Create a pod sandbox config for CRI.
-/// Uses host namespaces to work in nested container environments.
-/// The CRI namespace is always "skyr" — SCOC is the translation boundary
-/// where Skyr QID concepts map to CRI concepts.
-pub fn pod_sandbox_config(name: &str) -> PodSandboxConfig {
+///
+/// Each pod gets its own network namespace for isolation. PID and IPC
+/// namespaces remain shared with the host. The CRI namespace is always
+/// "skyr" — SCOC is the translation boundary where Skyr QID concepts
+/// map to CRI concepts.
+///
+/// `dns_servers` configures the pod's `/etc/resolv.conf`. Pass the host's
+/// nameservers for now; a cluster DNS server will be added in a later phase.
+pub fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandboxConfig {
     let namespace = "skyr";
     PodSandboxConfig {
         metadata: Some(PodSandboxMetadata {
@@ -257,10 +305,13 @@ pub fn pod_sandbox_config(name: &str) -> PodSandboxConfig {
             namespace: namespace.to_string(),
             attempt: 0,
         }),
-        // Empty hostname to avoid UTS namespace requirement
-        hostname: String::new(),
+        hostname: name.to_string(),
         log_directory: format!("/var/log/pods/{namespace}_{name}"),
-        dns_config: None,
+        dns_config: Some(DnsConfig {
+            servers: dns_servers.to_vec(),
+            searches: vec![],
+            options: vec![],
+        }),
         port_mappings: vec![],
         labels: Default::default(),
         annotations: Default::default(),
@@ -269,12 +320,12 @@ pub fn pod_sandbox_config(name: &str) -> PodSandboxConfig {
             #[allow(deprecated)]
             security_context: Some(LinuxSandboxSecurityContext {
                 namespace_options: Some(NamespaceOption {
-                    // Use host namespaces for nested container compatibility
-                    network: NamespaceMode::Node.into(),
+                    // Each pod gets its own network namespace for isolation
+                    network: NamespaceMode::Pod.into(),
+                    // PID and IPC remain shared with host
                     pid: NamespaceMode::Node.into(),
                     ipc: NamespaceMode::Node.into(),
                     target_id: String::new(),
-                    // Don't use user namespaces
                     userns_options: None,
                 }),
                 selinux_options: None,
@@ -329,12 +380,12 @@ pub fn container_config(name: &str, image: &str) -> ContainerConfig {
                 capabilities: None,
                 privileged: true,
                 namespace_options: Some(NamespaceOption {
-                    // Use host namespaces for nested container compatibility
-                    network: NamespaceMode::Node.into(),
+                    // Container shares the pod's network namespace
+                    network: NamespaceMode::Pod.into(),
+                    // PID and IPC remain shared with host
                     pid: NamespaceMode::Node.into(),
                     ipc: NamespaceMode::Node.into(),
                     target_id: String::new(),
-                    // Don't use user namespaces
                     userns_options: None,
                 }),
                 selinux_options: None,

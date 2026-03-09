@@ -1,15 +1,18 @@
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use ipnet::Ipv4Net;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod cri;
 mod log_stream;
+mod net;
 
 use cri::CriClient;
 
@@ -51,6 +54,11 @@ enum Command {
         /// LDB broker address for container log streaming.
         #[arg(long, default_value = "127.0.0.1:9092")]
         ldb_brokers: String,
+        /// Requested pod subnet size (e.g., "24" or "/24" for a /24 subnet).
+        /// Sent to the orchestrator during registration; a larger number means
+        /// a smaller subnet (fewer pods). Default /24 = 254 pods.
+        #[arg(long, default_value = "24")]
+        pod_netmask: String,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -134,10 +142,12 @@ enum ContainerAction {
     },
 }
 
-/// Tracked pod info for log streaming namespace construction.
+/// Tracked pod info for log streaming and network teardown.
 struct PodInfo {
     environment_qid: String,
     name: String,
+    /// Allocated IP address for the pod.
+    ip: Ipv4Addr,
 }
 
 /// Tracked container info for log streaming lifecycle.
@@ -146,29 +156,44 @@ struct ContainerInfo {
     name: String,
 }
 
-/// SCOP Conduit implementation backed by CRI.
+/// SCOP Conduit implementation backed by CRI, with per-pod networking.
 struct CriConduit {
     cri: Arc<Mutex<CriClient>>,
     ldb_publisher: Option<ldb::Publisher>,
     log_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pods: Arc<Mutex<HashMap<String, PodInfo>>>,
     containers: Arc<Mutex<HashMap<String, ContainerInfo>>>,
+    /// Per-node IP address allocator.
+    ipam: Arc<Mutex<net::Ipam>>,
+    /// The node's pod subnet (for network setup).
+    pod_cidr: Ipv4Net,
+    /// DNS servers to configure in pods.
+    dns_servers: Vec<String>,
 }
 
 impl CriConduit {
-    fn new(cri: CriClient, ldb_publisher: Option<ldb::Publisher>) -> Self {
+    fn new(
+        cri: CriClient,
+        ldb_publisher: Option<ldb::Publisher>,
+        ipam: net::Ipam,
+        pod_cidr: Ipv4Net,
+        dns_servers: Vec<String>,
+    ) -> Self {
         Self {
             cri: Arc::new(Mutex::new(cri)),
             ldb_publisher,
             log_tasks: Arc::new(Mutex::new(HashMap::new())),
             pods: Arc::new(Mutex::new(HashMap::new())),
             containers: Arc::new(Mutex::new(HashMap::new())),
+            ipam: Arc::new(Mutex::new(ipam)),
+            pod_cidr,
+            dns_servers,
         }
     }
 
     /// Convert SCOP PodConfig to CRI PodSandboxConfig.
-    fn to_cri_pod_config(config: &scop::PodConfig) -> k8s_cri::v1::PodSandboxConfig {
-        cri::pod_sandbox_config(&config.name)
+    fn to_cri_pod_config(&self, config: &scop::PodConfig) -> k8s_cri::v1::PodSandboxConfig {
+        cri::pod_sandbox_config(&config.name, &self.dns_servers)
     }
 
     /// Convert SCOP ContainerConfig to CRI ContainerConfig.
@@ -288,14 +313,59 @@ impl scop::Conduit for CriConduit {
         request: scop::CreatePodRequest,
     ) -> Result<scop::CreatePodResponse, scop::tonic::Status> {
         let config = request.config.unwrap_or_default();
-        let cri_config = Self::to_cri_pod_config(&config);
+        let cri_config = self.to_cri_pod_config(&config);
         let mut cri = self.cri.lock().await;
+
+        // Step 1: Create the CRI pod sandbox (gets its own network namespace)
         let pod_id = cri
             .run_pod_sandbox(cri_config)
             .await
             .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
 
-        // Track pod info for log streaming
+        // Step 2: Allocate an IP for this pod
+        let ip = {
+            let mut ipam = self.ipam.lock().await;
+            match ipam.allocate(&pod_id) {
+                Ok(ip) => ip,
+                Err(e) => {
+                    // Clean up CRI sandbox on IPAM failure
+                    let _ = cri.stop_pod_sandbox(&pod_id).await;
+                    let _ = cri.remove_pod_sandbox(&pod_id).await;
+                    return Err(scop::tonic::Status::internal(format!(
+                        "IPAM allocation failed: {e}"
+                    )));
+                }
+            }
+        };
+
+        // Step 3: Discover the pod's network namespace path
+        let netns_path = match cri.pod_network_namespace(&pod_id).await {
+            Ok(path) => path,
+            Err(e) => {
+                let mut ipam = self.ipam.lock().await;
+                ipam.release(&pod_id);
+                let _ = cri.stop_pod_sandbox(&pod_id).await;
+                let _ = cri.remove_pod_sandbox(&pod_id).await;
+                return Err(scop::tonic::Status::internal(format!(
+                    "failed to get network namespace: {e}"
+                )));
+            }
+        };
+
+        // Step 4: Set up pod networking (veth pair, bridge, IP, firewall)
+        if let Err(e) = net::setup_pod_network(&pod_id, ip, &self.pod_cidr, &netns_path) {
+            let mut ipam = self.ipam.lock().await;
+            ipam.release(&pod_id);
+            let _ = cri.stop_pod_sandbox(&pod_id).await;
+            let _ = cri.remove_pod_sandbox(&pod_id).await;
+            return Err(scop::tonic::Status::internal(format!(
+                "pod network setup failed: {e}"
+            )));
+        }
+
+        let address = ip.to_string();
+
+        // Track pod info for log streaming and network teardown
         {
             let mut pods = self.pods.lock().await;
             pods.insert(
@@ -303,17 +373,34 @@ impl scop::Conduit for CriConduit {
                 PodInfo {
                     environment_qid: config.environment_qid,
                     name: config.name,
+                    ip,
                 },
             );
         }
 
-        Ok(scop::CreatePodResponse { pod_id })
+        Ok(scop::CreatePodResponse { pod_id, address })
     }
 
     async fn remove_pod(
         &self,
         request: scop::RemovePodRequest,
     ) -> Result<scop::RemovePodResponse, scop::tonic::Status> {
+        // Tear down pod networking before stopping the sandbox
+        // (the netns disappears when the sandbox process exits)
+        if let Err(e) = net::teardown_pod_network(&request.pod_id) {
+            tracing::warn!(
+                pod_id = %request.pod_id,
+                error = %e,
+                "failed to tear down pod network (continuing with removal)"
+            );
+        }
+
+        // Release the pod's IP
+        {
+            let mut ipam = self.ipam.lock().await;
+            ipam.release(&request.pod_id);
+        }
+
         let mut cri = self.cri.lock().await;
 
         // Stop the pod sandbox first, then remove it
@@ -339,7 +426,7 @@ impl scop::Conduit for CriConduit {
     ) -> Result<scop::CreateContainerResponse, scop::tonic::Status> {
         let config = request.config.unwrap_or_default();
         let pod_config = request.pod_config.unwrap_or_default();
-        let cri_pod_config = Self::to_cri_pod_config(&pod_config);
+        let cri_pod_config = self.to_cri_pod_config(&pod_config);
         let cri_container_config = Self::to_cri_container_config(&config);
         let mut cri = self.cri.lock().await;
 
@@ -441,7 +528,19 @@ async fn main() -> Result<()> {
             memory_bytes,
             max_pods,
             ldb_brokers,
+            pod_netmask,
         } => {
+            // Parse --pod-netmask, stripping optional leading slash
+            let pod_netmask: u32 = pod_netmask
+                .strip_prefix('/')
+                .unwrap_or(&pod_netmask)
+                .parse()
+                .expect("invalid --pod-netmask, expected a number like 24 or /24");
+            assert!(
+                pod_netmask > 0 && pod_netmask <= 30,
+                "--pod-netmask must be between 1 and 30"
+            );
+
             tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
             tracing::info!("  bind: {}", bind);
@@ -449,6 +548,7 @@ async fn main() -> Result<()> {
             tracing::info!("  orchestrator_address: {}", orchestrator_address);
             tracing::info!("  containerd_socket: {}", containerd_socket);
             tracing::info!("  ldb_brokers: {}", ldb_brokers);
+            tracing::info!("  pod_netmask: /{}", pod_netmask);
 
             // Verify CRI connectivity at startup
             let cri = {
@@ -477,10 +577,7 @@ async fn main() -> Result<()> {
                 }
             };
 
-            // Create the conduit
-            let conduit = CriConduit::new(cri, ldb_publisher);
-
-            // Connect to orchestrator and register
+            // Register with orchestrator to get our pod CIDR
             tracing::info!("Registering with orchestrator at {}", orchestrator_address);
             let mut orchestrator =
                 scop::OrchestratorClient::connect(orchestrator_address.clone()).await?;
@@ -495,6 +592,7 @@ async fn main() -> Result<()> {
                         max_pods,
                     }),
                     labels: Default::default(),
+                    pod_netmask,
                 })
                 .await?
                 .into_inner();
@@ -505,7 +603,23 @@ async fn main() -> Result<()> {
                     register_response.error
                 );
             }
-            tracing::info!("Registered with orchestrator");
+
+            // Parse the pod CIDR assigned by the orchestrator
+            let pod_cidr: Ipv4Net = register_response
+                .pod_cidr
+                .parse()
+                .expect("orchestrator returned invalid pod_cidr");
+            tracing::info!("Registered with orchestrator, assigned pod CIDR: {}", pod_cidr);
+
+            // Set up the pod bridge network with the assigned CIDR
+            net::setup_bridge(&pod_cidr)?;
+
+            let ipam = net::Ipam::new(pod_cidr);
+            let dns_servers = net::host_nameservers();
+            tracing::info!("DNS servers for pods: {:?}", dns_servers);
+
+            // Create the conduit with networking support
+            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, dns_servers);
 
             // Spawn heartbeat task
             let node_name_heartbeat = node_name.clone();
@@ -556,6 +670,11 @@ async fn main() -> Result<()> {
             // Cancel heartbeat task
             heartbeat_handle.abort();
 
+            // Tear down pod bridge network
+            if let Err(e) = net::teardown_bridge(&pod_cidr) {
+                tracing::error!("Failed to tear down bridge: {}", e);
+            }
+
             // Unregister from orchestrator
             tracing::info!("Unregistering from orchestrator");
             if let Ok(mut client) =
@@ -583,8 +702,11 @@ async fn main() -> Result<()> {
                 name,
                 containerd_socket,
             } => {
+                // Test CLI: creates a pod sandbox without networking setup.
+                // Use the daemon for full networking support.
                 let mut cri = CriClient::connect(&containerd_socket).await?;
-                let config = cri::pod_sandbox_config(&name);
+                let dns_servers = net::host_nameservers();
+                let config = cri::pod_sandbox_config(&name, &dns_servers);
                 let pod_id = cri.run_pod_sandbox(config).await?;
                 println!("{pod_id}");
             }
@@ -612,7 +734,8 @@ async fn main() -> Result<()> {
                 cri.pull_image(&image, None).await?;
 
                 // Create a minimal pod config for the container creation call
-                let pod_config = cri::pod_sandbox_config("pod");
+                let dns_servers = net::host_nameservers();
+                let pod_config = cri::pod_sandbox_config("pod", &dns_servers);
                 let container_config = cri::container_config(&name, &image);
                 let container_id = cri
                     .create_container(&pod_id, &pod_config, container_config)

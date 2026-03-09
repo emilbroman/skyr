@@ -43,6 +43,9 @@ message RegisterNodeRequest {
   NodeCapacity capacity = 3;
   // Labels for node selection/scheduling.
   map<string, string> labels = 4;
+  // Requested pod subnet prefix length (e.g., 24 for a /24).
+  // The orchestrator allocates a subnet of this size from the cluster CIDR.
+  uint32 pod_netmask = 5;
 }
 
 // Resource capacity of a node.
@@ -61,6 +64,9 @@ message RegisterNodeResponse {
   bool success = 1;
   // Error message if registration failed.
   string error = 2;
+  // Pod CIDR assigned to this node (e.g., "10.42.1.0/24").
+  // The node uses this subnet for pod IP allocation.
+  string pod_cidr = 3;
 }
 
 // Heartbeat request to keep registration alive.
@@ -138,6 +144,8 @@ message CreatePodRequest {
 message CreatePodResponse {
   // The ID of the created pod.
   string pod_id = 1;
+  // The pod's IP address (e.g., "10.42.1.2").
+  string address = 2;
 }
 
 // Request to remove a pod.

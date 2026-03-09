@@ -158,6 +158,11 @@ fn pod_extern_fn(
         .assert_str_ref()
         .unwrap_or(eval_ctx.namespace())
         .to_owned();
+    let address = outputs
+        .get("address")
+        .assert_str_ref()
+        .unwrap_or("")
+        .to_owned();
 
     // Build the result record with outputs
     let mut result = Record::default();
@@ -165,6 +170,7 @@ fn pod_extern_fn(
     result.insert(String::from("node"), Value::Str(node.clone()));
     result.insert(String::from("name"), Value::Str(name.clone()));
     result.insert(String::from("namespace"), Value::Str(namespace.clone()));
+    result.insert(String::from("address"), Value::Str(address));
 
     // Create the Container function that captures the pod's context
     let container_fn = create_container_fn(

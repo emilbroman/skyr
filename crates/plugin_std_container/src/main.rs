@@ -13,6 +13,7 @@
 
 mod buildkit;
 mod node_registry;
+mod subnet_allocator;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -53,6 +54,12 @@ struct Args {
     /// LDB hostname for deployment log streaming.
     #[arg(long)]
     ldb_hostname: String,
+
+    /// Cluster CIDR for pod networking (e.g., "10.42.0.0/16").
+    /// Subdivided into per-node subnets during node registration.
+    /// Nodes request their preferred subnet size via --pod-netmask.
+    #[arg(long, default_value = "10.42.0.0/16")]
+    cluster_cidr: String,
 }
 
 // Resource type constants
@@ -72,6 +79,8 @@ struct ContainerPluginInner {
     registry_url: String,
     /// LDB publisher for deployment log streaming.
     ldb_publisher: ldb::Publisher,
+    /// Allocates per-node subnets from the cluster CIDR.
+    subnet_allocator: RwLock<subnet_allocator::SubnetAllocator>,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -89,6 +98,7 @@ impl ContainerPlugin {
         buildkit_addr: String,
         registry_url: String,
         ldb_publisher: ldb::Publisher,
+        subnet_allocator: subnet_allocator::SubnetAllocator,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -97,6 +107,7 @@ impl ContainerPlugin {
                 buildkit_addr,
                 registry_url,
                 ldb_publisher,
+                subnet_allocator: RwLock::new(subnet_allocator),
             }),
         }
     }
@@ -390,13 +401,16 @@ impl ContainerPlugin {
             .await
             .map_err(|e| PluginError::ScopOperation(e.to_string()))?;
 
-        let pod_id = response.into_inner().pod_id;
+        let inner = response.into_inner();
+        let pod_id = inner.pod_id;
+        let address = inner.address;
 
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
             pod_id = %pod_id,
             node = %node_name,
+            address = %address,
             "pod sandbox created"
         );
 
@@ -405,6 +419,7 @@ impl ContainerPlugin {
         outputs.insert(String::from("podId"), Value::Str(pod_id));
         outputs.insert(String::from("node"), Value::Str(node_name));
         outputs.insert(String::from("name"), Value::Str(name));
+        outputs.insert(String::from("address"), Value::Str(address));
 
         Ok(sclc::Resource {
             inputs,
@@ -897,6 +912,26 @@ impl scop::Orchestrator for ContainerPlugin {
             "registering node"
         );
 
+        // Allocate a pod subnet for this node at the requested size
+        let pod_cidr = {
+            let mut allocator = self.inner.subnet_allocator.write().await;
+            match allocator.allocate(&request.node_name, request.pod_netmask as u8) {
+                Ok(subnet) => subnet.to_string(),
+                Err(e) => {
+                    tracing::error!(
+                        node_name = %request.node_name,
+                        error = %e,
+                        "failed to allocate subnet for node"
+                    );
+                    return Ok(scop::RegisterNodeResponse {
+                        success: false,
+                        error: e,
+                        pod_cidr: String::new(),
+                    });
+                }
+            }
+        };
+
         let capacity = request.capacity.unwrap_or_default();
         let node_capacity = node_registry::NodeCapacity {
             cpu_millis: capacity.cpu_millis,
@@ -915,18 +950,28 @@ impl scop::Orchestrator for ContainerPlugin {
             .await
         {
             Ok(node) => {
-                info!(node_name = %node.name, "node registered successfully");
+                info!(
+                    node_name = %node.name,
+                    pod_cidr = %pod_cidr,
+                    "node registered successfully"
+                );
                 Ok(scop::RegisterNodeResponse {
                     success: true,
                     error: String::new(),
+                    pod_cidr,
                 })
             }
             Err(e) => {
+                // Release the subnet on registry failure
+                let mut allocator = self.inner.subnet_allocator.write().await;
+                allocator.release(&request.node_name);
+
                 let error = e.to_string();
                 tracing::error!(node_name = %request.node_name, error = %error, "failed to register node");
                 Ok(scop::RegisterNodeResponse {
                     success: false,
                     error,
+                    pod_cidr: String::new(),
                 })
             }
         }
@@ -961,6 +1006,12 @@ impl scop::Orchestrator for ContainerPlugin {
         request: scop::UnregisterNodeRequest,
     ) -> Result<scop::UnregisterNodeResponse, scop::tonic::Status> {
         info!(node_name = %request.node_name, "unregistering node");
+
+        // Release the node's subnet allocation
+        {
+            let mut allocator = self.inner.subnet_allocator.write().await;
+            allocator.release(&request.node_name);
+        }
 
         let mut registry = self.inner.node_registry.write().await;
         match registry.unregister(&request.node_name).await {
@@ -1184,6 +1235,7 @@ async fn main() -> Result<()> {
     info!("  buildkit_addr: {}", args.buildkit_addr);
     info!("  registry_url: {}", args.registry_url);
     info!("  ldb_hostname: {}", args.ldb_hostname);
+    info!("  cluster_cidr: {}", args.cluster_cidr);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -1210,6 +1262,13 @@ async fn main() -> Result<()> {
 
     info!("Connected to LDB");
 
+    // Set up subnet allocator for pod networking
+    let cluster_cidr: ipnet::Ipv4Net = args
+        .cluster_cidr
+        .parse()
+        .expect("invalid --cluster-cidr, expected CIDR notation (e.g., 10.42.0.0/16)");
+    let subnet_allocator = subnet_allocator::SubnetAllocator::new(cluster_cidr);
+
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
         node_registry,
@@ -1217,6 +1276,7 @@ async fn main() -> Result<()> {
         args.buildkit_addr.clone(),
         args.registry_url.clone(),
         ldb_publisher,
+        subnet_allocator,
     );
 
     // Clone for the RTP server (since ContainerPlugin is Clone via Arc)
