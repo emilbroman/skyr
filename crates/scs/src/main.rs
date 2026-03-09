@@ -277,6 +277,12 @@ impl Handler for ConfigHandler {
         let mut args =
             comma::parse_command(String::from_utf8_lossy(data).as_ref()).unwrap_or(vec![]);
         args.insert(0, "ssh skyr".into());
+        // Strip leading slash from repo path (ssh:// URLs produce paths like "/org/repo")
+        if let Some(repo_arg) = args.get_mut(2) {
+            if let Some(stripped) = repo_arg.strip_prefix('/') {
+                *repo_arg = stripped.to_string();
+            }
+        }
         let result = ChannelCommand::try_parse_from(args);
         if let Some(tx) = self.channels.remove(&channel) {
             tx.send(result).await.unwrap_or_default();
