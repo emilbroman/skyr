@@ -377,10 +377,10 @@ impl ContainerPlugin {
             "creating pod sandbox"
         );
 
-        // Connect to the target node and run the pod
+        // Connect to the target node and create the pod
         let mut conduit = self.get_conduit(&node_name).await?;
         let response = conduit
-            .run_pod(scop::RunPodRequest {
+            .create_pod(scop::CreatePodRequest {
                 config: Some(scop::PodConfig {
                     environment_qid: environment_qid.to_string(),
                     name: name.clone(),
@@ -486,15 +486,6 @@ impl ContainerPlugin {
 
         let mut conduit = self.get_conduit(node_name).await?;
 
-        // Stop the pod first
-        conduit
-            .stop_pod(scop::StopPodRequest {
-                pod_id: pod_id.to_string(),
-            })
-            .await
-            .map_err(|e| PluginError::ScopOperation(format!("stop_pod: {e}")))?;
-
-        // Then remove it
         conduit
             .remove_pod(scop::RemovePodRequest {
                 pod_id: pod_id.to_string(),

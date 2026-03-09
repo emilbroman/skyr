@@ -71,23 +71,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PodAction {
-    /// Create and run a test pod.
-    Run {
+    /// Create a test pod.
+    Create {
         /// Pod name.
         #[arg(long)]
         name: String,
         #[arg(long, default_value = "/run/containerd/containerd.sock")]
         containerd_socket: String,
     },
-    /// Stop a pod.
-    Stop {
-        /// Pod ID.
-        #[arg(long)]
-        id: String,
-        #[arg(long, default_value = "/run/containerd/containerd.sock")]
-        containerd_socket: String,
-    },
-    /// Remove a pod.
+    /// Stop and remove a pod.
     Remove {
         /// Pod ID.
         #[arg(long)]
@@ -291,10 +283,10 @@ impl CriConduit {
 
 #[scop::tonic::async_trait]
 impl scop::Conduit for CriConduit {
-    async fn run_pod(
+    async fn create_pod(
         &self,
-        request: scop::RunPodRequest,
-    ) -> Result<scop::RunPodResponse, scop::tonic::Status> {
+        request: scop::CreatePodRequest,
+    ) -> Result<scop::CreatePodResponse, scop::tonic::Status> {
         let config = request.config.unwrap_or_default();
         let cri_config = Self::to_cri_pod_config(&config);
         let mut cri = self.cri.lock().await;
@@ -315,18 +307,7 @@ impl scop::Conduit for CriConduit {
             );
         }
 
-        Ok(scop::RunPodResponse { pod_id })
-    }
-
-    async fn stop_pod(
-        &self,
-        request: scop::StopPodRequest,
-    ) -> Result<scop::StopPodResponse, scop::tonic::Status> {
-        let mut cri = self.cri.lock().await;
-        cri.stop_pod_sandbox(&request.pod_id)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-        Ok(scop::StopPodResponse {})
+        Ok(scop::CreatePodResponse { pod_id })
     }
 
     async fn remove_pod(
@@ -334,6 +315,11 @@ impl scop::Conduit for CriConduit {
         request: scop::RemovePodRequest,
     ) -> Result<scop::RemovePodResponse, scop::tonic::Status> {
         let mut cri = self.cri.lock().await;
+
+        // Stop the pod sandbox first, then remove it
+        cri.stop_pod_sandbox(&request.pod_id)
+            .await
+            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
         cri.remove_pod_sandbox(&request.pod_id)
             .await
             .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
@@ -593,7 +579,7 @@ async fn main() -> Result<()> {
         }
 
         Command::Pod { action } => match action {
-            PodAction::Run {
+            PodAction::Create {
                 name,
                 containerd_socket,
             } => {
@@ -602,19 +588,12 @@ async fn main() -> Result<()> {
                 let pod_id = cri.run_pod_sandbox(config).await?;
                 println!("{pod_id}");
             }
-            PodAction::Stop {
-                id,
-                containerd_socket,
-            } => {
-                let mut cri = CriClient::connect(&containerd_socket).await?;
-                cri.stop_pod_sandbox(&id).await?;
-                println!("Pod stopped");
-            }
             PodAction::Remove {
                 id,
                 containerd_socket,
             } => {
                 let mut cri = CriClient::connect(&containerd_socket).await?;
+                cri.stop_pod_sandbox(&id).await?;
                 cri.remove_pod_sandbox(&id).await?;
                 println!("Pod removed");
             }

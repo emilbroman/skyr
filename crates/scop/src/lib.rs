@@ -31,7 +31,7 @@
 //! struct MyConduit { /* CRI client */ }
 //!
 //! impl Conduit for MyConduit {
-//!     async fn run_pod(&self, request: RunPodRequest) -> Result<RunPodResponse, Status> {
+//!     async fn create_pod(&self, request: CreatePodRequest) -> Result<CreatePodResponse, Status> {
 //!         // Use CRI to create the sandbox
 //!     }
 //! }
@@ -48,7 +48,7 @@
 //!
 //! // Plugin sending commands to conduit
 //! let mut client = ConduitClient::connect("http://node:50054").await?;
-//! client.run_pod(request).await?;
+//! client.create_pod(request).await?;
 //! ```
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
@@ -67,12 +67,12 @@ pub mod proto {
 
 // Re-export commonly used types
 pub use proto::{
-    ContainerConfig, CreateContainerRequest, CreateContainerResponse, HeartbeatRequest,
-    HeartbeatResponse, KeyValue, NodeCapacity, NodeUsage, PodConfig, RegisterNodeRequest,
-    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse, RemovePodRequest,
-    RemovePodResponse, RunPodRequest, RunPodResponse, StartContainerRequest,
-    StartContainerResponse, StopContainerRequest, StopContainerResponse, StopPodRequest,
-    StopPodResponse, UnregisterNodeRequest, UnregisterNodeResponse,
+    ContainerConfig, CreateContainerRequest, CreateContainerResponse, CreatePodRequest,
+    CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue, NodeCapacity, NodeUsage,
+    PodConfig, RegisterNodeRequest, RegisterNodeResponse, RemoveContainerRequest,
+    RemoveContainerResponse, RemovePodRequest, RemovePodResponse, StartContainerRequest,
+    StartContainerResponse, StopContainerRequest, StopContainerResponse, UnregisterNodeRequest,
+    UnregisterNodeResponse,
 };
 
 // Re-export the generated clients
@@ -260,11 +260,11 @@ pub async fn serve_orchestrator<O: Orchestrator>(
 /// Trait implemented by SCOC to handle pod and container operations.
 #[tonic::async_trait]
 pub trait Conduit: Send + Sync + 'static {
-    /// Run a pod.
-    async fn run_pod(&self, request: RunPodRequest) -> Result<RunPodResponse, tonic::Status>;
-
-    /// Stop a pod.
-    async fn stop_pod(&self, request: StopPodRequest) -> Result<StopPodResponse, tonic::Status>;
+    /// Create a pod.
+    async fn create_pod(
+        &self,
+        request: CreatePodRequest,
+    ) -> Result<CreatePodResponse, tonic::Status>;
 
     /// Remove a pod.
     async fn remove_pod(
@@ -311,19 +311,11 @@ impl<C: Conduit> Clone for ConduitService<C> {
 
 #[tonic::async_trait]
 impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
-    async fn run_pod(
+    async fn create_pod(
         &self,
-        request: tonic::Request<RunPodRequest>,
-    ) -> Result<tonic::Response<RunPodResponse>, tonic::Status> {
-        let response = self.conduit.run_pod(request.into_inner()).await?;
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn stop_pod(
-        &self,
-        request: tonic::Request<StopPodRequest>,
-    ) -> Result<tonic::Response<StopPodResponse>, tonic::Status> {
-        let response = self.conduit.stop_pod(request.into_inner()).await?;
+        request: tonic::Request<CreatePodRequest>,
+    ) -> Result<tonic::Response<CreatePodResponse>, tonic::Status> {
+        let response = self.conduit.create_pod(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 
