@@ -5,10 +5,10 @@ use thiserror::Error;
 
 use crate::{
     BinaryExpr, BinaryOp, Bool, CallExpr, Diag, DiagList, Diagnosed, DictEntry, DictExpr,
-    DictTypeExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr, ImportStmt, Int, InterpExpr,
-    LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem, ListItem, Loc, ModStmt, ModuleId,
-    Position, PropertyAccessExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr,
-    ReplLine, Span, StrExpr, Token, TypeExpr, UnaryExpr, UnaryOp, Var,
+    DictTypeExpr, ExceptionExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr, ImportStmt, Int,
+    InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem, ListItem, Loc, ModStmt,
+    ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField, RecordTypeExpr,
+    RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr, UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -124,7 +124,7 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId) for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = statements:mod_stmt()* eof() { FileMod { statements } }
 
@@ -144,6 +144,7 @@ peg::parser! {
             / let_expr:let_expr() { let_expr }
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
+            / raise_expr:raise_expr() { raise_expr }
             / logical_or_expr()
 
         rule logical_or_expr() -> Loc<Expr>
@@ -381,6 +382,34 @@ peg::parser! {
         rule type_expr_record_field() -> RecordTypeFieldExpr
             = var:var() colon() ty:type_expr() { RecordTypeFieldExpr { var, ty } }
 
+        rule raise_expr() -> Loc<Expr>
+            = raise_kw_span:raise_keyword() expr:expr() {
+                let end = expr.span().end();
+                Loc::new(
+                    Expr::Raise(RaiseExpr { expr: Box::new(expr) }),
+                    Span::new(raise_kw_span.start(), end),
+                )
+            }
+
+        rule exception_expr() -> Loc<Expr>
+            = exception_kw_span:exception_keyword() colon() ty:type_expr() {
+                let id = *exception_id;
+                *exception_id += 1;
+                let end = ty.span().end();
+                Loc::new(
+                    Expr::Exception(ExceptionExpr { exception_id: id, ty: Some(ty) }),
+                    Span::new(exception_kw_span.start(), end),
+                )
+            }
+            / exception_kw_span:exception_keyword() {
+                let id = *exception_id;
+                *exception_id += 1;
+                Loc::new(
+                    Expr::Exception(ExceptionExpr { exception_id: id, ty: None }),
+                    exception_kw_span,
+                )
+            }
+
         rule extern_expr() -> Loc<Expr>
             = extern_kw_span:extern_keyword() name:str_simple() colon() ty:type_expr() {
                 let end = ty.span().end();
@@ -448,6 +477,7 @@ peg::parser! {
                 Loc::new(Expr::Bool(bool_lit.into_inner()), span)
             }
             / nil_lit:nil_lit() { nil_lit }
+            / exception_expr:exception_expr() { exception_expr }
             / var:var() {
                 let span = var.span();
                 Loc::new(Expr::Var(var), span)
@@ -628,6 +658,18 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::InKeyword)] { token.span() }
             }
             / expected!("in keyword")
+
+        rule exception_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::ExceptionKeyword)] { token.span() }
+            }
+            / expected!("exception keyword")
+
+        rule raise_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::RaiseKeyword)] { token.span() }
+            }
+            / expected!("raise keyword")
 
         rule equals() -> Span
             = quiet!{
@@ -862,7 +904,8 @@ peg::parser! {
 
 pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<FileMod>> {
     let mut diags = DiagList::new();
-    match grammar::file_mod(&TokenStream::new(source), &mut diags, module_id) {
+    let mut exception_id = 0u64;
+    match grammar::file_mod(&TokenStream::new(source), &mut diags, module_id, &mut exception_id) {
         Ok(file_mod) => Diagnosed::new(Some(file_mod), diags),
         Err(error) => {
             diags.push(SyntaxError {
@@ -876,7 +919,8 @@ pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<Fi
 
 pub fn parse_repl_line(source: &str, module_id: &ModuleId) -> Diagnosed<Option<ReplLine>> {
     let mut diags = DiagList::new();
-    match grammar::repl_line(&TokenStream::new(source), &mut diags, module_id) {
+    let mut exception_id = 0u64;
+    match grammar::repl_line(&TokenStream::new(source), &mut diags, module_id, &mut exception_id) {
         Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
         Err(error) => {
             diags.push(SyntaxError {

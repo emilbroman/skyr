@@ -3,14 +3,43 @@ use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use crate::{Dict, ExternFnValue, FnValue, Record, TrackedValue, Value, ast};
+use crate::{Dict, ExceptionValue, ExternFnValue, FnValue, Record, TrackedValue, Value, ast};
+
+#[derive(Clone, Debug)]
+pub struct StackFrame {
+    pub module_id: crate::ModuleId,
+    pub span: crate::Span,
+    pub parent: Option<Box<StackFrame>>,
+}
+
+impl StackFrame {
+    fn depth(&self) -> u32 {
+        let mut depth = 1;
+        let mut frame = self.parent.as_ref();
+        while let Some(f) = frame {
+            depth += 1;
+            frame = f.parent.as_ref();
+        }
+        depth
+    }
+
+    fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span)> {
+        let mut trace = vec![(self.module_id.clone(), self.span)];
+        let mut frame = self.parent.as_ref();
+        while let Some(f) = frame {
+            trace.push((f.module_id.clone(), f.span));
+            frame = f.parent.as_ref();
+        }
+        trace
+    }
+}
 
 pub struct EvalEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
-    stack_depth: u32,
+    stack: Option<Box<StackFrame>>,
 }
 
 impl<'a> EvalEnv<'a> {
@@ -20,7 +49,7 @@ impl<'a> EvalEnv<'a> {
             globals: None,
             imports: None,
             locals: HashMap::new(),
-            stack_depth: 0,
+            stack: None,
         }
     }
 
@@ -30,7 +59,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
-            stack_depth: self.stack_depth,
+            stack: self.stack.clone(),
         }
     }
 
@@ -40,7 +69,7 @@ impl<'a> EvalEnv<'a> {
             globals: Some(globals),
             imports: self.imports,
             locals: HashMap::new(),
-            stack_depth: self.stack_depth,
+            stack: self.stack.clone(),
         }
     }
 
@@ -53,7 +82,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: Some(imports),
             locals: HashMap::new(),
-            stack_depth: self.stack_depth,
+            stack: self.stack.clone(),
         }
     }
 
@@ -63,7 +92,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
-            stack_depth: self.stack_depth,
+            stack: self.stack.clone(),
         }
     }
 
@@ -79,18 +108,32 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: HashMap::new(),
-            stack_depth: self.stack_depth,
+            stack: self.stack.clone(),
         }
     }
 
-    pub fn with_stack_frame(&self) -> Result<Self, EvalError> {
-        if self.stack_depth >= 50 {
+    pub fn with_stack_frame(
+        &self,
+        module_id: crate::ModuleId,
+        span: crate::Span,
+    ) -> Result<Self, EvalError> {
+        let depth = self.stack.as_ref().map_or(0, |s| s.depth());
+        if depth >= 50 {
             return Err(EvalError::StackOverflow);
         }
 
+        let frame = StackFrame {
+            module_id,
+            span,
+            parent: self.stack.clone(),
+        };
         let mut env = self.inner();
-        env.stack_depth += 1;
+        env.stack = Some(Box::new(frame));
         Ok(env)
+    }
+
+    pub fn stack(&self) -> &Option<Box<StackFrame>> {
+        &self.stack
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&TrackedValue> {
@@ -124,8 +167,13 @@ pub struct FnEnv {
 }
 
 impl FnEnv {
-    pub fn as_eval_env<'a>(&'a self, args: &[TrackedValue]) -> EvalEnv<'a> {
+    pub fn as_eval_env<'a>(
+        &'a self,
+        args: &[TrackedValue],
+        stack: Option<Box<StackFrame>>,
+    ) -> EvalEnv<'a> {
         let mut env = EvalEnv::new().with_module_id(&self.module_id);
+        env.stack = stack;
 
         for (name, value) in &self.captures {
             env = env.with_local(name.as_str(), value.clone());
@@ -273,6 +321,22 @@ pub enum EvalError {
 
     #[error("{0}")]
     Custom(String),
+
+    #[error("uncaught exception: {0}")]
+    Exception(RaisedException),
+}
+
+#[derive(Debug)]
+pub struct RaisedException {
+    pub exception_id: u64,
+    pub payload: Value,
+    pub stack_trace: Vec<(crate::ModuleId, crate::Span)>,
+}
+
+impl std::fmt::Display for RaisedException {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exception#{} ({})", self.exception_id, self.payload)
+    }
 }
 
 pub trait ValueAssertions {
@@ -487,7 +551,17 @@ impl Eval {
 
                 match callee.value {
                     Value::Fn(function) => {
-                        let call_env = function.env.as_eval_env(&args);
+                        let call_module_id = env
+                            .module_id
+                            .cloned()
+                            .unwrap_or_default();
+                        let frame = StackFrame {
+                            module_id: call_module_id,
+                            span: expr.span(),
+                            parent: env.stack.clone(),
+                        };
+                        let call_env =
+                            function.env.as_eval_env(&args, Some(Box::new(frame)));
                         self.eval_expr(&call_env, &function.body)
                             .map(|value| value.with_dependencies(callee_dependencies))
                     }
@@ -643,6 +717,51 @@ impl Eval {
                         value.dependencies,
                     )),
                     _ => Ok(Self::tracked(Value::Nil)),
+                }
+            }
+            ast::Expr::Exception(exception_expr) => {
+                let exception_id = exception_expr.exception_id;
+                if exception_expr.ty.is_some() {
+                    let exc_fn = Value::ExternFn(ExternFnValue::new(Box::new(
+                        move |args: Vec<TrackedValue>, _ctx: &EvalCtx| {
+                            let payload = args
+                                .into_iter()
+                                .next()
+                                .map(|a| a.value)
+                                .unwrap_or(Value::Nil);
+                            Ok(TrackedValue::new(Value::Exception(ExceptionValue {
+                                exception_id,
+                                payload: Box::new(payload),
+                            })))
+                        },
+                    )));
+                    Ok(Self::tracked(exc_fn))
+                } else {
+                    Ok(Self::tracked(Value::Exception(ExceptionValue {
+                        exception_id,
+                        payload: Box::new(Value::Nil),
+                    })))
+                }
+            }
+            ast::Expr::Raise(raise_expr) => {
+                let value = self.eval_expr(env, raise_expr.expr.as_ref())?;
+                if matches!(value.value, Value::Pending(_)) {
+                    return Ok(Self::pending_with(value.dependencies));
+                }
+                match value.value {
+                    Value::Exception(exc) => {
+                        let stack_trace = env
+                            .stack
+                            .as_ref()
+                            .map(|s| s.collect_trace())
+                            .unwrap_or_default();
+                        Err(EvalError::Exception(RaisedException {
+                            exception_id: exc.exception_id,
+                            payload: *exc.payload,
+                            stack_trace,
+                        }))
+                    }
+                    other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
         }
@@ -859,7 +978,10 @@ impl Eval {
             return Ok(local_value.clone());
         }
         if let Some(global_expr) = env.lookup_global(name) {
-            let global_env = env.without_locals().with_stack_frame()?;
+            let module_id = env.module_id.cloned().unwrap_or_default();
+            let global_env =
+                env.without_locals()
+                    .with_stack_frame(module_id, global_expr.span())?;
             return self.eval_expr(&global_env, global_expr);
         }
         if let Some((target_module_id, import_file_mod)) = env.lookup_import(name) {

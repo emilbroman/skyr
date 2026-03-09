@@ -312,6 +312,20 @@ impl crate::Diag for InvalidType {
 }
 
 #[derive(Error, Debug)]
+#[error("raise requires an exception, got {ty}")]
+pub struct NotAnException {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for NotAnException {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -996,6 +1010,37 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     property: property_access.property.clone(),
                 });
                 Ok(Diagnosed::new(Type::Never, diags))
+            }
+            ast::Expr::Exception(exception_expr) => {
+                let exception_ty = Type::Exception(exception_expr.exception_id);
+                if let Some(ty_expr) = &exception_expr.ty {
+                    let param_ty = self.resolve_type_expr(ty_expr);
+                    let fn_ty = Type::Fn(FnType {
+                        params: vec![param_ty],
+                        ret: Box::new(exception_ty),
+                    });
+                    self.apply_expected_type(env, expr.span(), fn_ty, expected_type)
+                } else {
+                    self.apply_expected_type(env, expr.span(), exception_ty, expected_type)
+                }
+            }
+            ast::Expr::Raise(raise_expr) => {
+                let mut diags = DiagList::new();
+                let inner_ty = self
+                    .check_expr(env, raise_expr.expr.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+                if !matches!(inner_ty, Type::Exception(_) | Type::Never) {
+                    diags.push(NotAnException {
+                        module_id: env.module_id()?,
+                        ty: inner_ty,
+                        span: raise_expr.expr.span(),
+                    });
+                }
+                let ty = self
+                    .apply_expected_type(env, expr.span(), Type::Never, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
         }
     }

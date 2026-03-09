@@ -15,6 +15,7 @@ pub enum Type {
     IsoRec(usize, Box<Type>),
     Var(usize),
     Never,
+    Exception(u64),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +90,7 @@ impl Type {
                 ret: Box::new(fn_ty.ret.unfold_inner(replacement)),
             }),
             Type::Never => Type::Never,
+            Type::Exception(id) => Type::Exception(*id),
             Type::Var(id) => {
                 if let Some((target_id, replacement_ty)) = replacement {
                     if *id == target_id {
@@ -125,6 +127,7 @@ impl std::fmt::Display for Type {
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
             Type::Var(id) => write!(f, "Var({id})"),
             Type::Never => write!(f, "Never"),
+            Type::Exception(id) => write!(f, "Exception#{id}"),
         }
     }
 }
