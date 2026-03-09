@@ -61,6 +61,9 @@ message RegisterNodeResponse {
   bool success = 1;
   // Error message if registration failed.
   string error = 2;
+  // Pod CIDR assigned to this node (e.g., "10.42.1.0/24").
+  // The node uses this subnet for pod IP allocation.
+  string pod_cidr = 3;
 }
 
 // Heartbeat request to keep registration alive.

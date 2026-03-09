@@ -4319,6 +4319,7 @@ dependencies = [
  "gix-hash",
  "gix-object",
  "ids",
+ "ipnet",
  "ldb",
  "redis",
  "rtp",

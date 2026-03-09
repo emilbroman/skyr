@@ -54,10 +54,6 @@ enum Command {
         /// LDB broker address for container log streaming.
         #[arg(long, default_value = "127.0.0.1:9092")]
         ldb_brokers: String,
-        /// Pod CIDR for this node (e.g., "10.42.1.0/24").
-        /// Each node should receive a unique subnet from the cluster range.
-        #[arg(long)]
-        pod_cidr: String,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -527,7 +523,6 @@ async fn main() -> Result<()> {
             memory_bytes,
             max_pods,
             ldb_brokers,
-            pod_cidr,
         } => {
             tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
@@ -536,19 +531,6 @@ async fn main() -> Result<()> {
             tracing::info!("  orchestrator_address: {}", orchestrator_address);
             tracing::info!("  containerd_socket: {}", containerd_socket);
             tracing::info!("  ldb_brokers: {}", ldb_brokers);
-            tracing::info!("  pod_cidr: {}", pod_cidr);
-
-            // Parse pod CIDR
-            let pod_cidr: Ipv4Net = pod_cidr
-                .parse()
-                .expect("invalid --pod-cidr, expected CIDR notation (e.g., 10.42.1.0/24)");
-
-            // Set up the pod bridge network
-            net::setup_bridge(&pod_cidr)?;
-
-            let ipam = net::Ipam::new(pod_cidr);
-            let dns_servers = net::host_nameservers();
-            tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
             // Verify CRI connectivity at startup
             let cri = {
@@ -577,10 +559,7 @@ async fn main() -> Result<()> {
                 }
             };
 
-            // Create the conduit with networking support
-            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, dns_servers);
-
-            // Connect to orchestrator and register
+            // Register with orchestrator to get our pod CIDR
             tracing::info!("Registering with orchestrator at {}", orchestrator_address);
             let mut orchestrator =
                 scop::OrchestratorClient::connect(orchestrator_address.clone()).await?;
@@ -605,7 +584,23 @@ async fn main() -> Result<()> {
                     register_response.error
                 );
             }
-            tracing::info!("Registered with orchestrator");
+
+            // Parse the pod CIDR assigned by the orchestrator
+            let pod_cidr: Ipv4Net = register_response
+                .pod_cidr
+                .parse()
+                .expect("orchestrator returned invalid pod_cidr");
+            tracing::info!("Registered with orchestrator, assigned pod CIDR: {}", pod_cidr);
+
+            // Set up the pod bridge network with the assigned CIDR
+            net::setup_bridge(&pod_cidr)?;
+
+            let ipam = net::Ipam::new(pod_cidr);
+            let dns_servers = net::host_nameservers();
+            tracing::info!("DNS servers for pods: {:?}", dns_servers);
+
+            // Create the conduit with networking support
+            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, dns_servers);
 
             // Spawn heartbeat task
             let node_name_heartbeat = node_name.clone();
