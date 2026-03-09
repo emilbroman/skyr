@@ -864,27 +864,6 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let deployments = context
-            .cdb_client
-            .repo(env_qid.repo.clone())
-            .deployments()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list deployments for environment logs subscription: {e}");
-                juniper::FieldError::new("failed to list deployments", juniper::Value::Null)
-            })?
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to read deployments for environment logs subscription: {e}");
-                juniper::FieldError::new("failed to read deployments", juniper::Value::Null)
-            })?;
-
-        let env_deployments: Vec<_> = deployments
-            .into_iter()
-            .filter(|d| d.environment_qid() == env_qid)
-            .collect();
-
         let consumer = ldb::ClientBuilder::new()
             .brokers(context.ldb_brokers.clone())
             .build_consumer()
@@ -894,46 +873,87 @@ impl Subscription {
                 juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
             })?;
 
-        let mut streams = Vec::new();
-        for deployment in &env_deployments {
-            let deployment_qid = deployment.deployment_qid().to_string();
-            let namespace = match consumer.namespace(deployment_qid.clone()).await {
-                Ok(ns) => ns,
-                Err(e) => {
-                    tracing::warn!("Failed to prepare log consumer for deployment {deployment_qid}: {e}");
-                    continue;
-                }
-            };
-            match namespace
-                .tail(ldb::TailConfig {
-                    follow: true,
-                    start_from: ldb::StartFrom::End(initial_amount),
-                })
-                .await
-            {
-                Ok(stream) => streams.push(stream),
-                Err(e) => {
-                    tracing::warn!("Failed to tail logs for deployment {deployment_qid}: {e}");
-                }
-            }
-        }
-
-        let merged = futures_util::stream::select_all(streams);
+        let cdb_client = context.cdb_client.clone();
 
         Ok(Box::pin(async_stream::stream! {
-            let mut merged = merged;
-            while let Some(item) = merged.next().await {
-                match item {
-                    Ok((timestamp, severity, message)) => {
-                        yield Log {
-                            severity: severity.into(),
-                            timestamp: format_timestamp(timestamp),
-                            message,
-                        };
+            let mut merged = futures_util::stream::SelectAll::new();
+            let mut subscribed: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            let mut poll_interval = tokio::time::interval(Duration::from_secs(3));
+
+            loop {
+                tokio::select! {
+                    biased;
+
+                    Some(item) = merged.next(), if !merged.is_empty() => {
+                        match item {
+                            Ok((timestamp, severity, message)) => {
+                                let severity = Severity::from(severity);
+                                yield Log {
+                                    severity,
+                                    timestamp: format_timestamp(timestamp),
+                                    message,
+                                };
+                            }
+                            Err(error) => {
+                                tracing::warn!("Error while streaming environment logs: {}", error);
+                                break;
+                            }
+                        }
                     }
-                    Err(error) => {
-                        tracing::warn!("Error while streaming environment logs: {}", error);
-                        break;
+
+                    _ = poll_interval.tick() => {
+                        let deployments = match cdb_client
+                            .repo(env_qid.repo.clone())
+                            .deployments()
+                            .await
+                        {
+                            Ok(stream) => match stream.try_collect::<Vec<_>>().await {
+                                Ok(deployments) => deployments,
+                                Err(e) => {
+                                    tracing::warn!("Failed to read deployments while polling for environment logs: {e}");
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                tracing::warn!("Failed to list deployments while polling for environment logs: {e}");
+                                continue;
+                            }
+                        };
+
+                        for deployment in deployments {
+                            if deployment.environment_qid() != env_qid {
+                                continue;
+                            }
+                            let deployment_qid = deployment.deployment_qid().to_string();
+                            if !subscribed.insert(deployment_qid.clone()) {
+                                continue;
+                            }
+
+                            let namespace = match consumer.namespace(deployment_qid.clone()).await {
+                                Ok(ns) => ns,
+                                Err(e) => {
+                                    tracing::warn!("Failed to prepare log consumer for deployment {deployment_qid}: {e}");
+                                    subscribed.remove(&deployment_qid);
+                                    continue;
+                                }
+                            };
+                            match namespace
+                                .tail(ldb::TailConfig {
+                                    follow: true,
+                                    start_from: ldb::StartFrom::End(initial_amount),
+                                })
+                                .await
+                            {
+                                Ok(stream) => {
+                                    tracing::info!("Started log consumer for deployment {deployment_qid}");
+                                    merged.push(stream);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to tail logs for deployment {deployment_qid}: {e}");
+                                    subscribed.remove(&deployment_qid);
+                                }
+                            }
+                        }
                     }
                 }
             }
