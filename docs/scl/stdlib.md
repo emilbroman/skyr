@@ -45,11 +45,19 @@ Create a pod sandbox on a worker node:
 let pod = Container.Pod({ name: "my-pod" })
 ```
 
+To allow a pod to reach another pod's port, pass port resources in the `allow` list:
+
+```scl
+let dbPort = dbPod.Port({ port: 5432, protocol: "tcp" })
+let apiPod = Container.Pod({ name: "api", allow: [dbPort] })
+```
+
 **Inputs:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `Str` | Pod name |
+| `allow` | `[{ address: Str, port: Int, protocol: Str }]?` | Port resources this pod can reach (optional) |
 
 **Outputs:**
 
@@ -59,9 +67,38 @@ let pod = Container.Pod({ name: "my-pod" })
 | `node` | `Str` | Worker node hosting this pod |
 | `name` | `Str` | Pod name |
 | `namespace` | `Str` | Namespace (deployment ID) |
+| `address` | `Str` | Pod IP address |
 | `Container` | `fn({...}) {...}` | Function to create containers in this pod |
+| `Port` | `fn({...}) {...}` | Function to expose ports on this pod |
 
-A pod is a group of containers that share resources. Use the `Container` method to add containers.
+A pod is a group of containers that share resources. Use the `Container` method to add containers and `Port` to expose network ports.
+
+By default, pods are network-isolated: all ingress is denied, and egress to other cluster pods is blocked. Pods can always reach the internet. To allow a pod to communicate with another pod, use `Pod.Port` to open an ingress port, then pass that port resource in the `allow` list of the pod that needs to connect.
+
+### Port
+
+Expose a port on a pod's firewall. Accessed via `pod.Port`:
+
+```scl
+let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | `Int` | Port number to open |
+| `protocol` | `Str` | Protocol: `"tcp"` (default) or `"udp"` |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `address` | `Str` | The pod's IP address |
+| `port` | `Int` | The opened port number |
+| `protocol` | `Str` | The protocol |
+
+Port resources act as access tokens. Pass them to another pod's `allow` list to grant that pod egress access to this port.
 
 ### Container
 
@@ -101,13 +138,19 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-// Create a pod
+// Create a pod with a container
 let pod = Container.Pod({ name: "hello-world" })
-
-// Run a container in the pod
 pod.Container({
     name: "app",
     image: image.fullname,
+})
+let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
+
+// Another pod that can access the first pod's HTTP port
+let clientPod = Container.Pod({ name: "client", allow: [httpPort] })
+clientPod.Container({
+    name: "curl",
+    image: "curlimages/curl",
 })
 ```
 

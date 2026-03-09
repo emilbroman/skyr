@@ -40,10 +40,16 @@ export let Image = extern "Std/Container.Image": fn({
 // Pod resource - creates a pod sandbox on a worker node
 //
 // Each pod runs in its own network namespace with a unique IP address.
-// By default, all ingress traffic is denied. Use Pod.Port and allow lists
-// (in a future phase) to grant network access between pods.
+// By default, all ingress traffic is denied and egress to other pods is
+// blocked. Use Pod.Port to open ingress ports and the `allow` list to
+// grant egress access to specific port resources.
 export let Pod = extern "Std/Container.Pod": fn({
     name: Str,
+    // List of port resources this pod is allowed to reach.
+    // Each entry is a Pod.Port output: { address: Str, port: Int, protocol: Str }.
+    // Pods can always reach the internet; this controls access to cluster-internal
+    // destinations only.
+    allow: [{ address: Str, port: Int, protocol: Str }]?,
 }) {
     podId: Str,
     node: Str,

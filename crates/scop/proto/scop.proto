@@ -67,6 +67,10 @@ message RegisterNodeResponse {
   // Pod CIDR assigned to this node (e.g., "10.42.1.0/24").
   // The node uses this subnet for pod IP allocation.
   string pod_cidr = 3;
+  // The cluster-wide CIDR for pod networking (e.g., "10.42.0.0/16").
+  // Used by the node to distinguish cluster-internal traffic from internet
+  // traffic when enforcing egress allow lists.
+  string cluster_cidr = 4;
 }
 
 // Heartbeat request to keep registration alive.
@@ -164,6 +168,20 @@ message PodConfig {
   string name = 2;
   // Pod UID.
   string uid = 3;
+  // Network destinations this pod is allowed to reach (egress allow list).
+  // Each entry represents a port resource that this pod can connect to.
+  repeated AllowedDestination allowed_destinations = 4;
+}
+
+// A network destination that a pod is allowed to reach.
+// Corresponds to a Pod.Port resource output.
+message AllowedDestination {
+  // IP address of the destination pod.
+  string address = 1;
+  // Port number.
+  int32 port = 2;
+  // Protocol: "tcp" or "udp".
+  string protocol = 3;
 }
 
 // ============================================================================

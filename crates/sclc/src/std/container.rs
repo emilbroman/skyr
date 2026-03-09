@@ -94,8 +94,8 @@ fn image_extern_fn(
 
 /// Extern function for creating Pod resources.
 ///
-/// Input: `{ name: Str }`
-/// Output: `{ podId: Str, node: Str, name: Str, namespace: Str, Container: fn(...) }`
+/// Input: `{ name: Str, allow: [{ address: Str, port: Int, protocol: Str }]? }`
+/// Output: `{ podId: Str, node: Str, name: Str, namespace: Str, address: Str, Container: fn(...), Port: fn(...) }`
 fn pod_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
@@ -116,6 +116,9 @@ fn pod_extern_fn(
         id: name.clone(),
     };
 
+    // Extract the optional allow list (list of port resource records)
+    let allow_value = config.get("allow").clone();
+
     // Build inputs for the RTP plugin
     // The plugin expects: name, namespace, uid, node (optional), labels, annotations
     // For the minimal interface, we only pass name and generate uid/namespace
@@ -131,6 +134,8 @@ fn pod_extern_fn(
         String::from("uid"),
         Value::Str(format!("{}-{}", eval_ctx.namespace(), name)),
     );
+    // Pass the allow list through to the plugin (Value::Nil if not provided)
+    inputs.insert(String::from("allow"), allow_value);
 
     let Some(outputs) = eval_ctx.resource(
         POD_RESOURCE_TYPE,

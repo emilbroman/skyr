@@ -167,6 +167,8 @@ struct CriConduit {
     ipam: Arc<Mutex<net::Ipam>>,
     /// The node's pod subnet (for network setup).
     pod_cidr: Ipv4Net,
+    /// The cluster-wide CIDR (for egress allow-list rules).
+    cluster_cidr: Option<String>,
     /// DNS servers to configure in pods.
     dns_servers: Vec<String>,
 }
@@ -177,6 +179,7 @@ impl CriConduit {
         ldb_publisher: Option<ldb::Publisher>,
         ipam: net::Ipam,
         pod_cidr: Ipv4Net,
+        cluster_cidr: Option<String>,
         dns_servers: Vec<String>,
     ) -> Self {
         Self {
@@ -187,6 +190,7 @@ impl CriConduit {
             containers: Arc::new(Mutex::new(HashMap::new())),
             ipam: Arc::new(Mutex::new(ipam)),
             pod_cidr,
+            cluster_cidr,
             dns_servers,
         }
     }
@@ -352,8 +356,15 @@ impl scop::Conduit for CriConduit {
             }
         };
 
-        // Step 4: Set up pod networking (veth pair, bridge, IP, firewall)
-        if let Err(e) = net::setup_pod_network(&pod_id, ip, &self.pod_cidr, &netns_path) {
+        // Step 4: Set up pod networking (veth pair, bridge, IP, firewall, egress rules)
+        if let Err(e) = net::setup_pod_network(
+            &pod_id,
+            ip,
+            &self.pod_cidr,
+            &netns_path,
+            &config.allowed_destinations,
+            self.cluster_cidr.as_deref(),
+        ) {
             let mut ipam = self.ipam.lock().await;
             ipam.release(&pod_id);
             let _ = cri.stop_pod_sandbox(&pod_id).await;
@@ -611,6 +622,15 @@ async fn main() -> Result<()> {
                 .expect("orchestrator returned invalid pod_cidr");
             tracing::info!("Registered with orchestrator, assigned pod CIDR: {}", pod_cidr);
 
+            // Parse the cluster CIDR for egress allow-list enforcement
+            let cluster_cidr = if register_response.cluster_cidr.is_empty() {
+                tracing::warn!("orchestrator did not provide cluster_cidr, egress allow-list enforcement disabled");
+                None
+            } else {
+                tracing::info!("cluster CIDR for egress rules: {}", register_response.cluster_cidr);
+                Some(register_response.cluster_cidr)
+            };
+
             // Set up the pod bridge network with the assigned CIDR
             net::setup_bridge(&pod_cidr)?;
 
@@ -619,7 +639,7 @@ async fn main() -> Result<()> {
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
             // Create the conduit with networking support
-            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, dns_servers);
+            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, cluster_cidr, dns_servers);
 
             // Spawn heartbeat task
             let node_name_heartbeat = node_name.clone();

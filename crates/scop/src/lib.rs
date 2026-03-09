@@ -67,12 +67,12 @@ pub mod proto {
 
 // Re-export commonly used types
 pub use proto::{
-    ContainerConfig, CreateContainerRequest, CreateContainerResponse, CreatePodRequest,
-    CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue, NodeCapacity, NodeUsage,
-    PodConfig, RegisterNodeRequest, RegisterNodeResponse, RemoveContainerRequest,
-    RemoveContainerResponse, RemovePodRequest, RemovePodResponse, StartContainerRequest,
-    StartContainerResponse, StopContainerRequest, StopContainerResponse, UnregisterNodeRequest,
-    UnregisterNodeResponse,
+    AllowedDestination, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
+    CreatePodRequest, CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue,
+    NodeCapacity, NodeUsage, PodConfig, RegisterNodeRequest, RegisterNodeResponse,
+    RemoveContainerRequest, RemoveContainerResponse, RemovePodRequest, RemovePodResponse,
+    StartContainerRequest, StartContainerResponse, StopContainerRequest, StopContainerResponse,
+    UnregisterNodeRequest, UnregisterNodeResponse,
 };
 
 // Re-export the generated clients

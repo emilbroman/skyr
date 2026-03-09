@@ -232,12 +232,16 @@ fn bridge_exists() -> Result<bool> {
 ///
 /// Creates a veth pair, attaches the host end to the bridge, moves the pod end
 /// into the pod's network namespace, assigns an IP, configures routes, and
-/// installs deny-all ingress firewall rules.
+/// installs deny-all ingress firewall rules. If an allow list and cluster CIDR
+/// are provided, egress rules are also configured to restrict cluster-internal
+/// traffic to only the allowed destinations.
 pub fn setup_pod_network(
     pod_id: &str,
     ip: Ipv4Addr,
     subnet: &Ipv4Net,
     netns_path: &str,
+    allowed_destinations: &[scop::AllowedDestination],
+    cluster_cidr: Option<&str>,
 ) -> Result<()> {
     let gateway = Ipv4Addr::from(u32::from(subnet.network()) + 1);
     let ip_cidr = format!("{}/{}", ip, subnet.prefix_len());
@@ -293,6 +297,12 @@ pub fn setup_pod_network(
     // Apply deny-all ingress firewall
     setup_pod_firewall(netns_path)
         .with_context(|| format!("failed to set up firewall for pod {pod_id}"))?;
+
+    // Apply egress allow-list rules (restricts cluster-internal traffic)
+    if let Some(cidr) = cluster_cidr {
+        setup_pod_egress_rules(netns_path, allowed_destinations, cidr)
+            .with_context(|| format!("failed to set up egress rules for pod {pod_id}"))?;
+    }
 
     info!(pod_id = %pod_id, "pod network setup complete");
     Ok(())
@@ -372,6 +382,91 @@ fn setup_pod_firewall(netns_path: &str) -> Result<()> {
         "iptables",
         &["-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
     )?;
+
+    Ok(())
+}
+
+/// Configure egress rules for a pod based on its allow list.
+///
+/// By default pods can reach the internet but not other cluster-internal
+/// destinations. The allow list grants access to specific address:port
+/// pairs within the cluster.
+///
+/// Rules (appended to the OUTPUT chain, which defaults to ACCEPT):
+/// 1. Allow loopback output
+/// 2. Allow established/related outbound connections
+/// 3. For each allowed destination: allow traffic to that address:port/protocol
+/// 4. Drop all other traffic to the cluster CIDR (blocks cluster-internal)
+/// 5. Everything else (internet) falls through to the ACCEPT policy
+fn setup_pod_egress_rules(
+    netns_path: &str,
+    allowed: &[scop::AllowedDestination],
+    cluster_cidr: &str,
+) -> Result<()> {
+    debug!(
+        netns = %netns_path,
+        num_allowed = %allowed.len(),
+        cluster_cidr = %cluster_cidr,
+        "configuring pod egress rules"
+    );
+
+    // Allow loopback output (always needed)
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &["-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
+    )?;
+
+    // Allow established/related outbound (for return traffic on accepted connections)
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &[
+            "-A", "OUTPUT",
+            "-m", "conntrack",
+            "--ctstate", "ESTABLISHED,RELATED",
+            "-j", "ACCEPT",
+        ],
+    )?;
+
+    // Allow traffic to each destination in the allow list
+    for dest in allowed {
+        let port_str = dest.port.to_string();
+        nsenter_run(
+            netns_path,
+            "iptables",
+            &[
+                "-A", "OUTPUT",
+                "-d", &dest.address,
+                "-p", &dest.protocol,
+                "--dport", &port_str,
+                "-j", "ACCEPT",
+            ],
+        )?;
+
+        debug!(
+            netns = %netns_path,
+            dest_address = %dest.address,
+            dest_port = %dest.port,
+            dest_protocol = %dest.protocol,
+            "added egress allow rule"
+        );
+    }
+
+    // Drop all other traffic to cluster-internal IPs
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &["-A", "OUTPUT", "-d", cluster_cidr, "-j", "DROP"],
+    )?;
+
+    // Everything else (internet) falls through to OUTPUT ACCEPT policy
+
+    info!(
+        netns = %netns_path,
+        num_allowed = %allowed.len(),
+        "pod egress rules configured"
+    );
 
     Ok(())
 }

@@ -83,6 +83,8 @@ struct ContainerPluginInner {
     ldb_publisher: ldb::Publisher,
     /// Allocates per-node subnets from the cluster CIDR.
     subnet_allocator: RwLock<subnet_allocator::SubnetAllocator>,
+    /// The cluster-wide CIDR for pod networking, sent to nodes during registration.
+    cluster_cidr: String,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -101,6 +103,7 @@ impl ContainerPlugin {
         registry_url: String,
         ldb_publisher: ldb::Publisher,
         subnet_allocator: subnet_allocator::SubnetAllocator,
+        cluster_cidr: String,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -110,6 +113,7 @@ impl ContainerPlugin {
                 registry_url,
                 ldb_publisher,
                 subnet_allocator: RwLock::new(subnet_allocator),
+                cluster_cidr,
             }),
         }
     }
@@ -347,6 +351,7 @@ impl ContainerPlugin {
     /// - `name`: Pod name (required)
     /// - `uid`: Pod UID (required)
     /// - `node`: Target node name (optional, auto-scheduled if not specified)
+    /// - `allow`: List of port resources this pod can reach (optional)
     ///
     /// Outputs:
     /// - `podId`: The CRI pod sandbox ID
@@ -369,6 +374,9 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::InvalidInput(format!("uid: {e}")))?
             .to_string();
 
+        // Extract the allow list (list of port resource records)
+        let allowed_destinations = extract_allowed_destinations(inputs.get("allow"))?;
+
         // Determine target node: use specified node or auto-schedule
         let node_name = match inputs.get("node") {
             Value::Str(n) => n.clone(),
@@ -387,6 +395,7 @@ impl ContainerPlugin {
             pod_name = %name,
             environment_qid = %environment_qid,
             node = %node_name,
+            num_allowed = %allowed_destinations.len(),
             "creating pod sandbox"
         );
 
@@ -398,6 +407,7 @@ impl ContainerPlugin {
                     environment_qid: environment_qid.to_string(),
                     name: name.clone(),
                     uid,
+                    allowed_destinations,
                 }),
             })
             .await
@@ -433,8 +443,8 @@ impl ContainerPlugin {
     /// Update a pod sandbox.
     ///
     /// Pods are immutable in CRI, so updates that change the pod configuration
-    /// would require destroying and recreating. For now, we only update outputs
-    /// if the node assignment changes.
+    /// would require destroying and recreating. This includes changes to the
+    /// name, uid, or allow list (since egress rules are applied at pod creation).
     async fn update_pod(
         &self,
         environment_qid: &str,
@@ -444,19 +454,27 @@ impl ContainerPlugin {
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         // Check if inputs that affect the pod have changed
-        // If name/uid changed, we need to recreate
+        // If name, uid, or allow list changed, we need to recreate
         let prev_name = prev_inputs.get("name").assert_str_ref().ok();
         let prev_uid = prev_inputs.get("uid").assert_str_ref().ok();
 
         let name = inputs.get("name").assert_str_ref().ok();
         let uid = inputs.get("uid").assert_str_ref().ok();
 
-        if prev_name != name || prev_uid != uid {
-            // Pod identity changed - delete old and create new
+        // Check if the allow list has changed
+        let allow_changed = {
+            let prev_allow = serde_json::to_string(prev_inputs.get("allow")).unwrap_or_default();
+            let curr_allow = serde_json::to_string(inputs.get("allow")).unwrap_or_default();
+            prev_allow != curr_allow
+        };
+
+        if prev_name != name || prev_uid != uid || allow_changed {
+            // Pod identity or network config changed - delete old and create new
             warn!(
                 resource_type = %id.ty,
                 resource_id = %id.id,
-                "pod identity changed, recreating"
+                allow_changed = %allow_changed,
+                "pod config changed, recreating"
             );
             self.delete_pod(id.clone(), prev_inputs, prev_outputs)
                 .await?;
@@ -614,6 +632,7 @@ impl ContainerPlugin {
                     environment_qid: environment_qid.to_string(),
                     name: pod_name,
                     uid: pod_uid,
+                    allowed_destinations: vec![],
                 }),
             })
             .await
@@ -908,6 +927,53 @@ fn extract_env_vars(value: &Value) -> Result<Vec<scop::KeyValue>, PluginError> {
     }
 }
 
+/// Extract allowed destinations from the `allow` input value.
+///
+/// The allow list is a `Value::List` of records, each with `address`, `port`,
+/// and `protocol` fields (matching Pod.Port output shape). Returns an empty
+/// list if the value is Nil (allow not provided).
+fn extract_allowed_destinations(
+    value: &Value,
+) -> Result<Vec<scop::AllowedDestination>, PluginError> {
+    match value {
+        Value::Nil => Ok(vec![]),
+        Value::List(list) => {
+            let mut destinations = Vec::with_capacity(list.len());
+            for (i, item) in list.iter().enumerate() {
+                let record = item.assert_record_ref().map_err(|e| {
+                    PluginError::InvalidInput(format!("allow[{i}]: expected record: {e}"))
+                })?;
+                let address = record
+                    .get("address")
+                    .assert_str_ref()
+                    .map_err(|e| {
+                        PluginError::InvalidInput(format!("allow[{i}].address: {e}"))
+                    })?
+                    .to_string();
+                let port = *record.get("port").assert_int_ref().map_err(|e| {
+                    PluginError::InvalidInput(format!("allow[{i}].port: {e}"))
+                })? as i32;
+                let protocol = record
+                    .get("protocol")
+                    .assert_str_ref()
+                    .map_err(|e| {
+                        PluginError::InvalidInput(format!("allow[{i}].protocol: {e}"))
+                    })?
+                    .to_string();
+                destinations.push(scop::AllowedDestination {
+                    address,
+                    port,
+                    protocol,
+                });
+            }
+            Ok(destinations)
+        }
+        other => Err(PluginError::InvalidInput(format!(
+            "allow: expected List? but got {other}"
+        ))),
+    }
+}
+
 /// Check if any inputs have changed between two records.
 fn inputs_changed(prev: &sclc::Record, curr: &sclc::Record) -> bool {
     // Simple comparison: serialize and compare
@@ -1049,6 +1115,7 @@ impl scop::Orchestrator for ContainerPlugin {
                         success: false,
                         error: e,
                         pod_cidr: String::new(),
+                        cluster_cidr: String::new(),
                     });
                 }
             }
@@ -1081,6 +1148,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     success: true,
                     error: String::new(),
                     pod_cidr,
+                    cluster_cidr: self.inner.cluster_cidr.clone(),
                 })
             }
             Err(e) => {
@@ -1094,6 +1162,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     success: false,
                     error,
                     pod_cidr: String::new(),
+                    cluster_cidr: String::new(),
                 })
             }
         }
@@ -1437,6 +1506,7 @@ async fn main() -> Result<()> {
         args.registry_url.clone(),
         ldb_publisher,
         subnet_allocator,
+        cluster_cidr.to_string(),
     );
 
     // Clone for the RTP server (since ContainerPlugin is Clone via Arc)
