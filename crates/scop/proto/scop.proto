@@ -43,6 +43,9 @@ message RegisterNodeRequest {
   NodeCapacity capacity = 3;
   // Labels for node selection/scheduling.
   map<string, string> labels = 4;
+  // Requested pod subnet prefix length (e.g., 24 for a /24).
+  // The orchestrator allocates a subnet of this size from the cluster CIDR.
+  uint32 pod_netmask = 5;
 }
 
 // Resource capacity of a node.

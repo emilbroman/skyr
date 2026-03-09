@@ -54,6 +54,11 @@ enum Command {
         /// LDB broker address for container log streaming.
         #[arg(long, default_value = "127.0.0.1:9092")]
         ldb_brokers: String,
+        /// Requested pod subnet size (e.g., "24" or "/24" for a /24 subnet).
+        /// Sent to the orchestrator during registration; a larger number means
+        /// a smaller subnet (fewer pods). Default /24 = 254 pods.
+        #[arg(long, default_value = "24")]
+        pod_netmask: String,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -523,7 +528,19 @@ async fn main() -> Result<()> {
             memory_bytes,
             max_pods,
             ldb_brokers,
+            pod_netmask,
         } => {
+            // Parse --pod-netmask, stripping optional leading slash
+            let pod_netmask: u32 = pod_netmask
+                .strip_prefix('/')
+                .unwrap_or(&pod_netmask)
+                .parse()
+                .expect("invalid --pod-netmask, expected a number like 24 or /24");
+            assert!(
+                pod_netmask > 0 && pod_netmask <= 30,
+                "--pod-netmask must be between 1 and 30"
+            );
+
             tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
             tracing::info!("  bind: {}", bind);
@@ -531,6 +548,7 @@ async fn main() -> Result<()> {
             tracing::info!("  orchestrator_address: {}", orchestrator_address);
             tracing::info!("  containerd_socket: {}", containerd_socket);
             tracing::info!("  ldb_brokers: {}", ldb_brokers);
+            tracing::info!("  pod_netmask: /{}", pod_netmask);
 
             // Verify CRI connectivity at startup
             let cri = {
@@ -574,6 +592,7 @@ async fn main() -> Result<()> {
                         max_pods,
                     }),
                     labels: Default::default(),
+                    pod_netmask,
                 })
                 .await?
                 .into_inner();

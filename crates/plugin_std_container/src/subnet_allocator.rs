@@ -1,135 +1,187 @@
-//! Subnet allocator for per-node pod CIDRs.
+//! Tree-based subnet allocator for per-node pod CIDRs.
 //!
-//! Divides a cluster-wide CIDR (e.g., `10.42.0.0/16`) into fixed-size node
-//! subnets (e.g., `/24`) and assigns them to nodes during registration.
+//! Supports variable-size allocations from a cluster CIDR. Each node can
+//! request a different prefix length (e.g., a beefy server gets /24 while
+//! a Raspberry Pi gets /28). The allocator uses a binary trie to track
+//! free/allocated space and find the smallest free block that fits.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
 use ipnet::Ipv4Net;
 
-/// Allocates per-node subnets from a cluster CIDR.
+/// A node in the subnet allocation tree.
 ///
-/// Given a cluster CIDR like `10.42.0.0/16` and node prefix length `24`,
-/// this allocator hands out subnets `10.42.0.0/24`, `10.42.1.0/24`, etc.
-/// to each registering node.
+/// The tree is a binary trie over the IP address space within the cluster CIDR.
+/// Each level splits a prefix into two halves (left = 0 bit, right = 1 bit).
+#[derive(Debug)]
+enum Node {
+    /// This entire block is free.
+    Free,
+    /// This entire block is allocated to a node.
+    Allocated(String),
+    /// This block is partially allocated; children represent the two halves.
+    Split(Box<Node>, Box<Node>),
+}
+
+impl Node {
+    /// Try to allocate a subnet of `target_prefix` length from a block at `current_prefix`.
+    /// `base_addr` is the network address (as u32) of the current block.
+    /// Returns the allocated subnet on success.
+    fn allocate(
+        &mut self,
+        base_addr: u32,
+        current_prefix: u8,
+        target_prefix: u8,
+        node_name: &str,
+    ) -> Option<Ipv4Net> {
+        match self {
+            Node::Allocated(_) => None,
+
+            Node::Free => {
+                if current_prefix == target_prefix {
+                    // Exact match — allocate this block
+                    *self = Node::Allocated(node_name.to_string());
+                    Some(Ipv4Net::new(Ipv4Addr::from(base_addr), current_prefix).unwrap())
+                } else if current_prefix < target_prefix {
+                    // Need to split this free block and allocate from the left half
+                    let child_prefix = current_prefix + 1;
+                    let mut left = Box::new(Node::Free);
+                    let right = Box::new(Node::Free);
+
+                    let result = left.allocate(base_addr, child_prefix, target_prefix, node_name);
+                    *self = Node::Split(left, right);
+                    result
+                } else {
+                    // current_prefix > target_prefix — block is too small
+                    None
+                }
+            }
+
+            Node::Split(left, right) => {
+                // Try left first (lower addresses), then right
+                if let Some(subnet) =
+                    left.allocate(base_addr, current_prefix + 1, target_prefix, node_name)
+                {
+                    return Some(subnet);
+                }
+                let right_base = base_addr | (1 << (31 - current_prefix));
+                right.allocate(right_base, current_prefix + 1, target_prefix, node_name)
+            }
+        }
+    }
+
+    /// Release a subnet belonging to `node_name`. Returns true if found and released.
+    fn release(&mut self, node_name: &str) -> bool {
+        match self {
+            Node::Free => false,
+            Node::Allocated(name) => {
+                if name == node_name {
+                    *self = Node::Free;
+                    true
+                } else {
+                    false
+                }
+            }
+            Node::Split(left, right) => {
+                let released = left.release(node_name) || right.release(node_name);
+                if released {
+                    // Coalesce: if both children are now free, merge back
+                    if matches!(left.as_ref(), Node::Free) && matches!(right.as_ref(), Node::Free)
+                    {
+                        *self = Node::Free;
+                    }
+                }
+                released
+            }
+        }
+    }
+}
+
+/// Allocates variable-size per-node subnets from a cluster CIDR.
+///
+/// Uses a binary trie to efficiently find free space and supports different
+/// prefix lengths per node. For example, with cluster CIDR `10.42.0.0/16`:
+/// - Node A requests /24 → gets `10.42.0.0/24`
+/// - Node B requests /28 → gets `10.42.1.0/28`
+/// - Node C requests /24 → gets `10.42.2.0/24` (skips past B's /28 region)
 pub struct SubnetAllocator {
-    /// The cluster-wide CIDR (e.g., `10.42.0.0/16`).
+    /// The cluster-wide CIDR.
     cluster_cidr: Ipv4Net,
-    /// Prefix length for each node subnet (e.g., 24).
-    node_prefix_len: u8,
-    /// Total number of available node subnets.
-    max_subnets: u32,
-    /// Currently allocated subnets, keyed by node name.
+    /// Root of the allocation tree.
+    root: Node,
+    /// Map from node name to allocated subnet, for quick lookups and idempotency.
     allocated: HashMap<String, Ipv4Net>,
-    /// Next subnet index to try when allocating.
-    next_index: u32,
 }
 
 impl SubnetAllocator {
-    /// Create a new subnet allocator.
-    ///
-    /// - `cluster_cidr`: The overall cluster network (e.g., `10.42.0.0/16`)
-    /// - `node_prefix_len`: The prefix length for per-node subnets (e.g., `24`)
-    ///
-    /// # Panics
-    ///
-    /// Panics if `node_prefix_len` is not larger than the cluster CIDR prefix
-    /// length, or if `node_prefix_len > 30`.
-    pub fn new(cluster_cidr: Ipv4Net, node_prefix_len: u8) -> Self {
-        let cluster_prefix = cluster_cidr.prefix_len();
-        assert!(
-            node_prefix_len > cluster_prefix,
-            "node prefix length ({node_prefix_len}) must be greater than cluster prefix ({cluster_prefix})"
-        );
-        assert!(
-            node_prefix_len <= 30,
-            "node prefix length must be <= 30 to leave room for host addresses"
-        );
-
-        let subnet_bits = node_prefix_len - cluster_prefix;
-        let max_subnets = 1u32 << subnet_bits;
-
+    /// Create a new subnet allocator for the given cluster CIDR.
+    pub fn new(cluster_cidr: Ipv4Net) -> Self {
         tracing::info!(
             cluster_cidr = %cluster_cidr,
-            node_prefix_len = node_prefix_len,
-            max_subnets = max_subnets,
             "subnet allocator initialized"
         );
 
         Self {
             cluster_cidr,
-            node_prefix_len,
-            max_subnets,
+            root: Node::Free,
             allocated: HashMap::new(),
-            next_index: 0,
         }
     }
 
-    /// Allocate a subnet for a node. Returns the allocated subnet.
+    /// Allocate a subnet of the given prefix length for a node.
     ///
-    /// If the node already has an allocation, returns the existing one.
-    pub fn allocate(&mut self, node_name: &str) -> Result<Ipv4Net, String> {
-        // Return existing allocation if present
+    /// If the node already has an allocation, returns the existing one
+    /// (ignoring the requested prefix length).
+    pub fn allocate(&mut self, node_name: &str, prefix_len: u8) -> Result<Ipv4Net, String> {
+        // Validate prefix length
+        let cluster_prefix = self.cluster_cidr.prefix_len();
+        if prefix_len <= cluster_prefix {
+            return Err(format!(
+                "requested prefix length ({prefix_len}) must be greater than cluster prefix ({cluster_prefix})"
+            ));
+        }
+        if prefix_len > 30 {
+            return Err(format!(
+                "requested prefix length ({prefix_len}) must be <= 30"
+            ));
+        }
+
+        // Return existing allocation if present (idempotent)
         if let Some(&existing) = self.allocated.get(node_name) {
             return Ok(existing);
         }
 
-        // Find the next free subnet
-        let allocated_subnets: std::collections::HashSet<u32> = self
-            .allocated
-            .values()
-            .map(|net| self.subnet_index(net))
-            .collect();
-
-        let starting_index = self.next_index;
-        loop {
-            if !allocated_subnets.contains(&self.next_index) {
-                let subnet = self.subnet_at_index(self.next_index);
-                self.allocated.insert(node_name.to_string(), subnet);
+        let base_addr = u32::from(self.cluster_cidr.network());
+        match self
+            .root
+            .allocate(base_addr, cluster_prefix, prefix_len, node_name)
+        {
+            Some(subnet) => {
                 tracing::info!(
                     node = %node_name,
                     subnet = %subnet,
                     "allocated node subnet"
                 );
-                self.next_index = (self.next_index + 1) % self.max_subnets;
-                return Ok(subnet);
+                self.allocated.insert(node_name.to_string(), subnet);
+                Ok(subnet)
             }
-            self.next_index = (self.next_index + 1) % self.max_subnets;
-            if self.next_index == starting_index {
-                return Err(format!(
-                    "no free subnets available in {} (all {} subnets allocated)",
-                    self.cluster_cidr, self.max_subnets
-                ));
-            }
+            None => Err(format!(
+                "no free /{prefix_len} subnet available in {}",
+                self.cluster_cidr
+            )),
         }
     }
 
     /// Release a node's subnet allocation.
     pub fn release(&mut self, node_name: &str) {
-        if let Some(subnet) = self.allocated.remove(node_name) {
+        if self.allocated.remove(node_name).is_some() {
+            self.root.release(node_name);
             tracing::info!(
                 node = %node_name,
-                subnet = %subnet,
                 "released node subnet"
             );
         }
-    }
-
-    /// Compute the subnet at a given index within the cluster CIDR.
-    fn subnet_at_index(&self, index: u32) -> Ipv4Net {
-        let base = u32::from(self.cluster_cidr.network());
-        let host_bits = 32 - self.node_prefix_len;
-        let subnet_addr = Ipv4Addr::from(base + (index << host_bits));
-        Ipv4Net::new(subnet_addr, self.node_prefix_len).unwrap()
-    }
-
-    /// Compute the index of a subnet within the cluster CIDR.
-    fn subnet_index(&self, subnet: &Ipv4Net) -> u32 {
-        let base = u32::from(self.cluster_cidr.network());
-        let addr = u32::from(subnet.network());
-        let host_bits = 32 - self.node_prefix_len;
-        (addr - base) >> host_bits
     }
 }
 
@@ -138,13 +190,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn allocates_sequential_subnets() {
+    fn allocates_sequential_same_size() {
         let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
-        let mut alloc = SubnetAllocator::new(cluster, 24);
+        let mut alloc = SubnetAllocator::new(cluster);
 
-        let s1 = alloc.allocate("node-1").unwrap();
-        let s2 = alloc.allocate("node-2").unwrap();
-        let s3 = alloc.allocate("node-3").unwrap();
+        let s1 = alloc.allocate("node-1", 24).unwrap();
+        let s2 = alloc.allocate("node-2", 24).unwrap();
+        let s3 = alloc.allocate("node-3", 24).unwrap();
 
         assert_eq!(s1, "10.42.0.0/24".parse::<Ipv4Net>().unwrap());
         assert_eq!(s2, "10.42.1.0/24".parse::<Ipv4Net>().unwrap());
@@ -152,32 +204,104 @@ mod tests {
     }
 
     #[test]
+    fn allocates_different_sizes() {
+        let cluster: Ipv4Net = "10.0.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // Allocate a /24
+        let big = alloc.allocate("big-node", 24).unwrap();
+        assert_eq!(big, "10.0.0.0/24".parse::<Ipv4Net>().unwrap());
+
+        // Allocate a /28 — should come from the next available space
+        let small = alloc.allocate("small-node", 28).unwrap();
+        assert_eq!(small, "10.0.1.0/28".parse::<Ipv4Net>().unwrap());
+
+        // Another /24 — should skip past the /28's parent block
+        let big2 = alloc.allocate("big-node-2", 24).unwrap();
+        assert_eq!(big2, "10.0.2.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
     fn returns_existing_allocation() {
         let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
-        let mut alloc = SubnetAllocator::new(cluster, 24);
+        let mut alloc = SubnetAllocator::new(cluster);
 
-        let s1 = alloc.allocate("node-1").unwrap();
-        let s1_again = alloc.allocate("node-1").unwrap();
+        let s1 = alloc.allocate("node-1", 24).unwrap();
+        let s1_again = alloc.allocate("node-1", 28).unwrap(); // different size, still returns existing
         assert_eq!(s1, s1_again);
     }
 
     #[test]
     fn reuses_released_subnets() {
-        let cluster: Ipv4Net = "10.0.0.0/30".parse().unwrap();
-        // /30 -> /31 = 2 subnets (but /31 has only 2 addresses, that's fine for the test)
-        let mut alloc = SubnetAllocator::new(cluster, 31);
+        let cluster: Ipv4Net = "10.0.0.0/24".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
 
-        let s1 = alloc.allocate("node-1").unwrap();
-        let _s2 = alloc.allocate("node-2").unwrap();
+        let s1 = alloc.allocate("node-1", 25).unwrap();
+        let s2 = alloc.allocate("node-2", 25).unwrap();
+        assert_eq!(s1, "10.0.0.0/25".parse::<Ipv4Net>().unwrap());
+        assert_eq!(s2, "10.0.0.128/25".parse::<Ipv4Net>().unwrap());
 
-        // All subnets used
-        assert!(alloc.allocate("node-3").is_err());
+        // All space used for /25s
+        assert!(alloc.allocate("node-3", 25).is_err());
 
-        // Release one
+        // Release node-1
         alloc.release("node-1");
 
-        // Now node-3 gets node-1's old subnet
-        let s3 = alloc.allocate("node-3").unwrap();
-        assert_eq!(s1, s3);
+        // node-3 gets node-1's old subnet
+        let s3 = alloc.allocate("node-3", 25).unwrap();
+        assert_eq!(s3, "10.0.0.0/25".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn coalesces_on_release() {
+        let cluster: Ipv4Net = "10.0.0.0/24".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // Allocate two /25s that fill the /24
+        let _s1 = alloc.allocate("node-1", 25).unwrap();
+        let _s2 = alloc.allocate("node-2", 25).unwrap();
+
+        // Release both
+        alloc.release("node-1");
+        alloc.release("node-2");
+
+        // Now a full /25 should be available again at the start
+        let s3 = alloc.allocate("node-3", 25).unwrap();
+        assert_eq!(s3, "10.0.0.0/25".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn rejects_invalid_prefix() {
+        let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // prefix <= cluster prefix
+        assert!(alloc.allocate("node-1", 16).is_err());
+        assert!(alloc.allocate("node-1", 15).is_err());
+
+        // prefix > 30
+        assert!(alloc.allocate("node-1", 31).is_err());
+    }
+
+    #[test]
+    fn small_allocation_from_split_block() {
+        let cluster: Ipv4Net = "10.0.0.0/24".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // Allocate a /28 (16 addresses)
+        let s1 = alloc.allocate("node-1", 28).unwrap();
+        assert_eq!(s1, "10.0.0.0/28".parse::<Ipv4Net>().unwrap());
+
+        // Allocate another /28 — should fit in the same /27 half
+        let s2 = alloc.allocate("node-2", 28).unwrap();
+        assert_eq!(s2, "10.0.0.16/28".parse::<Ipv4Net>().unwrap());
+
+        // Allocate a /26 — the left /25 has a free /26 in its upper half (10.0.0.64/26)
+        let s3 = alloc.allocate("node-3", 26).unwrap();
+        assert_eq!(s3, "10.0.0.64/26".parse::<Ipv4Net>().unwrap());
+
+        // Allocate another /26 — now goes to the right /25
+        let s4 = alloc.allocate("node-4", 26).unwrap();
+        assert_eq!(s4, "10.0.0.128/26".parse::<Ipv4Net>().unwrap());
     }
 }

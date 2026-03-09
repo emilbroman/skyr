@@ -57,13 +57,9 @@ struct Args {
 
     /// Cluster CIDR for pod networking (e.g., "10.42.0.0/16").
     /// Subdivided into per-node subnets during node registration.
+    /// Nodes request their preferred subnet size via --pod-netmask.
     #[arg(long, default_value = "10.42.0.0/16")]
     cluster_cidr: String,
-
-    /// Prefix length for per-node subnets (e.g., 24 for /24 subnets).
-    /// Must be larger than the cluster CIDR prefix length.
-    #[arg(long, default_value = "24")]
-    node_net_bits: u8,
 }
 
 // Resource type constants
@@ -916,10 +912,10 @@ impl scop::Orchestrator for ContainerPlugin {
             "registering node"
         );
 
-        // Allocate a pod subnet for this node
+        // Allocate a pod subnet for this node at the requested size
         let pod_cidr = {
             let mut allocator = self.inner.subnet_allocator.write().await;
-            match allocator.allocate(&request.node_name) {
+            match allocator.allocate(&request.node_name, request.pod_netmask as u8) {
                 Ok(subnet) => subnet.to_string(),
                 Err(e) => {
                     tracing::error!(
@@ -1240,7 +1236,6 @@ async fn main() -> Result<()> {
     info!("  registry_url: {}", args.registry_url);
     info!("  ldb_hostname: {}", args.ldb_hostname);
     info!("  cluster_cidr: {}", args.cluster_cidr);
-    info!("  node_net_bits: {}", args.node_net_bits);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -1272,8 +1267,7 @@ async fn main() -> Result<()> {
         .cluster_cidr
         .parse()
         .expect("invalid --cluster-cidr, expected CIDR notation (e.g., 10.42.0.0/16)");
-    let subnet_allocator =
-        subnet_allocator::SubnetAllocator::new(cluster_cidr, args.node_net_bits);
+    let subnet_allocator = subnet_allocator::SubnetAllocator::new(cluster_cidr);
 
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
