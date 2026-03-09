@@ -325,7 +325,11 @@ pub struct RaisedException {
 
 impl std::fmt::Display for RaisedException {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "exception#{} ({})", self.exception_id, self.payload)
+        write!(f, "exception#{} ({})", self.exception_id, self.payload)?;
+        for (mid, span) in &self.stack_trace {
+            write!(f, "\n{mid}:{span}")?;
+        }
+        Ok(())
     }
 }
 
@@ -541,17 +545,13 @@ impl Eval {
 
                 match callee.value {
                     Value::Fn(function) => {
-                        let call_module_id = env
-                            .module_id
-                            .cloned()
-                            .unwrap_or_default();
+                        let call_module_id = env.module_id.cloned().unwrap_or_default();
                         let frame = StackFrame {
                             module_id: call_module_id,
                             span: expr.span(),
                             parent: env.stack,
                         };
-                        let call_env =
-                            function.env.as_eval_env(&args, Some(&frame));
+                        let call_env = function.env.as_eval_env(&args, Some(&frame));
                         self.eval_expr(&call_env, &function.body)
                             .map(|value| value.with_dependencies(callee_dependencies))
                     }
@@ -740,10 +740,7 @@ impl Eval {
                 }
                 match value.value {
                     Value::Exception(exc) => {
-                        let stack_trace = env
-                            .stack
-                            .map(|s| s.collect_trace())
-                            .unwrap_or_default();
+                        let stack_trace = env.stack.map(|s| s.collect_trace()).unwrap_or_default();
                         Err(EvalError::Exception(RaisedException {
                             exception_id: exc.exception_id,
                             payload: *exc.payload,
@@ -758,10 +755,13 @@ impl Eval {
                     Ok(value) => Ok(value),
                     Err(EvalError::Exception(raised)) => {
                         for catch in &try_expr.catches {
-                            let catch_target = self.eval_expr(env, &crate::Loc::new(
-                                ast::Expr::Var(catch.exception_var.clone()),
-                                catch.exception_var.span(),
-                            ))?;
+                            let catch_target = self.eval_expr(
+                                env,
+                                &crate::Loc::new(
+                                    ast::Expr::Var(catch.exception_var.clone()),
+                                    catch.exception_var.span(),
+                                ),
+                            )?;
 
                             match catch_target.value {
                                 Value::Exception(exc) => {
@@ -787,7 +787,9 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(EvalError::UnexpectedValue(call_result.value));
+                                            return Err(EvalError::UnexpectedValue(
+                                                call_result.value,
+                                            ));
                                         }
                                     }
                                 }
@@ -798,10 +800,8 @@ impl Eval {
                                         span: catch.exception_var.span(),
                                         parent: env.stack,
                                     };
-                                    let call_env = function.env.as_eval_env(
-                                        &[arg_value],
-                                        Some(&frame),
-                                    );
+                                    let call_env =
+                                        function.env.as_eval_env(&[arg_value], Some(&frame));
                                     let call_result = self.eval_expr(&call_env, &function.body)?;
                                     match call_result.value {
                                         Value::Exception(exc) => {
@@ -818,7 +818,9 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(EvalError::UnexpectedValue(call_result.value));
+                                            return Err(EvalError::UnexpectedValue(
+                                                call_result.value,
+                                            ));
                                         }
                                     }
                                 }
