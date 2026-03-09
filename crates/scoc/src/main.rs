@@ -359,7 +359,7 @@ impl scop::Conduit for CriConduit {
             let _ = cri.stop_pod_sandbox(&pod_id).await;
             let _ = cri.remove_pod_sandbox(&pod_id).await;
             return Err(scop::tonic::Status::internal(format!(
-                "pod network setup failed: {e}"
+                "pod network setup failed: {e:#}"
             )));
         }
 

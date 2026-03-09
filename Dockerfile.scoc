@@ -2,8 +2,8 @@ FROM skyr:latest AS binaries
 
 FROM alpine:3.21
 
-# Install containerd, ctr, and crun (better for nested containers)
-RUN apk add --no-cache containerd containerd-ctr crun
+# Install containerd, ctr, crun, iptables, CNI plugins, full iproute2 and util-linux (for nsenter)
+RUN apk add --no-cache containerd containerd-ctr crun iptables cni-plugins iproute2 util-linux
 
 # Copy SCOC binary from main skyr image
 COPY --from=binaries /scoc /usr/local/bin/scoc
@@ -12,6 +12,10 @@ COPY --from=binaries /scoc /usr/local/bin/scoc
 RUN mkdir -p /etc/containerd /etc/containerd/certs.d
 COPY containerd-config.toml /etc/containerd/config.toml
 COPY certs.d/ /etc/containerd/certs.d/
+
+# Install minimal CNI config (loopback only - SCOC handles real networking)
+RUN mkdir -p /etc/cni/net.d
+COPY cni/ /etc/cni/net.d/
 
 # Create log directory for pods
 RUN mkdir -p /var/log/pods

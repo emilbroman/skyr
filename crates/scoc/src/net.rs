@@ -242,7 +242,8 @@ pub fn setup_pod_network(
     let gateway = Ipv4Addr::from(u32::from(subnet.network()) + 1);
     let ip_cidr = format!("{}/{}", ip, subnet.prefix_len());
     let host_veth = veth_host_name(pod_id);
-    let pod_veth = "eth0";
+    // Use "skyr0" instead of "eth0" to avoid conflicts with CNI-created interfaces
+    let pod_veth = "skyr0";
 
     info!(
         pod_id = %pod_id,
@@ -252,12 +253,14 @@ pub fn setup_pod_network(
         "setting up pod network"
     );
 
-    // Create veth pair
+    // Create veth pair with pod end directly in the target namespace.
+    // We use "ip link add ... netns <path>" which creates the peer in the target netns.
+    // This avoids issues with moving interfaces between namespaces in nested containers.
     run_cmd(
         "ip",
         &[
             "link", "add", &host_veth, "type", "veth",
-            "peer", "name", pod_veth,
+            "peer", "name", pod_veth, "netns", netns_path,
         ],
     )
     .with_context(|| format!("failed to create veth pair for pod {pod_id}"))?;
@@ -269,13 +272,6 @@ pub fn setup_pod_network(
     // Bring host end up
     run_cmd("ip", &["link", "set", &host_veth, "up"])
         .with_context(|| format!("failed to bring {host_veth} up"))?;
-
-    // Move pod end into the network namespace
-    run_cmd(
-        "ip",
-        &["link", "set", pod_veth, "netns", netns_path],
-    )
-    .with_context(|| format!("failed to move {pod_veth} into netns {netns_path}"))?;
 
     // Configure pod-side networking inside the namespace
     nsenter_run(netns_path, "ip", &["addr", "add", &ip_cidr, "dev", pod_veth])
@@ -439,7 +435,9 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
 
 /// Run a command inside a network namespace using nsenter.
 fn nsenter_run(netns_path: &str, program: &str, args: &[&str]) -> Result<()> {
-    let mut nsenter_args = vec!["--net", netns_path, "--", program];
+    // Use --net=PATH format (util-linux nsenter requires = for file paths)
+    let net_arg = format!("--net={}", netns_path);
+    let mut nsenter_args = vec![net_arg.as_str(), "--", program];
     nsenter_args.extend_from_slice(args);
     run_cmd("nsenter", &nsenter_args)
 }

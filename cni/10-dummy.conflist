@@ -1,0 +1,18 @@
+{
+  "cniVersion": "1.0.0",
+  "name": "dummy-net",
+  "plugins": [
+    {
+      "type": "dummy",
+      "ipam": {
+        "type": "static",
+        "addresses": [
+          {"address": "169.254.1.1/32"}
+        ]
+      }
+    },
+    {
+      "type": "loopback"
+    }
+  ]
+}
