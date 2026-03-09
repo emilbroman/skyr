@@ -9,6 +9,7 @@ use crate::{Dict, ExceptionValue, ExternFnValue, FnValue, Record, TrackedValue, 
 pub struct StackFrame<'a> {
     pub module_id: crate::ModuleId,
     pub span: crate::Span,
+    pub name: String,
     pub parent: Option<&'a StackFrame<'a>>,
 }
 
@@ -23,11 +24,11 @@ impl StackFrame<'_> {
         depth
     }
 
-    fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span)> {
-        let mut trace = vec![(self.module_id.clone(), self.span)];
+    fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span, String)> {
+        let mut trace = vec![(self.module_id.clone(), self.span, self.name.clone())];
         let mut frame = self.parent;
         while let Some(f) = frame {
-            trace.push((f.module_id.clone(), f.span));
+            trace.push((f.module_id.clone(), f.span, f.name.clone()));
             frame = f.parent;
         }
         trace
@@ -114,7 +115,7 @@ impl<'a> EvalEnv<'a> {
 
     pub fn with_stack_frame(&self, frame: &'a StackFrame<'a>) -> Result<Self, EvalError> {
         if frame.depth() > 50 {
-            return Err(EvalError::StackOverflow);
+            return Err(self.throw(EvalErrorKind::StackOverflow));
         }
 
         let mut env = self.inner();
@@ -145,7 +146,20 @@ impl<'a> EvalEnv<'a> {
     }
 
     pub fn module_id(&self) -> Result<crate::ModuleId, EvalError> {
-        self.module_id.cloned().ok_or(EvalError::ModuleIdMissing)
+        self.module_id
+            .cloned()
+            .ok_or_else(|| self.throw(EvalErrorKind::ModuleIdMissing))
+    }
+
+    pub fn throw(&self, kind: impl Into<EvalErrorKind>) -> EvalError {
+        let frames = self
+            .stack
+            .map(|s| s.collect_trace())
+            .unwrap_or_default();
+        EvalError {
+            kind: kind.into(),
+            stack_trace: StackTrace { frames },
+        }
     }
 }
 
@@ -217,7 +231,7 @@ impl EvalCtx {
     pub fn emit(&self, effect: Effect) -> Result<(), EvalError> {
         self.effects
             .send(effect)
-            .map_err(|send_error| EvalError::EmitEffect(send_error.0))
+            .map_err(|send_error| EvalErrorKind::EmitEffect(send_error.0).into())
     }
 
     pub fn get_resource(
@@ -279,8 +293,49 @@ impl EvalCtx {
     }
 }
 
+#[derive(Debug)]
+pub struct StackTrace {
+    pub frames: Vec<(crate::ModuleId, crate::Span, String)>,
+}
+
+impl std::fmt::Display for StackTrace {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (module_id, span, name) in &self.frames {
+            write!(f, "\n  at {name} ({module_id} {span})")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct EvalError {
+    pub kind: EvalErrorKind,
+    pub stack_trace: StackTrace,
+}
+
+impl std::fmt::Display for EvalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.kind, self.stack_trace)
+    }
+}
+
+impl std::error::Error for EvalError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.kind.source()
+    }
+}
+
+impl From<EvalErrorKind> for EvalError {
+    fn from(kind: EvalErrorKind) -> Self {
+        Self {
+            kind,
+            stack_trace: StackTrace { frames: Vec::new() },
+        }
+    }
+}
+
 #[derive(Error, Debug)]
-pub enum EvalError {
+pub enum EvalErrorKind {
     #[error("failed to emit effect: {0:?}")]
     EmitEffect(Effect),
 
@@ -320,16 +375,12 @@ pub enum EvalError {
 pub struct RaisedException {
     pub exception_id: u64,
     pub payload: Value,
-    pub stack_trace: Vec<(crate::ModuleId, crate::Span)>,
+    pub stack_trace: StackTrace,
 }
 
 impl std::fmt::Display for RaisedException {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "exception#{} ({})", self.exception_id, self.payload)?;
-        for (mid, span) in &self.stack_trace {
-            write!(f, "\n{mid}:{span}")?;
-        }
-        Ok(())
+        write!(f, "exception#{} ({}){}", self.exception_id, self.payload, self.stack_trace)
     }
 }
 
@@ -346,42 +397,42 @@ impl ValueAssertions for Value {
     fn assert_int(self) -> Result<i64, EvalError> {
         match self {
             Value::Int(value) => Ok(value),
-            other => Err(EvalError::UnexpectedValue(other)),
+            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
         }
     }
 
     fn assert_str(self) -> Result<String, EvalError> {
         match self {
             Value::Str(value) => Ok(value),
-            other => Err(EvalError::UnexpectedValue(other)),
+            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
         }
     }
 
     fn assert_record(self) -> Result<Record, EvalError> {
         match self {
             Value::Record(value) => Ok(value),
-            other => Err(EvalError::UnexpectedValue(other)),
+            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
         }
     }
 
     fn assert_int_ref(&self) -> Result<&i64, EvalError> {
         match self {
             Value::Int(value) => Ok(value),
-            other => Err(EvalError::UnexpectedValue(other.clone())),
+            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
         }
     }
 
     fn assert_str_ref(&self) -> Result<&str, EvalError> {
         match self {
             Value::Str(value) => Ok(value.as_str()),
-            other => Err(EvalError::UnexpectedValue(other.clone())),
+            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
         }
     }
 
     fn assert_record_ref(&self) -> Result<&Record, EvalError> {
         match self {
             Value::Record(value) => Ok(value),
-            other => Err(EvalError::UnexpectedValue(other.clone())),
+            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
         }
     }
 }
@@ -402,24 +453,24 @@ impl ValueAssertions for Option<Value> {
     fn assert_int_ref(&self) -> Result<&i64, EvalError> {
         match self {
             Some(Value::Int(value)) => Ok(value),
-            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
-            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
         }
     }
 
     fn assert_str_ref(&self) -> Result<&str, EvalError> {
         match self {
             Some(Value::Str(value)) => Ok(value.as_str()),
-            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
-            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
         }
     }
 
     fn assert_record_ref(&self) -> Result<&Record, EvalError> {
         match self {
             Some(Value::Record(value)) => Ok(value),
-            Some(other) => Err(EvalError::UnexpectedValue(other.clone())),
-            None => Err(EvalError::UnexpectedValue(Value::Nil)),
+            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
         }
     }
 }
@@ -489,7 +540,7 @@ impl Eval {
                 .get(extern_expr.name.as_str())
                 .cloned()
                 .map(Self::tracked)
-                .ok_or_else(|| EvalError::MissingExtern(extern_expr.name.clone())),
+                .ok_or_else(|| env.throw(EvalErrorKind::MissingExtern(extern_expr.name.clone()))),
             ast::Expr::If(if_expr) => {
                 let condition = self.eval_expr(env, if_expr.condition.as_ref())?;
                 if matches!(&condition.value, Value::Pending(_)) {
@@ -505,7 +556,7 @@ impl Eval {
                             Ok(Self::tracked(Value::Nil))
                         }
                     }
-                    other => Err(EvalError::UnexpectedValue(other)),
+                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                 }
             }
             ast::Expr::Let(let_expr) => {
@@ -543,12 +594,18 @@ impl Eval {
                     return Ok(TrackedValue::pending().with_dependencies(callee_dependencies));
                 }
 
+                let frame_name = match &**call_expr.callee.as_ref() {
+                    ast::Expr::Var(var) => var.name.clone(),
+                    _ => "[fn]".to_string(),
+                };
+
                 match callee.value {
                     Value::Fn(function) => {
                         let call_module_id = env.module_id.cloned().unwrap_or_default();
                         let frame = StackFrame {
                             module_id: call_module_id,
                             span: expr.span(),
+                            name: frame_name,
                             parent: env.stack,
                         };
                         let call_env = function.env.as_eval_env(&args, Some(&frame));
@@ -581,10 +638,10 @@ impl Eval {
                         Value::Int(value) => Ok(Value::Int(-value)),
                         Value::Float(value_float) => Ok(Value::Float(
                             ordered_float::NotNan::new(-value_float.into_inner()).map_err(
-                                |_| EvalError::InvalidNumericResult("unary - produced NaN".into()),
+                                |_| env.throw(EvalErrorKind::InvalidNumericResult("unary - produced NaN".into())),
                             )?,
                         )),
-                        other => Err(EvalError::UnexpectedValue(other)),
+                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                     }),
                 }
             }
@@ -604,10 +661,10 @@ impl Eval {
                             }
                             rhs.try_map(|rhs| match rhs {
                                 Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(EvalError::UnexpectedValue(other)),
+                                other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                             })
                         }
-                        other => Err(EvalError::UnexpectedValue(other)),
+                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                     }),
                     ast::BinaryOp::Or => lhs.try_flat_map(|lhs| match lhs {
                         Value::Bool(true) => Ok(TrackedValue::new(Value::Bool(true))),
@@ -618,10 +675,10 @@ impl Eval {
                             }
                             rhs.try_map(|rhs| match rhs {
                                 Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(EvalError::UnexpectedValue(other)),
+                                other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                             })
                         }
-                        other => Err(EvalError::UnexpectedValue(other)),
+                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                     }),
                     _ => {
                         let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
@@ -630,7 +687,7 @@ impl Eval {
                         }
 
                         lhs.try_flat_map(|lhs| {
-                            rhs.try_map(|rhs| self.eval_binary_values(binary_expr.op, lhs, rhs))
+                            rhs.try_map(|rhs| self.eval_binary_values(binary_expr.op, lhs, rhs).map_err(|kind| env.throw(kind)))
                         })
                     }
                 }
@@ -740,20 +797,23 @@ impl Eval {
                 }
                 match value.value {
                     Value::Exception(exc) => {
-                        let stack_trace = env.stack.map(|s| s.collect_trace()).unwrap_or_default();
-                        Err(EvalError::Exception(RaisedException {
+                        let frames = env
+                            .stack
+                            .map(|s| s.collect_trace())
+                            .unwrap_or_default();
+                        Err(env.throw(EvalErrorKind::Exception(RaisedException {
                             exception_id: exc.exception_id,
                             payload: *exc.payload,
-                            stack_trace,
-                        }))
+                            stack_trace: StackTrace { frames },
+                        })))
                     }
-                    other => Err(EvalError::UnexpectedValue(other)),
+                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                 }
             }
             ast::Expr::Try(try_expr) => {
                 match self.eval_expr(env, try_expr.expr.as_ref()) {
                     Ok(value) => Ok(value),
-                    Err(EvalError::Exception(raised)) => {
+                    Err(EvalError { kind: EvalErrorKind::Exception(raised), stack_trace }) => {
                         for catch in &try_expr.catches {
                             let catch_target = self.eval_expr(
                                 env,
@@ -787,9 +847,7 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(EvalError::UnexpectedValue(
-                                                call_result.value,
-                                            ));
+                                            return Err(env.throw(EvalErrorKind::UnexpectedValue(call_result.value)));
                                         }
                                     }
                                 }
@@ -798,6 +856,7 @@ impl Eval {
                                     let frame = StackFrame {
                                         module_id: env.module_id.cloned().unwrap_or_default(),
                                         span: catch.exception_var.span(),
+                                        name: "[fn]".to_string(),
                                         parent: env.stack,
                                     };
                                     let call_env =
@@ -818,19 +877,17 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(EvalError::UnexpectedValue(
-                                                call_result.value,
-                                            ));
+                                            return Err(env.throw(EvalErrorKind::UnexpectedValue(call_result.value)));
                                         }
                                     }
                                 }
                                 _ => {
-                                    return Err(EvalError::UnexpectedValue(catch_target.value));
+                                    return Err(env.throw(EvalErrorKind::UnexpectedValue(catch_target.value)));
                                 }
                             }
                         }
                         // No catch matched, re-raise
-                        Err(EvalError::Exception(raised))
+                        Err(EvalError { kind: EvalErrorKind::Exception(raised), stack_trace })
                     }
                     Err(other) => Err(other),
                 }
@@ -843,97 +900,97 @@ impl Eval {
         op: ast::BinaryOp,
         lhs: Value,
         rhs: Value,
-    ) -> Result<Value, EvalError> {
+    ) -> Result<Value, EvalErrorKind> {
         match op {
             ast::BinaryOp::Add => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs + rhs)),
                 (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs + rhs)),
                 (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs as f64 + rhs.into_inner()).map_err(|_| {
-                        EvalError::InvalidNumericResult("int + float produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("int + float produced NaN".into())
                     })?,
                 )),
                 (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs.into_inner() + rhs as f64).map_err(|_| {
-                        EvalError::InvalidNumericResult("float + int produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("float + int produced NaN".into())
                     })?,
                 )),
                 (Value::Str(mut lhs), Value::Str(rhs)) => {
                     lhs.push_str(&rhs);
                     Ok(Value::Str(lhs))
                 }
-                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                (lhs, _) => Err(EvalErrorKind::UnexpectedValue(lhs)),
             },
             ast::BinaryOp::Sub => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs - rhs)),
                 (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs - rhs)),
                 (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs as f64 - rhs.into_inner()).map_err(|_| {
-                        EvalError::InvalidNumericResult("int - float produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("int - float produced NaN".into())
                     })?,
                 )),
                 (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs.into_inner() - rhs as f64).map_err(|_| {
-                        EvalError::InvalidNumericResult("float - int produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("float - int produced NaN".into())
                     })?,
                 )),
-                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                (lhs, _) => Err(EvalErrorKind::UnexpectedValue(lhs)),
             },
             ast::BinaryOp::Mul => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Int(lhs * rhs)),
                 (Value::Float(lhs), Value::Float(rhs)) => Ok(Value::Float(lhs * rhs)),
                 (Value::Int(lhs), Value::Float(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs as f64 * rhs.into_inner()).map_err(|_| {
-                        EvalError::InvalidNumericResult("int * float produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("int * float produced NaN".into())
                     })?,
                 )),
                 (Value::Float(lhs), Value::Int(rhs)) => Ok(Value::Float(
                     ordered_float::NotNan::new(lhs.into_inner() * rhs as f64).map_err(|_| {
-                        EvalError::InvalidNumericResult("float * int produced NaN".into())
+                        EvalErrorKind::InvalidNumericResult("float * int produced NaN".into())
                     })?,
                 )),
-                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                (lhs, _) => Err(EvalErrorKind::UnexpectedValue(lhs)),
             },
             ast::BinaryOp::Div => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => {
                     if rhs == 0 {
-                        return Err(EvalError::DivisionByZero);
+                        return Err(EvalErrorKind::DivisionByZero);
                     }
                     Ok(Value::Int(lhs / rhs))
                 }
                 (Value::Float(lhs), Value::Float(rhs)) => {
                     if rhs.into_inner() == 0.0 {
-                        return Err(EvalError::DivisionByZero);
+                        return Err(EvalErrorKind::DivisionByZero);
                     }
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs.into_inner() / rhs.into_inner()).map_err(
                             |_| {
-                                EvalError::InvalidNumericResult("float / float produced NaN".into())
+                                EvalErrorKind::InvalidNumericResult("float / float produced NaN".into())
                             },
                         )?,
                     ))
                 }
                 (Value::Int(lhs), Value::Float(rhs)) => {
                     if rhs.into_inner() == 0.0 {
-                        return Err(EvalError::DivisionByZero);
+                        return Err(EvalErrorKind::DivisionByZero);
                     }
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs as f64 / rhs.into_inner()).map_err(
-                            |_| EvalError::InvalidNumericResult("int / float produced NaN".into()),
+                            |_| EvalErrorKind::InvalidNumericResult("int / float produced NaN".into()),
                         )?,
                     ))
                 }
                 (Value::Float(lhs), Value::Int(rhs)) => {
                     if rhs == 0 {
-                        return Err(EvalError::DivisionByZero);
+                        return Err(EvalErrorKind::DivisionByZero);
                     }
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs.into_inner() / rhs as f64).map_err(
-                            |_| EvalError::InvalidNumericResult("float / int produced NaN".into()),
+                            |_| EvalErrorKind::InvalidNumericResult("float / int produced NaN".into()),
                         )?,
                     ))
                 }
-                (lhs, _) => Err(EvalError::UnexpectedValue(lhs)),
+                (lhs, _) => Err(EvalErrorKind::UnexpectedValue(lhs)),
             },
             ast::BinaryOp::Eq => Ok(Value::Bool(lhs == rhs)),
             ast::BinaryOp::Neq => Ok(Value::Bool(lhs != rhs)),
@@ -948,7 +1005,7 @@ impl Eval {
                 (Value::Float(lhs), Value::Int(rhs)) => {
                     Ok(Value::Bool(lhs.into_inner() < rhs as f64))
                 }
-                (lhs, rhs) => Err(EvalError::InvalidComparison { op, lhs, rhs }),
+                (lhs, rhs) => Err(EvalErrorKind::InvalidComparison { op, lhs, rhs }),
             },
             ast::BinaryOp::Lte => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs <= rhs)),
@@ -961,7 +1018,7 @@ impl Eval {
                 (Value::Float(lhs), Value::Int(rhs)) => {
                     Ok(Value::Bool(lhs.into_inner() <= rhs as f64))
                 }
-                (lhs, rhs) => Err(EvalError::InvalidComparison { op, lhs, rhs }),
+                (lhs, rhs) => Err(EvalErrorKind::InvalidComparison { op, lhs, rhs }),
             },
             ast::BinaryOp::Gt => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs > rhs)),
@@ -974,7 +1031,7 @@ impl Eval {
                 (Value::Float(lhs), Value::Int(rhs)) => {
                     Ok(Value::Bool(lhs.into_inner() > rhs as f64))
                 }
-                (lhs, rhs) => Err(EvalError::InvalidComparison { op, lhs, rhs }),
+                (lhs, rhs) => Err(EvalErrorKind::InvalidComparison { op, lhs, rhs }),
             },
             ast::BinaryOp::Gte => match (lhs, rhs) {
                 (Value::Int(lhs), Value::Int(rhs)) => Ok(Value::Bool(lhs >= rhs)),
@@ -987,7 +1044,7 @@ impl Eval {
                 (Value::Float(lhs), Value::Int(rhs)) => {
                     Ok(Value::Bool(lhs.into_inner() >= rhs as f64))
                 }
-                (lhs, rhs) => Err(EvalError::InvalidComparison { op, lhs, rhs }),
+                (lhs, rhs) => Err(EvalErrorKind::InvalidComparison { op, lhs, rhs }),
             },
             ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("handled earlier"),
         }
@@ -1017,7 +1074,7 @@ impl Eval {
                     }
                     Value::Bool(false) => Ok(ListItemOutcome::Complete),
                     Value::Pending(_) => Ok(ListItemOutcome::Pending(condition.dependencies)),
-                    other => Err(EvalError::UnexpectedValue(other)),
+                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                 }
             }
             ast::ListItem::For(for_item) => {
@@ -1038,7 +1095,7 @@ impl Eval {
                         Ok(ListItemOutcome::Complete)
                     }
                     Value::Pending(_) => Ok(ListItemOutcome::Pending(iterable.dependencies)),
-                    other => Err(EvalError::UnexpectedValue(other)),
+                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
                 }
             }
         }
@@ -1053,6 +1110,7 @@ impl Eval {
             let frame = StackFrame {
                 module_id,
                 span: global_expr.span(),
+                name: name.to_string(),
                 parent: env.stack,
             };
             let global_env = env.without_locals().with_stack_frame(&frame)?;
@@ -1174,7 +1232,7 @@ mod tests {
                             .unwrap_or_else(|| TrackedValue::new(Value::Nil));
                         first.try_map(|value| match value {
                             Value::Int(value) => Ok(Value::Int(value + 1)),
-                            other => Err(super::EvalError::UnexpectedValue(other)),
+                            other => Err(super::EvalErrorKind::UnexpectedValue(other).into()),
                         })
                     },
                 ))))
@@ -1220,7 +1278,7 @@ mod tests {
                             .unwrap_or(Value::Nil);
                         match value {
                             Value::Int(value) => Ok(TrackedValue::new(Value::Int(value + 1))),
-                            other => Err(super::EvalError::UnexpectedValue(other)),
+                            other => Err(super::EvalErrorKind::UnexpectedValue(other).into()),
                         }
                     },
                 ))))
