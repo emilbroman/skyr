@@ -26,12 +26,16 @@ type ResourceTransitionPluginClient =
 pub trait Plugin: Send + Sync + 'static {
     async fn create_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource>;
 
     async fn update_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -40,20 +44,24 @@ pub trait Plugin: Send + Sync + 'static {
 
     async fn delete_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        let _ = (id, inputs, outputs);
+        let _ = (environment_qid, deployment_id, id, inputs, outputs);
         Ok(())
     }
 
     async fn health(
         &self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
-        let _ = id;
+        let _ = (environment_qid, deployment_id, id);
         Ok(resource)
     }
 }
@@ -241,6 +249,8 @@ where
         info!(
             resource_type = request.resource_type.as_str(),
             resource_id = request.resource_id.as_str(),
+            environment_qid = request.environment_qid.as_str(),
+            deployment_id = request.deployment_id.as_str(),
             "received create_resource RPC"
         );
         let inputs: sclc::Record =
@@ -261,7 +271,12 @@ where
         let resource = {
             let mut plugin = self.plugin.write().await;
             plugin
-                .create_resource(resource_id.clone(), inputs)
+                .create_resource(
+                    &request.environment_qid,
+                    &request.deployment_id,
+                    resource_id.clone(),
+                    inputs,
+                )
                 .await
                 .map_err(|error| {
                     error!(
@@ -300,6 +315,8 @@ where
         info!(
             resource_type = resource_id.ty.as_str(),
             resource_id = resource_id.id.as_str(),
+            environment_qid = request.environment_qid.as_str(),
+            deployment_id = request.deployment_id.as_str(),
             "received update_resource RPC"
         );
         let prev_inputs: sclc::Record =
@@ -336,7 +353,14 @@ where
         let resource = {
             let mut plugin = self.plugin.write().await;
             plugin
-                .update_resource(resource_id.clone(), prev_inputs, prev_outputs, inputs)
+                .update_resource(
+                    &request.environment_qid,
+                    &request.deployment_id,
+                    resource_id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
                 .await
                 .map_err(|error| {
                     error!(
@@ -375,6 +399,8 @@ where
         info!(
             resource_type = resource_id.ty.as_str(),
             resource_id = resource_id.id.as_str(),
+            environment_qid = request.environment_qid.as_str(),
+            deployment_id = request.deployment_id.as_str(),
             "received delete_resource RPC"
         );
         let inputs: sclc::Record =
@@ -401,7 +427,13 @@ where
         {
             let mut plugin = self.plugin.write().await;
             plugin
-                .delete_resource(resource_id, inputs, outputs)
+                .delete_resource(
+                    &request.environment_qid,
+                    &request.deployment_id,
+                    resource_id,
+                    inputs,
+                    outputs,
+                )
                 .await
                 .map_err(|error| {
                     error!(err = %error, "plugin delete_resource failed");
@@ -419,8 +451,8 @@ where
     ) -> Result<tonic::Response<HealthResponse>, tonic::Status> {
         self.ensure_peer_capabilities().await?;
 
+        let request = request.into_inner();
         let resource = request
-            .into_inner()
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing health resource"))?;
         let id = sclc::ResourceId {
@@ -430,15 +462,18 @@ where
         let parsed = decode_resource(resource)?;
 
         let plugin = self.plugin.read().await;
-        let healthy = plugin.health(id.clone(), parsed).await.map_err(|error| {
-            error!(
-                resource_type = id.ty.as_str(),
-                resource_id = id.id.as_str(),
-                err = %error,
-                "plugin health failed"
-            );
-            tonic::Status::internal(error.to_string())
-        })?;
+        let healthy = plugin
+            .health(&request.environment_qid, &request.deployment_id, id.clone(), parsed)
+            .await
+            .map_err(|error| {
+                error!(
+                    resource_type = id.ty.as_str(),
+                    resource_id = id.id.as_str(),
+                    err = %error,
+                    "plugin health failed"
+                );
+                tonic::Status::internal(error.to_string())
+            })?;
 
         Ok(tonic::Response::new(HealthResponse {
             resource: Some(encode_resource(id, healthy)?),
@@ -471,12 +506,16 @@ pub struct PluginClient {
 impl PluginClient {
     pub async fn create_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(
             resource_type = id.ty.as_str(),
             resource_id = id.id.as_str(),
+            environment_qid,
+            deployment_id,
             "sending create_resource RPC"
         );
         let resource_inputs_json = serde_json::to_string(&inputs)?;
@@ -486,6 +525,8 @@ impl PluginClient {
                 resource_type: id.ty,
                 resource_id: id.id,
                 resource_inputs_json,
+                environment_qid: environment_qid.to_string(),
+                deployment_id: deployment_id.to_string(),
             })
             .await
             .map_err(|error| {
@@ -507,6 +548,8 @@ impl PluginClient {
 
     pub async fn update_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -515,6 +558,8 @@ impl PluginClient {
         debug!(
             resource_type = id.ty.as_str(),
             resource_id = id.id.as_str(),
+            environment_qid,
+            deployment_id,
             "sending update_resource RPC"
         );
         let current_inputs_json = serde_json::to_string(&prev_inputs)?;
@@ -530,6 +575,8 @@ impl PluginClient {
                     outputs_json: current_outputs_json,
                 }),
                 inputs_json,
+                environment_qid: environment_qid.to_string(),
+                deployment_id: deployment_id.to_string(),
             })
             .await
             .map_err(|error| {
@@ -551,6 +598,8 @@ impl PluginClient {
 
     pub async fn delete_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
@@ -558,6 +607,8 @@ impl PluginClient {
         debug!(
             resource_type = id.ty.as_str(),
             resource_id = id.id.as_str(),
+            environment_qid,
+            deployment_id,
             "sending delete_resource RPC"
         );
         let inputs_json = serde_json::to_string(&inputs)?;
@@ -570,6 +621,8 @@ impl PluginClient {
                     inputs_json,
                     outputs_json,
                 }),
+                environment_qid: environment_qid.to_string(),
+                deployment_id: deployment_id.to_string(),
             })
             .await
             .map_err(|error| {
@@ -581,6 +634,8 @@ impl PluginClient {
 
     pub async fn health(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
@@ -588,6 +643,8 @@ impl PluginClient {
             .inner
             .health(HealthRequest {
                 resource: Some(encode_resource(id, resource)?),
+                environment_qid: environment_qid.to_string(),
+                deployment_id: deployment_id.to_string(),
             })
             .await?
             .into_inner();

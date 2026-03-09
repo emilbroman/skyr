@@ -161,22 +161,12 @@ message RemovePodResponse {}
 
 // Configuration for a pod.
 message PodConfig {
-  // Metadata for the pod.
-  PodMetadata metadata = 1;
-  // Labels for the pod.
-  map<string, string> labels = 2;
-  // Annotations for the pod.
-  map<string, string> annotations = 3;
-}
-
-// Metadata for a pod.
-message PodMetadata {
-  // Name of the pod.
-  string name = 1;
-  // UID of the pod.
-  string uid = 2;
-  // Namespace of the pod.
-  string namespace = 3;
+  // Environment QID (e.g., "MyOrg/MyRepo::main").
+  string environment_qid = 1;
+  // Pod name.
+  string name = 2;
+  // Pod UID.
+  string uid = 3;
 }
 
 // ============================================================================
@@ -227,8 +217,8 @@ message RemoveContainerResponse {}
 
 // Configuration for a container.
 message ContainerConfig {
-  // Metadata for the container.
-  ContainerMetadata metadata = 1;
+  // Container name.
+  string name = 1;
   // Image to use.
   string image = 2;
   // Command to run (entrypoint).
@@ -237,16 +227,6 @@ message ContainerConfig {
   repeated string args = 4;
   // Environment variables.
   repeated KeyValue envs = 5;
-  // Labels.
-  map<string, string> labels = 6;
-  // Annotations.
-  map<string, string> annotations = 7;
-}
-
-// Metadata for a container.
-message ContainerMetadata {
-  // Name of the container.
-  string name = 1;
 }
 
 // Key-value pair for environment variables.

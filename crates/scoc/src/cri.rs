@@ -244,13 +244,16 @@ impl CriClient {
     }
 }
 
-/// Helper to create a minimal pod sandbox config for testing.
+/// Create a pod sandbox config for CRI.
 /// Uses host namespaces to work in nested container environments.
-pub fn test_pod_config(name: &str, namespace: &str) -> PodSandboxConfig {
+/// The CRI namespace is always "skyr" — SCOC is the translation boundary
+/// where Skyr QID concepts map to CRI concepts.
+pub fn pod_sandbox_config(name: &str) -> PodSandboxConfig {
+    let namespace = "skyr";
     PodSandboxConfig {
         metadata: Some(PodSandboxMetadata {
             name: name.to_string(),
-            uid: format!("{name}-{namespace}-uid"),
+            uid: format!("{name}-uid"),
             namespace: namespace.to_string(),
             attempt: 0,
         }),
@@ -294,8 +297,8 @@ pub fn test_pod_config(name: &str, namespace: &str) -> PodSandboxConfig {
     }
 }
 
-/// Helper to create a minimal container config for testing.
-pub fn test_container_config(name: &str, image: &str) -> ContainerConfig {
+/// Create a container config for CRI.
+pub fn container_config(name: &str, image: &str) -> ContainerConfig {
     ContainerConfig {
         metadata: Some(ContainerMetadata {
             name: name.to_string(),
@@ -315,7 +318,7 @@ pub fn test_container_config(name: &str, image: &str) -> ContainerConfig {
         devices: vec![],
         labels: Default::default(),
         annotations: Default::default(),
-        log_path: String::new(),
+        log_path: format!("{name}/0.log"),
         stdin: false,
         stdin_once: false,
         tty: false,

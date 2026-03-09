@@ -14,7 +14,6 @@
 mod buildkit;
 mod node_registry;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -156,13 +155,14 @@ impl ContainerPlugin {
     /// - `name`: Image name (without registry prefix)
     /// - `context`: Path to build context directory relative to repo root
     /// - `containerfile`: Path to Containerfile relative to context
-    /// - `namespace`: Deployment namespace (contains repo and commit info)
     ///
     /// Outputs:
     /// - `fullname`: Full image reference with digest (e.g., "registry:5000/name@sha256:...")
     /// - `digest`: Image digest (e.g., "sha256:...")
     async fn create_image(
         &self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -181,11 +181,6 @@ impl ContainerPlugin {
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("containerfile: {e}")))?
             .to_string();
-        let namespace = inputs
-            .get("namespace")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("namespace: {e}")))?
-            .to_string();
 
         info!(
             resource_type = %id.ty,
@@ -193,12 +188,23 @@ impl ContainerPlugin {
             image_name = %name,
             context = %context,
             containerfile = %containerfile,
-            namespace = %namespace,
+            environment_qid = %environment_qid,
+            deployment_id = %deployment_id,
             "creating image"
         );
 
-        // Parse namespace to get repository and deployment info
-        let deployment_qid = parse_namespace(&namespace)?;
+        // Parse environment QID to get repository info and construct deployment QID
+        let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|e| {
+            PluginError::InvalidInput(format!(
+                "invalid environment QID '{environment_qid}': {e}"
+            ))
+        })?;
+        let deployment: ids::DeploymentId = deployment_id.parse().map_err(|e| {
+            PluginError::InvalidInput(format!(
+                "invalid deployment ID '{deployment_id}': {e}"
+            ))
+        })?;
+        let deployment_qid = ids::DeploymentQid::new(env_qid, deployment);
 
         // Create a DeploymentClient for this deployment
         let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
@@ -220,10 +226,11 @@ impl ContainerPlugin {
         );
 
         // Create an LDB namespace publisher for this deployment
+        let ldb_namespace = deployment_qid.to_string();
         let log_publisher = self
             .inner
             .ldb_publisher
-            .namespace(namespace.clone())
+            .namespace(ldb_namespace)
             .await
             .map_err(|e| PluginError::Internal(format!("failed to create log publisher: {e}")))?;
 
@@ -261,6 +268,8 @@ impl ContainerPlugin {
     /// Update an image (rebuild if inputs changed).
     async fn update_image(
         &self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -273,7 +282,7 @@ impl ContainerPlugin {
                 resource_id = %id.id,
                 "image inputs changed, rebuilding"
             );
-            return self.create_image(id, inputs).await;
+            return self.create_image(environment_qid, deployment_id, id, inputs).await;
         }
 
         // No changes - return existing outputs
@@ -323,19 +332,16 @@ impl ContainerPlugin {
     ///
     /// Inputs:
     /// - `name`: Pod name (required)
-    /// - `namespace`: Pod namespace (required)
     /// - `uid`: Pod UID (required)
     /// - `node`: Target node name (optional, auto-scheduled if not specified)
-    /// - `labels`: Pod labels (optional)
-    /// - `annotations`: Pod annotations (optional)
     ///
     /// Outputs:
     /// - `podId`: The CRI pod sandbox ID
     /// - `node`: The node where the pod was scheduled
     /// - `name`: Echo of the pod name
-    /// - `namespace`: Echo of the pod namespace
     async fn create_pod(
         &self,
+        environment_qid: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -343,11 +349,6 @@ impl ContainerPlugin {
             .get("name")
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
-            .to_string();
-        let namespace = inputs
-            .get("namespace")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("namespace: {e}")))?
             .to_string();
         let uid = inputs
             .get("uid")
@@ -367,17 +368,11 @@ impl ContainerPlugin {
             }
         };
 
-        // Extract optional labels
-        let labels = extract_string_map(inputs.get("labels"))?;
-
-        // Extract optional annotations
-        let annotations = extract_string_map(inputs.get("annotations"))?;
-
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
             pod_name = %name,
-            pod_namespace = %namespace,
+            environment_qid = %environment_qid,
             node = %node_name,
             "creating pod sandbox"
         );
@@ -387,13 +382,9 @@ impl ContainerPlugin {
         let response = conduit
             .run_pod(scop::RunPodRequest {
                 config: Some(scop::PodConfig {
-                    metadata: Some(scop::PodMetadata {
-                        name: name.clone(),
-                        namespace: namespace.clone(),
-                        uid,
-                    }),
-                    labels,
-                    annotations,
+                    environment_qid: environment_qid.to_string(),
+                    name: name.clone(),
+                    uid,
                 }),
             })
             .await
@@ -414,7 +405,6 @@ impl ContainerPlugin {
         outputs.insert(String::from("podId"), Value::Str(pod_id));
         outputs.insert(String::from("node"), Value::Str(node_name));
         outputs.insert(String::from("name"), Value::Str(name));
-        outputs.insert(String::from("namespace"), Value::Str(namespace));
 
         Ok(sclc::Resource {
             inputs,
@@ -430,22 +420,21 @@ impl ContainerPlugin {
     /// if the node assignment changes.
     async fn update_pod(
         &self,
+        environment_qid: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         // Check if inputs that affect the pod have changed
-        // If name/namespace/uid changed, we need to recreate
+        // If name/uid changed, we need to recreate
         let prev_name = prev_inputs.get("name").assert_str_ref().ok();
-        let prev_namespace = prev_inputs.get("namespace").assert_str_ref().ok();
         let prev_uid = prev_inputs.get("uid").assert_str_ref().ok();
 
         let name = inputs.get("name").assert_str_ref().ok();
-        let namespace = inputs.get("namespace").assert_str_ref().ok();
         let uid = inputs.get("uid").assert_str_ref().ok();
 
-        if prev_name != name || prev_namespace != namespace || prev_uid != uid {
+        if prev_name != name || prev_uid != uid {
             // Pod identity changed - delete old and create new
             warn!(
                 resource_type = %id.ty,
@@ -454,7 +443,7 @@ impl ContainerPlugin {
             );
             self.delete_pod(id.clone(), prev_inputs, prev_outputs)
                 .await?;
-            return self.create_pod(id, inputs).await;
+            return self.create_pod(environment_qid, id, inputs).await;
         }
 
         // No changes that require recreation - return existing outputs
@@ -532,7 +521,6 @@ impl ContainerPlugin {
     /// Inputs:
     /// - `podId`: The CRI pod sandbox ID (required)
     /// - `podName`: Pod name for metadata (required)
-    /// - `podNamespace`: Pod namespace for metadata (required)
     /// - `podUid`: Pod UID for metadata (required)
     /// - `node`: Node where the pod is running (required)
     /// - `name`: Container name (required)
@@ -540,8 +528,6 @@ impl ContainerPlugin {
     /// - `command`: Entrypoint command (optional)
     /// - `args`: Command arguments (optional)
     /// - `envs`: Environment variables as a record (optional)
-    /// - `labels`: Container labels (optional)
-    /// - `annotations`: Container annotations (optional)
     ///
     /// Outputs:
     /// - `containerId`: The CRI container ID
@@ -549,6 +535,7 @@ impl ContainerPlugin {
     /// - `image`: Echo of the image
     async fn create_container(
         &self,
+        environment_qid: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -561,11 +548,6 @@ impl ContainerPlugin {
             .get("podName")
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?
-            .to_string();
-        let pod_namespace = inputs
-            .get("podNamespace")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podNamespace: {e}")))?
             .to_string();
         let pod_uid = inputs
             .get("podUid")
@@ -597,12 +579,6 @@ impl ContainerPlugin {
         // Extract optional envs as key-value pairs
         let envs = extract_env_vars(inputs.get("envs"))?;
 
-        // Extract optional labels
-        let labels = extract_string_map(inputs.get("labels"))?;
-
-        // Extract optional annotations
-        let annotations = extract_string_map(inputs.get("annotations"))?;
-
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
@@ -620,22 +596,16 @@ impl ContainerPlugin {
             .create_container(scop::CreateContainerRequest {
                 pod_id: pod_id.clone(),
                 config: Some(scop::ContainerConfig {
-                    metadata: Some(scop::ContainerMetadata { name: name.clone() }),
+                    name: name.clone(),
                     image: image.clone(),
                     command,
                     args,
                     envs,
-                    labels,
-                    annotations,
                 }),
                 pod_config: Some(scop::PodConfig {
-                    metadata: Some(scop::PodMetadata {
-                        name: pod_name,
-                        namespace: pod_namespace,
-                        uid: pod_uid,
-                    }),
-                    labels: HashMap::new(),
-                    annotations: HashMap::new(),
+                    environment_qid: environment_qid.to_string(),
+                    name: pod_name,
+                    uid: pod_uid,
                 }),
             })
             .await
@@ -677,6 +647,7 @@ impl ContainerPlugin {
     /// Containers are immutable, so any change requires recreating.
     async fn update_container(
         &self,
+        environment_qid: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -691,7 +662,7 @@ impl ContainerPlugin {
             );
             self.delete_container(id.clone(), prev_inputs, prev_outputs)
                 .await?;
-            return self.create_container(id, inputs).await;
+            return self.create_container(environment_qid, id, inputs).await;
         }
 
         // No changes - return existing outputs
@@ -766,26 +737,6 @@ impl ContainerPlugin {
 // Helper Functions
 // =============================================================================
 
-/// Extract a string map from a Value (for labels/annotations).
-fn extract_string_map(value: &Value) -> Result<HashMap<String, String>, PluginError> {
-    match value {
-        Value::Nil => Ok(HashMap::new()),
-        Value::Record(record) => {
-            let mut map = HashMap::new();
-            for (key, val) in record.iter() {
-                let s = val
-                    .assert_str_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("map value for {key}: {e}")))?;
-                map.insert(key.to_string(), s.to_string());
-            }
-            Ok(map)
-        }
-        other => Err(PluginError::InvalidInput(format!(
-            "expected Record? but got {other}"
-        ))),
-    }
-}
-
 /// Extract a string list from a Value (for command/args).
 fn extract_string_list(value: &Value) -> Result<Vec<String>, PluginError> {
     match value {
@@ -836,18 +787,6 @@ fn inputs_changed(prev: &sclc::Record, curr: &sclc::Record) -> bool {
     let prev_json = serde_json::to_string(prev).unwrap_or_default();
     let curr_json = serde_json::to_string(curr).unwrap_or_default();
     prev_json != curr_json
-}
-
-/// Parse the namespace to extract repository QID, environment ID, and deployment ID.
-///
-/// The namespace format is a deployment QID: `{org}/{repo}::{environment}@{deployment}`
-/// For example: `emil/myrepo::main@a10fb43f8a36c9be604dac6e76bd5bb298d3ea2e`
-fn parse_namespace(namespace: &str) -> Result<ids::DeploymentQid, PluginError> {
-    namespace.parse().map_err(|e| {
-        PluginError::InvalidInput(format!(
-            "invalid namespace deployment QID format '{namespace}': {e}"
-        ))
-    })
 }
 
 /// Extract a directory from the Git tree to the filesystem.
@@ -1058,12 +997,14 @@ impl scop::Orchestrator for ContainerPlugin {
 impl rtp::Plugin for ContainerPlugin {
     async fn create_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
-                let result = self.create_image(id.clone(), inputs).await;
+                let result = self.create_image(environment_qid, deployment_id, id.clone(), inputs).await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1075,7 +1016,7 @@ impl rtp::Plugin for ContainerPlugin {
                 result
             }
             POD_RESOURCE_TYPE => {
-                let result = self.create_pod(id.clone(), inputs).await;
+                let result = self.create_pod(environment_qid, id.clone(), inputs).await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1087,7 +1028,7 @@ impl rtp::Plugin for ContainerPlugin {
                 result
             }
             CONTAINER_RESOURCE_TYPE => {
-                let result = self.create_container(id.clone(), inputs).await;
+                let result = self.create_container(environment_qid, id.clone(), inputs).await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1104,6 +1045,8 @@ impl rtp::Plugin for ContainerPlugin {
 
     async fn update_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -1112,7 +1055,7 @@ impl rtp::Plugin for ContainerPlugin {
         match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 let result = self
-                    .update_image(id.clone(), prev_inputs, prev_outputs, inputs)
+                    .update_image(environment_qid, deployment_id, id.clone(), prev_inputs, prev_outputs, inputs)
                     .await;
                 if let Err(ref e) = result {
                     error!(
@@ -1125,7 +1068,7 @@ impl rtp::Plugin for ContainerPlugin {
                 result
             }
             POD_RESOURCE_TYPE => {
-                let result = self.update_pod(id.clone(), prev_inputs, prev_outputs, inputs).await;
+                let result = self.update_pod(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs).await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1138,7 +1081,7 @@ impl rtp::Plugin for ContainerPlugin {
             }
             CONTAINER_RESOURCE_TYPE => {
                 let result = self
-                    .update_container(id.clone(), prev_inputs, prev_outputs, inputs)
+                    .update_container(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs)
                     .await;
                 if let Err(ref e) = result {
                     error!(
@@ -1156,10 +1099,13 @@ impl rtp::Plugin for ContainerPlugin {
 
     async fn delete_resource(
         &mut self,
+        environment_qid: &str,
+        deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
+        let _ = (environment_qid, deployment_id);
         match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 let result = self.delete_image(id.clone(), inputs, outputs).await;

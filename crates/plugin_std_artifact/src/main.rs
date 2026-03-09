@@ -122,6 +122,8 @@ impl ArtifactPlugin {
 impl rtp::Plugin for ArtifactPlugin {
     async fn create_resource(
         &mut self,
+        _environment_qid: &str,
+        _deployment_id: &str,
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -139,6 +141,8 @@ impl rtp::Plugin for ArtifactPlugin {
 
     async fn update_resource(
         &mut self,
+        _environment_qid: &str,
+        _deployment_id: &str,
         id: sclc::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
@@ -158,6 +162,8 @@ impl rtp::Plugin for ArtifactPlugin {
 
     async fn delete_resource(
         &mut self,
+        _environment_qid: &str,
+        _deployment_id: &str,
         id: sclc::ResourceId,
         _inputs: sclc::Record,
         _outputs: sclc::Record,
