@@ -115,7 +115,10 @@ impl<'a> EvalEnv<'a> {
 
     pub fn with_stack_frame(&self, frame: &'a StackFrame<'a>) -> Result<Self, EvalError> {
         if frame.depth() > 50 {
-            return Err(self.throw(EvalErrorKind::StackOverflow));
+            return Err(self.throw(
+                EvalErrorKind::StackOverflow,
+                Some((frame.module_id.clone(), frame.span, frame.name.clone())),
+            ));
         }
 
         let mut env = self.inner();
@@ -148,14 +151,21 @@ impl<'a> EvalEnv<'a> {
     pub fn module_id(&self) -> Result<crate::ModuleId, EvalError> {
         self.module_id
             .cloned()
-            .ok_or_else(|| self.throw(EvalErrorKind::ModuleIdMissing))
+            .ok_or_else(|| self.throw(EvalErrorKind::ModuleIdMissing, None))
     }
 
-    pub fn throw(&self, kind: impl Into<EvalErrorKind>) -> EvalError {
-        let frames = self
-            .stack
-            .map(|s| s.collect_trace())
-            .unwrap_or_default();
+    pub fn throw(
+        &self,
+        kind: impl Into<EvalErrorKind>,
+        final_frame: Option<(crate::ModuleId, crate::Span, String)>,
+    ) -> EvalError {
+        let mut frames = Vec::new();
+        if let Some((module_id, span, name)) = final_frame {
+            frames.push((module_id, span, name));
+        }
+        if let Some(stack) = self.stack {
+            frames.extend(stack.collect_trace());
+        }
         EvalError {
             kind: kind.into(),
             stack_trace: StackTrace { frames },
@@ -367,7 +377,7 @@ pub enum EvalErrorKind {
     #[error("{0}")]
     Custom(String),
 
-    #[error("uncaught exception: {0}")]
+    #[error("{0}")]
     Exception(RaisedException),
 }
 
@@ -375,12 +385,15 @@ pub enum EvalErrorKind {
 pub struct RaisedException {
     pub exception_id: u64,
     pub payload: Value,
-    pub stack_trace: StackTrace,
+    pub name: String,
 }
 
 impl std::fmt::Display for RaisedException {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "exception#{} ({}){}", self.exception_id, self.payload, self.stack_trace)
+        match &self.payload {
+            Value::Nil => write!(f, "{}", self.name),
+            v => write!(f, "{}: {v}", self.name),
+        }
     }
 }
 
@@ -540,7 +553,16 @@ impl Eval {
                 .get(extern_expr.name.as_str())
                 .cloned()
                 .map(Self::tracked)
-                .ok_or_else(|| env.throw(EvalErrorKind::MissingExtern(extern_expr.name.clone()))),
+                .ok_or_else(|| {
+                    env.throw(
+                        EvalErrorKind::MissingExtern(extern_expr.name.clone()),
+                        Some((
+                            env.module_id.cloned().unwrap_or_default(),
+                            expr.span(),
+                            "extern".to_string(),
+                        )),
+                    )
+                }),
             ast::Expr::If(if_expr) => {
                 let condition = self.eval_expr(env, if_expr.condition.as_ref())?;
                 if matches!(&condition.value, Value::Pending(_)) {
@@ -556,7 +578,14 @@ impl Eval {
                             Ok(Self::tracked(Value::Nil))
                         }
                     }
-                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                    other => Err(env.throw(
+                        EvalErrorKind::UnexpectedValue(other),
+                        Some((
+                            env.module_id.cloned().unwrap_or_default(),
+                            expr.span(),
+                            "if".to_string(),
+                        )),
+                    )),
                 }
             }
             ast::Expr::Let(let_expr) => {
@@ -633,15 +662,31 @@ impl Eval {
                 if matches!(value.value, Value::Pending(_)) {
                     return Ok(Self::pending_with(value.dependencies));
                 }
+                let unary_span = expr.span();
+                let unary_module_id = env.module_id.cloned().unwrap_or_default();
                 match unary_expr.op {
                     ast::UnaryOp::Negate => value.try_map(|value| match value {
                         Value::Int(value) => Ok(Value::Int(-value)),
                         Value::Float(value_float) => Ok(Value::Float(
                             ordered_float::NotNan::new(-value_float.into_inner()).map_err(
-                                |_| env.throw(EvalErrorKind::InvalidNumericResult("unary - produced NaN".into())),
+                                |_| {
+                                    env.throw(
+                                        EvalErrorKind::InvalidNumericResult(
+                                            "unary - produced NaN".into(),
+                                        ),
+                                        Some((
+                                            unary_module_id.clone(),
+                                            unary_span,
+                                            "-".to_string(),
+                                        )),
+                                    )
+                                },
                             )?,
                         )),
-                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                        other => Err(env.throw(
+                            EvalErrorKind::UnexpectedValue(other),
+                            Some((unary_module_id.clone(), unary_span, "-".to_string())),
+                        )),
                     }),
                 }
             }
@@ -650,6 +695,10 @@ impl Eval {
                 if matches!(lhs.value, Value::Pending(_)) {
                     return Ok(Self::pending_with(lhs.dependencies));
                 }
+
+                let binary_span = expr.span();
+                let binary_module_id = env.module_id.cloned().unwrap_or_default();
+                let op_name = format!("{:?}", binary_expr.op).to_lowercase();
 
                 match binary_expr.op {
                     ast::BinaryOp::And => lhs.try_flat_map(|lhs| match lhs {
@@ -661,10 +710,16 @@ impl Eval {
                             }
                             rhs.try_map(|rhs| match rhs {
                                 Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                                other => Err(env.throw(
+                                    EvalErrorKind::UnexpectedValue(other),
+                                    Some((binary_module_id.clone(), binary_span, op_name.clone())),
+                                )),
                             })
                         }
-                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                        other => Err(env.throw(
+                            EvalErrorKind::UnexpectedValue(other),
+                            Some((binary_module_id.clone(), binary_span, op_name.clone())),
+                        )),
                     }),
                     ast::BinaryOp::Or => lhs.try_flat_map(|lhs| match lhs {
                         Value::Bool(true) => Ok(TrackedValue::new(Value::Bool(true))),
@@ -675,10 +730,16 @@ impl Eval {
                             }
                             rhs.try_map(|rhs| match rhs {
                                 Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                                other => Err(env.throw(
+                                    EvalErrorKind::UnexpectedValue(other),
+                                    Some((binary_module_id.clone(), binary_span, op_name.clone())),
+                                )),
                             })
                         }
-                        other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                        other => Err(env.throw(
+                            EvalErrorKind::UnexpectedValue(other),
+                            Some((binary_module_id.clone(), binary_span, op_name.clone())),
+                        )),
                     }),
                     _ => {
                         let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
@@ -687,7 +748,19 @@ impl Eval {
                         }
 
                         lhs.try_flat_map(|lhs| {
-                            rhs.try_map(|rhs| self.eval_binary_values(binary_expr.op, lhs, rhs).map_err(|kind| env.throw(kind)))
+                            rhs.try_map(|rhs| {
+                                self.eval_binary_values(binary_expr.op, lhs, rhs)
+                                    .map_err(|kind| {
+                                        env.throw(
+                                            kind,
+                                            Some((
+                                                binary_module_id.clone(),
+                                                binary_span,
+                                                op_name.clone(),
+                                            )),
+                                        )
+                                    })
+                            })
                         })
                     }
                 }
@@ -795,31 +868,46 @@ impl Eval {
                 if matches!(value.value, Value::Pending(_)) {
                     return Ok(Self::pending_with(value.dependencies));
                 }
+                let raise_frame = Some((
+                    env.module_id.cloned().unwrap_or_default(),
+                    expr.span(),
+                    "raise".to_string(),
+                ));
+                let exception_name = match raise_expr.expr.as_ref().as_ref() {
+                    ast::Expr::Var(var) => var.name.clone(),
+                    ast::Expr::Call(call) => match call.callee.as_ref().as_ref() {
+                        ast::Expr::Var(var) => var.name.clone(),
+                        _ => "exception".to_string(),
+                    },
+                    _ => "exception".to_string(),
+                };
                 match value.value {
-                    Value::Exception(exc) => {
-                        let frames = env
-                            .stack
-                            .map(|s| s.collect_trace())
-                            .unwrap_or_default();
-                        Err(env.throw(EvalErrorKind::Exception(RaisedException {
+                    Value::Exception(exc) => Err(env.throw(
+                        EvalErrorKind::Exception(RaisedException {
                             exception_id: exc.exception_id,
                             payload: *exc.payload,
-                            stack_trace: StackTrace { frames },
-                        })))
-                    }
-                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                            name: exception_name,
+                        }),
+                        raise_frame,
+                    )),
+                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other), raise_frame)),
                 }
             }
             ast::Expr::Try(try_expr) => {
+                let try_module_id = env.module_id.cloned().unwrap_or_default();
                 match self.eval_expr(env, try_expr.expr.as_ref()) {
                     Ok(value) => Ok(value),
-                    Err(EvalError { kind: EvalErrorKind::Exception(raised), stack_trace }) => {
+                    Err(EvalError {
+                        kind: EvalErrorKind::Exception(raised),
+                        stack_trace,
+                    }) => {
                         for catch in &try_expr.catches {
+                            let catch_span = catch.exception_var.span();
                             let catch_target = self.eval_expr(
                                 env,
                                 &crate::Loc::new(
                                     ast::Expr::Var(catch.exception_var.clone()),
-                                    catch.exception_var.span(),
+                                    catch_span,
                                 ),
                             )?;
 
@@ -847,15 +935,22 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(env.throw(EvalErrorKind::UnexpectedValue(call_result.value)));
+                                            return Err(env.throw(
+                                                EvalErrorKind::UnexpectedValue(call_result.value),
+                                                Some((
+                                                    try_module_id.clone(),
+                                                    catch_span,
+                                                    "catch".to_string(),
+                                                )),
+                                            ));
                                         }
                                     }
                                 }
                                 Value::Fn(function) => {
                                     let arg_value = TrackedValue::new(raised.payload.clone());
                                     let frame = StackFrame {
-                                        module_id: env.module_id.cloned().unwrap_or_default(),
-                                        span: catch.exception_var.span(),
+                                        module_id: try_module_id.clone(),
+                                        span: catch_span,
                                         name: "[fn]".to_string(),
                                         parent: env.stack,
                                     };
@@ -877,17 +972,34 @@ impl Eval {
                                             }
                                         }
                                         _ => {
-                                            return Err(env.throw(EvalErrorKind::UnexpectedValue(call_result.value)));
+                                            return Err(env.throw(
+                                                EvalErrorKind::UnexpectedValue(call_result.value),
+                                                Some((
+                                                    try_module_id.clone(),
+                                                    catch_span,
+                                                    "catch".to_string(),
+                                                )),
+                                            ));
                                         }
                                     }
                                 }
                                 _ => {
-                                    return Err(env.throw(EvalErrorKind::UnexpectedValue(catch_target.value)));
+                                    return Err(env.throw(
+                                        EvalErrorKind::UnexpectedValue(catch_target.value),
+                                        Some((
+                                            try_module_id.clone(),
+                                            catch_span,
+                                            "catch".to_string(),
+                                        )),
+                                    ));
                                 }
                             }
                         }
                         // No catch matched, re-raise
-                        Err(EvalError { kind: EvalErrorKind::Exception(raised), stack_trace })
+                        Err(EvalError {
+                            kind: EvalErrorKind::Exception(raised),
+                            stack_trace,
+                        })
                     }
                     Err(other) => Err(other),
                 }
@@ -965,7 +1077,9 @@ impl Eval {
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs.into_inner() / rhs.into_inner()).map_err(
                             |_| {
-                                EvalErrorKind::InvalidNumericResult("float / float produced NaN".into())
+                                EvalErrorKind::InvalidNumericResult(
+                                    "float / float produced NaN".into(),
+                                )
                             },
                         )?,
                     ))
@@ -976,7 +1090,11 @@ impl Eval {
                     }
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs as f64 / rhs.into_inner()).map_err(
-                            |_| EvalErrorKind::InvalidNumericResult("int / float produced NaN".into()),
+                            |_| {
+                                EvalErrorKind::InvalidNumericResult(
+                                    "int / float produced NaN".into(),
+                                )
+                            },
                         )?,
                     ))
                 }
@@ -986,7 +1104,11 @@ impl Eval {
                     }
                     Ok(Value::Float(
                         ordered_float::NotNan::new(lhs.into_inner() / rhs as f64).map_err(
-                            |_| EvalErrorKind::InvalidNumericResult("float / int produced NaN".into()),
+                            |_| {
+                                EvalErrorKind::InvalidNumericResult(
+                                    "float / int produced NaN".into(),
+                                )
+                            },
                         )?,
                     ))
                 }
@@ -1074,7 +1196,14 @@ impl Eval {
                     }
                     Value::Bool(false) => Ok(ListItemOutcome::Complete),
                     Value::Pending(_) => Ok(ListItemOutcome::Pending(condition.dependencies)),
-                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                    other => Err(env.throw(
+                        EvalErrorKind::UnexpectedValue(other),
+                        Some((
+                            env.module_id.cloned().unwrap_or_default(),
+                            if_item.condition.span(),
+                            "if".to_string(),
+                        )),
+                    )),
                 }
             }
             ast::ListItem::For(for_item) => {
@@ -1095,7 +1224,14 @@ impl Eval {
                         Ok(ListItemOutcome::Complete)
                     }
                     Value::Pending(_) => Ok(ListItemOutcome::Pending(iterable.dependencies)),
-                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other))),
+                    other => Err(env.throw(
+                        EvalErrorKind::UnexpectedValue(other),
+                        Some((
+                            env.module_id.cloned().unwrap_or_default(),
+                            for_item.iterable.span(),
+                            "for".to_string(),
+                        )),
+                    )),
                 }
             }
         }
