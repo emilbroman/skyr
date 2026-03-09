@@ -57,6 +57,9 @@ fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
         Value::ExternFn(_) | Value::Fn(_) => Err(EvalError::Custom(
             "cannot encode function value as JSON".into(),
         )),
+        Value::Exception(_) => Err(EvalError::Custom(
+            "cannot encode exception value as JSON".into(),
+        )),
         Value::Record(record) => Ok(JsonValue::Object(record_to_map(record)?)),
         Value::Dict(dict) => Ok(JsonValue::Object(dict_to_map(dict)?)),
     }

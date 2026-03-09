@@ -106,6 +106,8 @@ impl Expr {
                 vars
             }
             Expr::PropertyAccess(property_access) => property_access.expr.as_ref().free_vars(),
+            Expr::Exception(_) => HashSet::new(),
+            Expr::Raise(raise_expr) => raise_expr.expr.as_ref().free_vars(),
         }
     }
 }
@@ -138,6 +140,8 @@ pub enum Expr {
     List(ListExpr),
     Interp(InterpExpr),
     PropertyAccess(PropertyAccessExpr),
+    Exception(ExceptionExpr),
+    Raise(RaiseExpr),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -378,6 +382,17 @@ pub struct DictTypeExpr {
 pub struct RecordTypeFieldExpr {
     pub var: Loc<Var>,
     pub ty: Loc<TypeExpr>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExceptionExpr {
+    pub exception_id: u64,
+    pub ty: Option<Loc<TypeExpr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RaiseExpr {
+    pub expr: Box<Loc<Expr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

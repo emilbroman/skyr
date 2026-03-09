@@ -15,6 +15,7 @@ pub enum Value {
     Fn(FnValue),
     Record(Record),
     Dict(Dict),
+    Exception(ExceptionValue),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +76,34 @@ impl TrackedValue {
 impl From<Value> for TrackedValue {
     fn from(value: Value) -> Self {
         Self::new(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExceptionValue {
+    pub exception_id: u64,
+    pub payload: Box<Value>,
+}
+
+impl Serialize for ExceptionValue {
+    fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        Err(serde::ser::Error::custom(
+            "cannot serialize exception value",
+        ))
+    }
+}
+
+impl<'de> Deserialize<'de> for ExceptionValue {
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Err(serde::de::Error::custom(
+            "cannot deserialize exception value",
+        ))
     }
 }
 
@@ -273,6 +302,7 @@ impl std::fmt::Display for Value {
             Value::Fn(function) => write!(f, "{function}"),
             Value::Record(record) => write!(f, "{record}"),
             Value::Dict(dict) => write!(f, "{dict}"),
+            Value::Exception(exc) => write!(f, "<exception#{}>", exc.exception_id),
         }
     }
 }
