@@ -2,17 +2,29 @@
 
 Deployments are the core unit of infrastructure in Skyr. When you push code to a Skyr repository, Skyr creates a deployment and begins rolling out your infrastructure.
 
-## Branches and Deployments
+## Environments and Deployments
 
-Each Git branch (or ref) in your repository can have an active deployment. When you push a commit to a branch, Skyr creates a deployment for that specific branch and commit combination.
+Skyr organizes infrastructure using a four-level hierarchy: **Organization** → **Repository** → **Environment** → **Deployment**.
+
+An **environment** corresponds to a Git branch or tag in your repository. Each environment can have one active deployment at a time. A **deployment** is a specific revision (commit) of an environment.
 
 ```bash
 git push skyr main
 ```
 
-This creates a deployment identified by:
-- The branch name (`main`)
-- The commit hash you pushed
+This creates a deployment identified by a qualified identifier (QID) that combines all four levels:
+
+```
+alice/my_app::main@a10fb43f8a36c9be604dac6e76bd5bb298d3ea2e
+│     │       │    └─ deployment (commit hash)
+│     │       └─ environment (branch name)
+│     └─ repository
+└─ organization
+```
+
+Separators: `/` (org/repo), `::` (repo::env), `@` (env@deploy).
+
+Tags are also supported as environments using a `tag:` prefix (e.g., `tag:v1.0`).
 
 The deployment reads your `Main.scl` file, evaluates your configuration, and creates the resources you defined.
 
@@ -33,7 +45,7 @@ The deployment stays in this state as long as you want it running.
 
 ### Lingering
 
-When you push a new commit to the same branch, the old deployment transitions to **Lingering**. It's being replaced, but Skyr keeps it around temporarily while the new deployment rolls out.
+When you push a new commit to the same environment (branch), the old deployment transitions to **Lingering**. It's being replaced, but Skyr keeps it around temporarily while the new deployment rolls out.
 
 During this phase:
 - The old deployment stops creating new resources
@@ -54,7 +66,7 @@ After all resources are destroyed, the deployment reaches the **Down** state. It
 
 ## Supersession: How Rollouts Work
 
-When you push a new commit to a branch that already has an active deployment, the new deployment *supersedes* the old one.
+When you push a new commit to an environment that already has an active deployment, the new deployment *supersedes* the old one.
 
 ```
 Before push:
@@ -104,13 +116,19 @@ When you push:
 5. Resource `a` is destroyed (no longer in the config)
 6. Deployment A transitions to Down
 
-## Deleting Branches
+## Deleting Environments
 
-If you delete a branch (or force-push to remove a ref), the deployment transitions directly to Undesired and begins tearing down all its resources.
+If you delete a branch or tag (or force-push to remove a ref), the environment's deployment transitions directly to Undesired and begins tearing down all its resources.
 
 ```bash
 git push skyr --delete feature-branch
 ```
+
+## Resource Namespacing
+
+Resources are grouped by **environment** — all deployments within the same environment share the same resource namespace. This means a resource created by one deployment in `alice/my_app::main` is visible to the next deployment in that same environment, enabling seamless adoption during rollouts.
+
+The resource owner is tracked as a full deployment QID (e.g., `alice/my_app::main@a10fb43f...`), so Skyr always knows exactly which deployment owns each resource.
 
 ## Resource Ownership
 

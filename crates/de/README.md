@@ -28,8 +28,13 @@ CDB → DE → SCLC (compile)
 
 DE currently compiles configuration but does not yet emit transition requests to the [RTQ](../rtq/). The planned reconciliation loop — where DE evaluates the compiled resource DAG, compares it against the [RDB](../rdb/), and emits Create/Restore/Adopt/Destroy messages — is not yet implemented.
 
+## Namespace Usage
+
+DE uses environment QIDs (`org/repo::env`) as the RDB namespace for resource grouping, and deployment QIDs (`org/repo::env@deploy`) as LDB namespaces for log grouping. This ensures resources are shared within an environment while logs remain deployment-specific.
+
 ## Related Crates
 
+- [IDs](../ids/) — typed identifiers for namespace computation
 - [CDB](../cdb/) — source of deployment metadata and configuration files
 - [SCLC](../sclc/) — compiles SCL configuration
 - [RTQ](../rtq/) — target for transition requests (planned)

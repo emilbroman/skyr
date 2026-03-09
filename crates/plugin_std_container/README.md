@@ -19,7 +19,7 @@ RTE → RTP → Container Plugin → SCOP → SCOC → containerd
 
 ### `Std/Container.Image`
 
-Builds a container image from a Git context using BuildKit and pushes it to the OCI registry.
+Builds a container image from a Git context using BuildKit and pushes it to the OCI registry. The resource namespace (a deployment QID like `org/repo::env@deploy`) is parsed to locate the correct repository and commit in CDB for extracting the build context.
 
 ### `Std/Container.Pod`
 
@@ -47,6 +47,7 @@ cargo run -p plugin_std_container -- \
 
 ## Related Crates
 
+- [IDs](../ids/) — parses deployment QIDs from resource namespaces
 - [RTP](../rtp/) — the plugin protocol this implements
 - [RTE](../rte/) — invokes this plugin to process transitions
 - [SCOP](../scop/) — protocol for communicating with conduit nodes

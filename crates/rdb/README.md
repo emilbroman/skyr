@@ -35,7 +35,9 @@ Each resource has:
 - **Inputs** — the desired configuration provided by the deployment
 - **Outputs** — the actual state reported by the plugin after creation
 - **Dependencies** — list of other resource IDs this resource depends on (stored as JSON)
-- **Owner** — the deployment that owns this resource
+- **Owner** — the deployment QID (`org/repo::env@deploy`) that owns this resource
+
+Resources are grouped by **namespace**, which is the environment QID (`org/repo::env`). All deployments within the same environment share a resource namespace, enabling seamless resource adoption during rollouts.
 
 ## Related Crates
 

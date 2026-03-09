@@ -15,7 +15,8 @@ This file contains guidance for AI agents working on the Skyr codebase. For arch
 - Whenever the GraphQL server is updated in a way that impacts the schema, regenerate `crates/api/schema.graphql` by running `cargo run -p api -- --write-schema`.
 - When writing new RTP plugins, follow the pattern in `plugin_std_random` or `plugin_std_artifact`.
 - For ADB operations, configure endpoint/bucket via CLI args or environment variables.
-- For LDB logging, use `NamespacePublisher` with deployment ID as namespace.
+- For LDB logging, use `NamespacePublisher` with deployment QID as namespace.
+- The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Use its typed IDs and QIDs rather than raw strings when working with identifiers. Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces.
 - Note: spelling is consistently `supercede/supercession` in schema/API names.
 
 ## Running Locally

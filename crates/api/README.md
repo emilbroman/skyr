@@ -33,8 +33,17 @@ The GraphQL schema is defined in `schema.graphql`. When the server implementatio
 cargo run -p api -- --write-schema
 ```
 
+## Namespace Usage
+
+The API uses the [IDs](../ids/) crate to work with qualified identifiers:
+
+- Deployment IDs exposed via GraphQL are full deployment QIDs (`org/repo::env@deploy`).
+- Resource owner resolution parses deployment QIDs from owner strings to look up the owning deployment.
+- Deployment log subscriptions validate that the deployment belongs to the authenticated user's organization.
+
 ## Related Crates
 
+- [IDs](../ids/) — typed identifiers for deployment QID parsing
 - [UDB](../udb/) — user accounts and bearer token management
 - [CDB](../cdb/) — deployment and Git object data
 - [ADB](../adb/) — artifact storage
