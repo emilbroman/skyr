@@ -42,4 +42,5 @@ exec /usr/local/bin/scoc daemon \
   --containerd-socket /run/containerd/containerd.sock \
   --cpu-millis "${SCOC_CPU_MILLIS:-4000}" \
   --memory-bytes "${SCOC_MEMORY_BYTES:-8589934592}" \
-  --max-pods "${SCOC_MAX_PODS:-100}"
+  --max-pods "${SCOC_MAX_PODS:-100}" \
+  --ldb-brokers "${SCOC_LDB_BROKERS:-127.0.0.1:9092}"
