@@ -753,6 +753,86 @@ impl Eval {
                     other => Err(EvalError::UnexpectedValue(other)),
                 }
             }
+            ast::Expr::Try(try_expr) => {
+                match self.eval_expr(env, try_expr.expr.as_ref()) {
+                    Ok(value) => Ok(value),
+                    Err(EvalError::Exception(raised)) => {
+                        for catch in &try_expr.catches {
+                            let catch_target = self.eval_expr(env, &crate::Loc::new(
+                                ast::Expr::Var(catch.exception_var.clone()),
+                                catch.exception_var.span(),
+                            ))?;
+
+                            match catch_target.value {
+                                Value::Exception(exc) => {
+                                    if exc.exception_id == raised.exception_id {
+                                        return self.eval_expr(env, &catch.body);
+                                    }
+                                }
+                                Value::ExternFn(func) => {
+                                    let arg_value = TrackedValue::new(raised.payload.clone());
+                                    let call_result = func.call(vec![arg_value], &self.ctx)?;
+                                    match call_result.value {
+                                        Value::Exception(exc) => {
+                                            if exc.exception_id == raised.exception_id {
+                                                if let Some(catch_arg) = &catch.catch_arg {
+                                                    let inner_env = env.with_local(
+                                                        catch_arg.name.as_str(),
+                                                        TrackedValue::new(raised.payload.clone()),
+                                                    );
+                                                    return self.eval_expr(&inner_env, &catch.body);
+                                                } else {
+                                                    return self.eval_expr(env, &catch.body);
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(EvalError::UnexpectedValue(call_result.value));
+                                        }
+                                    }
+                                }
+                                Value::Fn(function) => {
+                                    let arg_value = TrackedValue::new(raised.payload.clone());
+                                    let frame = StackFrame {
+                                        module_id: env.module_id.cloned().unwrap_or_default(),
+                                        span: catch.exception_var.span(),
+                                        parent: env.stack,
+                                    };
+                                    let call_env = function.env.as_eval_env(
+                                        &[arg_value],
+                                        Some(&frame),
+                                    );
+                                    let call_result = self.eval_expr(&call_env, &function.body)?;
+                                    match call_result.value {
+                                        Value::Exception(exc) => {
+                                            if exc.exception_id == raised.exception_id {
+                                                if let Some(catch_arg) = &catch.catch_arg {
+                                                    let inner_env = env.with_local(
+                                                        catch_arg.name.as_str(),
+                                                        TrackedValue::new(raised.payload.clone()),
+                                                    );
+                                                    return self.eval_expr(&inner_env, &catch.body);
+                                                } else {
+                                                    return self.eval_expr(env, &catch.body);
+                                                }
+                                            }
+                                        }
+                                        _ => {
+                                            return Err(EvalError::UnexpectedValue(call_result.value));
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    return Err(EvalError::UnexpectedValue(catch_target.value));
+                                }
+                            }
+                        }
+                        // No catch matched, re-raise
+                        Err(EvalError::Exception(raised))
+                    }
+                    Err(other) => Err(other),
+                }
+            }
         }
     }
 

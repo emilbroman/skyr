@@ -4,11 +4,12 @@ use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
 
 use crate::{
-    BinaryExpr, BinaryOp, Bool, CallExpr, Diag, DiagList, Diagnosed, DictEntry, DictExpr,
-    DictTypeExpr, ExceptionExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr, ImportStmt, Int,
-    InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem, ListItem, Loc, ModStmt,
-    ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField, RecordTypeExpr,
-    RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TypeExpr, UnaryExpr, UnaryOp, Var,
+    BinaryExpr, BinaryOp, Bool, CallExpr, CatchClause, Diag, DiagList, Diagnosed, DictEntry,
+    DictExpr, DictTypeExpr, ExceptionExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr,
+    ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
+    ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
+    RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
+    TypeExpr, UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -145,6 +146,7 @@ peg::parser! {
             / fn_expr:fn_expr() { fn_expr }
             / extern_expr:extern_expr() { extern_expr }
             / raise_expr:raise_expr() { raise_expr }
+            / try_expr:try_expr() { try_expr }
             / logical_or_expr()
 
         rule logical_or_expr() -> Loc<Expr>
@@ -389,6 +391,34 @@ peg::parser! {
                     Expr::Raise(RaiseExpr { expr: Box::new(expr) }),
                     Span::new(raise_kw_span.start(), end),
                 )
+            }
+
+        rule try_expr() -> Loc<Expr>
+            = try_kw_span:try_keyword() expr:expr() catches:catch_clause()+ {
+                let end = catches.last().map(|c| c.body.span().end()).unwrap_or_else(|| expr.span().end());
+                Loc::new(
+                    Expr::Try(TryExpr {
+                        expr: Box::new(expr),
+                        catches,
+                    }),
+                    Span::new(try_kw_span.start(), end),
+                )
+            }
+
+        rule catch_clause() -> CatchClause
+            = catch_keyword() exception_var:var() open_paren() catch_arg:var() close_paren() colon() body:expr() {
+                CatchClause {
+                    exception_var,
+                    catch_arg: Some(catch_arg),
+                    body,
+                }
+            }
+            / catch_keyword() exception_var:var() colon() body:expr() {
+                CatchClause {
+                    exception_var,
+                    catch_arg: None,
+                    body,
+                }
             }
 
         rule exception_expr() -> Loc<Expr>
@@ -670,6 +700,18 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::RaiseKeyword)] { token.span() }
             }
             / expected!("raise keyword")
+
+        rule try_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::TryKeyword)] { token.span() }
+            }
+            / expected!("try keyword")
+
+        rule catch_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::CatchKeyword)] { token.span() }
+            }
+            / expected!("catch keyword")
 
         rule equals() -> Span
             = quiet!{
