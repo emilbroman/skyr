@@ -14,6 +14,8 @@
 //     name: "my-container",
 //     image: img.fullname,
 //   })
+//
+//   let http = pod.Port({ port: 8080, protocol: "tcp" })
 
 // Image resource - builds a container image using BuildKit
 //
@@ -56,5 +58,20 @@ export let Pod = extern "Std/Container.Pod": fn({
         containerId: Str,
         name: Str,
         image: Str,
-    }
+    },
+    // Open a port on the pod's firewall, returning an access token
+    // that can be passed to other pods to grant ingress.
+    Port: fn({
+        // Port number to open
+        port: Int,
+        // Protocol: "tcp" (default) or "udp"
+        protocol: Str,
+    }) {
+        // The pod's IP address
+        address: Str,
+        // The opened port number
+        port: Int,
+        // The protocol
+        protocol: Str,
+    },
 }
