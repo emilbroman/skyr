@@ -5,30 +5,30 @@ use tokio::sync::mpsc;
 
 use crate::{Dict, ExceptionValue, ExternFnValue, FnValue, Record, TrackedValue, Value, ast};
 
-#[derive(Clone, Debug)]
-pub struct StackFrame {
+#[derive(Debug)]
+pub struct StackFrame<'a> {
     pub module_id: crate::ModuleId,
     pub span: crate::Span,
-    pub parent: Option<Box<StackFrame>>,
+    pub parent: Option<&'a StackFrame<'a>>,
 }
 
-impl StackFrame {
+impl StackFrame<'_> {
     fn depth(&self) -> u32 {
         let mut depth = 1;
-        let mut frame = self.parent.as_ref();
+        let mut frame = self.parent;
         while let Some(f) = frame {
             depth += 1;
-            frame = f.parent.as_ref();
+            frame = f.parent;
         }
         depth
     }
 
     fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span)> {
         let mut trace = vec![(self.module_id.clone(), self.span)];
-        let mut frame = self.parent.as_ref();
+        let mut frame = self.parent;
         while let Some(f) = frame {
             trace.push((f.module_id.clone(), f.span));
-            frame = f.parent.as_ref();
+            frame = f.parent;
         }
         trace
     }
@@ -39,7 +39,7 @@ pub struct EvalEnv<'a> {
     globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
-    stack: Option<Box<StackFrame>>,
+    stack: Option<&'a StackFrame<'a>>,
 }
 
 impl<'a> EvalEnv<'a> {
@@ -112,28 +112,18 @@ impl<'a> EvalEnv<'a> {
         }
     }
 
-    pub fn with_stack_frame(
-        &self,
-        module_id: crate::ModuleId,
-        span: crate::Span,
-    ) -> Result<Self, EvalError> {
-        let depth = self.stack.as_ref().map_or(0, |s| s.depth());
-        if depth >= 50 {
+    pub fn with_stack_frame(&self, frame: &'a StackFrame<'a>) -> Result<Self, EvalError> {
+        if frame.depth() > 50 {
             return Err(EvalError::StackOverflow);
         }
 
-        let frame = StackFrame {
-            module_id,
-            span,
-            parent: self.stack.clone(),
-        };
         let mut env = self.inner();
-        env.stack = Some(Box::new(frame));
+        env.stack = Some(frame);
         Ok(env)
     }
 
-    pub fn stack(&self) -> &Option<Box<StackFrame>> {
-        &self.stack
+    pub fn stack(&self) -> Option<&'a StackFrame<'a>> {
+        self.stack
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&TrackedValue> {
@@ -170,7 +160,7 @@ impl FnEnv {
     pub fn as_eval_env<'a>(
         &'a self,
         args: &[TrackedValue],
-        stack: Option<Box<StackFrame>>,
+        stack: Option<&'a StackFrame<'a>>,
     ) -> EvalEnv<'a> {
         let mut env = EvalEnv::new().with_module_id(&self.module_id);
         env.stack = stack;
@@ -558,10 +548,10 @@ impl Eval {
                         let frame = StackFrame {
                             module_id: call_module_id,
                             span: expr.span(),
-                            parent: env.stack.clone(),
+                            parent: env.stack,
                         };
                         let call_env =
-                            function.env.as_eval_env(&args, Some(Box::new(frame)));
+                            function.env.as_eval_env(&args, Some(&frame));
                         self.eval_expr(&call_env, &function.body)
                             .map(|value| value.with_dependencies(callee_dependencies))
                     }
@@ -752,7 +742,6 @@ impl Eval {
                     Value::Exception(exc) => {
                         let stack_trace = env
                             .stack
-                            .as_ref()
                             .map(|s| s.collect_trace())
                             .unwrap_or_default();
                         Err(EvalError::Exception(RaisedException {
@@ -979,9 +968,12 @@ impl Eval {
         }
         if let Some(global_expr) = env.lookup_global(name) {
             let module_id = env.module_id.cloned().unwrap_or_default();
-            let global_env =
-                env.without_locals()
-                    .with_stack_frame(module_id, global_expr.span())?;
+            let frame = StackFrame {
+                module_id,
+                span: global_expr.span(),
+                parent: env.stack,
+            };
+            let global_env = env.without_locals().with_stack_frame(&frame)?;
             return self.eval_expr(&global_env, global_expr);
         }
         if let Some((target_module_id, import_file_mod)) = env.lookup_import(name) {
