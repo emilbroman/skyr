@@ -106,13 +106,10 @@ message UnregisterNodeResponse {
 // The Conduit service handles pod and container operations. The container
 // plugin connects to conduits when it needs to execute operations on a node.
 service Conduit {
-  // RunPod creates and starts a pod sandbox.
-  rpc RunPod(RunPodRequest) returns (RunPodResponse);
+  // CreatePod creates and starts a pod sandbox.
+  rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
 
-  // StopPod stops a running pod sandbox.
-  rpc StopPod(StopPodRequest) returns (StopPodResponse);
-
-  // RemovePod removes a pod sandbox.
+  // RemovePod stops and removes a pod sandbox.
   rpc RemovePod(RemovePodRequest) returns (RemovePodResponse);
 
   // CreateContainer creates a container within a pod.
@@ -132,24 +129,16 @@ service Conduit {
 // Pod Messages
 // ============================================================================
 
-// Request to create and run a pod.
-message RunPodRequest {
+// Request to create a pod.
+message CreatePodRequest {
   PodConfig config = 1;
 }
 
-// Response from running a pod.
-message RunPodResponse {
+// Response from creating a pod.
+message CreatePodResponse {
   // The ID of the created pod.
   string pod_id = 1;
 }
-
-// Request to stop a pod.
-message StopPodRequest {
-  string pod_id = 1;
-}
-
-// Response from stopping a pod.
-message StopPodResponse {}
 
 // Request to remove a pod.
 message RemovePodRequest {
