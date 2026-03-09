@@ -148,7 +148,8 @@ Application services:
 To start everything:
 
 ```sh
-podman compose up
+make up # builds images and starts podman compose detached
+make down # podman compose down
 ```
 
 This requires building the `skyr:latest` image first.
