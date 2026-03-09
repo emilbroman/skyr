@@ -14,7 +14,7 @@ deps:
 	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_rabbitmq_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
 
 compose: image scoc-image deps
-	podman compose up api scs de rte-0 rte-1 rte-2 plugin-std-random plugin-std-artifact plugin-std-container scoc-1 scoc-2 scoc-3
+	podman compose up --force-recreate api scs de rte-0 rte-1 rte-2 plugin-std-random plugin-std-artifact plugin-std-container scoc-1 scoc-2 scoc-3
 
 dev:
 	nix develop -c cargo watch -s 'set -e; \

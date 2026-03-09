@@ -8,6 +8,7 @@ COPY crates/adb/Cargo.toml crates/adb/Cargo.toml
 COPY crates/api/Cargo.toml crates/api/Cargo.toml
 COPY crates/cdb/Cargo.toml crates/cdb/Cargo.toml
 COPY crates/de/Cargo.toml crates/de/Cargo.toml
+COPY crates/ids/Cargo.toml crates/ids/Cargo.toml
 COPY crates/ldb/Cargo.toml crates/ldb/Cargo.toml
 COPY crates/plugin_std_artifact/Cargo.toml crates/plugin_std_artifact/Cargo.toml
 COPY crates/plugin_std_random/Cargo.toml crates/plugin_std_random/Cargo.toml
@@ -23,11 +24,12 @@ COPY crates/scop/Cargo.toml crates/scop/Cargo.toml
 COPY crates/scoc/Cargo.toml crates/scoc/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ldb/src crates/plugin_std_artifact/src crates/plugin_std_random/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
+    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ids/src crates/ldb/src crates/plugin_std_artifact/src crates/plugin_std_random/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/de/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ids/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/ldb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_artifact/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_random/src/main.rs; \
