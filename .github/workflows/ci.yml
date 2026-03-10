@@ -1,0 +1,260 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/emilbroman
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: cargo fmt
+        run: nix develop -c cargo fmt --check
+
+      - name: cargo clippy
+        run: nix develop -c cargo clippy --workspace -- -D warnings
+
+      - name: cargo test
+        run: nix develop -c cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Container images (main only)
+  # ---------------------------------------------------------------------------
+  base-image:
+    name: Build base image
+    if: github.ref == 'refs/heads/main'
+    needs: [check]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dev/Containerfile.skyr
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/skyr:latest
+            ${{ env.IMAGE_PREFIX }}/skyr:${{ github.sha }}
+          cache-from: type=gha,scope=base-image
+          cache-to: type=gha,mode=max,scope=base-image
+
+  service-images:
+    name: "Image: skyr-${{ matrix.binary }}"
+    if: github.ref == 'refs/heads/main'
+    needs: [base-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        binary:
+          - scs
+          - de
+          - rte
+          - api
+          - plugin_std_random
+          - plugin_std_artifact
+          - plugin_std_container
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: dev/Containerfile.service
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE_PREFIX }}/skyr:${{ github.sha }}
+            BINARY=${{ matrix.binary }}
+          tags: |
+            ${{ env.IMAGE_PREFIX }}/skyr-${{ matrix.binary }}:latest
+            ${{ env.IMAGE_PREFIX }}/skyr-${{ matrix.binary }}:${{ github.sha }}
+
+  # ---------------------------------------------------------------------------
+  # CLI binaries (main only)
+  # ---------------------------------------------------------------------------
+  build-cli:
+    name: "CLI: ${{ matrix.target }}"
+    if: github.ref == 'refs/heads/main'
+    needs: [check]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            use_cross: false
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+            use_cross: true
+          - os: macos-14
+            target: aarch64-apple-darwin
+            use_cross: false
+          - os: macos-14
+            target: x86_64-apple-darwin
+            use_cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl' && !matrix.use_cross
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build CLI
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p cli
+          else
+            cargo build --release --target ${{ matrix.target }} -p cli
+          fi
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/skyr dist/skyr-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skyr-${{ matrix.target }}
+          path: dist/skyr-${{ matrix.target }}
+
+  # ---------------------------------------------------------------------------
+  # scoc binaries (main only)
+  # ---------------------------------------------------------------------------
+  build-scoc:
+    name: "scoc: ${{ matrix.target }}"
+    if: github.ref == 'refs/heads/main'
+    needs: [check]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            use_cross: false
+          - target: aarch64-unknown-linux-musl
+            use_cross: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: scoc-${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: "!matrix.use_cross"
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Build scoc
+        run: |
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p scoc
+          else
+            cargo build --release --target ${{ matrix.target }} -p scoc
+          fi
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/scoc dist/scoc-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scoc-${{ matrix.target }}
+          path: dist/scoc-${{ matrix.target }}
+
+  # ---------------------------------------------------------------------------
+  # GitHub Release (main only)
+  # ---------------------------------------------------------------------------
+  release:
+    name: Create Release
+    if: github.ref == 'refs/heads/main'
+    needs: [build-cli, build-scoc, base-image, service-images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.sha }}
+          name: ${{ github.sha }}
+          body: |
+            Automated release for commit ${{ github.sha }}.
+
+            ### Container Images
+
+            ```
+            ghcr.io/emilbroman/skyr:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-scs:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-de:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-rte:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-api:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-plugin_std_random:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-plugin_std_artifact:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-plugin_std_container:${{ github.sha }}
+            ```
+          files: artifacts/*
+          make_latest: true

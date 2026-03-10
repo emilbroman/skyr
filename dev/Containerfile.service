@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS base
+
+FROM scratch
+ARG BINARY
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /${BINARY} /${BINARY}
+ENTRYPOINT ["/${BINARY}"]
