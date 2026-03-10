@@ -345,8 +345,10 @@ async fn worker_loop_iteration(
                 &deployment_qid,
                 Severity::Info,
                 format!(
-                    "CREATE applied for {}.{}",
-                    message.resource.resource_type, message.resource.resource_id
+                    "Created {}.{} for {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    &message.deployment_id[..8]
                 ),
             )
             .await;
@@ -502,8 +504,10 @@ async fn worker_loop_iteration(
                 &deployment_qid,
                 Severity::Info,
                 format!(
-                    "DESTROY applied for {}.{}",
-                    message.resource.resource_type, message.resource.resource_id
+                    "Destroyed {}.{} for {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    &message.deployment_id[..8]
                 ),
             )
             .await;
@@ -724,25 +728,28 @@ async fn worker_loop_iteration(
                 to_owner = %to_deployment_qid,
                 "adopted resource",
             );
-            let summary = format!(
-                "ADOPT applied for {}.{} from {} to {}",
-                message.resource.resource_type,
-                message.resource.resource_id,
-                from_deployment_qid,
-                to_deployment_qid
-            );
             log_deployment_event(
                 &ldb_publisher,
                 &from_deployment_qid,
                 Severity::Info,
-                summary.clone(),
+                format!(
+                    "Relinquished {}.{} to {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    &message.to_deployment_id[..8]
+                ),
             )
             .await;
             log_deployment_event(
                 &ldb_publisher,
                 &to_deployment_qid,
                 Severity::Info,
-                summary,
+                format!(
+                    "Adopted {}.{} from {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    &message.from_deployment_id[..8]
+                ),
             )
             .await;
         }
@@ -965,8 +972,10 @@ async fn worker_loop_iteration(
                 &deployment_qid,
                 Severity::Info,
                 format!(
-                    "RESTORE applied for {}.{}",
-                    message.resource.resource_type, message.resource.resource_id
+                    "Restored {}.{} for {}",
+                    message.resource.resource_type,
+                    message.resource.resource_id,
+                    &message.deployment_id[..8]
                 ),
             )
             .await;

@@ -192,15 +192,17 @@ impl Worker {
 
     async fn work(&mut self) -> anyhow::Result<()> {
         let deployment = self.client.get().await?;
+        let deployment_id = deployment.deployment.to_string();
+        let short_id = &deployment_id[..8];
 
         match deployment.state {
             DeploymentState::Down => {
-                tracing::info!("deployment down, waiting to be decommissioned...");
+                tracing::info!("{short_id} down, waiting to be decommissioned...");
                 Ok(())
             }
 
             DeploymentState::Desired => {
-                tracing::info!("reconciling");
+                tracing::info!("{short_id} reconciling");
                 let completeness = self.compile_and_evaluate().await?;
 
                 match completeness {
@@ -223,7 +225,7 @@ impl Worker {
             }
 
             DeploymentState::Undesired => {
-                tracing::info!("tearing down");
+                tracing::info!("{short_id} tearing down");
 
                 let owner_deployment_qid = deployment.deployment_qid().to_string();
                 let mut all_resources = Vec::new();
@@ -234,7 +236,9 @@ impl Worker {
 
                 let owned_resources = all_resources
                     .iter()
-                    .filter(|resource| resource.owner.as_deref() == Some(owner_deployment_qid.as_str()))
+                    .filter(|resource| {
+                        resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
+                    })
                     .collect::<Vec<_>>();
                 let mut emitted = 0usize;
                 let mut blocked = 0usize;
@@ -284,10 +288,10 @@ impl Worker {
                 }
 
                 if owned_resources.is_empty() {
-                    tracing::info!("no more resources, setting state to DOWN");
+                    tracing::info!("{short_id} no more resources, setting state to DOWN");
                     self.client.set(DeploymentState::Down).await?;
                     self.log_publisher
-                        .info(format!("No more resources, deployment is DOWN"))
+                        .info(format!("Undesired {short_id} is fully torn down"))
                         .await;
                     return Ok(());
                 }
@@ -295,17 +299,19 @@ impl Worker {
                 if blocked > 0 {
                     tracing::info!(
                         blocked_resources = blocked,
-                        "teardown waiting on living dependents",
+                        "{short_id} teardown waiting on living dependents",
                     );
                     self.log_publisher
-                        .info(format!("{blocked} resources still have living dependents"))
+                        .info(format!(
+                            "Undesired {short_id} still has {blocked} resources with living dependents"
+                        ))
                         .await;
                 }
                 Ok(())
             }
 
             DeploymentState::Lingering => {
-                tracing::info!("lingering...");
+                tracing::info!("{short_id} lingering...");
                 let mut cursor = self.client.clone();
                 let mut seen = HashSet::new();
 
@@ -377,7 +383,8 @@ impl Worker {
         let deployment_id = full_deployment_qid.deployment.to_string();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
-        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
+        let mut eval =
+            sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
@@ -405,224 +412,231 @@ impl Worker {
         let log_publisher = self.log_publisher.clone();
         let namespace_id = self.namespace.namespace().to_owned();
         let rtq_publisher = self.rtq_publisher.clone();
-        let effects_task = task::spawn(async move {
-            let mut had_effect = false;
-            while let Some(effect) = effects_rx.recv().await {
-                match effect {
-                    sclc::Effect::CreateResource {
-                        id,
-                        inputs,
-                        dependencies,
-                    } => {
-                        had_effect = true;
-                        let message = rtq::Message::Create(rtq::CreateMessage {
-                            resource: rtq::ResourceRef {
-                                environment_qid: namespace_id.clone(),
-                                resource_type: id.ty.clone(),
-                                resource_id: id.id.clone(),
-                            },
-                            deployment_id: deployment_id.clone(),
-                            inputs: match serde_json::to_value(&inputs) {
-                                Ok(value) => value,
-                                Err(error) => {
+        let effects_task = task::spawn(
+            {
+                async move {
+                    let mut had_effect = false;
+                    while let Some(effect) = effects_rx.recv().await {
+                        match effect {
+                            sclc::Effect::CreateResource {
+                                id,
+                                inputs,
+                                dependencies,
+                            } => {
+                                had_effect = true;
+                                let message = rtq::Message::Create(rtq::CreateMessage {
+                                    resource: rtq::ResourceRef {
+                                        environment_qid: namespace_id.clone(),
+                                        resource_type: id.ty.clone(),
+                                        resource_id: id.id.clone(),
+                                    },
+                                    deployment_id: deployment_id.clone(),
+                                    inputs: match serde_json::to_value(&inputs) {
+                                        Ok(value) => value,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                resource_type = %id.ty,
+                                                resource_id = %id.id,
+                                                error = %error,
+                                                "failed to encode create inputs",
+                                            );
+                                            continue;
+                                        }
+                                    },
+                                    dependencies: dependencies
+                                        .into_iter()
+                                        .map(|dependency| rtq::ResourceRef {
+                                            environment_qid: namespace_id.clone(),
+                                            resource_type: dependency.ty,
+                                            resource_id: dependency.id,
+                                        })
+                                        .collect(),
+                                });
+                                if let Err(error) = rtq_publisher.enqueue(&message).await {
                                     tracing::error!(
-                                        resource_type = %id.ty,
-                                        resource_id = %id.id,
                                         error = %error,
-                                        "failed to encode create inputs",
+                                        "failed to publish create message",
                                     );
+
+                                    log_publisher
+                                        .error(format!(
+                                            "Failed to enqueue CREATE {}.{}: {}",
+                                            id.ty, id.id, error
+                                        ))
+                                        .await;
+
                                     continue;
                                 }
-                            },
-                            dependencies: dependencies
-                                .into_iter()
-                                .map(|dependency| rtq::ResourceRef {
-                                    environment_qid: namespace_id.clone(),
-                                    resource_type: dependency.ty,
-                                    resource_id: dependency.id,
-                                })
-                                .collect(),
-                        });
-                        if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            tracing::error!(
-                                error = %error,
-                                "failed to publish create message",
-                            );
 
-                            log_publisher
-                                .error(format!(
-                                    "Failed to enqueue CREATE {}.{}: {}",
-                                    id.ty, id.id, error
-                                ))
-                                .await;
-
-                            continue;
-                        }
-
-                        tracing::info!(
-                            resource_type = %id.ty,
-                            resource_id = %id.id,
-                            inputs = ?inputs,
-                            "effect create resource",
-                        );
-                    }
-                    sclc::Effect::UpdateResource {
-                        id,
-                        inputs,
-                        dependencies,
-                    } => {
-                        had_effect = true;
-                        let desired_inputs = match serde_json::to_value(&inputs) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                tracing::error!(
+                                tracing::info!(
                                     resource_type = %id.ty,
                                     resource_id = %id.id,
-                                    error = %error,
-                                    "failed to encode update inputs",
+                                    inputs = ?inputs,
+                                    "effect create resource",
                                 );
-                                continue;
                             }
-                        };
-                        let dependencies = dependencies
-                            .into_iter()
-                            .map(|dependency| rtq::ResourceRef {
-                                environment_qid: namespace_id.clone(),
-                                resource_type: dependency.ty,
-                                resource_id: dependency.id,
-                            })
-                            .collect::<Vec<_>>();
-                        let message = if let Some(from_owner_qid) =
-                            unowned_resource_owner_by_id.get(&id).cloned()
-                        {
-                            let from_deploy_id = from_owner_qid
-                                .rsplit_once('@')
-                                .map(|(_, id)| id.to_string())
-                                .unwrap_or(from_owner_qid);
-                            rtq::Message::Adopt(rtq::AdoptMessage {
-                                resource: rtq::ResourceRef {
-                                    environment_qid: namespace_id.clone(),
-                                    resource_type: id.ty.clone(),
-                                    resource_id: id.id.clone(),
-                                },
-                                from_deployment_id: from_deploy_id,
-                                to_deployment_id: deployment_id.clone(),
-                                desired_inputs,
+                            sclc::Effect::UpdateResource {
+                                id,
+                                inputs,
                                 dependencies,
-                            })
-                        } else {
-                            rtq::Message::Restore(rtq::RestoreMessage {
-                                resource: rtq::ResourceRef {
-                                    environment_qid: namespace_id.clone(),
-                                    resource_type: id.ty.clone(),
-                                    resource_id: id.id.clone(),
-                                },
-                                deployment_id: deployment_id.clone(),
-                                desired_inputs,
-                                dependencies,
-                            })
-                        };
-                        if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            tracing::error!(
-                                error = %error,
-                                "failed to publish update message",
-                            );
+                            } => {
+                                had_effect = true;
+                                let desired_inputs = match serde_json::to_value(&inputs) {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        tracing::error!(
+                                            resource_type = %id.ty,
+                                            resource_id = %id.id,
+                                            error = %error,
+                                            "failed to encode update inputs",
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let dependencies = dependencies
+                                    .into_iter()
+                                    .map(|dependency| rtq::ResourceRef {
+                                        environment_qid: namespace_id.clone(),
+                                        resource_type: dependency.ty,
+                                        resource_id: dependency.id,
+                                    })
+                                    .collect::<Vec<_>>();
+                                let message = if let Some(from_owner_qid) =
+                                    unowned_resource_owner_by_id.get(&id).cloned()
+                                {
+                                    let from_deploy_id = from_owner_qid
+                                        .rsplit_once('@')
+                                        .map(|(_, id)| id.to_string())
+                                        .unwrap_or(from_owner_qid);
+                                    rtq::Message::Adopt(rtq::AdoptMessage {
+                                        resource: rtq::ResourceRef {
+                                            environment_qid: namespace_id.clone(),
+                                            resource_type: id.ty.clone(),
+                                            resource_id: id.id.clone(),
+                                        },
+                                        from_deployment_id: from_deploy_id,
+                                        to_deployment_id: deployment_id.clone(),
+                                        desired_inputs,
+                                        dependencies,
+                                    })
+                                } else {
+                                    rtq::Message::Restore(rtq::RestoreMessage {
+                                        resource: rtq::ResourceRef {
+                                            environment_qid: namespace_id.clone(),
+                                            resource_type: id.ty.clone(),
+                                            resource_id: id.id.clone(),
+                                        },
+                                        deployment_id: deployment_id.clone(),
+                                        desired_inputs,
+                                        dependencies,
+                                    })
+                                };
+                                if let Err(error) = rtq_publisher.enqueue(&message).await {
+                                    tracing::error!(
+                                        error = %error,
+                                        "failed to publish update message",
+                                    );
 
-                            log_publisher
-                                .error(format!(
-                                    "Failed to enqueue UPDATE {}.{}: {}",
-                                    id.ty, id.id, error
-                                ))
-                                .await;
-                            continue;
-                        }
+                                    log_publisher
+                                        .error(format!(
+                                            "Failed to enqueue UPDATE {}.{}: {}",
+                                            id.ty, id.id, error
+                                        ))
+                                        .await;
+                                    continue;
+                                }
 
-                        tracing::info!(
-                            resource_type = %id.ty,
-                            resource_id = %id.id,
-                            inputs = ?inputs,
-                            "effect update resource",
-                        );
-                    }
-                    sclc::Effect::TouchResource {
-                        id,
-                        inputs,
-                        dependencies,
-                    } => {
-                        let Some(from_owner_deployment_qid) =
-                            unowned_resource_owner_by_id.get(&id).cloned()
-                        else {
-                            continue;
-                        };
-                        let from_deployment_id = from_owner_deployment_qid
-                            .rsplit_once('@')
-                            .map(|(_, id)| id.to_string())
-                            .unwrap_or(from_owner_deployment_qid);
-                        had_effect = true;
-                        let desired_inputs = match serde_json::to_value(&inputs) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                tracing::error!(
+                                tracing::info!(
                                     resource_type = %id.ty,
                                     resource_id = %id.id,
-                                    error = %error,
-                                    "failed to encode touch inputs",
+                                    inputs = ?inputs,
+                                    "effect update resource",
                                 );
-                                continue;
                             }
-                        };
-                        let dependencies = dependencies
-                            .into_iter()
-                            .map(|dependency| rtq::ResourceRef {
-                                environment_qid: namespace_id.clone(),
-                                resource_type: dependency.ty,
-                                resource_id: dependency.id,
-                            })
-                            .collect::<Vec<_>>();
-                        let message = rtq::Message::Adopt(rtq::AdoptMessage {
-                            resource: rtq::ResourceRef {
-                                environment_qid: namespace_id.clone(),
-                                resource_type: id.ty.clone(),
-                                resource_id: id.id.clone(),
-                            },
-                            from_deployment_id,
-                            to_deployment_id: deployment_id.clone(),
-                            desired_inputs,
-                            dependencies,
-                        });
-                        if let Err(error) = rtq_publisher.enqueue(&message).await {
-                            tracing::error!(
-                                error = %error,
-                                "failed to publish touch adopt message",
-                            );
+                            sclc::Effect::TouchResource {
+                                id,
+                                inputs,
+                                dependencies,
+                            } => {
+                                let Some(from_owner_deployment_qid) =
+                                    unowned_resource_owner_by_id.get(&id).cloned()
+                                else {
+                                    continue;
+                                };
+                                let from_deployment_id = from_owner_deployment_qid
+                                    .rsplit_once('@')
+                                    .map(|(_, id)| id.to_string())
+                                    .unwrap_or(from_owner_deployment_qid);
+                                had_effect = true;
+                                let desired_inputs = match serde_json::to_value(&inputs) {
+                                    Ok(value) => value,
+                                    Err(error) => {
+                                        tracing::error!(
+                                            resource_type = %id.ty,
+                                            resource_id = %id.id,
+                                            error = %error,
+                                            "failed to encode touch inputs",
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let dependencies = dependencies
+                                    .into_iter()
+                                    .map(|dependency| rtq::ResourceRef {
+                                        environment_qid: namespace_id.clone(),
+                                        resource_type: dependency.ty,
+                                        resource_id: dependency.id,
+                                    })
+                                    .collect::<Vec<_>>();
+                                let message = rtq::Message::Adopt(rtq::AdoptMessage {
+                                    resource: rtq::ResourceRef {
+                                        environment_qid: namespace_id.clone(),
+                                        resource_type: id.ty.clone(),
+                                        resource_id: id.id.clone(),
+                                    },
+                                    from_deployment_id,
+                                    to_deployment_id: deployment_id.clone(),
+                                    desired_inputs,
+                                    dependencies,
+                                });
+                                if let Err(error) = rtq_publisher.enqueue(&message).await {
+                                    tracing::error!(
+                                        error = %error,
+                                        "failed to publish touch adopt message",
+                                    );
 
-                            log_publisher
-                                .error(format!(
-                                    "Failed to enqueue ADOPT {}.{}: {}",
-                                    id.ty, id.id, error
-                                ))
-                                .await;
-                            continue;
+                                    log_publisher
+                                        .error(format!(
+                                            "Failed to enqueue ADOPT {}.{}: {}",
+                                            id.ty, id.id, error
+                                        ))
+                                        .await;
+                                    continue;
+                                }
+
+                                tracing::info!(
+                                    resource_type = %id.ty,
+                                    resource_id = %id.id,
+                                    inputs = ?inputs,
+                                    "effect touch resource adopt",
+                                );
+                            }
                         }
+                    }
 
-                        tracing::info!(
-                            resource_type = %id.ty,
-                            resource_id = %id.id,
-                            inputs = ?inputs,
-                            "effect touch resource adopt",
-                        );
+                    if had_effect {
+                        EvalCompleteness::Partial
+                    } else {
+                        EvalCompleteness::Complete
                     }
                 }
             }
+            .instrument(tracing::Span::current()),
+        );
 
-            if had_effect {
-                EvalCompleteness::Partial
-            } else {
-                EvalCompleteness::Complete
-            }
-        }.instrument(tracing::Span::current()));
-
-        program.evaluate(&module_id, &eval).await?;
+        if let Err(e) = program.evaluate(&module_id, &eval).await {
+            self.log_publisher.error(format!("{e}")).await;
+        }
         drop(eval);
         let completeness = effects_task.await?;
         Ok(completeness)
