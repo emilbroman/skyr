@@ -159,7 +159,7 @@ impl ContainerPlugin {
         nodes
             .into_iter()
             .next()
-            .ok_or_else(|| PluginError::NoAvailableNodes)
+            .ok_or(PluginError::NoAvailableNodes)
     }
 
     // =========================================================================

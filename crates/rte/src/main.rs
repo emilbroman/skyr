@@ -344,7 +344,7 @@ async fn worker_loop_iteration(
                 "created resource",
             );
             log_deployment_event(
-                &ldb_publisher,
+                ldb_publisher,
                 &deployment_qid,
                 Severity::Info,
                 format!(
@@ -506,7 +506,7 @@ async fn worker_loop_iteration(
                 "deleted resource",
             );
             log_deployment_event(
-                &ldb_publisher,
+                ldb_publisher,
                 &deployment_qid,
                 Severity::Info,
                 format!(
@@ -741,7 +741,7 @@ async fn worker_loop_iteration(
                 "adopted resource",
             );
             log_deployment_event(
-                &ldb_publisher,
+                ldb_publisher,
                 &from_deployment_qid,
                 Severity::Info,
                 format!(
@@ -753,7 +753,7 @@ async fn worker_loop_iteration(
             )
             .await;
             log_deployment_event(
-                &ldb_publisher,
+                ldb_publisher,
                 &to_deployment_qid,
                 Severity::Info,
                 format!(
@@ -983,7 +983,7 @@ async fn worker_loop_iteration(
                 "restored resource",
             );
             log_deployment_event(
-                &ldb_publisher,
+                ldb_publisher,
                 &deployment_qid,
                 Severity::Info,
                 format!(

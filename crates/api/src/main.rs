@@ -332,7 +332,7 @@ impl User {
     }
 
     fn fullname(&self) -> Option<&str> {
-        self.user.fullname.as_ref().map(|s| s.as_str())
+        self.user.fullname.as_deref()
     }
 }
 
@@ -379,8 +379,8 @@ impl Repository {
         }
 
         Ok(env_map
-            .into_iter()
-            .map(|(_, deployments)| {
+            .into_values()
+            .map(|deployments| {
                 let qid = deployments[0].environment_qid();
                 Environment { qid, deployments }
             })
@@ -1253,6 +1253,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[axum::debug_handler]
+#[allow(clippy::too_many_arguments)]
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
@@ -1317,6 +1318,7 @@ async fn graphiql() -> Html<String> {
 }
 
 #[axum::debug_handler]
+#[allow(clippy::too_many_arguments)]
 async fn graphql_ws_handler(
     ws: WebSocketUpgrade,
     Extension(schema): Extension<Arc<Schema>>,
@@ -1684,7 +1686,7 @@ async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, conte
 
 async fn send_ws_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
     socket
-        .send(WsMessage::Text(value.to_string().into()))
+        .send(WsMessage::Text(value.to_string()))
         .await
         .is_ok()
 }

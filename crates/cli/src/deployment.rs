@@ -9,7 +9,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{auth, output::OutputFormat, repo};
 
-#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 type JSON = serde_json::Value;
 
 #[derive(Args, Debug)]
@@ -252,8 +252,7 @@ async fn stream_single_environment(
             json!({
                 "type": "connection_init"
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .with_context(|| {
@@ -279,8 +278,7 @@ async fn stream_single_environment(
                     "operationName": "EnvironmentLogs"
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .context("failed to send environment logs subscription")?;
@@ -336,7 +334,7 @@ where
                     Some("connection_ack") => return Ok(()),
                     Some("ping") => {
                         write
-                            .send(Message::Text(json!({ "type": "pong" }).to_string().into()))
+                            .send(Message::Text(json!({ "type": "pong" }).to_string()))
                             .await
                             .context("failed to send graphql ping response")?;
                     }
