@@ -782,7 +782,27 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             got: call_expr.type_args.len(),
                             span: expr.span(),
                         });
-                        fn_ty
+                        // Substitute Any for params (to accept any argument) and Never for return
+                        // (to be usable anywhere). This prevents downstream type errors.
+                        let param_replacements: Vec<(usize, Type)> = fn_ty
+                            .type_params
+                            .iter()
+                            .map(|id| (*id, Type::Any))
+                            .collect();
+                        let ret_replacements: Vec<(usize, Type)> = fn_ty
+                            .type_params
+                            .iter()
+                            .map(|id| (*id, Type::Never))
+                            .collect();
+                        FnType {
+                            type_params: vec![],
+                            params: fn_ty
+                                .params
+                                .iter()
+                                .map(|p| p.substitute(&param_replacements))
+                                .collect(),
+                            ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
+                        }
                     } else {
                         // Build substitution map from type param IDs to resolved type args
                         let replacements: Vec<(usize, Type)> = fn_ty
@@ -810,7 +830,27 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         expected: fn_ty.type_params.len(),
                         span: call_expr.callee.span(),
                     });
-                    fn_ty
+                    // Substitute Any for params (to accept any argument) and Never for return
+                    // (to be usable anywhere). This prevents downstream type errors.
+                    let param_replacements: Vec<(usize, Type)> = fn_ty
+                        .type_params
+                        .iter()
+                        .map(|id| (*id, Type::Any))
+                        .collect();
+                    let ret_replacements: Vec<(usize, Type)> = fn_ty
+                        .type_params
+                        .iter()
+                        .map(|id| (*id, Type::Never))
+                        .collect();
+                    FnType {
+                        type_params: vec![],
+                        params: fn_ty
+                            .params
+                            .iter()
+                            .map(|p| p.substitute(&param_replacements))
+                            .collect(),
+                        ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
+                    }
                 } else {
                     fn_ty
                 };

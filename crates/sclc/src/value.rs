@@ -319,7 +319,7 @@ impl std::fmt::Display for FnValue {
             }
         }
 
-        write!(f, ")>")
+        write!(f, ")")
     }
 }
 

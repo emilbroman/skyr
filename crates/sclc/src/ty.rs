@@ -99,9 +99,7 @@ impl Type {
                 Type::Record(record.map_types(|ty| ty.substitute(replacements)))
             }
             Type::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.substitute(replacements))),
-            Type::IsoRec(id, body) => {
-                Type::IsoRec(*id, Box::new(body.substitute(replacements)))
-            }
+            Type::IsoRec(id, body) => Type::IsoRec(*id, Box::new(body.substitute(replacements))),
         }
     }
 
@@ -130,7 +128,7 @@ impl std::fmt::Display for Type {
             Type::Record(record) => write!(f, "{record}"),
             Type::Dict(dict) => write!(f, "{dict}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
-            Type::Var(id) => write!(f, "Var({id})"),
+            Type::Var(id) => write!(f, "T{id}"),
             Type::Never => write!(f, "Never"),
             Type::Exception(id) => write!(f, "Exception#{id}"),
         }
@@ -145,7 +143,7 @@ impl std::fmt::Display for FnType {
             write!(f, "<")?;
             let mut type_params = self.type_params.iter().peekable();
             while let Some(id) = type_params.next() {
-                write!(f, "Var({id})")?;
+                write!(f, "T{id}")?;
                 if type_params.peek().is_some() {
                     write!(f, ", ")?;
                 }
