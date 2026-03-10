@@ -132,6 +132,7 @@ jobs:
 
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
+        if: startsWith(matrix.os, 'ubuntu-')
 
       - uses: Swatinem/rust-cache@v2
         with:
