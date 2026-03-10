@@ -327,10 +327,10 @@ Define exception types with the `exception` keyword:
 let MyError = exception
 ```
 
-Exceptions can optionally carry a typed payload (note the colon):
+Exceptions can optionally carry a typed payload:
 
 ```scl
-let ParseError = exception: Str
+let ParseError = exception(Str)
 ```
 
 #### Raising Exceptions
