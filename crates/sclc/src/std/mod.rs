@@ -30,6 +30,7 @@ std_modules! {
     encoding => "Encoding.scl",
     list => "List.scl",
     num => "Num.scl",
+    option => "Option.scl",
     random => "Random.scl",
 }
 

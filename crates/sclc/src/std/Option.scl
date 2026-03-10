@@ -1,0 +1,15 @@
+export let isNone = fn<T>(value: T?)
+	value == nil
+
+export let isSome = fn<T>(value: T?)
+	value != nil
+
+export let UnexpectedNil = exception
+
+let uncheckedUnwrap = extern "Std/Option.uncheckedUnwrap": fn<T>(T?) T
+
+export let unwrap = fn<T>(value: T?)
+	if (value != nil)
+		uncheckedUnwrap<T>(value)
+	else
+		raise UnexpectedNil
