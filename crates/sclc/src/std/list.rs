@@ -8,9 +8,14 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
 
         first.try_map(|value| {
-            value
-                .assert_int()
-                .map(|n| crate::Value::List((0..n).map(crate::Value::Int).collect()))
+            let n = value.assert_int()?;
+            if n < 0 {
+                return Err(crate::EvalErrorKind::Custom(format!(
+                    "List.range: expected non-negative integer, got {n}"
+                ))
+                .into());
+            }
+            Ok(crate::Value::List((0..n).map(crate::Value::Int).collect()))
         })
     });
 }

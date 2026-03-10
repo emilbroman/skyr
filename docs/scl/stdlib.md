@@ -321,7 +321,7 @@ let indices = List.range(5)   // [0, 1, 2, 3, 4]
 
 **Type:** `fn(Int) [Int]`
 
-Returns a list containing every integer in the half-open range `[0, n)`. If `n` is zero or negative, returns an empty list.
+Returns a list containing every integer in the half-open range `[0, n)`. Returns an empty list when `n` is zero. Raises an error if `n` is negative.
 
 ## Std/Num
 
