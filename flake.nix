@@ -21,6 +21,7 @@
             cargo
             gnumake
             protobuf
+            lld
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
