@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -524,7 +524,10 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::AddOverlayPeerRequest,
     ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
-        net::add_overlay_peer(&request.peer_host_ip)
+        // Resolve hostname to IP (bridge fdb requires IP address)
+        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip)
+            .map_err(|e| scop::tonic::Status::internal(format!("failed to resolve peer {}: {e:#}", request.peer_host_ip)))?;
+        net::add_overlay_peer(&peer_ip)
             .map_err(|e| scop::tonic::Status::internal(format!("add overlay peer failed: {e:#}")))?;
         Ok(scop::AddOverlayPeerResponse {})
     }
@@ -533,7 +536,10 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::RemoveOverlayPeerRequest,
     ) -> Result<scop::RemoveOverlayPeerResponse, scop::tonic::Status> {
-        net::remove_overlay_peer(&request.peer_host_ip)
+        // Resolve hostname to IP (bridge fdb requires IP address)
+        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip)
+            .map_err(|e| scop::tonic::Status::internal(format!("failed to resolve peer {}: {e:#}", request.peer_host_ip)))?;
+        net::remove_overlay_peer(&peer_ip)
             .map_err(|e| scop::tonic::Status::internal(format!("remove overlay peer failed: {e:#}")))?;
         Ok(scop::RemoveOverlayPeerResponse {})
     }
@@ -728,7 +734,8 @@ async fn main() -> Result<()> {
             net::setup_bridge(&pod_cidr)?;
 
             // Set up VXLAN overlay for cross-node pod communication
-            let local_ip = extract_host_from_address(&conduit_address);
+            let local_host = extract_host_from_address(&conduit_address);
+            let local_ip = resolve_hostname_to_ip(&local_host)?;
             net::setup_vxlan(&local_ip)?;
 
             let ipam = net::Ipam::new(pod_cidr);
@@ -893,7 +900,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Extract the host IP from a conduit address like "http://192.168.1.10:50054".
+/// Extract the host from a conduit address like "http://192.168.1.10:50054" or "http://scoc-1:50054".
 fn extract_host_from_address(addr: &str) -> String {
     // Strip scheme (e.g., "http://")
     let without_scheme = addr
@@ -920,4 +927,18 @@ fn extract_host_from_address(addr: &str) -> String {
             .unwrap_or(authority)
             .to_owned()
     }
+}
+
+/// Resolve a hostname to an IP address.
+///
+/// If the input is already an IP address, it is returned as-is.
+/// Otherwise, DNS resolution is performed to get the IP.
+fn resolve_hostname_to_ip(hostname: &str) -> Result<String> {
+    // Add a dummy port for ToSocketAddrs (it requires host:port format)
+    let addr_with_port = format!("{}:0", hostname);
+    let resolved = addr_with_port
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve hostname: {}", hostname))?;
+    Ok(resolved.ip().to_string())
 }
