@@ -453,6 +453,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Type::Record(rhs_record) => {
                     for (name, lhs_field) in lhs_record.iter() {
                         let Some(rhs_field) = rhs_record.get(name) else {
+                            if matches!(lhs_field, Type::Optional(_)) {
+                                continue;
+                            }
                             return Err(TypeError::new(TypeIssue::Mismatch(
                                 lhs.clone(),
                                 rhs.clone(),
@@ -1111,9 +1114,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 let ty = Type::Record(record_ty);
                 if let Some(expected_record) = expected_record {
-                    let missing_field = expected_record
-                        .iter()
-                        .any(|(name, _)| matches!(ty, Type::Record(ref record) if record.get(name).is_none()));
+                    let missing_field = expected_record.iter().any(|(name, field_ty)| {
+                        matches!(ty, Type::Record(ref record) if record.get(name).is_none())
+                            && !matches!(field_ty, Type::Optional(_))
+                    });
                     if missing_field {
                         diags.push(InvalidType {
                             module_id: env.module_id()?,
@@ -1697,6 +1701,53 @@ mod tests {
         let rhs = Type::Record(rhs_record);
 
         assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_record_missing_optional_field_accepted() {
+        let checker = checker();
+        let mut lhs_record = RecordType::default();
+        lhs_record.insert("a".into(), Type::Int);
+        lhs_record.insert("b".into(), Type::Optional(Box::new(Type::Str)));
+        let lhs = Type::Record(lhs_record);
+
+        let mut rhs_record = RecordType::default();
+        rhs_record.insert("a".into(), Type::Int);
+        let rhs = Type::Record(rhs_record);
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn record_expr_missing_optional_field_accepted() {
+        let checker = checker();
+        let module_id = ModuleId::default();
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let span = Span::new(Position::new(1, 1), Position::new(1, 10));
+
+        let record_expr = loc(
+            Expr::Record(RecordExpr {
+                fields: vec![RecordField {
+                    var: loc(Var { name: "a".into() }, span),
+                    expr: loc(Expr::Int(Int { value: 1 }), span),
+                }],
+            }),
+            span,
+        );
+
+        let mut expected_record = RecordType::default();
+        expected_record.insert("a".into(), Type::Int);
+        expected_record.insert("b".into(), Type::Optional(Box::new(Type::Str)));
+        let expected_ty = Type::Record(expected_record);
+
+        let diagnosed = checker
+            .check_expr(&env, &record_expr, Some(&expected_ty))
+            .expect("type check should succeed");
+
+        assert!(
+            diagnosed.diags().is_empty(),
+            "expected no diagnostics for missing optional field"
+        );
     }
 
     #[test]
