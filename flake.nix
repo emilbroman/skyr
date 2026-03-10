@@ -25,7 +25,7 @@
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
             rustup install nightly
-            rustup component add rust-analyzer
+            rustup component add rust-analyzer rustfmt clippy
           '';
         };
       }
