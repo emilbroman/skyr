@@ -441,6 +441,21 @@ impl crate::Diag for UnexpectedTypeArgs {
 }
 
 #[derive(Error, Debug)]
+#[error("type argument {actual} does not satisfy bound {bound}")]
+pub struct TypeArgBoundViolation {
+    pub module_id: crate::ModuleId,
+    pub actual: Type,
+    pub bound: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for TypeArgBoundViolation {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("unknown type: {name}")]
 pub struct UnknownType {
     pub module_id: crate::ModuleId,
@@ -1056,10 +1071,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::Call(call_expr) => {
                 let mut diags = DiagList::new();
-                let callee_ty = self
+                let mut callee_ty = self
                     .check_expr(env, call_expr.callee.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
+                // Resolve type variable to its upper bound for function calls
+                if let Type::Var(id) = &callee_ty {
+                    if let Some(bound) = env.type_var_bounds.get(id) {
+                        callee_ty = bound.clone().unfold();
+                    }
+                }
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
@@ -1107,12 +1128,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     } else {
                         // Build substitution map from type param IDs to resolved type args
+                        // and check each type arg against its declared bound
                         let replacements: Vec<(usize, Type)> = fn_ty
                             .type_params
                             .iter()
                             .zip(call_expr.type_args.iter())
-                            .map(|((id, _), type_arg)| {
-                                (*id, self.resolve_type_expr(env, type_arg).unpack(&mut diags))
+                            .map(|((id, bound), type_arg)| {
+                                let resolved = self.resolve_type_expr(env, type_arg).unpack(&mut diags);
+                                // Check that the type argument satisfies the declared bound
+                                if self
+                                    .assign_type_with_bounds(bound, &resolved, &env.type_var_bounds)
+                                    .is_err()
+                                {
+                                    diags.push(TypeArgBoundViolation {
+                                        module_id: env.module_id().unwrap(),
+                                        actual: resolved.clone(),
+                                        bound: bound.clone(),
+                                        span: type_arg.span(),
+                                    });
+                                }
+                                (*id, resolved)
                             })
                             .collect();
                         FnType {
@@ -1524,12 +1559,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
-                let lhs_ty = self
+                let mut lhs_ty = self
                     .check_expr(env, property_access.expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
                 if matches!(lhs_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
+                }
+                // Resolve type variable to its upper bound for property access
+                if let Type::Var(id) = &lhs_ty {
+                    if let Some(bound) = env.type_var_bounds.get(id) {
+                        lhs_ty = bound.clone().unfold();
+                    }
                 }
                 let member_ty = match &lhs_ty {
                     Type::Record(record_ty) => record_ty
@@ -2721,5 +2762,64 @@ mod tests {
         });
 
         assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_var_to_bound_via_upper_bound() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        // T <: Int? means T should be assignable to Int?
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
+        assert!(checker
+            .assign_type_with_bounds(
+                &Type::Optional(Box::new(Type::Int)),
+                &Type::Var(id),
+                &bounds
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn assign_type_var_to_stricter_than_bound_fails() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        // T <: Int? means T is NOT necessarily assignable to Int (could be nil)
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
+        assert!(checker
+            .assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds)
+            .is_err());
+    }
+
+    #[test]
+    fn assign_type_var_with_record_bound_allows_field_access() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        let mut record = RecordType::default();
+        record.insert("x".to_string(), Type::Int);
+        let bounds = HashMap::from([(id, Type::Record(record.clone()))]);
+        // T <: {x: Int} means T should be assignable to {x: Int}
+        assert!(checker
+            .assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds)
+            .is_ok());
+    }
+
+    #[test]
+    fn assign_type_var_with_fn_bound_allows_fn_assignment() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        let fn_ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let bounds = HashMap::from([(id, fn_ty.clone())]);
+        // T <: fn(Int) Int means T should be assignable to fn(Int) Int
+        assert!(checker
+            .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
+            .is_ok());
     }
 }
