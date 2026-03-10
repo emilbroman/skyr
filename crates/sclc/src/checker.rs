@@ -110,6 +110,17 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    /// If `ty` is a type variable with a known upper bound, return a reference
+    /// to the bound. Otherwise, return the passed-in reference unchanged.
+    pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
+        if let Type::Var(id) = ty {
+            if let Some(bound) = self.type_var_bounds.get(id) {
+                return bound;
+            }
+        }
+        ty
+    }
+
     pub fn without_locals(&self) -> Self {
         Self {
             module_id: self.module_id,
@@ -1071,16 +1082,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::Call(call_expr) => {
                 let mut diags = DiagList::new();
-                let mut callee_ty = self
+                let raw_callee_ty = self
                     .check_expr(env, call_expr.callee.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
-                // Resolve type variable to its upper bound for function calls
-                if let Type::Var(id) = &callee_ty {
-                    if let Some(bound) = env.type_var_bounds.get(id) {
-                        callee_ty = bound.clone().unfold();
-                    }
-                }
+                let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
@@ -1559,18 +1565,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
-                let mut lhs_ty = self
+                let raw_lhs_ty = self
                     .check_expr(env, property_access.expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
+                let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
                 if matches!(lhs_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
-                }
-                // Resolve type variable to its upper bound for property access
-                if let Type::Var(id) = &lhs_ty {
-                    if let Some(bound) = env.type_var_bounds.get(id) {
-                        lhs_ty = bound.clone().unfold();
-                    }
                 }
                 let member_ty = match &lhs_ty {
                     Type::Record(record_ty) => record_ty
