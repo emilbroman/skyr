@@ -117,6 +117,9 @@ let container = pod.Container({
 |-------|------|-------------|
 | `name` | `Str` | Container name |
 | `image` | `Str` | Full image reference (use `image.fullname`) |
+| `command` | `[Str]?` | Entrypoint command (optional) |
+| `args` | `[Str]?` | Command arguments (optional) |
+| `envs` | `{ Str: Str }?` | Environment variables (optional) |
 
 **Outputs:**
 
@@ -303,7 +306,7 @@ let roll = Random.Int({
 | `max` | `Int` | Input max value |
 | `result` | `Int` | The generated random integer |
 
-The random value is generated once when the resource is created and remains stable across subsequent evaluations.
+The random value is generated when the resource is created and regenerated on updates (e.g., when `min` or `max` change).
 
 ## Std/List
 

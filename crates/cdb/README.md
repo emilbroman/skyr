@@ -15,8 +15,8 @@ SCS → CDB ← DE
 
 ### Git Object Storage
 
-- Store and retrieve raw Git objects (blobs, trees, commits).
-- Object-level access for structured reads.
+- Store and retrieve raw Git objects via `write_object()` / `read_raw_object()`.
+- Type-specific methods: `write_blob()` / `read_blob()`, `write_tree()` / `read_tree()`, `write_commit()` / `read_commit()` for structured access.
 
 ### Deployment Management
 

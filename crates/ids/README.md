@@ -67,6 +67,31 @@ All ID and QID types implement:
 
 Leaf ID types use `new_unchecked()` constructors for data already validated (e.g., from the database).
 
+### Builder Methods
+
+QID types provide builder methods for constructing child QIDs:
+
+- `RepoQid::new(OrgId, RepoId)` — construct a repo QID
+- `RepoQid::environment(EnvironmentId)` → `EnvironmentQid`
+- `EnvironmentQid::new(RepoQid, EnvironmentId)` — construct an environment QID
+- `EnvironmentQid::deployment(DeploymentId)` → `DeploymentQid`
+- `DeploymentQid::new(EnvironmentQid, DeploymentId)` — construct a deployment QID
+
+### Parent Accessors
+
+QID types provide accessors for parent scopes:
+
+- `EnvironmentQid::repo_qid()` → `&RepoQid`
+- `DeploymentQid::environment_qid()` → `&EnvironmentQid`
+- `DeploymentQid::repo_qid()` → `&RepoQid`
+
+### Binary Encoding
+
+`DeploymentId` supports binary encoding for compact storage:
+
+- `DeploymentId::from_bytes(&[u8])` — decode from 20-byte SHA-1 representation
+- `DeploymentId::to_bytes()` → `[u8; 20]` — encode to bytes
+
 ## Related Crates
 
 Every crate in the workspace that works with namespace identifiers depends on this crate. Key consumers:

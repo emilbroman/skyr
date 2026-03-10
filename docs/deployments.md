@@ -162,7 +162,8 @@ A resource won't be destroyed until all resources that depend on it are gone.
 Use the CLI to check on your deployments:
 
 ```bash
-skyr deployments
+skyr deployments list alice/my-app   # List all deployments
+skyr deployments logs alice/my-app   # Stream deployment logs in real time
 ```
 
 Or use the GraphQL API to query deployment status, view logs, and access artifacts.
