@@ -305,6 +305,24 @@ let roll = Random.Int({
 
 The random value is generated once when the resource is created and remains stable across subsequent evaluations.
 
+## Std/List
+
+List utilities.
+
+### range
+
+Generate a list of integers from 0 up to (but not including) `n`:
+
+```scl
+import Std/List
+
+let indices = List.range(5)   // [0, 1, 2, 3, 4]
+```
+
+**Type:** `fn(Int) [Int]`
+
+Returns a list containing every integer in the half-open range `[0, n)`. If `n` is zero or negative, returns an empty list.
+
 ## Std/Num
 
 Numeric utilities.
