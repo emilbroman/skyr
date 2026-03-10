@@ -43,7 +43,7 @@ impl Diag for SyntaxError {
 
 enum Postfix {
     Property(Loc<Var>),
-    Call(Vec<Loc<Expr>>, Span),
+    Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
 }
 
 fn decode_string(raw: &str) -> String {
@@ -300,13 +300,17 @@ peg::parser! {
 
         // fn expressions are right-associative because the body is parsed as a full Expr.
         rule fn_expr() -> Loc<Expr>
-            = fn_kw_span:fn_keyword() open_paren() params:fn_params() close_paren() body:expr() {
+            = fn_kw_span:fn_keyword() type_params:type_params()? open_paren() params:fn_params() close_paren() body:expr() {
                 let end = body.span().end();
                 Loc::new(Expr::Fn(FnExpr {
+                    type_params: type_params.unwrap_or_default(),
                     params,
                     body: Box::new(body),
                 }), Span::new(fn_kw_span.start(), end))
             }
+
+        rule type_params() -> Vec<Loc<Var>>
+            = less() params:(var() ++ comma()) comma()? greater() { params }
 
         rule fn_params() -> Vec<FnParam>
             = params:(fn_param() ++ comma()) comma()? { params }
@@ -465,11 +469,12 @@ peg::parser! {
                                 property,
                             }), Span::new(start, end))
                         }
-                        Postfix::Call(args, close_paren_span) => {
+                        Postfix::Call(type_args, args, close_paren_span) => {
                             let start = expr.span().start();
                             let end = close_paren_span.end();
                             Loc::new(Expr::Call(CallExpr {
                                 callee: Box::new(expr),
+                                type_args,
                                 args,
                             }), Span::new(start, end))
                         }
@@ -480,7 +485,11 @@ peg::parser! {
 
         rule postfix_suffix() -> Postfix
             = dot() property:var() { Postfix::Property(property) }
-            / open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(args, close_paren_span) }
+            / type_args:type_args() open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(type_args, args, close_paren_span) }
+            / open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(vec![], args, close_paren_span) }
+
+        rule type_args() -> Vec<Loc<TypeExpr>>
+            = less() args:(type_expr() ++ comma()) comma()? greater() { args }
 
         rule call_args() -> Vec<Loc<Expr>>
             = args:(expr() ++ comma()) comma()? { args }

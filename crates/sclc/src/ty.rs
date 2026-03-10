@@ -20,6 +20,7 @@ pub enum Type {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnType {
+    pub type_params: Vec<usize>,
     pub params: Vec<Type>,
     pub ret: Box<Type>,
 }
@@ -68,6 +69,42 @@ impl DictType {
 }
 
 impl Type {
+    /// Substitute multiple type variables at once.
+    pub fn substitute(&self, replacements: &[(usize, Type)]) -> Self {
+        match self {
+            Type::Var(id) => {
+                for (target_id, replacement) in replacements {
+                    if id == target_id {
+                        return replacement.clone();
+                    }
+                }
+                Type::Var(*id)
+            }
+            Type::Any | Type::Int | Type::Float | Type::Bool | Type::Str | Type::Never => {
+                self.clone()
+            }
+            Type::Exception(id) => Type::Exception(*id),
+            Type::Optional(ty) => Type::Optional(Box::new(ty.substitute(replacements))),
+            Type::List(ty) => Type::List(Box::new(ty.substitute(replacements))),
+            Type::Fn(fn_ty) => Type::Fn(FnType {
+                type_params: fn_ty.type_params.clone(),
+                params: fn_ty
+                    .params
+                    .iter()
+                    .map(|p| p.substitute(replacements))
+                    .collect(),
+                ret: Box::new(fn_ty.ret.substitute(replacements)),
+            }),
+            Type::Record(record) => {
+                Type::Record(record.map_types(|ty| ty.substitute(replacements)))
+            }
+            Type::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.substitute(replacements))),
+            Type::IsoRec(id, body) => {
+                Type::IsoRec(*id, Box::new(body.substitute(replacements)))
+            }
+        }
+    }
+
     pub fn unfold(&self) -> Self {
         self.unfold_inner(None)
     }
@@ -82,6 +119,7 @@ impl Type {
             Type::Optional(ty) => Type::Optional(Box::new(ty.unfold_inner(replacement))),
             Type::List(ty) => Type::List(Box::new(ty.unfold_inner(replacement))),
             Type::Fn(fn_ty) => Type::Fn(FnType {
+                type_params: fn_ty.type_params.clone(),
                 params: fn_ty
                     .params
                     .iter()
@@ -134,7 +172,21 @@ impl std::fmt::Display for Type {
 
 impl std::fmt::Display for FnType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "fn(")?;
+        write!(f, "fn")?;
+
+        if !self.type_params.is_empty() {
+            write!(f, "<")?;
+            let mut type_params = self.type_params.iter().peekable();
+            while let Some(id) = type_params.next() {
+                write!(f, "Var({id})")?;
+                if type_params.peek().is_some() {
+                    write!(f, ", ")?;
+                }
+            }
+            write!(f, ">")?;
+        }
+
+        write!(f, "(")?;
 
         let mut params = self.params.iter().peekable();
         while let Some(param) = params.next() {
