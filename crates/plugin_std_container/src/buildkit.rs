@@ -147,9 +147,7 @@ pub async fn build_and_push(
     }
 
     let digest = stdout_digest.or(stderr_digest).ok_or_else(|| {
-        PluginError::ImageBuild(
-            "could not extract image digest from buildctl output".to_string(),
-        )
+        PluginError::ImageBuild("could not extract image digest from buildctl output".to_string())
     })?;
 
     // Build the full image reference with digest

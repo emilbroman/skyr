@@ -87,8 +87,7 @@ impl Node {
                 let released = left.release(node_name) || right.release(node_name);
                 if released {
                     // Coalesce: if both children are now free, merge back
-                    if matches!(left.as_ref(), Node::Free) && matches!(right.as_ref(), Node::Free)
-                    {
+                    if matches!(left.as_ref(), Node::Free) && matches!(right.as_ref(), Node::Free) {
                         *self = Node::Free;
                     }
                 }

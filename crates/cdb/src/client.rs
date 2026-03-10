@@ -388,11 +388,7 @@ impl RepositoryClient {
             .session
             .execute_iter(
                 self.client.statements.read_object.clone(),
-                (
-                    repo.org.as_str(),
-                    repo.repo.as_str(),
-                    hash.as_bytes(),
-                ),
+                (repo.org.as_str(), repo.repo.as_str(), hash.as_bytes()),
             )
             .await?;
 
@@ -422,12 +418,7 @@ impl RepositoryClient {
             .session
             .execute_unpaged(
                 &self.client.statements.write_object,
-                (
-                    repo.org.as_str(),
-                    repo.repo.as_str(),
-                    id.as_slice(),
-                    data,
-                ),
+                (repo.org.as_str(), repo.repo.as_str(), id.as_slice(), data),
             )
             .await?;
 
@@ -550,8 +541,8 @@ impl DeploymentClient {
             deployment: self.deployment.clone(),
             created_at: prev_state
                 .as_ref()
-                .map(|s| s.created_at.clone())
-                .unwrap_or_else(|| Utc::now()),
+                .map(|s| s.created_at)
+                .unwrap_or_else(Utc::now),
             state,
         };
 
@@ -653,8 +644,8 @@ fn deployment_from_row(
     created_at: DateTime<Utc>,
     state: String,
 ) -> Result<Deployment, DeploymentQueryError> {
-    let deploy_id = DeploymentId::from_bytes(&commit_hash)
-        .map_err(|_| DeploymentQueryError::NotFound)?;
+    let deploy_id =
+        DeploymentId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
     Ok(Deployment {
         repo: RepoQid::new(
             ids::OrgId::new_unchecked(organization),
@@ -682,10 +673,7 @@ impl Client {
         Ok(())
     }
 
-    pub async fn repository(
-        &self,
-        name: &RepoQid,
-    ) -> Result<Repository, RepositoryQueryError> {
+    pub async fn repository(&self, name: &RepoQid) -> Result<Repository, RepositoryQueryError> {
         let pager = self
             .session
             .execute_iter(
@@ -726,11 +714,25 @@ impl Client {
         {
             None => Err(DeploymentQueryError::NotFound),
             Some(Err(e)) => Err(e.into()),
-            Some(Ok((organization, repository, environment_id, commit_hash, created_at, state))) => {
+            Some(Ok((
+                organization,
+                repository,
+                environment_id,
+                commit_hash,
+                created_at,
+                state,
+            ))) => {
                 if organization != repo.org.as_str() || repository != repo.repo.as_str() {
                     return Err(DeploymentQueryError::NotFound);
                 }
-                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
+                deployment_from_row(
+                    organization,
+                    repository,
+                    environment_id,
+                    commit_hash,
+                    created_at,
+                    state,
+                )
             }
         }
     }
@@ -763,7 +765,14 @@ impl Client {
             .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
                 let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
-                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
+                deployment_from_row(
+                    organization,
+                    repository,
+                    environment_id,
+                    commit_hash,
+                    created_at,
+                    state,
+                )
             })
             .boxed())
     }
@@ -810,10 +819,7 @@ impl RepositoryClient {
                     .statements
                     .list_active_deployments_by_repo
                     .clone(),
-                (
-                    self.name.org.as_str(),
-                    self.name.repo.as_str(),
-                ),
+                (self.name.org.as_str(), self.name.repo.as_str()),
             )
             .await?;
 
@@ -840,7 +846,14 @@ impl RepositoryClient {
             .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
             .map(|r| {
                 let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
-                deployment_from_row(organization, repository, environment_id, commit_hash, created_at, state)
+                deployment_from_row(
+                    organization,
+                    repository,
+                    environment_id,
+                    commit_hash,
+                    created_at,
+                    state,
+                )
             })
             .boxed())
     }
@@ -854,10 +867,7 @@ impl RepositoryClient {
             .session
             .execute_iter(
                 self.client.statements.list_deployments_by_repo.clone(),
-                (
-                    self.name.org.as_str(),
-                    self.name.repo.as_str(),
-                ),
+                (self.name.org.as_str(), self.name.repo.as_str()),
             )
             .await?;
 
@@ -1056,10 +1066,9 @@ impl DeploymentClient {
                 let (commit_hash,) = row?;
                 let deploy_id = DeploymentId::from_bytes(&commit_hash)
                     .map_err(|_| DeploymentQueryError::NotFound)?;
-                Ok::<_, DeploymentQueryError>(self.repo.deployment(
-                    self.environment.clone(),
-                    deploy_id,
-                ))
+                Ok::<_, DeploymentQueryError>(
+                    self.repo.deployment(self.environment.clone(), deploy_id),
+                )
             })
             .try_collect::<Vec<_>>()
             .await?;
@@ -1089,10 +1098,7 @@ impl DeploymentClient {
             .ok()
             .and_then(|(superceding,)| {
                 let deploy_id = DeploymentId::from_bytes(&superceding).ok()?;
-                Some(self.repo.deployment(
-                    self.environment.clone(),
-                    deploy_id,
-                ))
+                Some(self.repo.deployment(self.environment.clone(), deploy_id))
             }))
     }
 }

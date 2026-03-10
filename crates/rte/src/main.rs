@@ -117,7 +117,8 @@ async fn main() -> anyhow::Result<()> {
                     .build_consumer(worker_cfg)
                     .await?;
 
-                let span = tracing::info_span!("worker", worker = %format!("{}/{}", index, worker_count));
+                let span =
+                    tracing::info_span!("worker", worker = %format!("{}/{}", index, worker_count));
                 tracing::info!(
                     parent: &span,
                     shards = ?consumer.owned_shards(),
@@ -152,8 +153,7 @@ async fn worker_loop(
 ) {
     loop {
         let keep_running =
-            match worker_loop_iteration(&mut consumer, &rdb_client, &ldb_publisher, &plugins)
-                .await
+            match worker_loop_iteration(&mut consumer, &rdb_client, &ldb_publisher, &plugins).await
             {
                 Ok(keep_running) => keep_running,
                 Err(error) => {
@@ -292,7 +292,10 @@ async fn worker_loop_iteration(
                 }
             };
 
-            let deployment_qid = format!("{}@{}", message.resource.environment_qid, message.deployment_id);
+            let deployment_qid = format!(
+                "{}@{}",
+                message.resource.environment_qid, message.deployment_id
+            );
 
             if let Err(error) = resource_client
                 .set_input(resource.inputs.clone(), deployment_qid.clone())
@@ -360,7 +363,10 @@ async fn worker_loop_iteration(
                     message.resource.resource_type.clone(),
                     message.resource.resource_id.clone(),
                 );
-            let deployment_qid = format!("{}@{}", message.resource.environment_qid, message.deployment_id);
+            let deployment_qid = format!(
+                "{}@{}",
+                message.resource.environment_qid, message.deployment_id
+            );
 
             let current = match resource_client.get().await {
                 Ok(Some(resource)) => {
@@ -543,8 +549,14 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
-            let from_deployment_qid = format!("{}@{}", message.resource.environment_qid, message.from_deployment_id);
-            let to_deployment_qid = format!("{}@{}", message.resource.environment_qid, message.to_deployment_id);
+            let from_deployment_qid = format!(
+                "{}@{}",
+                message.resource.environment_qid, message.from_deployment_id
+            );
+            let to_deployment_qid = format!(
+                "{}@{}",
+                message.resource.environment_qid, message.to_deployment_id
+            );
 
             if current.owner.as_deref() != Some(from_deployment_qid.as_str()) {
                 tracing::info!(
@@ -784,7 +796,10 @@ async fn worker_loop_iteration(
                     return Ok(true);
                 }
             };
-            let deployment_qid = format!("{}@{}", message.resource.environment_qid, message.deployment_id);
+            let deployment_qid = format!(
+                "{}@{}",
+                message.resource.environment_qid, message.deployment_id
+            );
 
             if current.owner.as_deref() != Some(deployment_qid.as_str()) {
                 tracing::info!(

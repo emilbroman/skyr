@@ -149,10 +149,7 @@ impl Client {
         let data = serde_json::to_string(&node)?;
 
         // Store the node data
-        let _: () = self
-            .conn
-            .set(format!("{PREFIX_NODE}{name}"), &data)
-            .await?;
+        let _: () = self.conn.set(format!("{PREFIX_NODE}{name}"), &data).await?;
 
         // Add to the set of nodes
         let _: () = self.conn.sadd(SET_NODES, &name).await?;
@@ -175,10 +172,7 @@ impl Client {
         }
 
         let data = serde_json::to_string(&node)?;
-        let _: () = self
-            .conn
-            .set(format!("{PREFIX_NODE}{name}"), &data)
-            .await?;
+        let _: () = self.conn.set(format!("{PREFIX_NODE}{name}"), &data).await?;
 
         Ok(node)
     }

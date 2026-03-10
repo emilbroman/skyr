@@ -97,8 +97,9 @@ async fn list_deployments(
     let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
         .flat_map(|env| {
-            env.deployments.into_iter().map(|deployment| {
-                DeploymentOutput {
+            env.deployments
+                .into_iter()
+                .map(|deployment| DeploymentOutput {
                     r#ref: deployment.ref_.to_owned(),
                     commit: deployment.commit.to_owned(),
                     created_at: deployment.created_at.to_owned(),
@@ -121,8 +122,7 @@ async fn list_deployments(
                                 .collect::<Vec<_>>(),
                         })
                         .collect::<Vec<_>>(),
-                }
-            })
+                })
         })
         .collect();
 
@@ -173,12 +173,9 @@ async fn stream_deployment_logs(
         let environment_qids: BTreeSet<String> = environments
             .into_iter()
             .filter(|env| {
-                env.deployments.iter().any(|d| {
-                    !matches!(
-                        d.state,
-                        list_repository_deployments::DeploymentState::DOWN
-                    )
-                })
+                env.deployments
+                    .iter()
+                    .any(|d| !matches!(d.state, list_repository_deployments::DeploymentState::DOWN))
             })
             .map(|env| env.qid)
             .collect();
@@ -197,12 +194,9 @@ async fn stream_deployment_logs(
                 let token = token.to_owned();
                 let task_events_tx = task_events_tx.clone();
                 tokio::spawn(async move {
-                    let result = stream_single_environment(
-                        &ws_endpoint,
-                        &token,
-                        environment_qid.clone(),
-                    )
-                    .await;
+                    let result =
+                        stream_single_environment(&ws_endpoint, &token, environment_qid.clone())
+                            .await;
                     let _ = task_events_tx.send((environment_qid, result));
                 });
             }

@@ -2,6 +2,17 @@
 
 This file contains guidance for AI agents working on the Skyr codebase. For architecture and crate descriptions, see the [README](README.md) and individual crate READMEs. For end-user documentation, see [docs/](docs/index.md).
 
+### Before Committing
+
+Always run formatting and linting before committing:
+
+```sh
+cargo fmt
+cargo clippy --all-targets
+```
+
+Fix any warnings or errors before pushing.
+
 ### Conventions and Gotchas
 
 - Keep deployment state transitions coherent across `scs` and `de`.

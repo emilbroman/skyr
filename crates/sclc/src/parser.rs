@@ -97,15 +97,15 @@ impl<'a> TokenStream<'a> {
 impl<'a> Parse for TokenStream<'a> {
     type PositionRepr = Position;
 
-    fn start<'input>(&'input self) -> usize {
+    fn start(&self) -> usize {
         0
     }
 
-    fn is_eof<'input>(&'input self, p: usize) -> bool {
+    fn is_eof(&self, p: usize) -> bool {
         p >= self.tokens.len()
     }
 
-    fn position_repr<'input>(&'input self, p: usize) -> Self::PositionRepr {
+    fn position_repr(&self, p: usize) -> Self::PositionRepr {
         self.tokens
             .get(p)
             .map(|token| token.span().start())
@@ -966,7 +966,12 @@ peg::parser! {
 pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<FileMod>> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
-    match grammar::file_mod(&TokenStream::new(source), &mut diags, module_id, &mut exception_id) {
+    match grammar::file_mod(
+        &TokenStream::new(source),
+        &mut diags,
+        module_id,
+        &mut exception_id,
+    ) {
         Ok(file_mod) => Diagnosed::new(Some(file_mod), diags),
         Err(error) => {
             diags.push(SyntaxError {
@@ -981,7 +986,12 @@ pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<Fi
 pub fn parse_repl_line(source: &str, module_id: &ModuleId) -> Diagnosed<Option<ReplLine>> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
-    match grammar::repl_line(&TokenStream::new(source), &mut diags, module_id, &mut exception_id) {
+    match grammar::repl_line(
+        &TokenStream::new(source),
+        &mut diags,
+        module_id,
+        &mut exception_id,
+    ) {
         Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
         Err(error) => {
             diags.push(SyntaxError {

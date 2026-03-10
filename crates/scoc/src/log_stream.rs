@@ -99,10 +99,7 @@ pub async fn stream_container_logs(
 }
 
 /// Wait for the log file to appear, retrying up to 30 seconds.
-async fn wait_for_file(
-    path: &PathBuf,
-    cancel: &CancellationToken,
-) -> Option<tokio::fs::File> {
+async fn wait_for_file(path: &PathBuf, cancel: &CancellationToken) -> Option<tokio::fs::File> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 
     loop {

@@ -15,6 +15,10 @@ impl ModuleId {
         self.segments.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty()
+    }
+
     pub fn starts_with(&self, prefix: &Self) -> bool {
         self.segments.starts_with(prefix.segments.as_slice())
     }

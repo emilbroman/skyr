@@ -21,3 +21,7 @@ members = [
   "crates/scs",
   "crates/udb",
 ]
+
+[workspace.lints.clippy]
+large_enum_variant = "allow"
+result_large_err = "allow"

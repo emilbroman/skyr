@@ -170,3 +170,10 @@ Build and test:
 cargo build
 cargo test
 ```
+
+Before committing, run formatting and linting checks:
+
+```sh
+cargo fmt
+cargo clippy --all-targets
+```

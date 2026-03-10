@@ -28,3 +28,6 @@ rdb = { path = "../rdb" }
 udb = { path = "../udb" }
 ldb = { path = "../ldb" }
 adb = { path = "../adb" }
+
+[lints]
+workspace = true

@@ -136,8 +136,7 @@ pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
         .context("failed to assign gateway IP to bridge")?;
 
     // Bring bridge up
-    run_cmd("ip", &["link", "set", BRIDGE_NAME, "up"])
-        .context("failed to bring bridge up")?;
+    run_cmd("ip", &["link", "set", BRIDGE_NAME, "up"]).context("failed to bring bridge up")?;
 
     // Enable IP forwarding
     std::fs::write("/proc/sys/net/ipv4/ip_forward", "1")
@@ -147,11 +146,17 @@ pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
     run_cmd(
         "iptables",
         &[
-            "-t", "nat",
-            "-A", "POSTROUTING",
-            "-s", &subnet.to_string(),
-            "!", "-o", BRIDGE_NAME,
-            "-j", "MASQUERADE",
+            "-t",
+            "nat",
+            "-A",
+            "POSTROUTING",
+            "-s",
+            &subnet.to_string(),
+            "!",
+            "-o",
+            BRIDGE_NAME,
+            "-j",
+            "MASQUERADE",
         ],
     )
     .context("failed to add MASQUERADE rule")?;
@@ -159,11 +164,7 @@ pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
     // Allow forwarding from bridge
     run_cmd(
         "iptables",
-        &[
-            "-A", "FORWARD",
-            "-i", BRIDGE_NAME,
-            "-j", "ACCEPT",
-        ],
+        &["-A", "FORWARD", "-i", BRIDGE_NAME, "-j", "ACCEPT"],
     )
     .context("failed to add FORWARD accept rule for bridge")?;
 
@@ -171,11 +172,16 @@ pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
     run_cmd(
         "iptables",
         &[
-            "-A", "FORWARD",
-            "-o", BRIDGE_NAME,
-            "-m", "conntrack",
-            "--ctstate", "RELATED,ESTABLISHED",
-            "-j", "ACCEPT",
+            "-A",
+            "FORWARD",
+            "-o",
+            BRIDGE_NAME,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
         ],
     )
     .context("failed to add FORWARD return traffic rule")?;
@@ -192,29 +198,36 @@ pub fn teardown_bridge(subnet: &Ipv4Net) -> Result<()> {
     let _ = run_cmd(
         "iptables",
         &[
-            "-t", "nat",
-            "-D", "POSTROUTING",
-            "-s", &subnet.to_string(),
-            "!", "-o", BRIDGE_NAME,
-            "-j", "MASQUERADE",
+            "-t",
+            "nat",
+            "-D",
+            "POSTROUTING",
+            "-s",
+            &subnet.to_string(),
+            "!",
+            "-o",
+            BRIDGE_NAME,
+            "-j",
+            "MASQUERADE",
         ],
     );
     let _ = run_cmd(
         "iptables",
-        &[
-            "-D", "FORWARD",
-            "-i", BRIDGE_NAME,
-            "-j", "ACCEPT",
-        ],
+        &["-D", "FORWARD", "-i", BRIDGE_NAME, "-j", "ACCEPT"],
     );
     let _ = run_cmd(
         "iptables",
         &[
-            "-D", "FORWARD",
-            "-o", BRIDGE_NAME,
-            "-m", "conntrack",
-            "--ctstate", "RELATED,ESTABLISHED",
-            "-j", "ACCEPT",
+            "-D",
+            "FORWARD",
+            "-o",
+            BRIDGE_NAME,
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "RELATED,ESTABLISHED",
+            "-j",
+            "ACCEPT",
         ],
     );
 
@@ -272,8 +285,8 @@ pub fn setup_pod_network(
     run_cmd(
         "ip",
         &[
-            "link", "add", &host_veth, "type", "veth",
-            "peer", "name", pod_veth, "netns", netns_path,
+            "link", "add", &host_veth, "type", "veth", "peer", "name", pod_veth, "netns",
+            netns_path,
         ],
     )
     .with_context(|| format!("failed to create veth pair for pod {pod_id}"))?;
@@ -287,8 +300,12 @@ pub fn setup_pod_network(
         .with_context(|| format!("failed to bring {host_veth} up"))?;
 
     // Configure pod-side networking inside the namespace
-    nsenter_run(netns_path, "ip", &["addr", "add", &ip_cidr, "dev", pod_veth])
-        .context("failed to assign IP in pod netns")?;
+    nsenter_run(
+        netns_path,
+        "ip",
+        &["addr", "add", &ip_cidr, "dev", pod_veth],
+    )
+    .context("failed to assign IP in pod netns")?;
 
     nsenter_run(netns_path, "ip", &["link", "set", pod_veth, "up"])
         .context("failed to bring eth0 up in pod netns")?;
@@ -378,10 +395,14 @@ fn setup_pod_firewall(netns_path: &str) -> Result<()> {
         netns_path,
         "iptables",
         &[
-            "-A", "INPUT",
-            "-m", "conntrack",
-            "--ctstate", "ESTABLISHED,RELATED",
-            "-j", "ACCEPT",
+            "-A",
+            "INPUT",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
         ],
     )?;
 
@@ -431,10 +452,14 @@ fn setup_pod_egress_rules(
         netns_path,
         "iptables",
         &[
-            "-A", "OUTPUT",
-            "-m", "conntrack",
-            "--ctstate", "ESTABLISHED,RELATED",
-            "-j", "ACCEPT",
+            "-A",
+            "OUTPUT",
+            "-m",
+            "conntrack",
+            "--ctstate",
+            "ESTABLISHED,RELATED",
+            "-j",
+            "ACCEPT",
         ],
     )?;
 
@@ -445,11 +470,16 @@ fn setup_pod_egress_rules(
             netns_path,
             "iptables",
             &[
-                "-A", "OUTPUT",
-                "-d", &dest.address,
-                "-p", &dest.protocol,
-                "--dport", &port_str,
-                "-j", "ACCEPT",
+                "-A",
+                "OUTPUT",
+                "-d",
+                &dest.address,
+                "-p",
+                &dest.protocol,
+                "--dport",
+                &port_str,
+                "-j",
+                "ACCEPT",
             ],
         )?;
 
@@ -503,11 +533,17 @@ pub fn setup_vxlan(local_ip: &str) -> Result<()> {
     run_cmd(
         "ip",
         &[
-            "link", "add", VXLAN_NAME,
-            "type", "vxlan",
-            "id", &vni,
-            "dstport", &port,
-            "local", local_ip,
+            "link",
+            "add",
+            VXLAN_NAME,
+            "type",
+            "vxlan",
+            "id",
+            &vni,
+            "dstport",
+            &port,
+            "local",
+            local_ip,
             "nolearning",
         ],
     )
@@ -539,10 +575,13 @@ pub fn add_overlay_peer(peer_ip: &str) -> Result<()> {
     run_cmd(
         "bridge",
         &[
-            "fdb", "append",
+            "fdb",
+            "append",
             "00:00:00:00:00:00",
-            "dev", VXLAN_NAME,
-            "dst", peer_ip,
+            "dev",
+            VXLAN_NAME,
+            "dst",
+            peer_ip,
         ],
     )
     .with_context(|| format!("failed to add overlay peer {peer_ip}"))
@@ -554,10 +593,13 @@ pub fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
     run_cmd(
         "bridge",
         &[
-            "fdb", "del",
+            "fdb",
+            "del",
             "00:00:00:00:00:00",
-            "dev", VXLAN_NAME,
-            "dst", peer_ip,
+            "dev",
+            VXLAN_NAME,
+            "dst",
+            peer_ip,
         ],
     )
     .with_context(|| format!("failed to remove overlay peer {peer_ip}"))
@@ -583,10 +625,7 @@ pub fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
         netns_path,
         "iptables",
         &[
-            "-A", "INPUT",
-            "-p", protocol,
-            "--dport", &port_str,
-            "-j", "ACCEPT",
+            "-A", "INPUT", "-p", protocol, "--dport", &port_str, "-j", "ACCEPT",
         ],
     )
     .with_context(|| format!("failed to open port {port}/{protocol}"))
@@ -608,10 +647,7 @@ pub fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
         netns_path,
         "iptables",
         &[
-            "-D", "INPUT",
-            "-p", protocol,
-            "--dport", &port_str,
-            "-j", "ACCEPT",
+            "-D", "INPUT", "-p", protocol, "--dport", &port_str, "-j", "ACCEPT",
         ],
     )
     .with_context(|| format!("failed to close port {port}/{protocol}"))

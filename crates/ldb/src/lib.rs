@@ -127,6 +127,12 @@ pub struct ClientBuilder {
     brokers: String,
 }
 
+impl Default for ClientBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClientBuilder {
     pub fn new() -> Self {
         Self {

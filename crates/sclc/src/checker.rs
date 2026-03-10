@@ -33,6 +33,12 @@ pub struct TypeEnv<'a> {
     type_var_bounds: HashMap<usize, Type>,
 }
 
+impl<'a> Default for TypeEnv<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> TypeEnv<'a> {
     pub fn new() -> Self {
         Self {
@@ -113,11 +119,10 @@ impl<'a> TypeEnv<'a> {
     /// If `ty` is a type variable with a known upper bound, return a reference
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
-        if let Type::Var(id) = ty {
-            if let Some(bound) = self.type_var_bounds.get(id) {
+        if let Type::Var(id) = ty
+            && let Some(bound) = self.type_var_bounds.get(id) {
                 return bound;
             }
-        }
         ty
     }
 
@@ -506,13 +511,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
 
         // If rhs is a bounded type variable, check assignability via its upper bound.
-        if let Type::Var(id) = rhs {
-            if let Some(upper_bound) = bounds.get(id) {
+        if let Type::Var(id) = rhs
+            && let Some(upper_bound) = bounds.get(id) {
                 return self
                     .assign_type_with_bounds(lhs, upper_bound, bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
             }
-        }
 
         match lhs {
             Type::Optional(lhs_inner) => match rhs {
@@ -625,9 +629,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
 
             // Non-generic lhs, generic rhs: unify to solve rhs's type params
-            (true, false) => {
-                self.unify_generic_fn(lhs_fn, rhs_fn, bounds)
-            }
+            (true, false) => self.unify_generic_fn(lhs_fn, rhs_fn, bounds),
 
             // Generic lhs, non-generic rhs: the rhs (a concrete fn) must be
             // assignable to any valid instantiation of lhs. This means we need
@@ -642,7 +644,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .collect();
                 let instantiated_lhs = FnType {
                     type_params: vec![],
-                    params: lhs_fn.params.iter().map(|p| p.substitute(&replacements)).collect(),
+                    params: lhs_fn
+                        .params
+                        .iter()
+                        .map(|p| p.substitute(&replacements))
+                        .collect(),
                     ret: Box::new(lhs_fn.ret.substitute(&replacements)),
                 };
                 self.assign_fn_type(&instantiated_lhs, rhs_fn, bounds)
@@ -678,7 +684,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
                 let renamed_lhs = FnType {
                     type_params: vec![],
-                    params: lhs_fn.params.iter().map(|p| p.substitute(&alpha_rename)).collect(),
+                    params: lhs_fn
+                        .params
+                        .iter()
+                        .map(|p| p.substitute(&alpha_rename))
+                        .collect(),
                     ret: Box::new(lhs_fn.ret.substitute(&alpha_rename)),
                 };
                 let body_rhs = FnType {
@@ -718,7 +728,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
         // Collect bounds from parameters (contravariant position)
         for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
-            self.collect_bounds(lhs_param, rhs_param, Variance::Contravariant, &free_vars, &mut assertions)?;
+            self.collect_bounds(
+                lhs_param,
+                rhs_param,
+                Variance::Contravariant,
+                &free_vars,
+                &mut assertions,
+            )?;
         }
 
         // Collect bounds from return type (covariant position)
@@ -731,13 +747,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         )?;
 
         // Verify: for each type param, lower <: upper
-        for (_id, (lower, upper)) in &assertions {
-            self.assign_type_with_bounds(upper, lower, bounds).map_err(|err| {
-                err.causing(TypeIssue::Mismatch(
-                    Type::Fn(lhs_fn.clone()),
-                    Type::Fn(rhs_fn.clone()),
-                ))
-            })?;
+        for (lower, upper) in assertions.values() {
+            self.assign_type_with_bounds(upper, lower, bounds)
+                .map_err(|err| {
+                    err.causing(TypeIssue::Mismatch(
+                        Type::Fn(lhs_fn.clone()),
+                        Type::Fn(rhs_fn.clone()),
+                    ))
+                })?;
         }
 
         Ok(())
@@ -753,8 +770,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         assertions: &mut HashMap<usize, (Type, Type)>,
     ) -> Result<(), TypeError> {
         // If rhs is a free type variable, record the bound from lhs
-        if let Type::Var(id) = rhs {
-            if free_vars.contains(id) {
+        if let Type::Var(id) = rhs
+            && free_vars.contains(id) {
                 let entry = assertions.get_mut(id).expect("free var must have entry");
                 match variance {
                     Variance::Covariant => {
@@ -768,7 +785,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 return Ok(());
             }
-        }
 
         // Structural recursion for matching type constructors
         match (lhs, rhs) {
@@ -791,8 +807,20 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Ok(())
             }
             (Type::Dict(lhs_dict), Type::Dict(rhs_dict)) => {
-                self.collect_bounds(lhs_dict.key.as_ref(), rhs_dict.key.as_ref(), variance, free_vars, assertions)?;
-                self.collect_bounds(lhs_dict.value.as_ref(), rhs_dict.value.as_ref(), variance, free_vars, assertions)
+                self.collect_bounds(
+                    lhs_dict.key.as_ref(),
+                    rhs_dict.key.as_ref(),
+                    variance,
+                    free_vars,
+                    assertions,
+                )?;
+                self.collect_bounds(
+                    lhs_dict.value.as_ref(),
+                    rhs_dict.value.as_ref(),
+                    variance,
+                    free_vars,
+                    assertions,
+                )
             }
             (Type::Fn(lhs_fn), Type::Fn(rhs_fn)) if lhs_fn.params.len() == rhs_fn.params.len() => {
                 // Parameters: flip variance
@@ -801,7 +829,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     self.collect_bounds(lhs_param, rhs_param, flipped, free_vars, assertions)?;
                 }
                 // Return: same variance
-                self.collect_bounds(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref(), variance, free_vars, assertions)
+                self.collect_bounds(
+                    lhs_fn.ret.as_ref(),
+                    rhs_fn.ret.as_ref(),
+                    variance,
+                    free_vars,
+                    assertions,
+                )
             }
             _ => {
                 // No structural match — just check assignability in the appropriate direction.
@@ -809,13 +843,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 match variance {
                     Variance::Covariant => {
                         // lhs :> rhs (lhs is supertype)
-                        self.assign_type(lhs, rhs)
-                            .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                        self.assign_type(lhs, rhs).map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })
                     }
                     Variance::Contravariant => {
                         // rhs :> lhs (rhs is supertype, i.e. lhs <: rhs)
-                        self.assign_type(rhs, lhs)
-                            .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                        self.assign_type(rhs, lhs).map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })
                     }
                 }
             }
@@ -863,8 +899,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         expected_type: Option<&Type>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
-        if let Some(expected_type) = expected_type {
-            if let Err(error) =
+        if let Some(expected_type) = expected_type
+            && let Err(error) =
                 self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
             {
                 diags.push(InvalidType {
@@ -873,7 +909,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     span,
                 });
             }
-        }
 
         Ok(Diagnosed::new(ty, diags))
     }
@@ -1042,8 +1077,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut type_param_entries = Vec::with_capacity(fn_expr.type_params.len());
                 for type_param in &fn_expr.type_params {
                     let type_id = next_type_id();
-                    fn_env =
-                        fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+                    fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
                     let upper_bound = if let Some(bound_expr) = &type_param.bound {
                         self.resolve_type_expr(&fn_env, bound_expr)
                             .unpack(&mut diags)
@@ -1140,7 +1174,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             .iter()
                             .zip(call_expr.type_args.iter())
                             .map(|((id, bound), type_arg)| {
-                                let resolved = self.resolve_type_expr(env, type_arg).unpack(&mut diags);
+                                let resolved =
+                                    self.resolve_type_expr(env, type_arg).unpack(&mut diags);
                                 // Check that the type argument satisfies the declared bound
                                 if self
                                     .assign_type_with_bounds(bound, &resolved, &env.type_var_bounds)
@@ -1598,9 +1633,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut diags = DiagList::new();
                 let exception_ty = Type::Exception(exception_expr.exception_id);
                 if let Some(ty_expr) = &exception_expr.ty {
-                    let param_ty = self
-                        .resolve_type_expr(env, ty_expr)
-                        .unpack(&mut diags);
+                    let param_ty = self.resolve_type_expr(env, ty_expr).unpack(&mut diags);
                     let fn_ty = Type::Fn(FnType {
                         type_params: vec![],
                         params: vec![param_ty],
@@ -1657,10 +1690,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
                     match &catch_var_ty {
                         Type::Exception(_) => {
-                            if catch.catch_arg.is_some() {
+                            if let Some(catch_arg) = &catch.catch_arg {
                                 diags.push(UnexpectedCatchArg {
                                     module_id: env.module_id()?,
-                                    span: catch.catch_arg.as_ref().unwrap().span(),
+                                    span: catch_arg.span(),
                                 });
                             }
                             self.check_expr(env, &catch.body, Some(&try_ty))?
@@ -1676,13 +1709,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 });
                             }
                             if let Some(catch_arg) = &catch.catch_arg {
-                                let param_ty = fn_ty
-                                    .params
-                                    .first()
-                                    .cloned()
-                                    .unwrap_or(Type::Never);
-                                let inner_env =
-                                    env.with_local(catch_arg.name.as_str(), param_ty);
+                                let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never);
+                                let inner_env = env.with_local(catch_arg.name.as_str(), param_ty);
                                 self.check_expr(&inner_env, &catch.body, Some(&try_ty))?
                                     .unpack(&mut diags);
                             } else {
@@ -1806,11 +1834,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
             }
             ast::TypeExpr::Optional(inner) => {
-                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                let inner_ty = self
+                    .resolve_type_expr(env, inner.as_ref())
+                    .unpack(&mut diags);
                 Type::Optional(Box::new(inner_ty))
             }
             ast::TypeExpr::List(inner) => {
-                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                let inner_ty = self
+                    .resolve_type_expr(env, inner.as_ref())
+                    .unpack(&mut diags);
                 Type::List(Box::new(inner_ty))
             }
             ast::TypeExpr::Fn(fn_ty) => {
@@ -1818,8 +1850,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut type_param_entries = Vec::with_capacity(fn_ty.type_params.len());
                 for type_param in &fn_ty.type_params {
                     let type_id = next_type_id();
-                    fn_env =
-                        fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+                    fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
                     let upper_bound = if let Some(bound_expr) = &type_param.bound {
                         self.resolve_type_expr(&fn_env, bound_expr)
                             .unpack(&mut diags)
@@ -1833,7 +1864,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .iter()
                     .map(|param| self.resolve_type_expr(&fn_env, param).unpack(&mut diags))
                     .collect();
-                let ret = self.resolve_type_expr(&fn_env, &fn_ty.ret).unpack(&mut diags);
+                let ret = self
+                    .resolve_type_expr(&fn_env, &fn_ty.ret)
+                    .unpack(&mut diags);
                 Type::Fn(FnType {
                     type_params: type_param_entries,
                     params,
@@ -1843,16 +1876,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::TypeExpr::Record(record_ty) => {
                 let mut resolved = RecordType::default();
                 for field in &record_ty.fields {
-                    let field_ty = self
-                        .resolve_type_expr(env, &field.ty)
-                        .unpack(&mut diags);
+                    let field_ty = self.resolve_type_expr(env, &field.ty).unpack(&mut diags);
                     resolved.insert(field.var.name.clone(), field_ty);
                 }
                 Type::Record(resolved)
             }
             ast::TypeExpr::Dict(dict_ty) => {
                 let key = self.resolve_type_expr(env, &dict_ty.key).unpack(&mut diags);
-                let value = self.resolve_type_expr(env, &dict_ty.value).unpack(&mut diags);
+                let value = self
+                    .resolve_type_expr(env, &dict_ty.value)
+                    .unpack(&mut diags);
                 Type::Dict(DictType {
                     key: Box::new(key),
                     value: Box::new(value),
@@ -2772,13 +2805,15 @@ mod tests {
         let id = next_type_id();
         // T <: Int? means T should be assignable to Int?
         let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
-        assert!(checker
-            .assign_type_with_bounds(
-                &Type::Optional(Box::new(Type::Int)),
-                &Type::Var(id),
-                &bounds
-            )
-            .is_ok());
+        assert!(
+            checker
+                .assign_type_with_bounds(
+                    &Type::Optional(Box::new(Type::Int)),
+                    &Type::Var(id),
+                    &bounds
+                )
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2788,9 +2823,11 @@ mod tests {
         let id = next_type_id();
         // T <: Int? means T is NOT necessarily assignable to Int (could be nil)
         let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
-        assert!(checker
-            .assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds)
-            .is_err());
+        assert!(
+            checker
+                .assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds)
+                .is_err()
+        );
     }
 
     #[test]
@@ -2802,9 +2839,11 @@ mod tests {
         record.insert("x".to_string(), Type::Int);
         let bounds = HashMap::from([(id, Type::Record(record.clone()))]);
         // T <: {x: Int} means T should be assignable to {x: Int}
-        assert!(checker
-            .assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds)
-            .is_ok());
+        assert!(
+            checker
+                .assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2819,8 +2858,10 @@ mod tests {
         });
         let bounds = HashMap::from([(id, fn_ty.clone())]);
         // T <: fn(Int) Int means T should be assignable to fn(Int) Int
-        assert!(checker
-            .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
-            .is_ok());
+        assert!(
+            checker
+                .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
+                .is_ok()
+        );
     }
 }

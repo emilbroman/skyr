@@ -43,6 +43,12 @@ pub struct EvalEnv<'a> {
     stack: Option<&'a StackFrame<'a>>,
 }
 
+impl<'a> Default for EvalEnv<'a> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<'a> EvalEnv<'a> {
     pub fn new() -> Self {
         Self {
@@ -60,7 +66,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
-            stack: self.stack.clone(),
+            stack: self.stack,
         }
     }
 
@@ -70,7 +76,7 @@ impl<'a> EvalEnv<'a> {
             globals: Some(globals),
             imports: self.imports,
             locals: HashMap::new(),
-            stack: self.stack.clone(),
+            stack: self.stack,
         }
     }
 
@@ -83,7 +89,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: Some(imports),
             locals: HashMap::new(),
-            stack: self.stack.clone(),
+            stack: self.stack,
         }
     }
 
@@ -93,7 +99,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
-            stack: self.stack.clone(),
+            stack: self.stack,
         }
     }
 
@@ -109,7 +115,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: HashMap::new(),
-            stack: self.stack.clone(),
+            stack: self.stack,
         }
     }
 

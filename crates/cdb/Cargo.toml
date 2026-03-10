@@ -14,3 +14,6 @@ ids = { path = "../ids" }
 scylla = { version = "1.5.0", features = ["chrono-04"] }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
+
+[lints]
+workspace = true

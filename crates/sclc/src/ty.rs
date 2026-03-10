@@ -6,7 +6,7 @@ thread_local! {
     /// function type is formatted, its type-parameter IDs are pushed here so
     /// that nested `Type::Var` nodes can look up their index and print a
     /// friendly name (`A`, `B`, …) instead of a raw numeric ID.
-    static DISPLAY_TYPE_PARAMS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static DISPLAY_TYPE_PARAMS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 
 fn typevar_name(index: usize) -> String {
@@ -317,10 +317,7 @@ mod tests {
         // fn<A>(A, [A]) A?
         let ty = Type::Fn(FnType {
             type_params: vec![(42, Type::Any)],
-            params: vec![
-                Type::Var(42),
-                Type::List(Box::new(Type::Var(42))),
-            ],
+            params: vec![Type::Var(42), Type::List(Box::new(Type::Var(42)))],
             ret: Box::new(Type::Optional(Box::new(Type::Var(42)))),
         });
         assert_eq!(ty.to_string(), "fn<A>(A, [A]) A?");
