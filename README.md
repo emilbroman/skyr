@@ -120,7 +120,7 @@ The RTQ carries four message types:
 
 ## Running Locally
 
-Infrastructure services are defined in `podman-compose.yml`:
+Infrastructure services are defined in `dev/podman-compose.yml`:
 
 | Service | Port(s) | Purpose |
 |---------|---------|---------|
