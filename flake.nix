@@ -15,7 +15,7 @@
         pkgs = nixpkgs.legacyPackages."${system}";
       in
       {
-        devShell = pkgs.mkShell {
+        devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustup
             cargo
@@ -25,7 +25,7 @@
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
             rustup install nightly
-            rustup component add rust-analyzer
+            rustup component add rust-analyzer rustfmt clippy
           '';
         };
       }
