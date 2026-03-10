@@ -15,6 +15,8 @@ Generates a random integer within a specified range.
 | **Inputs** | `min` (integer), `max` (integer) |
 | **Outputs** | `result` (random integer in [min, max]) |
 
+Both creates and updates generate a new random value — updates are not idempotent.
+
 ## Running
 
 ```sh

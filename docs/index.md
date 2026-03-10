@@ -125,12 +125,16 @@ git push skyr main
 The `skyr` CLI helps you work with SCL locally and interact with Skyr servers.
 
 ```bash
-skyr repl                    # Interactive SCL REPL
-skyr run                     # Evaluate Main.scl in the current directory
-skyr run --root ./app        # Evaluate Main.scl in a specific directory
-skyr signup                  # Create a new account
-skyr signin                  # Sign in to Skyr
-skyr whoami                  # Show current user
-skyr repo                    # Manage repositories
-skyr deployments             # View deployment status
+skyr repl                           # Interactive SCL REPL
+skyr run                            # Evaluate Main.scl in the current directory
+skyr run --root ./app               # Evaluate Main.scl in a specific directory
+skyr signup --username alice --email alice@example.com  # Create a new account
+skyr signin --username alice        # Sign in to Skyr
+skyr whoami                         # Show current user
+skyr repo list                      # List repositories
+skyr repo create alice/my-app       # Create a repository
+skyr deployments list alice/my-app  # List deployments
+skyr deployments logs alice/my-app  # Stream deployment logs
 ```
+
+Use `--format json` with any command to get machine-readable output.

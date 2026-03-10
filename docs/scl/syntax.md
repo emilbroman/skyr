@@ -293,6 +293,73 @@ let times = fn(x: Int) x * multiplier
 times(4)                  // 12
 ```
 
+#### Generic Functions
+
+Functions can declare type parameters in angle brackets before the parameter list:
+
+```scl
+fn<T>(value: T?) T                       // One type parameter
+fn<T, U>(list: [T], f: fn(T) U) [U]     // Two type parameters
+```
+
+Type parameters can have upper bounds using `<:`:
+
+```scl
+fn<T <: { name: Str }>(item: T) item.name
+```
+
+This constrains `T` to types that have at least a `name: Str` field.
+
+When calling generic functions, type arguments must be provided explicitly:
+
+```scl
+unwrap<Int>(maybeValue)
+List.map<Int, Str>([1, 2], fn(x: Int) "{x}")
+```
+
+### Exceptions
+
+#### Defining Exceptions
+
+Define exception types with the `exception` keyword:
+
+```scl
+let MyError = exception
+```
+
+Exceptions can optionally carry a typed payload (note the colon):
+
+```scl
+let ParseError = exception: Str
+```
+
+#### Raising Exceptions
+
+Use `raise` to throw an exception:
+
+```scl
+raise MyError
+```
+
+#### Try / Catch
+
+Use `try`/`catch` to handle exceptions:
+
+```scl
+try riskyOperation()
+    catch MyError: "default value"
+```
+
+Multiple catch clauses are allowed:
+
+```scl
+try riskyOperation()
+    catch NotFound: "not found"
+    catch ParseError(msg): "parse error: {msg}"
+```
+
+If the exception carries a payload, bind it with parentheses (`catch ParseError(msg): ...`). Without parentheses, the payload is ignored.
+
 ### List Comprehensions
 
 Transform and filter lists within list literals:
@@ -414,6 +481,14 @@ Wrap in brackets:
 fn(Int) Int
 fn(Int, Int) Int
 fn({ name: Str }) { result: Int }
+```
+
+Generic function types use angle brackets with optional bounds:
+
+```scl
+fn<T>(T) T
+fn<T, U>(T, fn(T) U) [U]
+fn<T <: { name: Str }>(T) Str
 ```
 
 ## Extern Declarations

@@ -17,7 +17,7 @@ RTE → RDB ← DE
 | Operation | Description |
 |-----------|-------------|
 | `get` | Retrieve a resource by ID |
-| `set_input` | Store the desired inputs for a resource |
+| `set_input` | Store the desired inputs and owner for a resource |
 | `set_output` | Store the actual outputs from a resource |
 | `set_dependencies` | Record resource dependency relationships |
 | `delete` | Remove a resource |
@@ -39,8 +39,16 @@ Each resource has:
 
 Resources are grouped by **namespace**, which is the environment QID (`org/repo::env`). All deployments within the same environment share a resource namespace, enabling seamless resource adoption during rollouts.
 
+## Client Hierarchy
+
+Clients are constructed via a builder and scoped progressively:
+
+`ClientBuilder::build()` → `Client` → `.namespace(env_qid)` → `NamespaceClient` → `.resource(type, id)` → `ResourceClient`
+
+The client automatically creates its keyspace and tables on initialization.
+
 ## Related Crates
 
 - [RTE](../rte/) — writes resource state after processing transitions
-- [DE](../de/) — reads resource state for reconciliation (planned)
+- [DE](../de/) — reads resource state for reconciliation
 - [RTQ](../rtq/) — transition messages reference resources by namespace and ID

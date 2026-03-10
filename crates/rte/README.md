@@ -25,6 +25,14 @@ RTE connects to RTQ as a consumer with configurable worker shards and dials RTP 
 | **Adopt** | Transfers ownership in RDB. If inputs differ from the existing resource, calls plugin `update_resource`. |
 | **Restore** | Compares desired inputs against current state. If they differ, calls plugin `update_resource` to re-apply desired state. |
 
+### RDB Persistence
+
+Create messages persist state to RDB in multiple steps: inputs and dependencies first, then outputs after the plugin responds. This ensures partial state is visible during long-running plugin operations.
+
+### Error Handling
+
+If a plugin call or RDB operation fails, the message is nack'd (not acknowledged), allowing RabbitMQ to redeliver it. This provides at-least-once delivery semantics for all transition operations.
+
 ### Idempotency
 
 - Duplicate Create messages for existing resources are dropped.
@@ -43,7 +51,7 @@ cargo run -p rte -- daemon \
   --plugin "Std/Container@localhost:50053"
 ```
 
-Multiple RTE workers can run in parallel, each handling a subset of RTQ shards.
+Multiple RTE workers can run in parallel, each handling a subset of RTQ shards. Use `--worker-index` and `--worker-count` to configure shard ownership.
 
 ## Related Crates
 

@@ -117,6 +117,9 @@ let container = pod.Container({
 |-------|------|-------------|
 | `name` | `Str` | Container name |
 | `image` | `Str` | Full image reference (use `image.fullname`) |
+| `command` | `[Str]?` | Entrypoint command (optional) |
+| `args` | `[Str]?` | Command arguments (optional) |
+| `envs` | `#{ Str: Str }?` | Environment variables (optional) |
 
 **Outputs:**
 
@@ -303,7 +306,68 @@ let roll = Random.Int({
 | `max` | `Int` | Input max value |
 | `result` | `Int` | The generated random integer |
 
-The random value is generated once when the resource is created and remains stable across subsequent evaluations.
+The random value is generated when the resource is created and regenerated on updates (e.g., when `min` or `max` change).
+
+## Std/Option
+
+Utilities for working with optional (`T?`) values.
+
+### isNone
+
+Check if a value is `nil`:
+
+```scl
+import Std/Option
+
+Option.isNone<Int>(nil)    // true
+Option.isNone<Int>(42)     // false
+```
+
+**Type:** `fn<T>(value: T?) Bool`
+
+### isSome
+
+Check if a value is not `nil`:
+
+```scl
+Option.isSome<Int>(42)     // true
+Option.isSome<Int>(nil)    // false
+```
+
+**Type:** `fn<T>(value: T?) Bool`
+
+### unwrap
+
+Extract the value from an optional, or raise an exception if `nil`:
+
+```scl
+Option.unwrap<Int>(42)     // 42
+Option.unwrap<Int>(nil)    // raises UnexpectedNil
+```
+
+**Type:** `fn<T>(value: T?) T`
+
+Raises the `Option.UnexpectedNil` exception if the value is `nil`. Use `try`/`catch` to handle:
+
+```scl
+let result = try Option.unwrap<Str>(maybeValue)
+    catch Option.UnexpectedNil: "fallback"
+```
+
+### default
+
+Return the value if present, or a fallback if `nil`:
+
+```scl
+Option.default<Int>(42, 0)     // 42
+Option.default<Int>(nil, 0)    // 0
+```
+
+**Type:** `fn<T>(value: T?, fallback: T) T`
+
+### UnexpectedNil
+
+An exception type, raised by `unwrap` when the value is `nil`.
 
 ## Std/List
 
@@ -322,6 +386,56 @@ let indices = List.range(5)   // [0, 1, 2, 3, 4]
 **Type:** `fn(Int) [Int]`
 
 Returns a list containing every integer in the half-open range `[0, n)`. Returns an empty list when `n` is zero. Raises an error if `n` is negative.
+
+### map
+
+Apply a function to each element:
+
+```scl
+List.map<Int, Int>([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
+```
+
+**Type:** `fn<T, U>(list: [T], transform: fn(T) U) [U]`
+
+### filter
+
+Keep only elements that satisfy a predicate:
+
+```scl
+List.filter<Int>([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
+```
+
+**Type:** `fn<T>(list: [T], predicate: fn(T) Bool) [T]`
+
+### append
+
+Add an element to the end of a list:
+
+```scl
+List.append<Int>([1, 2], 3)   // [1, 2, 3]
+```
+
+**Type:** `fn<T>(list: [T], newItem: T) [T]`
+
+### concat
+
+Flatten a list of lists into a single list:
+
+```scl
+List.concat<Int>([[1, 2], [3, 4]])   // [1, 2, 3, 4]
+```
+
+**Type:** `fn<T>(lists: [[T]]) [T]`
+
+### flatMap
+
+Map each element to a list, then flatten:
+
+```scl
+List.flatMap<Int, Int>([1, 2, 3], fn(x: Int) [x, x * 10])   // [1, 10, 2, 20, 3, 30]
+```
+
+**Type:** `fn<T, U>(list: [T], transform: fn(T) [U]) [U]`
 
 ## Std/Num
 

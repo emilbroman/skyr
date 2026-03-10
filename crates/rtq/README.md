@@ -19,13 +19,18 @@ DE → RTQ → RTE
 | **Adopt** | Transfer resource ownership between deployments |
 | **Destroy** | Delete a resource no longer needed |
 
-Each message contains a `ResourceRef` with namespace, resource type, and resource ID. Create, Destroy, and Restore messages carry an `owner_deployment_qid` (a full deployment QID like `org/repo::env@deploy`). Adopt messages carry `from_owner_deployment_qid` and `to_owner_deployment_qid` to transfer ownership between deployments.
+Each message contains a `ResourceRef` with `environment_qid`, resource type, and resource ID. Additional fields per message type:
+
+- **Create**: `owner_deployment_qid`, `desired_inputs`, `dependencies`
+- **Restore**: `owner_deployment_qid`, `desired_inputs`, `dependencies`
+- **Adopt**: `from_owner_deployment_qid`, `to_owner_deployment_qid`, `desired_inputs`, `dependencies`
+- **Destroy**: `owner_deployment_qid`
 
 ## Implementation
 
 - Messages are typed as the `Message` enum and JSON-encoded via serde.
 - Producers use `ClientBuilder::build_publisher()` and call `Publisher::enqueue(&Message)`.
-- Workers use `ClientBuilder::build_consumer(WorkerConfig)` and consume typed deliveries.
+- Workers use `ClientBuilder::build_consumer(WorkerConfig)` and consume typed deliveries. Each delivery exposes `ack()` and `nack(requeue)` methods for explicit acknowledgment.
 
 ### Topology
 
@@ -33,11 +38,11 @@ The AMQP topology is hard-coded (the cluster is fully controlled):
 
 - Direct exchange (`rtq.v1`).
 - 32 shards for parallelism.
-- Routing key derived from a consistent hash of the resource UID.
+- Routing key derived from a consistent hash of the resource UID (`environment_qid:resource_type:resource_id`).
 - Worker queue bindings derived from `WorkerConfig` shard ownership — each worker is assigned a subset of shards.
 
 ## Related Crates
 
-- [DE](../de/) — publishes transition messages (planned)
+- [DE](../de/) — publishes transition messages
 - [RTE](../rte/) — consumes and processes transition messages
 - [RTP](../rtp/) — protocol used by RTE to invoke plugins

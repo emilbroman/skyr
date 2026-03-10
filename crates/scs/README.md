@@ -8,6 +8,7 @@ SCS is the entry point for all user-initiated deployments. Users interact with S
 
 ```
 User (Git/SSH) → SCS → CDB (store objects + deployments)
+                       UDB (authenticate)
 ```
 
 ## How It Works

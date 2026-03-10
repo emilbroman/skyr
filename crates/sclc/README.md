@@ -25,12 +25,19 @@ CLI → SCLC (REPL / run)
 ## Compilation Pipeline
 
 The `compile()` function:
-1. Opens `Main.scl` from the provided source.
+1. Opens `Main.scl` from the provided source (a `SourceRepo` implementation).
 2. Resolves imports across packages.
 3. Type checks the program.
 4. Returns `Diagnosed<Program<_>>` with accumulated diagnostics.
 
 Parse functions return `Diagnosed<Option<_>>` and report syntax errors as diagnostics (not panics or `Result` errors).
+
+## Key Types
+
+- **`Diagnosed<T>`** — wraps a value with a `DiagList` of accumulated warnings and errors. Used throughout the pipeline to collect diagnostics without aborting.
+- **`Program<S>`** — a compiled and type-checked program ready for evaluation. Call `.evaluate()` to execute it.
+- **`SourceRepo`** — trait for providing source files to the compiler. CDB implements this for deployment compilation; the CLI implements it for local file access.
+- **`Effect`** — emitted during evaluation when the program creates or modifies resources (`CreateResource`, `UpdateResource`, `TouchResource`).
 
 ## Related Crates
 

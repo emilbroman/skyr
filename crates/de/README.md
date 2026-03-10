@@ -8,7 +8,9 @@ DE is the heart of Skyr's reconciliation model. It continuously monitors active 
 
 ```
 CDB → DE → SCLC (compile)
-           DE → RTQ (transition requests) [not yet implemented]
+           DE → RDB (read current state)
+           DE → RTQ (transition requests)
+           DE → LDB (deployment logs)
 ```
 
 ## How It Works
@@ -19,14 +21,34 @@ CDB → DE → SCLC (compile)
 
 | State | Behavior |
 |-------|----------|
-| **Desired** | Compiles `Main.scl` from the deployment's commit. Marks any superceded deployment as Undesired. |
-| **Lingering** | Compiles `Main.scl` and logs. Waiting for the new deployment to take over. |
-| **Undesired** | Logs teardown intent and transitions to Down. |
+| **Desired** | Compiles `Main.scl`, evaluates the resource DAG against current RDB state, and emits transition requests. Once evaluation is complete (no pending effects), marks superceded deployments as Undesired. |
+| **Lingering** | Follows the supercession chain to find the active Desired deployment, then marks itself as superceded by it. Includes cycle detection to prevent infinite loops. |
+| **Undesired** | Tears down owned resources by enqueuing Destroy messages. Blocks teardown for resources that still have living dependents. Transitions to Down when all owned resources are destroyed. |
 | **Down** | Idles. |
 
-## Current Limitations
+## Reconciliation Loop
 
-DE currently compiles configuration but does not yet emit transition requests to the [RTQ](../rtq/). The planned reconciliation loop — where DE evaluates the compiled resource DAG, compares it against the [RDB](../rdb/), and emits Create/Restore/Adopt/Destroy messages — is not yet implemented.
+When a deployment is in the **Desired** state, DE performs a full reconciliation:
+
+1. **Compile**: Runs `sclc::compile()` on `Main.scl` from the deployment's commit. Diagnostics (warnings and errors) are logged to LDB.
+2. **Load current state**: Fetches all resources from the RDB namespace (environment QID) and feeds them into the evaluator for comparison.
+3. **Evaluate**: Runs the compiled program against the current state, producing effects for any differences.
+4. **Emit transitions**: Converts effects into RTQ messages:
+
+| Effect | RTQ Message |
+|--------|-------------|
+| `CreateResource` | **Create** — new resource to be created by a plugin |
+| `UpdateResource` (unowned) | **Restore** — re-apply desired inputs to an existing resource |
+| `UpdateResource` (owned by another deployment) | **Adopt** — transfer ownership and optionally update inputs |
+| `TouchResource` (owned by another deployment) | **Adopt** — transfer ownership without input changes |
+
+5. **Completeness**: If no effects were emitted, evaluation is **Complete** and superceded deployments can be transitioned to Undesired. If effects were emitted, evaluation is **Partial** and supercession teardown is deferred until the next loop iteration.
+
+## Supercession
+
+When a Desired deployment finishes a complete evaluation, it transitions any Lingering deployments it supercedes to Undesired, triggering their teardown. Lingering deployments follow the supercession chain (via `get_superceding()`) to find the active Desired deployment and record the relationship.
+
+During **Undesired** teardown, DE enqueues Destroy messages for owned resources but blocks destruction of resources that still have living dependents from other deployments. This ensures correct teardown ordering.
 
 ## Namespace Usage
 
@@ -37,8 +59,9 @@ DE uses environment QIDs (`org/repo::env`) as the RDB namespace for resource gro
 - [IDs](../ids/) — typed identifiers for namespace computation
 - [CDB](../cdb/) — source of deployment metadata and configuration files
 - [SCLC](../sclc/) — compiles SCL configuration
-- [RTQ](../rtq/) — target for transition requests (planned)
-- [RDB](../rdb/) — resource state for reconciliation (planned)
+- [RTQ](../rtq/) — target for transition requests
+- [RDB](../rdb/) — resource state for reconciliation
+- [LDB](../ldb/) — deployment log output
 - [SCS](../scs/) — creates the deployments that DE monitors
 
 See [Deployments](../../docs/deployments.md) for the full deployment lifecycle.

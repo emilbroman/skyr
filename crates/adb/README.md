@@ -23,9 +23,16 @@ Plugin → ADB (S3/MinIO) ← API
 
 Writes support `if-none-match` for idempotent creates (conditional write).
 
-## Configuration
+## Client Construction
 
-Endpoint, bucket, credentials, and region are configurable via CLI arguments or environment variables.
+Clients are created via `ClientBuilder` with the following configuration:
+
+- `bucket()` — S3 bucket name
+- `endpoint_url()` — S3 endpoint URL
+- `presign_endpoint_url()` — separate endpoint for presigned URLs (optional)
+- `region()`, `access_key_id()`, `secret_access_key()` — AWS credentials
+- `force_path_style()` — use path-style addressing (required for MinIO)
+- `create_bucket_if_missing()` — auto-create the bucket on startup
 
 In local development, MinIO is used as the S3-compatible backend (ports 9000/9001).
 

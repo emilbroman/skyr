@@ -22,8 +22,8 @@ Plugins implement the `Plugin` trait:
 |--------|-------------|
 | `create_resource` | Create a new resource from inputs, return outputs |
 | `update_resource` | Update an existing resource with new inputs |
-| `delete_resource` | Delete a resource |
-| `health` | Health check for a resource |
+| `delete_resource` | Delete a resource (optional, default no-op) |
+| `health` | Health check for a resource (optional, default no-op) |
 
 ### Server
 
@@ -31,7 +31,15 @@ Plugins implement the `Plugin` trait:
 
 ### Client
 
-`dial()` connects to a plugin with a capability exchange handshake. Returns a `PluginClient` with typed methods.
+`dial()` connects to a plugin with a capability exchange handshake where both sides exchange plugin name and version. Returns a `PluginClient` with async methods matching the Plugin trait.
+
+### Transport
+
+Targets support three URI schemes: `tcp://`, `unix://`, and `http://`.
+
+### Resource Encoding
+
+Resource inputs and outputs are passed as JSON strings over the wire, not native Rust types. Plugins are responsible for deserializing inputs and serializing outputs.
 
 ## Writing Plugins
 

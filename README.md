@@ -110,7 +110,7 @@ The RTQ carries four message types:
 |-------|---------------|-------------|
 | [plugin_std_random](crates/plugin_std_random/) | `Std/Random.Int` | Random number generation |
 | [plugin_std_artifact](crates/plugin_std_artifact/) | `Std/Artifact.File` | Artifact file storage via ADB |
-| [plugin_std_container](crates/plugin_std_container/) | `Std/Container.Image`, `Pod`, `Pod.Container` | Container management via SCOP/SCOC |
+| [plugin_std_container](crates/plugin_std_container/) | `Std/Container.Image`, `Pod`, `Pod.Container`, `Pod.Port` | Container management via SCOP/SCOC |
 
 ### Container Infrastructure
 

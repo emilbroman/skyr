@@ -16,7 +16,7 @@ SCS → UDB ← API
 |-----------|-------------|
 | Register/fetch users | Create and look up user accounts |
 | Set full name | Update optional user display name |
-| Issue/revoke bearer tokens | Short-lived tokens for API authentication |
+| Issue/revoke bearer tokens | Short-lived tokens (15-minute TTL) for API authentication |
 | Add/check/remove SSH pubkeys | Per-user SSH public key fingerprint management |
 
 ## Key Prefixes
@@ -28,6 +28,10 @@ UDB uses the following Redis key prefixes:
 | `u:` | User hashes |
 | `p:` | Per-user public key sets |
 | `t:` | Bearer tokens |
+
+## Client Construction
+
+Clients are created via `ClientBuilder` and scoped per-user: `Client` → `.user(username)` → `UserClient` → `.tokens()` / `.pubkeys()` for token and key operations.
 
 ## Related Crates
 
