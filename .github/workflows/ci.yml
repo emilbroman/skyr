@@ -155,7 +155,7 @@ jobs:
       - name: Build CLI
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            nix develop -c cross build --release --target ${{ matrix.target }} -p cli
+            RUSTUP_TOOLCHAIN=nightly cross build --release --target ${{ matrix.target }} -p cli
           else
             nix develop -c cargo build --release --target ${{ matrix.target }} -p cli
           fi
@@ -209,7 +209,7 @@ jobs:
       - name: Build scoc
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            nix develop -c cross build --release --target ${{ matrix.target }} -p scoc
+            RUSTUP_TOOLCHAIN=nightly cross build --release --target ${{ matrix.target }} -p scoc
           else
             nix develop -c cargo build --release --target ${{ matrix.target }} -p scoc
           fi
