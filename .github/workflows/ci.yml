@@ -121,16 +121,12 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            use_cross: false
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            use_cross: true
           - os: macos-14
             target: aarch64-apple-darwin
-            use_cross: false
           - os: macos-14
             target: x86_64-apple-darwin
-            use_cross: false
     steps:
       - uses: actions/checkout@v4
 
@@ -145,20 +141,11 @@ jobs:
         run: nix develop -c rustup target add ${{ matrix.target }}
 
       - name: Install musl-tools
-        if: matrix.target == 'x86_64-unknown-linux-musl' && !matrix.use_cross
+        if: endsWith(matrix.target, '-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: nix develop -c cargo install cross --locked
-
       - name: Build CLI
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            RUSTUP_TOOLCHAIN=nightly cross build --release --target ${{ matrix.target }} -p cli
-          else
-            nix develop -c cargo build --release --target ${{ matrix.target }} -p cli
-          fi
+        run: nix develop -c cargo build --release --target ${{ matrix.target }} -p cli
 
       - name: Prepare artifact
         run: |
@@ -177,14 +164,14 @@ jobs:
     name: "scoc: ${{ matrix.target }}"
     if: github.ref == 'refs/heads/main'
     needs: [check]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
-            use_cross: false
-          - target: aarch64-unknown-linux-musl
-            use_cross: true
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
     steps:
       - uses: actions/checkout@v4
 
@@ -199,20 +186,10 @@ jobs:
         run: nix develop -c rustup target add ${{ matrix.target }}
 
       - name: Install musl-tools
-        if: "!matrix.use_cross"
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: nix develop -c cargo install cross --locked
-
       - name: Build scoc
-        run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            RUSTUP_TOOLCHAIN=nightly cross build --release --target ${{ matrix.target }} -p scoc
-          else
-            nix develop -c cargo build --release --target ${{ matrix.target }} -p scoc
-          fi
+        run: nix develop -c cargo build --release --target ${{ matrix.target }} -p scoc
 
       - name: Prepare artifact
         run: |
