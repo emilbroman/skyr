@@ -15,7 +15,7 @@
         pkgs = nixpkgs.legacyPackages."${system}";
       in
       {
-        devShell = pkgs.mkShell {
+        devShells.default = pkgs.mkShell {
           packages = with pkgs; [
             rustup
             cargo
