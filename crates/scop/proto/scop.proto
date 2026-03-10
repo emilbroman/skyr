@@ -71,6 +71,10 @@ message RegisterNodeResponse {
   // Used by the node to distinguish cluster-internal traffic from internet
   // traffic when enforcing egress allow lists.
   string cluster_cidr = 4;
+  // The service CIDR for Host VIPs (e.g., "10.43.0.0/16").
+  // Traffic to this range is allowed through pod egress rules and handled
+  // via DNAT rules installed by AddServiceRoute.
+  string service_cidr = 5;
 }
 
 // Heartbeat request to keep registration alive.
@@ -145,6 +149,23 @@ service Conduit {
 
   // ClosePort closes an ingress firewall port on a pod.
   rpc ClosePort(ClosePortRequest) returns (ClosePortResponse);
+
+  // AddServiceRoute installs a DNAT rule for a Host.Port (VIP:port → backend pod:port).
+  // Called on every node so that any pod can reach the VIP.
+  rpc AddServiceRoute(AddServiceRouteRequest) returns (AddServiceRouteResponse);
+
+  // RemoveServiceRoute removes a previously-installed DNAT rule.
+  rpc RemoveServiceRoute(RemoveServiceRouteRequest) returns (RemoveServiceRouteResponse);
+
+  // SetDnsRecord adds or updates a DNS record for a Host (hostname → VIP).
+  rpc SetDnsRecord(SetDnsRecordRequest) returns (SetDnsRecordResponse);
+
+  // RemoveDnsRecord removes a DNS record for a Host.
+  rpc RemoveDnsRecord(RemoveDnsRecordRequest) returns (RemoveDnsRecordResponse);
+
+  // ConfigureServiceCidr tells the node about the service CIDR range
+  // so it can be added as an allowed range in the bridge forwarding rules.
+  rpc ConfigureServiceCidr(ConfigureServiceCidrRequest) returns (ConfigureServiceCidrResponse);
 }
 
 // ============================================================================
@@ -309,3 +330,82 @@ message ClosePortRequest {
 
 // Response from closing a port.
 message ClosePortResponse {}
+
+// ============================================================================
+// Service Route Messages (Host.Port load balancing)
+// ============================================================================
+
+// A backend target for load-balanced traffic.
+message ServiceBackend {
+  // IP address of the backend pod.
+  string address = 1;
+  // Port number on the backend pod.
+  int32 port = 2;
+  // Protocol: "tcp" or "udp".
+  string protocol = 3;
+}
+
+// Request to add a DNAT service route on this node.
+message AddServiceRouteRequest {
+  // The virtual IP (VIP) of the Host.
+  string vip = 1;
+  // The port on the VIP to route.
+  int32 port = 2;
+  // The protocol: "tcp" or "udp".
+  string protocol = 3;
+  // Backend pod ports to load-balance across.
+  repeated ServiceBackend backends = 4;
+}
+
+// Response from adding a service route.
+message AddServiceRouteResponse {}
+
+// Request to remove a DNAT service route from this node.
+message RemoveServiceRouteRequest {
+  // The virtual IP (VIP) of the Host.
+  string vip = 1;
+  // The port on the VIP.
+  int32 port = 2;
+  // The protocol: "tcp" or "udp".
+  string protocol = 3;
+}
+
+// Response from removing a service route.
+message RemoveServiceRouteResponse {}
+
+// ============================================================================
+// DNS Messages (Host name resolution)
+// ============================================================================
+
+// Request to set a DNS record on this node.
+message SetDnsRecordRequest {
+  // The hostname (e.g., "web-api.internal").
+  string hostname = 1;
+  // The IP address to resolve to (VIP).
+  string address = 2;
+}
+
+// Response from setting a DNS record.
+message SetDnsRecordResponse {}
+
+// Request to remove a DNS record from this node.
+message RemoveDnsRecordRequest {
+  // The hostname to remove.
+  string hostname = 1;
+}
+
+// Response from removing a DNS record.
+message RemoveDnsRecordResponse {}
+
+// ============================================================================
+// Service CIDR Configuration
+// ============================================================================
+
+// Request to configure the service CIDR on this node.
+message ConfigureServiceCidrRequest {
+  // The service CIDR range (e.g., "10.43.0.0/16").
+  string service_cidr = 1;
+}
+
+// Response from configuring the service CIDR.
+message ConfigureServiceCidrResponse {}

@@ -67,14 +67,16 @@ pub mod proto {
 
 // Re-export commonly used types
 pub use proto::{
-    AddOverlayPeerRequest, AddOverlayPeerResponse, AllowedDestination, ClosePortRequest,
-    ClosePortResponse, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
+    AddOverlayPeerRequest, AddOverlayPeerResponse, AddServiceRouteRequest, AddServiceRouteResponse,
+    AllowedDestination, ClosePortRequest, ClosePortResponse, ConfigureServiceCidrRequest,
+    ConfigureServiceCidrResponse, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
     CreatePodRequest, CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue,
     NodeCapacity, NodeUsage, OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest,
-    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse,
-    RemoveOverlayPeerRequest, RemoveOverlayPeerResponse, RemovePodRequest, RemovePodResponse,
-    StartContainerRequest, StartContainerResponse, StopContainerRequest, StopContainerResponse,
-    UnregisterNodeRequest, UnregisterNodeResponse,
+    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse, RemoveDnsRecordRequest,
+    RemoveDnsRecordResponse, RemoveOverlayPeerRequest, RemoveOverlayPeerResponse, RemovePodRequest,
+    RemovePodResponse, RemoveServiceRouteRequest, RemoveServiceRouteResponse, ServiceBackend,
+    SetDnsRecordRequest, SetDnsRecordResponse, StartContainerRequest, StartContainerResponse,
+    StopContainerRequest, StopContainerResponse, UnregisterNodeRequest, UnregisterNodeResponse,
 };
 
 // Re-export the generated clients
@@ -324,6 +326,36 @@ pub trait Conduit: Send + Sync + 'static {
         &self,
         request: ClosePortRequest,
     ) -> Result<ClosePortResponse, tonic::Status>;
+
+    /// Add a DNAT service route for Host.Port load balancing.
+    async fn add_service_route(
+        &self,
+        request: AddServiceRouteRequest,
+    ) -> Result<AddServiceRouteResponse, tonic::Status>;
+
+    /// Remove a DNAT service route.
+    async fn remove_service_route(
+        &self,
+        request: RemoveServiceRouteRequest,
+    ) -> Result<RemoveServiceRouteResponse, tonic::Status>;
+
+    /// Set a DNS record (hostname → VIP).
+    async fn set_dns_record(
+        &self,
+        request: SetDnsRecordRequest,
+    ) -> Result<SetDnsRecordResponse, tonic::Status>;
+
+    /// Remove a DNS record.
+    async fn remove_dns_record(
+        &self,
+        request: RemoveDnsRecordRequest,
+    ) -> Result<RemoveDnsRecordResponse, tonic::Status>;
+
+    /// Configure the service CIDR for VIP routing.
+    async fn configure_service_cidr(
+        &self,
+        request: ConfigureServiceCidrRequest,
+    ) -> Result<ConfigureServiceCidrResponse, tonic::Status>;
 }
 
 struct ConduitService<C: Conduit> {
@@ -420,6 +452,52 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
         request: tonic::Request<ClosePortRequest>,
     ) -> Result<tonic::Response<ClosePortResponse>, tonic::Status> {
         let response = self.conduit.close_port(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn add_service_route(
+        &self,
+        request: tonic::Request<AddServiceRouteRequest>,
+    ) -> Result<tonic::Response<AddServiceRouteResponse>, tonic::Status> {
+        let response = self.conduit.add_service_route(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_service_route(
+        &self,
+        request: tonic::Request<RemoveServiceRouteRequest>,
+    ) -> Result<tonic::Response<RemoveServiceRouteResponse>, tonic::Status> {
+        let response = self
+            .conduit
+            .remove_service_route(request.into_inner())
+            .await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn set_dns_record(
+        &self,
+        request: tonic::Request<SetDnsRecordRequest>,
+    ) -> Result<tonic::Response<SetDnsRecordResponse>, tonic::Status> {
+        let response = self.conduit.set_dns_record(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_dns_record(
+        &self,
+        request: tonic::Request<RemoveDnsRecordRequest>,
+    ) -> Result<tonic::Response<RemoveDnsRecordResponse>, tonic::Status> {
+        let response = self.conduit.remove_dns_record(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn configure_service_cidr(
+        &self,
+        request: tonic::Request<ConfigureServiceCidrRequest>,
+    ) -> Result<tonic::Response<ConfigureServiceCidrResponse>, tonic::Status> {
+        let response = self
+            .conduit
+            .configure_service_cidr(request.into_inner())
+            .await?;
         Ok(tonic::Response::new(response))
     }
 }

@@ -267,6 +267,7 @@ pub fn setup_pod_network(
     netns_path: &str,
     allowed_destinations: &[scop::AllowedDestination],
     cluster_cidr: Option<&str>,
+    service_cidr: Option<&str>,
 ) -> Result<()> {
     let gateway = Ipv4Addr::from(u32::from(subnet.network()) + 1);
     let ip_cidr = format!("{}/{}", ip, subnet.prefix_len());
@@ -329,7 +330,7 @@ pub fn setup_pod_network(
 
     // Apply egress allow-list rules (restricts cluster-internal traffic)
     if let Some(cidr) = cluster_cidr {
-        setup_pod_egress_rules(netns_path, allowed_destinations, cidr)
+        setup_pod_egress_rules(netns_path, allowed_destinations, cidr, service_cidr)
             .with_context(|| format!("failed to set up egress rules for pod {pod_id}"))?;
     }
 
@@ -435,6 +436,7 @@ fn setup_pod_egress_rules(
     netns_path: &str,
     allowed: &[scop::AllowedDestination],
     cluster_cidr: &str,
+    service_cidr: Option<&str>,
 ) -> Result<()> {
     debug!(
         netns = %netns_path,
@@ -466,7 +468,8 @@ fn setup_pod_egress_rules(
         ],
     )?;
 
-    // Allow traffic to each destination in the allow list
+    // Allow traffic to each destination in the allow list.
+    // Destinations can be either pod IPs (for Pod.Port) or VIPs (for Host.Port).
     for dest in allowed {
         let port_str = dest.port.to_string();
         nsenter_run(
@@ -495,12 +498,21 @@ fn setup_pod_egress_rules(
         );
     }
 
-    // Drop all other traffic to cluster-internal IPs
+    // Drop all other traffic to cluster-internal IPs (pod CIDR)
     nsenter_run(
         netns_path,
         "iptables",
         &["-A", "OUTPUT", "-d", cluster_cidr, "-j", "DROP"],
     )?;
+
+    // Drop all other traffic to the service CIDR (Host VIPs) unless explicitly allowed
+    if let Some(svc_cidr) = service_cidr {
+        nsenter_run(
+            netns_path,
+            "iptables",
+            &["-A", "OUTPUT", "-d", svc_cidr, "-j", "DROP"],
+        )?;
+    }
 
     // Everything else (internet) falls through to OUTPUT ACCEPT policy
 
@@ -654,6 +666,234 @@ pub fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
         ],
     )
     .with_context(|| format!("failed to close port {port}/{protocol}"))
+}
+
+// ============================================================================
+// Service route management (DNAT for Host.Port VIPs)
+// ============================================================================
+
+/// Custom iptables chain name for service routes (DNAT rules).
+const SERVICES_CHAIN: &str = "SKYR-SERVICES";
+
+/// Set up the services DNAT chain in the nat table.
+///
+/// Creates a custom chain and hooks it into PREROUTING and OUTPUT so that
+/// both incoming bridge traffic (from pods) and locally-originated traffic
+/// are subject to DNAT rules.
+pub fn setup_services_chain() -> Result<()> {
+    info!("setting up SKYR-SERVICES iptables chain");
+
+    // Create the custom chain in the nat table
+    let _ = run_cmd("iptables", &["-t", "nat", "-N", SERVICES_CHAIN]);
+
+    // Hook into PREROUTING (traffic entering the node, e.g. from pods via bridge)
+    let _ = run_cmd(
+        "iptables",
+        &["-t", "nat", "-C", "PREROUTING", "-j", SERVICES_CHAIN],
+    )
+    .or_else(|_| {
+        run_cmd(
+            "iptables",
+            &["-t", "nat", "-A", "PREROUTING", "-j", SERVICES_CHAIN],
+        )
+    });
+
+    // Hook into OUTPUT (traffic generated locally on the node)
+    let _ = run_cmd(
+        "iptables",
+        &["-t", "nat", "-C", "OUTPUT", "-j", SERVICES_CHAIN],
+    )
+    .or_else(|_| {
+        run_cmd(
+            "iptables",
+            &["-t", "nat", "-A", "OUTPUT", "-j", SERVICES_CHAIN],
+        )
+    });
+
+    info!("SKYR-SERVICES chain setup complete");
+    Ok(())
+}
+
+/// Tear down the services DNAT chain.
+pub fn teardown_services_chain() -> Result<()> {
+    info!("tearing down SKYR-SERVICES iptables chain");
+    let _ = run_cmd(
+        "iptables",
+        &["-t", "nat", "-D", "PREROUTING", "-j", SERVICES_CHAIN],
+    );
+    let _ = run_cmd(
+        "iptables",
+        &["-t", "nat", "-D", "OUTPUT", "-j", SERVICES_CHAIN],
+    );
+    let _ = run_cmd("iptables", &["-t", "nat", "-F", SERVICES_CHAIN]);
+    let _ = run_cmd("iptables", &["-t", "nat", "-X", SERVICES_CHAIN]);
+    Ok(())
+}
+
+/// Add a DNAT service route: VIP:port → load-balanced backends.
+///
+/// For multiple backends, uses the iptables `statistic` module with
+/// `--probability` for round-robin load balancing.
+pub fn add_service_route(
+    vip: &str,
+    port: i32,
+    protocol: &str,
+    backends: &[scop::ServiceBackend],
+) -> Result<()> {
+    if backends.is_empty() {
+        warn!(vip = %vip, port = %port, "no backends for service route, skipping");
+        return Ok(());
+    }
+
+    let port_str = port.to_string();
+    let num_backends = backends.len();
+
+    info!(
+        vip = %vip,
+        port = %port,
+        protocol = %protocol,
+        num_backends = %num_backends,
+        "adding service route"
+    );
+
+    for (i, backend) in backends.iter().enumerate() {
+        let dest = format!("{}:{}", backend.address, backend.port);
+
+        // For load balancing: use statistic --probability for all but the last backend.
+        // Last backend catches everything remaining.
+        if i < num_backends - 1 {
+            let remaining = num_backends - i;
+            let probability = format!("{:.10}", 1.0 / remaining as f64);
+            run_cmd(
+                "iptables",
+                &[
+                    "-t",
+                    "nat",
+                    "-A",
+                    SERVICES_CHAIN,
+                    "-d",
+                    vip,
+                    "-p",
+                    protocol,
+                    "--dport",
+                    &port_str,
+                    "-m",
+                    "statistic",
+                    "--mode",
+                    "random",
+                    "--probability",
+                    &probability,
+                    "-j",
+                    "DNAT",
+                    "--to-destination",
+                    &dest,
+                ],
+            )
+            .with_context(|| format!("failed to add service route {vip}:{port} → {dest}"))?;
+        } else {
+            // Last backend: no probability filter, catches all remaining traffic
+            run_cmd(
+                "iptables",
+                &[
+                    "-t",
+                    "nat",
+                    "-A",
+                    SERVICES_CHAIN,
+                    "-d",
+                    vip,
+                    "-p",
+                    protocol,
+                    "--dport",
+                    &port_str,
+                    "-j",
+                    "DNAT",
+                    "--to-destination",
+                    &dest,
+                ],
+            )
+            .with_context(|| format!("failed to add service route {vip}:{port} → {dest}"))?;
+        }
+    }
+
+    info!(vip = %vip, port = %port, "service route added");
+    Ok(())
+}
+
+/// Remove a DNAT service route for a VIP:port.
+///
+/// Removes all DNAT rules in the SKYR-SERVICES chain matching this VIP:port.
+pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> {
+    let port_str = port.to_string();
+
+    info!(
+        vip = %vip,
+        port = %port,
+        protocol = %protocol,
+        "removing service route"
+    );
+
+    // List all rules in the chain and delete matching ones.
+    // We loop because iptables -D only removes one rule at a time,
+    // and there may be multiple backends.
+    loop {
+        let output = std::process::Command::new("iptables")
+            .args(["-t", "nat", "-S", SERVICES_CHAIN])
+            .output()
+            .context("failed to list service rules")?;
+
+        let rules = String::from_utf8_lossy(&output.stdout);
+        let rule_to_delete = rules.lines().find(|line| {
+            line.contains(&format!("-d {}", vip))
+                && line.contains(&format!("--dport {}", port_str))
+                && line.contains(&format!("-p {}", protocol))
+                && line.contains("-j DNAT")
+        });
+
+        if let Some(rule) = rule_to_delete {
+            // Convert -A to -D for deletion
+            let delete_rule = rule.replace("-A ", "-D ");
+            let args: Vec<&str> = std::iter::once("-t")
+                .chain(std::iter::once("nat"))
+                .chain(delete_rule.split_whitespace())
+                .collect();
+            let _ = run_cmd("iptables", &args);
+        } else {
+            break;
+        }
+    }
+
+    info!(vip = %vip, port = %port, "service route removed");
+    Ok(())
+}
+
+/// Configure the service CIDR for FORWARD rules.
+///
+/// Allows forwarding of traffic destined to the service CIDR through the bridge,
+/// so DNAT'd packets can reach their backend pods.
+pub fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
+    info!(
+        service_cidr = %service_cidr,
+        "configuring service CIDR forwarding"
+    );
+
+    // Allow forwarding from bridge to service CIDR destinations
+    // (after DNAT rewrites the destination, traffic needs to be forwarded)
+    run_cmd(
+        "iptables",
+        &[
+            "-A",
+            "FORWARD",
+            "-o",
+            BRIDGE_NAME,
+            "-d",
+            service_cidr,
+            "-j",
+            "ACCEPT",
+        ],
+    )
+    .context("failed to add FORWARD rule for service CIDR")?;
+
+    Ok(())
 }
 
 // ============================================================================
