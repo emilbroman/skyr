@@ -171,7 +171,7 @@ let getName = fn<T <: { name: Str }>(item: T) item.name
 getName({ name: "alice", age: 30 })   // "alice"
 ```
 
-At call sites, type arguments are inferred from the argument types. Generic functions enable reusable utilities like `List.map` and `Option.unwrap` that work with any type.
+At call sites, type arguments must be provided explicitly (e.g., `List.map<Int, Str>(...)`). Generic functions enable reusable utilities like `List.map` and `Option.unwrap` that work with any type.
 
 ### Exception Types
 
@@ -179,7 +179,7 @@ Exception types are defined with the `exception` keyword and can optionally carr
 
 ```scl
 let NotFound = exception           // No payload
-let ParseError = exception Str     // Carries a Str
+let ParseError = exception: Str    // Carries a Str (note the colon)
 ```
 
 Exceptions are raised with `raise` and caught with `try`/`catch` (see [Syntax Reference](syntax.md#exceptions)).

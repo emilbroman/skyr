@@ -319,8 +319,8 @@ Check if a value is `nil`:
 ```scl
 import Std/Option
 
-Option.isNone(nil)    // true
-Option.isNone(42)     // false
+Option.isNone<Int>(nil)    // true
+Option.isNone<Int>(42)     // false
 ```
 
 **Type:** `fn<T>(value: T?) Bool`
@@ -330,8 +330,8 @@ Option.isNone(42)     // false
 Check if a value is not `nil`:
 
 ```scl
-Option.isSome(42)     // true
-Option.isSome(nil)    // false
+Option.isSome<Int>(42)     // true
+Option.isSome<Int>(nil)    // false
 ```
 
 **Type:** `fn<T>(value: T?) Bool`
@@ -341,8 +341,8 @@ Option.isSome(nil)    // false
 Extract the value from an optional, or raise an exception if `nil`:
 
 ```scl
-Option.unwrap(42)     // 42
-Option.unwrap(nil)    // raises UnexpectedNil
+Option.unwrap<Int>(42)     // 42
+Option.unwrap<Int>(nil)    // raises UnexpectedNil
 ```
 
 **Type:** `fn<T>(value: T?) T`
@@ -350,7 +350,7 @@ Option.unwrap(nil)    // raises UnexpectedNil
 Raises the `Option.UnexpectedNil` exception if the value is `nil`. Use `try`/`catch` to handle:
 
 ```scl
-let result = try Option.unwrap(maybeValue)
+let result = try Option.unwrap<Str>(maybeValue)
     catch Option.UnexpectedNil: "fallback"
 ```
 
@@ -359,8 +359,8 @@ let result = try Option.unwrap(maybeValue)
 Return the value if present, or a fallback if `nil`:
 
 ```scl
-Option.default(42, 0)     // 42
-Option.default(nil, 0)    // 0
+Option.default<Int>(42, 0)     // 42
+Option.default<Int>(nil, 0)    // 0
 ```
 
 **Type:** `fn<T>(value: T?, fallback: T) T`
@@ -392,7 +392,7 @@ Returns a list containing every integer in the half-open range `[0, n)`. Returns
 Apply a function to each element:
 
 ```scl
-List.map([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
+List.map<Int, Int>([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
 ```
 
 **Type:** `fn<T, U>(list: [T], transform: fn(T) U) [U]`
@@ -402,7 +402,7 @@ List.map([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
 Keep only elements that satisfy a predicate:
 
 ```scl
-List.filter([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
+List.filter<Int>([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
 ```
 
 **Type:** `fn<T>(list: [T], predicate: fn(T) Bool) [T]`
@@ -412,7 +412,7 @@ List.filter([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
 Add an element to the end of a list:
 
 ```scl
-List.append([1, 2], 3)   // [1, 2, 3]
+List.append<Int>([1, 2], 3)   // [1, 2, 3]
 ```
 
 **Type:** `fn<T>(list: [T], newItem: T) [T]`
@@ -422,7 +422,7 @@ List.append([1, 2], 3)   // [1, 2, 3]
 Flatten a list of lists into a single list:
 
 ```scl
-List.concat([[1, 2], [3, 4]])   // [1, 2, 3, 4]
+List.concat<Int>([[1, 2], [3, 4]])   // [1, 2, 3, 4]
 ```
 
 **Type:** `fn<T>(lists: [[T]]) [T]`
@@ -432,7 +432,7 @@ List.concat([[1, 2], [3, 4]])   // [1, 2, 3, 4]
 Map each element to a list, then flatten:
 
 ```scl
-List.flatMap([1, 2, 3], fn(x: Int) [x, x * 10])   // [1, 10, 2, 20, 3, 30]
+List.flatMap<Int, Int>([1, 2, 3], fn(x: Int) [x, x * 10])   // [1, 10, 2, 20, 3, 30]
 ```
 
 **Type:** `fn<T, U>(list: [T], transform: fn(T) [U]) [U]`

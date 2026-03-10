@@ -310,10 +310,11 @@ fn<T <: { name: Str }>(item: T) item.name
 
 This constrains `T` to types that have at least a `name: Str` field.
 
-When calling generic functions, type arguments are usually inferred. You can also provide them explicitly:
+When calling generic functions, type arguments must be provided explicitly:
 
 ```scl
 unwrap<Int>(maybeValue)
+List.map<Int, Str>([1, 2], fn(x: Int) "{x}")
 ```
 
 ### Exceptions
@@ -326,10 +327,10 @@ Define exception types with the `exception` keyword:
 let MyError = exception
 ```
 
-Exceptions can optionally carry a typed payload:
+Exceptions can optionally carry a typed payload (note the colon):
 
 ```scl
-let ParseError = exception Str
+let ParseError = exception: Str
 ```
 
 #### Raising Exceptions
