@@ -17,6 +17,15 @@ use tracing::{debug, info, warn};
 /// Bridge interface name used for pod networking.
 const BRIDGE_NAME: &str = "skyr0";
 
+/// VXLAN interface name for overlay networking.
+const VXLAN_NAME: &str = "vxlan1";
+
+/// VXLAN Network Identifier.
+const VXLAN_VNI: u32 = 42;
+
+/// VXLAN UDP destination port.
+const VXLAN_PORT: u16 = 4789;
+
 // ============================================================================
 // IPAM — per-node IP address management
 // ============================================================================
@@ -469,6 +478,143 @@ fn setup_pod_egress_rules(
     );
 
     Ok(())
+}
+
+// ============================================================================
+// VXLAN overlay
+// ============================================================================
+
+/// Set up a VXLAN interface and attach it to the pod bridge.
+///
+/// This enables cross-node pod communication. The VXLAN uses the bridge's
+/// L2 learning for MAC-to-VTEP resolution after BUM traffic is flooded
+/// to all peers via FDB entries.
+pub fn setup_vxlan(local_ip: &str) -> Result<()> {
+    let vni = VXLAN_VNI.to_string();
+    let port = VXLAN_PORT.to_string();
+
+    info!(
+        vxlan = VXLAN_NAME,
+        local_ip = %local_ip,
+        vni = %vni,
+        "setting up VXLAN overlay"
+    );
+
+    run_cmd(
+        "ip",
+        &[
+            "link", "add", VXLAN_NAME,
+            "type", "vxlan",
+            "id", &vni,
+            "dstport", &port,
+            "local", local_ip,
+            "nolearning",
+        ],
+    )
+    .context("failed to create VXLAN interface")?;
+
+    run_cmd("ip", &["link", "set", VXLAN_NAME, "master", BRIDGE_NAME])
+        .context("failed to attach VXLAN to bridge")?;
+
+    run_cmd("ip", &["link", "set", VXLAN_NAME, "up"])
+        .context("failed to bring VXLAN interface up")?;
+
+    info!("VXLAN overlay setup complete");
+    Ok(())
+}
+
+/// Tear down the VXLAN interface.
+pub fn teardown_vxlan() -> Result<()> {
+    info!(vxlan = VXLAN_NAME, "tearing down VXLAN overlay");
+    let _ = run_cmd("ip", &["link", "del", VXLAN_NAME]);
+    Ok(())
+}
+
+/// Add a VXLAN overlay peer.
+///
+/// Adds an FDB entry that directs BUM (broadcast, unknown-unicast, multicast)
+/// traffic to the peer's underlay IP. This enables ARP resolution across nodes.
+pub fn add_overlay_peer(peer_ip: &str) -> Result<()> {
+    info!(peer_ip = %peer_ip, "adding overlay peer");
+    run_cmd(
+        "bridge",
+        &[
+            "fdb", "append",
+            "00:00:00:00:00:00",
+            "dev", VXLAN_NAME,
+            "dst", peer_ip,
+        ],
+    )
+    .with_context(|| format!("failed to add overlay peer {peer_ip}"))
+}
+
+/// Remove a VXLAN overlay peer.
+pub fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
+    info!(peer_ip = %peer_ip, "removing overlay peer");
+    run_cmd(
+        "bridge",
+        &[
+            "fdb", "del",
+            "00:00:00:00:00:00",
+            "dev", VXLAN_NAME,
+            "dst", peer_ip,
+        ],
+    )
+    .with_context(|| format!("failed to remove overlay peer {peer_ip}"))
+}
+
+// ============================================================================
+// Ingress port management
+// ============================================================================
+
+/// Open an ingress firewall port on a pod.
+///
+/// Appends an iptables INPUT ACCEPT rule for the specified port/protocol
+/// in the pod's network namespace.
+pub fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+    let port_str = port.to_string();
+    info!(
+        netns = %netns_path,
+        port = %port,
+        protocol = %protocol,
+        "opening ingress port"
+    );
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &[
+            "-A", "INPUT",
+            "-p", protocol,
+            "--dport", &port_str,
+            "-j", "ACCEPT",
+        ],
+    )
+    .with_context(|| format!("failed to open port {port}/{protocol}"))
+}
+
+/// Close an ingress firewall port on a pod.
+///
+/// Deletes the matching iptables INPUT ACCEPT rule from the pod's
+/// network namespace.
+pub fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+    let port_str = port.to_string();
+    info!(
+        netns = %netns_path,
+        port = %port,
+        protocol = %protocol,
+        "closing ingress port"
+    );
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &[
+            "-D", "INPUT",
+            "-p", protocol,
+            "--dport", &port_str,
+            "-j", "ACCEPT",
+        ],
+    )
+    .with_context(|| format!("failed to close port {port}/{protocol}"))
 }
 
 // ============================================================================

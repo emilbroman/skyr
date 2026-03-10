@@ -67,10 +67,12 @@ pub mod proto {
 
 // Re-export commonly used types
 pub use proto::{
-    AllowedDestination, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
+    AddOverlayPeerRequest, AddOverlayPeerResponse, AllowedDestination, ClosePortRequest,
+    ClosePortResponse, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
     CreatePodRequest, CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue,
-    NodeCapacity, NodeUsage, PodConfig, RegisterNodeRequest, RegisterNodeResponse,
-    RemoveContainerRequest, RemoveContainerResponse, RemovePodRequest, RemovePodResponse,
+    NodeCapacity, NodeUsage, OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest,
+    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse, RemovePodRequest,
+    RemovePodResponse, RemoveOverlayPeerRequest, RemoveOverlayPeerResponse,
     StartContainerRequest, StartContainerResponse, StopContainerRequest, StopContainerResponse,
     UnregisterNodeRequest, UnregisterNodeResponse,
 };
@@ -295,6 +297,30 @@ pub trait Conduit: Send + Sync + 'static {
         &self,
         request: RemoveContainerRequest,
     ) -> Result<RemoveContainerResponse, tonic::Status>;
+
+    /// Add a VXLAN overlay peer for cross-node pod communication.
+    async fn add_overlay_peer(
+        &self,
+        request: AddOverlayPeerRequest,
+    ) -> Result<AddOverlayPeerResponse, tonic::Status>;
+
+    /// Remove a VXLAN overlay peer.
+    async fn remove_overlay_peer(
+        &self,
+        request: RemoveOverlayPeerRequest,
+    ) -> Result<RemoveOverlayPeerResponse, tonic::Status>;
+
+    /// Open an ingress firewall port on a pod.
+    async fn open_port(
+        &self,
+        request: OpenPortRequest,
+    ) -> Result<OpenPortResponse, tonic::Status>;
+
+    /// Close an ingress firewall port on a pod.
+    async fn close_port(
+        &self,
+        request: ClosePortRequest,
+    ) -> Result<ClosePortResponse, tonic::Status>;
 }
 
 struct ConduitService<C: Conduit> {
@@ -356,6 +382,41 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
         request: tonic::Request<RemoveContainerRequest>,
     ) -> Result<tonic::Response<RemoveContainerResponse>, tonic::Status> {
         let response = self.conduit.remove_container(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn add_overlay_peer(
+        &self,
+        request: tonic::Request<AddOverlayPeerRequest>,
+    ) -> Result<tonic::Response<AddOverlayPeerResponse>, tonic::Status> {
+        let response = self.conduit.add_overlay_peer(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_overlay_peer(
+        &self,
+        request: tonic::Request<RemoveOverlayPeerRequest>,
+    ) -> Result<tonic::Response<RemoveOverlayPeerResponse>, tonic::Status> {
+        let response = self
+            .conduit
+            .remove_overlay_peer(request.into_inner())
+            .await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn open_port(
+        &self,
+        request: tonic::Request<OpenPortRequest>,
+    ) -> Result<tonic::Response<OpenPortResponse>, tonic::Status> {
+        let response = self.conduit.open_port(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn close_port(
+        &self,
+        request: tonic::Request<ClosePortRequest>,
+    ) -> Result<tonic::Response<ClosePortResponse>, tonic::Status> {
+        let response = self.conduit.close_port(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 }

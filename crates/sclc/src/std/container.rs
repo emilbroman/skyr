@@ -181,19 +181,21 @@ fn pod_extern_fn(
 
     // Create the Container function that captures the pod's context
     let container_fn = create_container_fn(
-        pod_id,
+        pod_id.clone(),
         name.clone(),
         namespace.clone(),
-        node,
+        node.clone(),
         resource_id.clone(),
     );
     result.insert(String::from("Container"), Value::ExternFn(container_fn));
 
     // Create the Port function that captures the pod's context
     let port_fn = create_port_fn(
+        pod_id,
         name.clone(),
         namespace,
         address,
+        node,
         resource_id.clone(),
     );
     result.insert(String::from("Port"), Value::ExternFn(port_fn));
@@ -286,9 +288,11 @@ fn create_container_fn(
 /// The returned function captures the pod's context (name, namespace, address)
 /// and uses them when creating Pod.Port resources.
 fn create_port_fn(
+    pod_id: String,
     pod_name: String,
     pod_namespace: String,
     pod_address: String,
+    node: String,
     pod_resource_id: ResourceId,
 ) -> ExternFnValue {
     ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
@@ -325,9 +329,11 @@ fn create_port_fn(
 
         // Build inputs for the RTP plugin
         let mut inputs = Record::default();
+        inputs.insert(String::from("podId"), Value::Str(pod_id.clone()));
         inputs.insert(String::from("podName"), Value::Str(pod_name.clone()));
         inputs.insert(String::from("podNamespace"), Value::Str(pod_namespace.clone()));
         inputs.insert(String::from("podAddress"), Value::Str(pod_address.clone()));
+        inputs.insert(String::from("node"), Value::Str(node.clone()));
         inputs.insert(String::from("port"), Value::Int(port));
         inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
         if let Some(ref name) = port_name {

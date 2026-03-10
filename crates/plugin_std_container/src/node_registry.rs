@@ -100,6 +100,12 @@ pub struct Node {
     pub labels: HashMap<String, String>,
     /// Last heartbeat timestamp (Unix epoch seconds).
     pub last_heartbeat: u64,
+    /// Pod CIDR assigned to this node (e.g., "10.42.1.0/24").
+    #[serde(default)]
+    pub pod_cidr: String,
+    /// Host IP for VXLAN overlay underlay traffic.
+    #[serde(default)]
+    pub overlay_endpoint: String,
 }
 
 #[derive(Clone)]
@@ -125,6 +131,8 @@ impl Client {
         address: impl Into<String>,
         capacity: NodeCapacity,
         labels: HashMap<String, String>,
+        pod_cidr: impl Into<String>,
+        overlay_endpoint: impl Into<String>,
     ) -> Result<Node, NodeError> {
         let name = name.into();
         let node = Node {
@@ -134,6 +142,8 @@ impl Client {
             usage: NodeUsage::default(),
             labels,
             last_heartbeat: now_secs(),
+            pod_cidr: pod_cidr.into(),
+            overlay_endpoint: overlay_endpoint.into(),
         };
 
         let data = serde_json::to_string(&node)?;
