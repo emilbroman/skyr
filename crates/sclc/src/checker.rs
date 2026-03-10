@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Component;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -8,12 +8,29 @@ use crate::{
 };
 use thiserror::Error;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Variance {
+    Covariant,
+    Contravariant,
+}
+
+impl Variance {
+    fn flip(self) -> Self {
+        match self {
+            Variance::Covariant => Variance::Contravariant,
+            Variance::Contravariant => Variance::Covariant,
+        }
+    }
+}
+
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     locals: HashMap<&'a str, Type>,
     type_vars: HashMap<String, Type>,
+    /// Upper bounds for type variable IDs (used during function body checking).
+    type_var_bounds: HashMap<usize, Type>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -24,6 +41,7 @@ impl<'a> TypeEnv<'a> {
             imports: None,
             locals: HashMap::new(),
             type_vars: HashMap::new(),
+            type_var_bounds: HashMap::new(),
         }
     }
 
@@ -34,6 +52,7 @@ impl<'a> TypeEnv<'a> {
             imports: self.imports,
             locals: self.locals.clone(),
             type_vars: self.type_vars.clone(),
+            type_var_bounds: self.type_var_bounds.clone(),
         }
     }
 
@@ -44,6 +63,7 @@ impl<'a> TypeEnv<'a> {
             imports: self.imports,
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
+            type_var_bounds: self.type_var_bounds.clone(),
         }
     }
 
@@ -57,6 +77,7 @@ impl<'a> TypeEnv<'a> {
             imports: Some(imports),
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
+            type_var_bounds: self.type_var_bounds.clone(),
         }
     }
 
@@ -67,6 +88,7 @@ impl<'a> TypeEnv<'a> {
             imports: self.imports,
             locals: self.locals.clone(),
             type_vars: self.type_vars.clone(),
+            type_var_bounds: self.type_var_bounds.clone(),
         }
     }
 
@@ -82,6 +104,23 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    pub fn with_type_var_bound(&self, id: usize, upper_bound: Type) -> Self {
+        let mut env = self.inner();
+        env.type_var_bounds.insert(id, upper_bound);
+        env
+    }
+
+    /// If `ty` is a type variable with a known upper bound, return a reference
+    /// to the bound. Otherwise, return the passed-in reference unchanged.
+    pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
+        if let Type::Var(id) = ty {
+            if let Some(bound) = self.type_var_bounds.get(id) {
+                return bound;
+            }
+        }
+        ty
+    }
+
     pub fn without_locals(&self) -> Self {
         Self {
             module_id: self.module_id,
@@ -89,6 +128,7 @@ impl<'a> TypeEnv<'a> {
             imports: self.imports,
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
+            type_var_bounds: self.type_var_bounds.clone(),
         }
     }
 
@@ -412,6 +452,21 @@ impl crate::Diag for UnexpectedTypeArgs {
 }
 
 #[derive(Error, Debug)]
+#[error("type argument {actual} does not satisfy bound {bound}")]
+pub struct TypeArgBoundViolation {
+    pub module_id: crate::ModuleId,
+    pub actual: Type,
+    pub bound: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for TypeArgBoundViolation {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("unknown type: {name}")]
 pub struct UnknownType {
     pub module_id: crate::ModuleId,
@@ -435,18 +490,37 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     fn types_disjoint(&self, lhs: &Type, rhs: &Type) -> bool {
         self.assign_type(lhs, rhs).is_err() && self.assign_type(rhs, lhs).is_err()
     }
+
     fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
+        self.assign_type_with_bounds(lhs, rhs, &HashMap::new())
+    }
+
+    fn assign_type_with_bounds(
+        &self,
+        lhs: &Type,
+        rhs: &Type,
+        bounds: &HashMap<usize, Type>,
+    ) -> Result<(), TypeError> {
         if lhs == rhs || matches!(lhs, Type::Any) || matches!(rhs, Type::Never) {
             return Ok(());
+        }
+
+        // If rhs is a bounded type variable, check assignability via its upper bound.
+        if let Type::Var(id) = rhs {
+            if let Some(upper_bound) = bounds.get(id) {
+                return self
+                    .assign_type_with_bounds(lhs, upper_bound, bounds)
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
+            }
         }
 
         match lhs {
             Type::Optional(lhs_inner) => match rhs {
                 Type::Optional(rhs_inner) => self
-                    .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
+                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => self
-                    .assign_type(lhs_inner.as_ref(), rhs)
+                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
             },
             Type::Record(lhs_record) => match rhs {
@@ -461,9 +535,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 rhs.clone(),
                             )));
                         };
-                        self.assign_type(lhs_field, rhs_field).map_err(|err| {
-                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                        })?;
+                        self.assign_type_with_bounds(lhs_field, rhs_field, bounds)
+                            .map_err(|err| {
+                                err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                            })?;
                     }
                     Ok(())
                 }
@@ -474,14 +549,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             },
             Type::Dict(lhs_dict) => match rhs {
                 Type::Dict(rhs_dict) => {
-                    self.assign_type(lhs_dict.key.as_ref(), rhs_dict.key.as_ref())
-                        .map_err(|err| {
-                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                        })?;
-                    self.assign_type(lhs_dict.value.as_ref(), rhs_dict.value.as_ref())
-                        .map_err(|err| {
-                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                        })?;
+                    self.assign_type_with_bounds(
+                        lhs_dict.key.as_ref(),
+                        rhs_dict.key.as_ref(),
+                        bounds,
+                    )
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
+                    self.assign_type_with_bounds(
+                        lhs_dict.value.as_ref(),
+                        rhs_dict.value.as_ref(),
+                        bounds,
+                    )
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
                     Ok(())
                 }
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
@@ -491,7 +570,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             },
             Type::List(lhs_inner) => match rhs {
                 Type::List(rhs_inner) => self
-                    .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
+                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
                     lhs.clone(),
@@ -499,34 +578,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 ))),
             },
             Type::Fn(lhs_fn) => match rhs {
-                Type::Fn(rhs_fn) => {
-                    // Generic function subtyping requires instantiation/unification
-                    // which is not yet implemented. Reject for now.
-                    if !lhs_fn.type_params.is_empty() || !rhs_fn.type_params.is_empty() {
-                        return Err(TypeError::new(TypeIssue::Mismatch(
-                            lhs.clone(),
-                            rhs.clone(),
-                        )));
-                    }
-                    if lhs_fn.params.len() != rhs_fn.params.len() {
-                        return Err(TypeError::new(TypeIssue::Mismatch(
-                            lhs.clone(),
-                            rhs.clone(),
-                        )));
-                    }
-                    for (lhs_param, rhs_param) in
-                        lhs_fn.params.iter().zip(rhs_fn.params.iter())
-                    {
-                        self.assign_type(lhs_param, rhs_param).map_err(|err| {
-                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                        })?;
-                    }
-                    self.assign_type(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref())
-                        .map_err(|err| {
-                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                        })?;
-                    Ok(())
-                }
+                Type::Fn(rhs_fn) => self
+                    .assign_fn_type(lhs_fn, rhs_fn, bounds)
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
                     lhs.clone(),
                     rhs.clone(),
@@ -539,6 +593,268 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
+    /// Check that a function type `rhs` is assignable to `lhs`.
+    ///
+    /// Handles three cases:
+    /// 1. Both non-generic: direct structural check with contravariant params
+    /// 2. Generic rhs, non-generic lhs: unify to solve type params
+    /// 3. Both generic: F-sub rule with contravariant bounds and alpha-renaming
+    fn assign_fn_type(
+        &self,
+        lhs_fn: &FnType,
+        rhs_fn: &FnType,
+        bounds: &HashMap<usize, Type>,
+    ) -> Result<(), TypeError> {
+        if lhs_fn.params.len() != rhs_fn.params.len() {
+            return Err(TypeError::new(TypeIssue::Mismatch(
+                Type::Fn(lhs_fn.clone()),
+                Type::Fn(rhs_fn.clone()),
+            )));
+        }
+
+        match (lhs_fn.type_params.is_empty(), rhs_fn.type_params.is_empty()) {
+            // Both non-generic: structural check with contravariant params
+            (true, true) => {
+                for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
+                    // Contravariant: rhs_param <: lhs_param
+                    self.assign_type_with_bounds(rhs_param, lhs_param, bounds)?;
+                }
+                // Covariant return
+                self.assign_type_with_bounds(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref(), bounds)?;
+                Ok(())
+            }
+
+            // Non-generic lhs, generic rhs: unify to solve rhs's type params
+            (true, false) => {
+                self.unify_generic_fn(lhs_fn, rhs_fn, bounds)
+            }
+
+            // Generic lhs, non-generic rhs: the rhs (a concrete fn) must be
+            // assignable to any valid instantiation of lhs. This means we need
+            // to check that for *every* valid instantiation of lhs's type params,
+            // rhs is assignable. In practice, we check with the upper bounds.
+            (false, true) => {
+                // Instantiate lhs at its upper bounds
+                let replacements: Vec<(usize, Type)> = lhs_fn
+                    .type_params
+                    .iter()
+                    .map(|(id, bound)| (*id, bound.clone()))
+                    .collect();
+                let instantiated_lhs = FnType {
+                    type_params: vec![],
+                    params: lhs_fn.params.iter().map(|p| p.substitute(&replacements)).collect(),
+                    ret: Box::new(lhs_fn.ret.substitute(&replacements)),
+                };
+                self.assign_fn_type(&instantiated_lhs, rhs_fn, bounds)
+            }
+
+            // Both generic: F-sub rule
+            // ∀(S <: U).A <: ∀(T <: V).B requires:
+            // 1. Same number of type params
+            // 2. V <: U (contravariant in bounds)
+            // 3. A[S:=T] <: B (with T having bound V)
+            (false, false) => {
+                if lhs_fn.type_params.len() != rhs_fn.type_params.len() {
+                    return Err(TypeError::new(TypeIssue::Mismatch(
+                        Type::Fn(lhs_fn.clone()),
+                        Type::Fn(rhs_fn.clone()),
+                    )));
+                }
+
+                // Check bound contravariance: rhs bounds <: lhs bounds
+                for ((_, lhs_bound), (_, rhs_bound)) in
+                    lhs_fn.type_params.iter().zip(rhs_fn.type_params.iter())
+                {
+                    self.assign_type_with_bounds(lhs_bound, rhs_bound, bounds)?;
+                }
+
+                // Alpha-rename: substitute lhs type vars with rhs type vars
+                let alpha_rename: Vec<(usize, Type)> = lhs_fn
+                    .type_params
+                    .iter()
+                    .zip(rhs_fn.type_params.iter())
+                    .map(|((lhs_id, _), (rhs_id, _))| (*lhs_id, Type::Var(*rhs_id)))
+                    .collect();
+
+                let renamed_lhs = FnType {
+                    type_params: vec![],
+                    params: lhs_fn.params.iter().map(|p| p.substitute(&alpha_rename)).collect(),
+                    ret: Box::new(lhs_fn.ret.substitute(&alpha_rename)),
+                };
+                let body_rhs = FnType {
+                    type_params: vec![],
+                    params: rhs_fn.params.clone(),
+                    ret: rhs_fn.ret.clone(),
+                };
+
+                // Extend bounds with rhs type var bounds for the body check
+                let mut extended_bounds = bounds.clone();
+                for (id, bound) in &rhs_fn.type_params {
+                    extended_bounds.insert(*id, bound.clone());
+                }
+
+                self.assign_fn_type(&renamed_lhs, &body_rhs, &extended_bounds)
+            }
+        }
+    }
+
+    /// Unification for assigning a concrete function type (lhs) to a generic function type (rhs).
+    /// Walks the types structurally, collecting upper/lower bounds for rhs's free type variables,
+    /// then verifies that all bounds converge (lower <: upper).
+    fn unify_generic_fn(
+        &self,
+        lhs_fn: &FnType,
+        rhs_fn: &FnType,
+        bounds: &HashMap<usize, Type>,
+    ) -> Result<(), TypeError> {
+        let free_vars: HashSet<usize> = rhs_fn.type_params.iter().map(|(id, _)| *id).collect();
+
+        // Initialize assertions from declared bounds
+        let mut assertions: HashMap<usize, (Type, Type)> = rhs_fn
+            .type_params
+            .iter()
+            .map(|(id, upper_bound)| (*id, (Type::Never, upper_bound.clone())))
+            .collect();
+
+        // Collect bounds from parameters (contravariant position)
+        for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
+            self.collect_bounds(lhs_param, rhs_param, Variance::Contravariant, &free_vars, &mut assertions)?;
+        }
+
+        // Collect bounds from return type (covariant position)
+        self.collect_bounds(
+            lhs_fn.ret.as_ref(),
+            rhs_fn.ret.as_ref(),
+            Variance::Covariant,
+            &free_vars,
+            &mut assertions,
+        )?;
+
+        // Verify: for each type param, lower <: upper
+        for (_id, (lower, upper)) in &assertions {
+            self.assign_type_with_bounds(upper, lower, bounds).map_err(|err| {
+                err.causing(TypeIssue::Mismatch(
+                    Type::Fn(lhs_fn.clone()),
+                    Type::Fn(rhs_fn.clone()),
+                ))
+            })?;
+        }
+
+        Ok(())
+    }
+
+    /// Walk two types structurally, collecting bounds for free type variables in rhs.
+    fn collect_bounds(
+        &self,
+        lhs: &Type,
+        rhs: &Type,
+        variance: Variance,
+        free_vars: &HashSet<usize>,
+        assertions: &mut HashMap<usize, (Type, Type)>,
+    ) -> Result<(), TypeError> {
+        // If rhs is a free type variable, record the bound from lhs
+        if let Type::Var(id) = rhs {
+            if free_vars.contains(id) {
+                let entry = assertions.get_mut(id).expect("free var must have entry");
+                match variance {
+                    Variance::Covariant => {
+                        // lhs is an upper bound for this variable
+                        self.tighten_upper(&mut entry.1, lhs)?;
+                    }
+                    Variance::Contravariant => {
+                        // lhs is a lower bound for this variable
+                        self.tighten_lower(&mut entry.0, lhs)?;
+                    }
+                }
+                return Ok(());
+            }
+        }
+
+        // Structural recursion for matching type constructors
+        match (lhs, rhs) {
+            (Type::Optional(lhs_inner), Type::Optional(rhs_inner)) => {
+                self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
+            }
+            (_, Type::Optional(rhs_inner)) if variance == Variance::Covariant => {
+                // Non-optional lhs can be assigned to optional rhs in covariant position
+                self.collect_bounds(lhs, rhs_inner, variance, free_vars, assertions)
+            }
+            (Type::List(lhs_inner), Type::List(rhs_inner)) => {
+                self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
+            }
+            (Type::Record(lhs_record), Type::Record(rhs_record)) => {
+                for (name, rhs_field) in rhs_record.iter() {
+                    if let Some(lhs_field) = lhs_record.get(name) {
+                        self.collect_bounds(lhs_field, rhs_field, variance, free_vars, assertions)?;
+                    }
+                }
+                Ok(())
+            }
+            (Type::Dict(lhs_dict), Type::Dict(rhs_dict)) => {
+                self.collect_bounds(lhs_dict.key.as_ref(), rhs_dict.key.as_ref(), variance, free_vars, assertions)?;
+                self.collect_bounds(lhs_dict.value.as_ref(), rhs_dict.value.as_ref(), variance, free_vars, assertions)
+            }
+            (Type::Fn(lhs_fn), Type::Fn(rhs_fn)) if lhs_fn.params.len() == rhs_fn.params.len() => {
+                // Parameters: flip variance
+                let flipped = variance.flip();
+                for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
+                    self.collect_bounds(lhs_param, rhs_param, flipped, free_vars, assertions)?;
+                }
+                // Return: same variance
+                self.collect_bounds(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref(), variance, free_vars, assertions)
+            }
+            _ => {
+                // No structural match — just check assignability in the appropriate direction.
+                // If there are no free vars in rhs, this is a plain type compatibility check.
+                match variance {
+                    Variance::Covariant => {
+                        // lhs :> rhs (lhs is supertype)
+                        self.assign_type(lhs, rhs)
+                            .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                    }
+                    Variance::Contravariant => {
+                        // rhs :> lhs (rhs is supertype, i.e. lhs <: rhs)
+                        self.assign_type(rhs, lhs)
+                            .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Tighten an upper bound: new bound must be a subtype of or equal to current.
+    fn tighten_upper(&self, current: &mut Type, new_bound: &Type) -> Result<(), TypeError> {
+        if self.assign_type(current, new_bound).is_ok() {
+            // new_bound <: current, so new_bound is tighter — use it
+            *current = new_bound.clone();
+        } else if self.assign_type(new_bound, current).is_ok() {
+            // current <: new_bound, current is already tighter — keep it
+        } else {
+            // Neither is a subtype of the other
+            return Err(TypeError::new(TypeIssue::Mismatch(
+                current.clone(),
+                new_bound.clone(),
+            )));
+        }
+        Ok(())
+    }
+
+    /// Tighten a lower bound: new bound must be a supertype of or equal to current.
+    fn tighten_lower(&self, current: &mut Type, new_bound: &Type) -> Result<(), TypeError> {
+        if self.assign_type(new_bound, current).is_ok() {
+            // current <: new_bound, so new_bound is tighter (higher lower bound) — use it
+            *current = new_bound.clone();
+        } else if self.assign_type(current, new_bound).is_ok() {
+            // new_bound <: current, current is already tighter — keep it
+        } else {
+            return Err(TypeError::new(TypeIssue::Mismatch(
+                current.clone(),
+                new_bound.clone(),
+            )));
+        }
+        Ok(())
+    }
+
     fn apply_expected_type(
         &self,
         env: &TypeEnv<'_>,
@@ -548,7 +864,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         if let Some(expected_type) = expected_type {
-            if let Err(error) = self.assign_type(expected_type, &ty) {
+            if let Err(error) =
+                self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
+            {
                 diags.push(InvalidType {
                     module_id: env.module_id()?,
                     error,
@@ -721,12 +1039,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut fn_env = env.inner();
 
                 // Allocate type variable IDs for generic type parameters
-                let mut type_param_ids = Vec::with_capacity(fn_expr.type_params.len());
+                let mut type_param_entries = Vec::with_capacity(fn_expr.type_params.len());
                 for type_param in &fn_expr.type_params {
                     let type_id = next_type_id();
-                    type_param_ids.push(type_id);
                     fn_env =
-                        fn_env.with_type_var(type_param.name.clone(), Type::Var(type_id));
+                        fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+                    let upper_bound = if let Some(bound_expr) = &type_param.bound {
+                        self.resolve_type_expr(&fn_env, bound_expr)
+                            .unpack(&mut diags)
+                    } else {
+                        Type::Any
+                    };
+                    fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
+                    type_param_entries.push((type_id, upper_bound));
                 }
 
                 let mut params = Vec::with_capacity(fn_expr.params.len());
@@ -746,7 +1071,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         env,
                         expr.span(),
                         Type::Fn(FnType {
-                            type_params: type_param_ids,
+                            type_params: type_param_entries,
                             params,
                             ret: Box::new(ret),
                         }),
@@ -757,10 +1082,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::Call(call_expr) => {
                 let mut diags = DiagList::new();
-                let callee_ty = self
+                let raw_callee_ty = self
                     .check_expr(env, call_expr.callee.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
+                let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
@@ -790,12 +1116,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         let param_replacements: Vec<(usize, Type)> = fn_ty
                             .type_params
                             .iter()
-                            .map(|id| (*id, Type::Any))
+                            .map(|(id, _)| (*id, Type::Any))
                             .collect();
                         let ret_replacements: Vec<(usize, Type)> = fn_ty
                             .type_params
                             .iter()
-                            .map(|id| (*id, Type::Never))
+                            .map(|(id, _)| (*id, Type::Never))
                             .collect();
                         FnType {
                             type_params: vec![],
@@ -808,12 +1134,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     } else {
                         // Build substitution map from type param IDs to resolved type args
+                        // and check each type arg against its declared bound
                         let replacements: Vec<(usize, Type)> = fn_ty
                             .type_params
                             .iter()
                             .zip(call_expr.type_args.iter())
-                            .map(|(id, type_arg)| {
-                                (*id, self.resolve_type_expr(env, type_arg).unpack(&mut diags))
+                            .map(|((id, bound), type_arg)| {
+                                let resolved = self.resolve_type_expr(env, type_arg).unpack(&mut diags);
+                                // Check that the type argument satisfies the declared bound
+                                if self
+                                    .assign_type_with_bounds(bound, &resolved, &env.type_var_bounds)
+                                    .is_err()
+                                {
+                                    diags.push(TypeArgBoundViolation {
+                                        module_id: env.module_id().unwrap(),
+                                        actual: resolved.clone(),
+                                        bound: bound.clone(),
+                                        span: type_arg.span(),
+                                    });
+                                }
+                                (*id, resolved)
                             })
                             .collect();
                         FnType {
@@ -838,12 +1178,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     let param_replacements: Vec<(usize, Type)> = fn_ty
                         .type_params
                         .iter()
-                        .map(|id| (*id, Type::Any))
+                        .map(|(id, _)| (*id, Type::Any))
                         .collect();
                     let ret_replacements: Vec<(usize, Type)> = fn_ty
                         .type_params
                         .iter()
-                        .map(|id| (*id, Type::Never))
+                        .map(|(id, _)| (*id, Type::Never))
                         .collect();
                     FnType {
                         type_params: vec![],
@@ -1225,10 +1565,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
-                let lhs_ty = self
+                let raw_lhs_ty = self
                     .check_expr(env, property_access.expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
+                let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
                 if matches!(lhs_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
@@ -1474,12 +1815,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::TypeExpr::Fn(fn_ty) => {
                 let mut fn_env = env.inner();
-                let mut type_param_ids = Vec::with_capacity(fn_ty.type_params.len());
+                let mut type_param_entries = Vec::with_capacity(fn_ty.type_params.len());
                 for type_param in &fn_ty.type_params {
                     let type_id = next_type_id();
-                    type_param_ids.push(type_id);
                     fn_env =
-                        fn_env.with_type_var(type_param.name.clone(), Type::Var(type_id));
+                        fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+                    let upper_bound = if let Some(bound_expr) = &type_param.bound {
+                        self.resolve_type_expr(&fn_env, bound_expr)
+                            .unpack(&mut diags)
+                    } else {
+                        Type::Any
+                    };
+                    type_param_entries.push((type_id, upper_bound));
                 }
                 let params = fn_ty
                     .params
@@ -1488,7 +1835,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .collect();
                 let ret = self.resolve_type_expr(&fn_env, &fn_ty.ret).unpack(&mut diags);
                 Type::Fn(FnType {
-                    type_params: type_param_ids,
+                    type_params: type_param_entries,
                     params,
                     ret: Box::new(ret),
                 })
@@ -2173,13 +2520,13 @@ mod tests {
     }
 
     #[test]
-    fn assign_type_generic_lhs_fn_rejected() {
+    fn assign_type_generic_lhs_fn_concrete_rhs_rejected() {
         let checker = checker();
         let id_a = next_type_id();
 
-        // fn<A>(A) A  vs  fn(Int) Int — generic lhs always rejected
+        // fn<A>(A) A  assigned from  fn(Int) Int — fails: concrete fn can't serve as polymorphic fn
         let lhs = Type::Fn(FnType {
-            type_params: vec![id_a],
+            type_params: vec![(id_a, Type::Any)],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
@@ -2193,43 +2540,287 @@ mod tests {
     }
 
     #[test]
-    fn assign_type_generic_rhs_fn_rejected() {
+    fn assign_type_generic_lhs_fn_concrete_rhs_tight_bound() {
         let checker = checker();
         let id_a = next_type_id();
 
-        // fn(Int) Int  vs  fn<A>(A) A — generic rhs always rejected
+        // fn<A <: Int>(A) Int  assigned from  fn(Int) Int — succeeds: lhs instantiated at Int
+        let lhs = Type::Fn(FnType {
+            type_params: vec![(id_a, Type::Int)],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_concrete_lhs_generic_rhs() {
+        let checker = checker();
+        let id_a = next_type_id();
+
+        // fn(Int) Int  assigned from  fn<A>(A) A — unification solves A=Int
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
             ret: Box::new(Type::Int),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![id_a],
+            type_params: vec![(id_a, Type::Any)],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
     }
 
     #[test]
-    fn assign_type_both_generic_fns_rejected() {
+    fn assign_type_both_generic_fns() {
         let checker = checker();
         let id_a = next_type_id();
         let id_b = next_type_id();
 
-        // fn<A>(A) A  vs  fn<B>(B) B — both generic, rejected
+        // fn<A>(A) A  assigned from  fn<B>(B) B — identical structure, succeeds
         let lhs = Type::Fn(FnType {
-            type_params: vec![id_a],
+            type_params: vec![(id_a, Type::Any)],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![id_b],
+            type_params: vec![(id_b, Type::Any)],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_bounded_generic_rhs_succeeds() {
+        let checker = checker();
+        let id_t = next_type_id();
+
+        // fn(Int) Int  assigned from  fn<T <: Int?>(T) T — T=Int satisfies Never <: Int <: Int?
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![(id_t, Type::Optional(Box::new(Type::Int)))],
+            params: vec![Type::Var(id_t)],
+            ret: Box::new(Type::Var(id_t)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_bounded_generic_rhs_fails_bound_violation() {
+        let checker = checker();
+        let id_t = next_type_id();
+
+        // fn(Int?) Int?  assigned from  fn<T <: Int>(T) T — fails: Int? is not <: Int
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Optional(Box::new(Type::Int))],
+            ret: Box::new(Type::Optional(Box::new(Type::Int))),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![(id_t, Type::Int)],
+            params: vec![Type::Var(id_t)],
+            ret: Box::new(Type::Var(id_t)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_contravariant_generic_fn() {
+        let checker = checker();
+        let id_t = next_type_id();
+
+        // fn(fn(Int) Int) Int  <:  fn<T <: Int>(fn(T) Int) T
+        //
+        // assign_type(lhs, rhs) checks rhs <: lhs.
+        // lhs = fn(fn(Int) Int) Int (the expected type)
+        // rhs = fn<T <: Int>(fn(T) Int) T (the generic type being assigned)
+        //
+        // Unification of rhs against lhs:
+        // - Params (Contravariant): lhs_p = fn(Int) Int, rhs_p = fn(T) Int
+        //   - Inner params (flip to Covariant): lhs=Int, rhs=T → T gets upper bound Int
+        //   - Inner return (keep Contravariant): lhs=Int, rhs=Int → ✓
+        // - Return (Covariant): lhs=Int, rhs=T → T gets upper bound Int
+        //
+        // T: lower=Never, upper=min(Int, Int, Int)=Int. Never <: Int ✓
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Fn(FnType {
+                type_params: vec![],
+                params: vec![Type::Int],
+                ret: Box::new(Type::Int),
+            })],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![(id_t, Type::Int)],
+            params: vec![Type::Fn(FnType {
+                type_params: vec![],
+                params: vec![Type::Var(id_t)],
+                ret: Box::new(Type::Int),
+            })],
+            ret: Box::new(Type::Var(id_t)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_contravariant_params() {
+        let checker = checker();
+
+        // assign_type(lhs, rhs) checks rhs <: lhs.
+        // fn(Int?) Int <: fn(Int) Int — contravariant params: Int <: Int? ✓
+        // So lhs = fn(Int) Int, rhs = fn(Int?) Int.
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Optional(Box::new(Type::Int))],
+            ret: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_contravariant_params_reject() {
+        let checker = checker();
+
+        // fn(Int) Int is NOT <: fn(Int?) Int — contravariant: Int? is NOT <: Int
+        // So lhs = fn(Int?) Int, rhs = fn(Int) Int.
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Optional(Box::new(Type::Int))],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_both_generic_tighter_bound_succeeds() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A <: Int?>(A) A  <:  fn<B <: Int>(B) B
+        // F-sub rule: rhs bound (Int) <: lhs bound (Int?) ✓, then body check with B having bound Int
+        let lhs = Type::Fn(FnType {
+            type_params: vec![(id_a, Type::Optional(Box::new(Type::Int)))],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![(id_b, Type::Int)],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_both_generic_looser_bound_fails() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A <: Int>(A) A  is NOT <:  fn<B <: Int?>(B) B
+        // F-sub: rhs bound (Int?) <: lhs bound (Int)? No, Int? is not <: Int.
+        let lhs = Type::Fn(FnType {
+            type_params: vec![(id_a, Type::Int)],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![(id_b, Type::Optional(Box::new(Type::Int)))],
             params: vec![Type::Var(id_b)],
             ret: Box::new(Type::Var(id_b)),
         });
 
         assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_var_to_bound_via_upper_bound() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        // T <: Int? means T should be assignable to Int?
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
+        assert!(checker
+            .assign_type_with_bounds(
+                &Type::Optional(Box::new(Type::Int)),
+                &Type::Var(id),
+                &bounds
+            )
+            .is_ok());
+    }
+
+    #[test]
+    fn assign_type_var_to_stricter_than_bound_fails() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        // T <: Int? means T is NOT necessarily assignable to Int (could be nil)
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
+        assert!(checker
+            .assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds)
+            .is_err());
+    }
+
+    #[test]
+    fn assign_type_var_with_record_bound_allows_field_access() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        let mut record = RecordType::default();
+        record.insert("x".to_string(), Type::Int);
+        let bounds = HashMap::from([(id, Type::Record(record.clone()))]);
+        // T <: {x: Int} means T should be assignable to {x: Int}
+        assert!(checker
+            .assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds)
+            .is_ok());
+    }
+
+    #[test]
+    fn assign_type_var_with_fn_bound_allows_fn_assignment() {
+        use std::collections::HashMap;
+        let checker = checker();
+        let id = next_type_id();
+        let fn_ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let bounds = HashMap::from([(id, fn_ty.clone())]);
+        // T <: fn(Int) Int means T should be assignable to fn(Int) Int
+        assert!(checker
+            .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
+            .is_ok());
     }
 }

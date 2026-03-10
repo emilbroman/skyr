@@ -40,7 +40,8 @@ pub enum Type {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnType {
-    pub type_params: Vec<usize>,
+    /// Type parameter IDs paired with their upper bounds (defaults to Type::Any).
+    pub type_params: Vec<(usize, Type)>,
     pub params: Vec<Type>,
     pub ret: Box<Type>,
 }
@@ -107,7 +108,11 @@ impl Type {
             Type::Optional(ty) => Type::Optional(Box::new(ty.substitute(replacements))),
             Type::List(ty) => Type::List(Box::new(ty.substitute(replacements))),
             Type::Fn(fn_ty) => Type::Fn(FnType {
-                type_params: fn_ty.type_params.clone(),
+                type_params: fn_ty
+                    .type_params
+                    .iter()
+                    .map(|(id, bound)| (*id, bound.substitute(replacements)))
+                    .collect(),
                 params: fn_ty
                     .params
                     .iter()
@@ -176,7 +181,9 @@ impl std::fmt::Display for FnType {
         // Push type-param IDs so nested Var nodes resolve to friendly names.
         if param_count > 0 {
             DISPLAY_TYPE_PARAMS.with(|stack| {
-                stack.borrow_mut().extend_from_slice(&self.type_params);
+                stack
+                    .borrow_mut()
+                    .extend(self.type_params.iter().map(|(id, _)| *id));
             });
         }
 
@@ -184,7 +191,7 @@ impl std::fmt::Display for FnType {
         let result = (|| {
             if param_count > 0 {
                 write!(f, "<")?;
-                for (i, id) in self.type_params.iter().enumerate() {
+                for (i, (id, bound)) in self.type_params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
@@ -198,6 +205,9 @@ impl std::fmt::Display for FnType {
                             .unwrap_or_else(|| format!("T{id}"))
                     });
                     write!(f, "{name}")?;
+                    if *bound != Type::Any {
+                        write!(f, " <: {bound}")?;
+                    }
                 }
                 write!(f, ">")?;
             }
@@ -274,7 +284,7 @@ mod tests {
     fn display_generic_fn_single_param() {
         // fn<A>(A) A
         let ty = Type::Fn(FnType {
-            type_params: vec![10],
+            type_params: vec![(10, Type::Any)],
             params: vec![Type::Var(10)],
             ret: Box::new(Type::Var(10)),
         });
@@ -285,7 +295,7 @@ mod tests {
     fn display_generic_fn_two_params() {
         // fn<A, B>(A, B) A
         let ty = Type::Fn(FnType {
-            type_params: vec![5, 6],
+            type_params: vec![(5, Type::Any), (6, Type::Any)],
             params: vec![Type::Var(5), Type::Var(6)],
             ret: Box::new(Type::Var(5)),
         });
@@ -306,7 +316,7 @@ mod tests {
     fn display_generic_fn_with_complex_types() {
         // fn<A>(A, [A]) A?
         let ty = Type::Fn(FnType {
-            type_params: vec![42],
+            type_params: vec![(42, Type::Any)],
             params: vec![
                 Type::Var(42),
                 Type::List(Box::new(Type::Var(42))),
@@ -317,17 +327,28 @@ mod tests {
     }
 
     #[test]
+    fn display_generic_fn_with_bound() {
+        // fn<A <: Int>(A) A
+        let ty = Type::Fn(FnType {
+            type_params: vec![(10, Type::Int)],
+            params: vec![Type::Var(10)],
+            ret: Box::new(Type::Var(10)),
+        });
+        assert_eq!(ty.to_string(), "fn<A <: Int>(A) A");
+    }
+
+    #[test]
     fn display_nested_generic_fns() {
         // Outer fn has type param id=1, inner has id=2.
         // When outer formats: stack = [1], so Var(1) = A.
         // When inner formats: stack = [1, 2], so Var(2) = B, Var(1) = A.
         let inner = Type::Fn(FnType {
-            type_params: vec![2],
+            type_params: vec![(2, Type::Any)],
             params: vec![Type::Var(2)],
             ret: Box::new(Type::Var(1)),
         });
         let outer = Type::Fn(FnType {
-            type_params: vec![1],
+            type_params: vec![(1, Type::Any)],
             params: vec![Type::Var(1)],
             ret: Box::new(inner),
         });
@@ -338,7 +359,7 @@ mod tests {
     fn display_stack_cleaned_up_after_formatting() {
         // Format a generic fn, then check that a bare Var falls back.
         let generic = Type::Fn(FnType {
-            type_params: vec![7],
+            type_params: vec![(7, Type::Any)],
             params: vec![Type::Var(7)],
             ret: Box::new(Type::Var(7)),
         });
