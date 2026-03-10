@@ -1577,9 +1577,9 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
 
 #[cfg(test)]
 mod tests {
-    use super::TypeChecker;
+    use super::{TypeChecker, next_type_id};
     use crate::{
-        DictType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
+        DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -2007,5 +2007,248 @@ mod tests {
             .check_expr(&env, &and_expr, None)
             .expect("type check should succeed with diags");
         assert!(matches!(*diagnosed, Type::Never));
+    }
+
+    #[test]
+    fn assign_type_fn_exact_match() {
+        let checker = checker();
+        let ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&ty, &ty).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_covariant_return() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Optional(Box::new(Type::Str))),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_return_type_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_param_count_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int, Type::Bool],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_param_type_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Bool],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_non_fn_rhs() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &Type::Int).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_alpha_renames() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A>(A) A  vs  fn<B>(B) B — structurally identical
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_b],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_rejects_type_param_count_mismatch() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A>(A) A  vs  fn<B, C>(B) B
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_b, next_type_id()],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_rejects_different_structure() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A>(A) A  vs  fn<B>(B) Int — different return structure
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_b],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_multi_type_params() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+        let id_c = next_type_id();
+        let id_d = next_type_id();
+
+        // fn<A, B>(A, B) A  vs  fn<C, D>(C, D) C
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a, id_b],
+            params: vec![Type::Var(id_a), Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_c, id_d],
+            params: vec![Type::Var(id_c), Type::Var(id_d)],
+            ret: Box::new(Type::Var(id_c)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_rejects_swapped_type_params() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+        let id_c = next_type_id();
+        let id_d = next_type_id();
+
+        // fn<A, B>(A, B) A  vs  fn<C, D>(D, C) C
+        // After alpha-renaming C->A, D->B: fn<A, B>(B, A) A — mismatch
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a, id_b],
+            params: vec![Type::Var(id_a), Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_c, id_d],
+            params: vec![Type::Var(id_d), Type::Var(id_c)],
+            ret: Box::new(Type::Var(id_c)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_fn_nested_type_vars() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A>([A]) A  vs  fn<B>([B]) B
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::List(Box::new(Type::Var(id_a)))],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_b],
+            params: vec![Type::List(Box::new(Type::Var(id_b)))],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_non_generic_fn_rejects_generic() {
+        let checker = checker();
+        let id_a = next_type_id();
+
+        // fn(Int) Int  vs  fn<A>(A) A
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
     }
 }
