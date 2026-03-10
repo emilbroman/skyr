@@ -106,45 +106,12 @@ impl Type {
     }
 
     pub fn unfold(&self) -> Self {
-        self.unfold_inner(None)
-    }
-
-    fn unfold_inner(&self, replacement: Option<(usize, &Type)>) -> Self {
         match self {
-            Type::Any => Type::Any,
-            Type::Int => Type::Int,
-            Type::Float => Type::Float,
-            Type::Bool => Type::Bool,
-            Type::Str => Type::Str,
-            Type::Optional(ty) => Type::Optional(Box::new(ty.unfold_inner(replacement))),
-            Type::List(ty) => Type::List(Box::new(ty.unfold_inner(replacement))),
-            Type::Fn(fn_ty) => Type::Fn(FnType {
-                type_params: fn_ty.type_params.clone(),
-                params: fn_ty
-                    .params
-                    .iter()
-                    .map(|param| param.unfold_inner(replacement))
-                    .collect(),
-                ret: Box::new(fn_ty.ret.unfold_inner(replacement)),
-            }),
-            Type::Never => Type::Never,
-            Type::Exception(id) => Type::Exception(*id),
-            Type::Var(id) => {
-                if let Some((target_id, replacement_ty)) = replacement {
-                    if *id == target_id {
-                        return replacement_ty.clone();
-                    }
-                }
-                Type::Var(*id)
-            }
-            Type::Record(record) => {
-                Type::Record(record.map_types(|ty| ty.unfold_inner(replacement)))
-            }
-            Type::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.unfold_inner(replacement))),
             Type::IsoRec(id, body) => {
                 let rec = Type::IsoRec(*id, body.clone());
-                body.unfold_inner(Some((*id, &rec)))
+                body.substitute(&[(*id, rec)])
             }
+            _ => self.clone(),
         }
     }
 }

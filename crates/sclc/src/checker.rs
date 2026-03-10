@@ -412,6 +412,20 @@ impl crate::Diag for UnexpectedTypeArgs {
 }
 
 #[derive(Error, Debug)]
+#[error("unknown type: {name}")]
+pub struct UnknownType {
+    pub module_id: crate::ModuleId,
+    pub name: String,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for UnknownType {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -615,12 +629,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Str(_) => {
                 self.apply_expected_type(env, expr.span(), Type::Str, expected_type)
             }
-            ast::Expr::Extern(extern_expr) => self.apply_expected_type(
-                env,
-                expr.span(),
-                self.resolve_type_expr(env, &extern_expr.ty),
-                expected_type,
-            ),
+            ast::Expr::Extern(extern_expr) => {
+                let mut diags = DiagList::new();
+                let resolved_ty = self
+                    .resolve_type_expr(env, &extern_expr.ty)
+                    .unpack(&mut diags);
+                let ty = self
+                    .apply_expected_type(env, expr.span(), resolved_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::If(if_expr) => {
                 let mut diags = DiagList::new();
                 let bool_ty = Type::Bool;
@@ -676,7 +694,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
                 let mut params = Vec::with_capacity(fn_expr.params.len());
                 for param in &fn_expr.params {
-                    let param_ty = self.resolve_type_expr(&fn_env, &param.ty);
+                    let param_ty = self
+                        .resolve_type_expr(&fn_env, &param.ty)
+                        .unpack(&mut diags);
                     fn_env = fn_env.with_local(param.var.name.as_str(), param_ty.clone());
                     params.push(param_ty);
                 }
@@ -735,7 +755,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             .type_params
                             .iter()
                             .zip(call_expr.type_args.iter())
-                            .map(|(id, type_arg)| (*id, self.resolve_type_expr(env, type_arg)))
+                            .map(|(id, type_arg)| {
+                                (*id, self.resolve_type_expr(env, type_arg).unpack(&mut diags))
+                            })
                             .collect();
                         FnType {
                             type_params: vec![],
@@ -1154,17 +1176,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Ok(Diagnosed::new(Type::Never, diags))
             }
             ast::Expr::Exception(exception_expr) => {
+                let mut diags = DiagList::new();
                 let exception_ty = Type::Exception(exception_expr.exception_id);
                 if let Some(ty_expr) = &exception_expr.ty {
-                    let param_ty = self.resolve_type_expr(env, ty_expr);
+                    let param_ty = self
+                        .resolve_type_expr(env, ty_expr)
+                        .unpack(&mut diags);
                     let fn_ty = Type::Fn(FnType {
                         type_params: vec![],
                         params: vec![param_ty],
                         ret: Box::new(exception_ty),
                     });
-                    self.apply_expected_type(env, expr.span(), fn_ty, expected_type)
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), fn_ty, expected_type)?
+                        .unpack(&mut diags);
+                    Ok(Diagnosed::new(ty, diags))
                 } else {
-                    self.apply_expected_type(env, expr.span(), exception_ty, expected_type)
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), exception_ty, expected_type)?
+                        .unpack(&mut diags);
+                    Ok(Diagnosed::new(ty, diags))
                 }
             }
             ast::Expr::Raise(raise_expr) => {
@@ -1333,8 +1364,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         &self,
         env: &TypeEnv<'_>,
         type_expr: &crate::Loc<ast::TypeExpr>,
-    ) -> Type {
-        match type_expr.as_ref() {
+    ) -> Diagnosed<Type> {
+        let mut diags = DiagList::new();
+        let ty = match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Any" => Type::Any,
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
             ast::TypeExpr::Var(var) if var.name == "Float" => Type::Float,
@@ -1342,38 +1374,59 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Var(var) => {
                 if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
-                    return ty.clone();
+                    ty.clone()
+                } else {
+                    if let Ok(module_id) = env.module_id() {
+                        diags.push(UnknownType {
+                            module_id,
+                            name: var.name.clone(),
+                            span: type_expr.span(),
+                        });
+                    }
+                    Type::Never
                 }
-                Type::Never
             }
             ast::TypeExpr::Optional(inner) => {
-                Type::Optional(Box::new(self.resolve_type_expr(env, inner.as_ref())))
+                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                Type::Optional(Box::new(inner_ty))
             }
             ast::TypeExpr::List(inner) => {
-                Type::List(Box::new(self.resolve_type_expr(env, inner.as_ref())))
+                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                Type::List(Box::new(inner_ty))
             }
-            ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
-                type_params: vec![],
-                params: fn_ty
+            ast::TypeExpr::Fn(fn_ty) => {
+                let params = fn_ty
                     .params
                     .iter()
-                    .map(|param| self.resolve_type_expr(env, param))
-                    .collect(),
-                ret: Box::new(self.resolve_type_expr(env, &fn_ty.ret)),
-            }),
+                    .map(|param| self.resolve_type_expr(env, param).unpack(&mut diags))
+                    .collect();
+                let ret = self.resolve_type_expr(env, &fn_ty.ret).unpack(&mut diags);
+                Type::Fn(FnType {
+                    type_params: vec![],
+                    params,
+                    ret: Box::new(ret),
+                })
+            }
             ast::TypeExpr::Record(record_ty) => {
                 let mut resolved = RecordType::default();
                 for field in &record_ty.fields {
-                    resolved
-                        .insert(field.var.name.clone(), self.resolve_type_expr(env, &field.ty));
+                    let field_ty = self
+                        .resolve_type_expr(env, &field.ty)
+                        .unpack(&mut diags);
+                    resolved.insert(field.var.name.clone(), field_ty);
                 }
                 Type::Record(resolved)
             }
-            ast::TypeExpr::Dict(dict_ty) => Type::Dict(DictType {
-                key: Box::new(self.resolve_type_expr(env, &dict_ty.key)),
-                value: Box::new(self.resolve_type_expr(env, &dict_ty.value)),
-            }),
-        }
+            ast::TypeExpr::Dict(dict_ty) => {
+                let key = self.resolve_type_expr(env, &dict_ty.key).unpack(&mut diags);
+                let value = self.resolve_type_expr(env, &dict_ty.value).unpack(&mut diags);
+                Type::Dict(DictType {
+                    key: Box::new(key),
+                    value: Box::new(value),
+                })
+            }
+        };
+        Diagnosed::new(ty, diags)
     }
 
     fn find_imports<'a>(
