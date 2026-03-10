@@ -1001,7 +1001,7 @@ impl<'a> CommandHandler<'a> {
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
                 let (r1, r2) = futures::join!(
                     deployment.set(state),
-                    deployment.mark_superceded_by(&new_deployment_id),
+                    deployment.mark_superseded_by(&new_deployment_id),
                 );
                 r1?;
                 r2?;

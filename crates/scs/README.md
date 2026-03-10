@@ -28,7 +28,7 @@ When a user pushes:
 4. Marks new deployments as **Desired** (active).
 5. Marks replaced deployments as **Lingering** (superseded by the new deployment).
 6. Marks deleted environments as **Undesired** (scheduled for teardown).
-7. Records the supercession relationship between old and new deployments.
+7. Records the supersession relationship between old and new deployments.
 
 ### Fetch (`git-upload-pack`)
 

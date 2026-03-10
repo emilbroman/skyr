@@ -22,7 +22,7 @@ SCS → CDB ← DE
 
 - Store and query deployments keyed by repository QID (`org/repo`), environment ID, and deployment ID.
 - Update deployment states (Desired, Lingering, Undesired, Down).
-- Record and look up supercession relationships between deployments.
+- Record and look up supersession relationships between deployments.
 - Look up deployments by their full deployment QID (`org/repo::env@deploy`).
 
 ### Data Model
@@ -46,7 +46,7 @@ Used by DE to load `Main.scl` and resolve imports during compilation.
 
 CDB manages its own keyspace and table creation. When changing the schema, update both table creation statements and prepared statements together.
 
-Note: the codebase consistently uses the spelling `supercede`/`supercession` in schema and API names.
+Note: the codebase uses the correct spelling `supersede`/`supersession` in schema and API names.
 
 ## Related Crates
 

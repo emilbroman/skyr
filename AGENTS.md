@@ -24,7 +24,7 @@ Fix any warnings or errors before pushing.
 - For ADB operations, configure endpoint/bucket via CLI args or environment variables.
 - For LDB logging, use `NamespacePublisher` with deployment QID as namespace.
 - The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Use its typed IDs and QIDs rather than raw strings when working with identifiers. Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces.
-- Note: spelling is consistently `supercede/supercession` in schema/API names.
+- Note: spelling is consistently `supersede/supersession` in schema/API names.
 - When adding new SCL language features (syntax, types, standard library modules/functions, etc.), update the corresponding end-user documentation in `docs/scl/`:
   - `docs/scl/syntax.md` — for new syntax constructs (operators, expressions, statements, keywords)
   - `docs/scl/types.md` — for type system changes (new types, subtyping rules, inference behavior)

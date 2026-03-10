@@ -21,8 +21,8 @@ CDB → DE → SCLC (compile)
 
 | State | Behavior |
 |-------|----------|
-| **Desired** | Compiles `Main.scl`, evaluates the resource DAG against current RDB state, and emits transition requests. Once evaluation is complete (no pending effects), marks superceded deployments as Undesired. |
-| **Lingering** | Follows the supercession chain to find the active Desired deployment, then marks itself as superceded by it. Includes cycle detection to prevent infinite loops. |
+| **Desired** | Compiles `Main.scl`, evaluates the resource DAG against current RDB state, and emits transition requests. Once evaluation is complete (no pending effects), marks superseded deployments as Undesired. |
+| **Lingering** | Follows the supersession chain to find the active Desired deployment, then marks itself as superseded by it. Includes cycle detection to prevent infinite loops. |
 | **Undesired** | Tears down owned resources by enqueuing Destroy messages. Blocks teardown for resources that still have living dependents. Transitions to Down when all owned resources are destroyed. |
 | **Down** | Idles. |
 
@@ -42,11 +42,11 @@ When a deployment is in the **Desired** state, DE performs a full reconciliation
 | `UpdateResource` (owned by another deployment) | **Adopt** — transfer ownership and optionally update inputs |
 | `TouchResource` (owned by another deployment) | **Adopt** — transfer ownership without input changes |
 
-5. **Completeness**: If no effects were emitted, evaluation is **Complete** and superceded deployments can be transitioned to Undesired. If effects were emitted, evaluation is **Partial** and supercession teardown is deferred until the next loop iteration.
+5. **Completeness**: If no effects were emitted, evaluation is **Complete** and superseded deployments can be transitioned to Undesired. If effects were emitted, evaluation is **Partial** and supersession teardown is deferred until the next loop iteration.
 
-## Supercession
+## Supersession
 
-When a Desired deployment finishes a complete evaluation, it transitions any Lingering deployments it supercedes to Undesired, triggering their teardown. Lingering deployments follow the supercession chain (via `get_superceding()`) to find the active Desired deployment and record the relationship.
+When a Desired deployment finishes a complete evaluation, it transitions any Lingering deployments it supersedes to Undesired, triggering their teardown. Lingering deployments follow the supersession chain (via `get_superseding()`) to find the active Desired deployment and record the relationship.
 
 During **Undesired** teardown, DE enqueues Destroy messages for owned resources but blocks destruction of resources that still have living dependents from other deployments. This ensures correct teardown ordering.
 
