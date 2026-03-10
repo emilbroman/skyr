@@ -23,6 +23,8 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@main
       - uses: DeterminateSystems/magic-nix-cache-action@main
 
+      - uses: Swatinem/rust-cache@v2
+
       - name: cargo fmt
         run: nix develop -c cargo fmt --check
 
@@ -132,14 +134,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: cli-${{ matrix.target }}
+
+      - name: Add Rust target
+        run: nix develop -c rustup target add ${{ matrix.target }}
 
       - name: Install musl-tools
         if: matrix.target == 'x86_64-unknown-linux-musl' && !matrix.use_cross
@@ -147,14 +150,14 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --locked
+        run: nix develop -c cargo install cross --locked
 
       - name: Build CLI
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p cli
+            nix develop -c cross build --release --target ${{ matrix.target }} -p cli
           else
-            cargo build --release --target ${{ matrix.target }} -p cli
+            nix develop -c cargo build --release --target ${{ matrix.target }} -p cli
           fi
 
       - name: Prepare artifact
@@ -185,14 +188,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust nightly
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          targets: ${{ matrix.target }}
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: scoc-${{ matrix.target }}
+
+      - name: Add Rust target
+        run: nix develop -c rustup target add ${{ matrix.target }}
 
       - name: Install musl-tools
         if: "!matrix.use_cross"
@@ -200,14 +204,14 @@ jobs:
 
       - name: Install cross
         if: matrix.use_cross
-        run: cargo install cross --locked
+        run: nix develop -c cargo install cross --locked
 
       - name: Build scoc
         run: |
           if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p scoc
+            nix develop -c cross build --release --target ${{ matrix.target }} -p scoc
           else
-            cargo build --release --target ${{ matrix.target }} -p scoc
+            nix develop -c cargo build --release --target ${{ matrix.target }} -p scoc
           fi
 
       - name: Prepare artifact
