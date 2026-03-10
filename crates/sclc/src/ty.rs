@@ -1,4 +1,24 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+
+thread_local! {
+    /// Stack of type parameter IDs currently being displayed. When a generic
+    /// function type is formatted, its type-parameter IDs are pushed here so
+    /// that nested `Type::Var` nodes can look up their index and print a
+    /// friendly name (`A`, `B`, …) instead of a raw numeric ID.
+    static DISPLAY_TYPE_PARAMS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+}
+
+fn typevar_name(index: usize) -> String {
+    // 0 = A, 1 = B, … 25 = Z, 26 = A1, 27 = B1, …
+    let letter = (b'A' + (index % 26) as u8) as char;
+    let suffix = index / 26;
+    if suffix == 0 {
+        letter.to_string()
+    } else {
+        format!("{letter}{suffix}")
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
@@ -128,7 +148,19 @@ impl std::fmt::Display for Type {
             Type::Record(record) => write!(f, "{record}"),
             Type::Dict(dict) => write!(f, "{dict}"),
             Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
-            Type::Var(id) => write!(f, "T{id}"),
+            Type::Var(id) => {
+                let name = DISPLAY_TYPE_PARAMS.with(|stack| {
+                    stack
+                        .borrow()
+                        .iter()
+                        .position(|v| v == id)
+                        .map(typevar_name)
+                });
+                match name {
+                    Some(name) => write!(f, "{name}"),
+                    None => write!(f, "T{id}"),
+                }
+            }
             Type::Never => write!(f, "Never"),
             Type::Exception(id) => write!(f, "Exception#{id}"),
         }
@@ -139,29 +171,60 @@ impl std::fmt::Display for FnType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "fn")?;
 
-        if !self.type_params.is_empty() {
-            write!(f, "<")?;
-            let mut type_params = self.type_params.iter().peekable();
-            while let Some(id) = type_params.next() {
-                write!(f, "T{id}")?;
-                if type_params.peek().is_some() {
+        let param_count = self.type_params.len();
+
+        // Push type-param IDs so nested Var nodes resolve to friendly names.
+        if param_count > 0 {
+            DISPLAY_TYPE_PARAMS.with(|stack| {
+                stack.borrow_mut().extend_from_slice(&self.type_params);
+            });
+        }
+
+        // Helper closure so we can use `?` and still guarantee cleanup.
+        let result = (|| {
+            if param_count > 0 {
+                write!(f, "<")?;
+                for (i, id) in self.type_params.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    // Look up the name we just registered.
+                    let name = DISPLAY_TYPE_PARAMS.with(|stack| {
+                        stack
+                            .borrow()
+                            .iter()
+                            .position(|v| v == id)
+                            .map(typevar_name)
+                            .unwrap_or_else(|| format!("T{id}"))
+                    });
+                    write!(f, "{name}")?;
+                }
+                write!(f, ">")?;
+            }
+
+            write!(f, "(")?;
+
+            let mut params = self.params.iter().peekable();
+            while let Some(param) = params.next() {
+                write!(f, "{param}")?;
+                if params.peek().is_some() {
                     write!(f, ", ")?;
                 }
             }
-            write!(f, ">")?;
+
+            write!(f, ") {}", self.ret)
+        })();
+
+        // Pop the type-param IDs we pushed, regardless of success/failure.
+        if param_count > 0 {
+            DISPLAY_TYPE_PARAMS.with(|stack| {
+                let mut s = stack.borrow_mut();
+                let new_len = s.len() - param_count;
+                s.truncate(new_len);
+            });
         }
 
-        write!(f, "(")?;
-
-        let mut params = self.params.iter().peekable();
-        while let Some(param) = params.next() {
-            write!(f, "{param}")?;
-            if params.peek().is_some() {
-                write!(f, ", ")?;
-            }
-        }
-
-        write!(f, ") {}", self.ret)
+        result
     }
 }
 
@@ -184,5 +247,104 @@ impl std::fmt::Display for RecordType {
 impl std::fmt::Display for DictType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "#{{{}: {}}}", self.key, self.value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typevar_name_letters() {
+        assert_eq!(typevar_name(0), "A");
+        assert_eq!(typevar_name(1), "B");
+        assert_eq!(typevar_name(25), "Z");
+        assert_eq!(typevar_name(26), "A1");
+        assert_eq!(typevar_name(27), "B1");
+        assert_eq!(typevar_name(52), "A2");
+    }
+
+    #[test]
+    fn display_var_without_scope_falls_back() {
+        let ty = Type::Var(99);
+        assert_eq!(ty.to_string(), "T99");
+    }
+
+    #[test]
+    fn display_generic_fn_single_param() {
+        // fn<A>(A) A
+        let ty = Type::Fn(FnType {
+            type_params: vec![10],
+            params: vec![Type::Var(10)],
+            ret: Box::new(Type::Var(10)),
+        });
+        assert_eq!(ty.to_string(), "fn<A>(A) A");
+    }
+
+    #[test]
+    fn display_generic_fn_two_params() {
+        // fn<A, B>(A, B) A
+        let ty = Type::Fn(FnType {
+            type_params: vec![5, 6],
+            params: vec![Type::Var(5), Type::Var(6)],
+            ret: Box::new(Type::Var(5)),
+        });
+        assert_eq!(ty.to_string(), "fn<A, B>(A, B) A");
+    }
+
+    #[test]
+    fn display_non_generic_fn() {
+        let ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int, Type::Str],
+            ret: Box::new(Type::Bool),
+        });
+        assert_eq!(ty.to_string(), "fn(Int, Str) Bool");
+    }
+
+    #[test]
+    fn display_generic_fn_with_complex_types() {
+        // fn<A>(A, [A]) A?
+        let ty = Type::Fn(FnType {
+            type_params: vec![42],
+            params: vec![
+                Type::Var(42),
+                Type::List(Box::new(Type::Var(42))),
+            ],
+            ret: Box::new(Type::Optional(Box::new(Type::Var(42)))),
+        });
+        assert_eq!(ty.to_string(), "fn<A>(A, [A]) A?");
+    }
+
+    #[test]
+    fn display_nested_generic_fns() {
+        // Outer fn has type param id=1, inner has id=2.
+        // When outer formats: stack = [1], so Var(1) = A.
+        // When inner formats: stack = [1, 2], so Var(2) = B, Var(1) = A.
+        let inner = Type::Fn(FnType {
+            type_params: vec![2],
+            params: vec![Type::Var(2)],
+            ret: Box::new(Type::Var(1)),
+        });
+        let outer = Type::Fn(FnType {
+            type_params: vec![1],
+            params: vec![Type::Var(1)],
+            ret: Box::new(inner),
+        });
+        assert_eq!(outer.to_string(), "fn<A>(A) fn<B>(B) A");
+    }
+
+    #[test]
+    fn display_stack_cleaned_up_after_formatting() {
+        // Format a generic fn, then check that a bare Var falls back.
+        let generic = Type::Fn(FnType {
+            type_params: vec![7],
+            params: vec![Type::Var(7)],
+            ret: Box::new(Type::Var(7)),
+        });
+        assert_eq!(generic.to_string(), "fn<A>(A) A");
+
+        let bare = Type::Var(7);
+        assert_eq!(bare.to_string(), "T7");
     }
 }
