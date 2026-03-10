@@ -1,1 +1,16 @@
 export let range = extern "Std/List.range": fn(Int) [Int]
+
+export let map = fn<T, U>(list: [T], transform: fn(T) U)
+	[for (t in list) transform(t)]
+
+export let append = fn<T>(list: [T], newItem: T)
+	[for (t in list) t, newItem]
+
+export let concat = fn<T>(lists: [[T]])
+	[for (list in lists) for (t in list) t]
+
+export let filter = fn<T>(list: [T], predicate: fn(T) Bool)
+	[for (t in list) if (predicate(t)) t]
+
+export let flatMap = fn<T, U>(list: [T], transform: fn(T) [U])
+	[for (t in list) for (u in transform(t)) u]
