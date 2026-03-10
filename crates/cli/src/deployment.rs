@@ -9,7 +9,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use crate::{auth, output::OutputFormat, repo};
 
-#[allow(non_camel_case_types)]
+#[allow(clippy::upper_case_acronyms)]
 type JSON = serde_json::Value;
 
 #[derive(Args, Debug)]
@@ -97,8 +97,9 @@ async fn list_deployments(
     let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
         .flat_map(|env| {
-            env.deployments.into_iter().map(|deployment| {
-                DeploymentOutput {
+            env.deployments
+                .into_iter()
+                .map(|deployment| DeploymentOutput {
                     r#ref: deployment.ref_.to_owned(),
                     commit: deployment.commit.to_owned(),
                     created_at: deployment.created_at.to_owned(),
@@ -121,8 +122,7 @@ async fn list_deployments(
                                 .collect::<Vec<_>>(),
                         })
                         .collect::<Vec<_>>(),
-                }
-            })
+                })
         })
         .collect();
 
@@ -173,12 +173,9 @@ async fn stream_deployment_logs(
         let environment_qids: BTreeSet<String> = environments
             .into_iter()
             .filter(|env| {
-                env.deployments.iter().any(|d| {
-                    !matches!(
-                        d.state,
-                        list_repository_deployments::DeploymentState::DOWN
-                    )
-                })
+                env.deployments
+                    .iter()
+                    .any(|d| !matches!(d.state, list_repository_deployments::DeploymentState::DOWN))
             })
             .map(|env| env.qid)
             .collect();
@@ -197,12 +194,9 @@ async fn stream_deployment_logs(
                 let token = token.to_owned();
                 let task_events_tx = task_events_tx.clone();
                 tokio::spawn(async move {
-                    let result = stream_single_environment(
-                        &ws_endpoint,
-                        &token,
-                        environment_qid.clone(),
-                    )
-                    .await;
+                    let result =
+                        stream_single_environment(&ws_endpoint, &token, environment_qid.clone())
+                            .await;
                     let _ = task_events_tx.send((environment_qid, result));
                 });
             }
@@ -258,8 +252,7 @@ async fn stream_single_environment(
             json!({
                 "type": "connection_init"
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .with_context(|| {
@@ -285,8 +278,7 @@ async fn stream_single_environment(
                     "operationName": "EnvironmentLogs"
                 }
             })
-            .to_string()
-            .into(),
+            .to_string(),
         ))
         .await
         .context("failed to send environment logs subscription")?;
@@ -342,7 +334,7 @@ where
                     Some("connection_ack") => return Ok(()),
                     Some("ping") => {
                         write
-                            .send(Message::Text(json!({ "type": "pong" }).to_string().into()))
+                            .send(Message::Text(json!({ "type": "pong" }).to_string()))
                             .await
                             .context("failed to send graphql ping response")?;
                     }

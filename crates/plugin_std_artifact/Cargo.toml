@@ -13,3 +13,6 @@ tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 adb = { path = "../adb" }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
+
+[lints]
+workspace = true

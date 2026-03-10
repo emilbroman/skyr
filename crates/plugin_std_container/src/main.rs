@@ -159,7 +159,7 @@ impl ContainerPlugin {
         nodes
             .into_iter()
             .next()
-            .ok_or_else(|| PluginError::NoAvailableNodes)
+            .ok_or(PluginError::NoAvailableNodes)
     }
 
     // =========================================================================
@@ -212,14 +212,10 @@ impl ContainerPlugin {
 
         // Parse environment QID to get repository info and construct deployment QID
         let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|e| {
-            PluginError::InvalidInput(format!(
-                "invalid environment QID '{environment_qid}': {e}"
-            ))
+            PluginError::InvalidInput(format!("invalid environment QID '{environment_qid}': {e}"))
         })?;
         let deployment: ids::DeploymentId = deployment_id.parse().map_err(|e| {
-            PluginError::InvalidInput(format!(
-                "invalid deployment ID '{deployment_id}': {e}"
-            ))
+            PluginError::InvalidInput(format!("invalid deployment ID '{deployment_id}': {e}"))
         })?;
         let deployment_qid = ids::DeploymentQid::new(env_qid, deployment);
 
@@ -299,7 +295,9 @@ impl ContainerPlugin {
                 resource_id = %id.id,
                 "image inputs changed, rebuilding"
             );
-            return self.create_image(environment_qid, deployment_id, id, inputs).await;
+            return self
+                .create_image(environment_qid, deployment_id, id, inputs)
+                .await;
         }
 
         // No changes - return existing outputs
@@ -385,7 +383,7 @@ impl ContainerPlugin {
                 return Err(PluginError::InvalidInput(format!(
                     "node: expected Str? but got {other}"
                 ))
-                .into())
+                .into());
             }
         };
 
@@ -1002,19 +1000,17 @@ fn extract_allowed_destinations(
                 let address = record
                     .get("address")
                     .assert_str_ref()
-                    .map_err(|e| {
-                        PluginError::InvalidInput(format!("allow[{i}].address: {e}"))
-                    })?
+                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].address: {e}")))?
                     .to_string();
-                let port = *record.get("port").assert_int_ref().map_err(|e| {
-                    PluginError::InvalidInput(format!("allow[{i}].port: {e}"))
-                })? as i32;
+                let port = *record
+                    .get("port")
+                    .assert_int_ref()
+                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].port: {e}")))?
+                    as i32;
                 let protocol = record
                     .get("protocol")
                     .assert_str_ref()
-                    .map_err(|e| {
-                        PluginError::InvalidInput(format!("allow[{i}].protocol: {e}"))
-                    })?
+                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].protocol: {e}")))?
                     .to_string();
                 destinations.push(scop::AllowedDestination {
                     address,
@@ -1103,8 +1099,9 @@ async fn extract_tree_recursive(
     dest: &std::path::Path,
 ) -> Result<(), PluginError> {
     // Create destination directory
-    std::fs::create_dir_all(dest)
-        .map_err(|e| PluginError::Internal(format!("failed to create dir {}: {e}", dest.display())))?;
+    std::fs::create_dir_all(dest).map_err(|e| {
+        PluginError::Internal(format!("failed to create dir {}: {e}", dest.display()))
+    })?;
 
     for entry in tree.entries.iter() {
         let name = std::str::from_utf8(&entry.filename)
@@ -1115,13 +1112,16 @@ async fn extract_tree_recursive(
         match entry.mode.kind() {
             EntryKind::Blob | EntryKind::BlobExecutable => {
                 // Read file and write to destination
-                let data = client
-                    .read_file(&entry_src)
-                    .await
-                    .map_err(|e| PluginError::Internal(format!("failed to read file {}: {e}", entry_src.display())))?;
+                let data = client.read_file(&entry_src).await.map_err(|e| {
+                    PluginError::Internal(format!(
+                        "failed to read file {}: {e}",
+                        entry_src.display()
+                    ))
+                })?;
 
-                std::fs::write(&entry_dest, &data)
-                    .map_err(|e| PluginError::Internal(format!("failed to write {}: {e}", entry_dest.display())))?;
+                std::fs::write(&entry_dest, &data).map_err(|e| {
+                    PluginError::Internal(format!("failed to write {}: {e}", entry_dest.display()))
+                })?;
 
                 // Set executable bit if needed
                 #[cfg(unix)]
@@ -1131,25 +1131,36 @@ async fn extract_tree_recursive(
                         .map_err(|e| PluginError::Internal(format!("failed to get metadata: {e}")))?
                         .permissions();
                     perms.set_mode(perms.mode() | 0o111);
-                    std::fs::set_permissions(&entry_dest, perms)
-                        .map_err(|e| PluginError::Internal(format!("failed to set permissions: {e}")))?;
+                    std::fs::set_permissions(&entry_dest, perms).map_err(|e| {
+                        PluginError::Internal(format!("failed to set permissions: {e}"))
+                    })?;
                 }
             }
             EntryKind::Tree => {
                 // Read subtree and recurse
-                let subtree = client
-                    .read_dir(Some(&entry_src))
-                    .await
-                    .map_err(|e| PluginError::Internal(format!("failed to read dir {}: {e}", entry_src.display())))?;
+                let subtree = client.read_dir(Some(&entry_src)).await.map_err(|e| {
+                    PluginError::Internal(format!(
+                        "failed to read dir {}: {e}",
+                        entry_src.display()
+                    ))
+                })?;
 
-                Box::pin(extract_tree_recursive(client, &subtree, &entry_src, &entry_dest)).await?;
+                Box::pin(extract_tree_recursive(
+                    client,
+                    &subtree,
+                    &entry_src,
+                    &entry_dest,
+                ))
+                .await?;
             }
             EntryKind::Link => {
                 // Read symlink target (stored as blob content) and create symlink
-                let target_data = client
-                    .read_file(&entry_src)
-                    .await
-                    .map_err(|e| PluginError::Internal(format!("failed to read symlink {}: {e}", entry_src.display())))?;
+                let target_data = client.read_file(&entry_src).await.map_err(|e| {
+                    PluginError::Internal(format!(
+                        "failed to read symlink {}: {e}",
+                        entry_src.display()
+                    ))
+                })?;
 
                 let target = std::str::from_utf8(&target_data)
                     .map_err(|e| PluginError::Internal(format!("invalid utf8 in symlink: {e}")))?;
@@ -1212,8 +1223,8 @@ impl scop::Orchestrator for ContainerPlugin {
         };
 
         // Extract overlay endpoint (host IP) from conduit address
-        let overlay_endpoint = extract_overlay_endpoint(&request.conduit_address)
-            .unwrap_or_default();
+        let overlay_endpoint =
+            extract_overlay_endpoint(&request.conduit_address).unwrap_or_default();
 
         // List existing nodes before registering (for peer notification)
         let existing_nodes = {
@@ -1349,7 +1360,9 @@ impl scop::Orchestrator for ContainerPlugin {
                     error = %e,
                     "heartbeat failed"
                 );
-                Ok(scop::HeartbeatResponse { acknowledged: false })
+                Ok(scop::HeartbeatResponse {
+                    acknowledged: false,
+                })
             }
         }
     }
@@ -1447,7 +1460,9 @@ impl rtp::Plugin for ContainerPlugin {
     ) -> anyhow::Result<sclc::Resource> {
         match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
-                let result = self.create_image(environment_qid, deployment_id, id.clone(), inputs).await;
+                let result = self
+                    .create_image(environment_qid, deployment_id, id.clone(), inputs)
+                    .await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1471,7 +1486,9 @@ impl rtp::Plugin for ContainerPlugin {
                 result
             }
             CONTAINER_RESOURCE_TYPE => {
-                let result = self.create_container(environment_qid, id.clone(), inputs).await;
+                let result = self
+                    .create_container(environment_qid, id.clone(), inputs)
+                    .await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1510,7 +1527,14 @@ impl rtp::Plugin for ContainerPlugin {
         match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 let result = self
-                    .update_image(environment_qid, deployment_id, id.clone(), prev_inputs, prev_outputs, inputs)
+                    .update_image(
+                        environment_qid,
+                        deployment_id,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
                     .await;
                 if let Err(ref e) = result {
                     error!(
@@ -1523,7 +1547,15 @@ impl rtp::Plugin for ContainerPlugin {
                 result
             }
             POD_RESOURCE_TYPE => {
-                let result = self.update_pod(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs).await;
+                let result = self
+                    .update_pod(
+                        environment_qid,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
+                    .await;
                 if let Err(ref e) = result {
                     error!(
                         resource_type = %id.ty,
@@ -1536,7 +1568,13 @@ impl rtp::Plugin for ContainerPlugin {
             }
             CONTAINER_RESOURCE_TYPE => {
                 let result = self
-                    .update_container(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs)
+                    .update_container(
+                        environment_qid,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
                     .await;
                 if let Err(ref e) = result {
                     error!(
@@ -1550,7 +1588,13 @@ impl rtp::Plugin for ContainerPlugin {
             }
             PORT_RESOURCE_TYPE => {
                 let result = self
-                    .update_port(environment_qid, id.clone(), prev_inputs, prev_outputs, inputs)
+                    .update_port(
+                        environment_qid,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
                     .await;
                 if let Err(ref e) = result {
                     error!(

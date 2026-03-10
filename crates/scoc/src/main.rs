@@ -143,6 +143,7 @@ enum ContainerAction {
 }
 
 /// Tracked pod info for log streaming and network teardown.
+#[allow(dead_code)]
 struct PodInfo {
     environment_qid: String,
     name: String,
@@ -525,10 +526,15 @@ impl scop::Conduit for CriConduit {
         request: scop::AddOverlayPeerRequest,
     ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
         // Resolve hostname to IP (bridge fdb requires IP address)
-        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip)
-            .map_err(|e| scop::tonic::Status::internal(format!("failed to resolve peer {}: {e:#}", request.peer_host_ip)))?;
-        net::add_overlay_peer(&peer_ip)
-            .map_err(|e| scop::tonic::Status::internal(format!("add overlay peer failed: {e:#}")))?;
+        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip).map_err(|e| {
+            scop::tonic::Status::internal(format!(
+                "failed to resolve peer {}: {e:#}",
+                request.peer_host_ip
+            ))
+        })?;
+        net::add_overlay_peer(&peer_ip).map_err(|e| {
+            scop::tonic::Status::internal(format!("add overlay peer failed: {e:#}"))
+        })?;
         Ok(scop::AddOverlayPeerResponse {})
     }
 
@@ -537,10 +543,15 @@ impl scop::Conduit for CriConduit {
         request: scop::RemoveOverlayPeerRequest,
     ) -> Result<scop::RemoveOverlayPeerResponse, scop::tonic::Status> {
         // Resolve hostname to IP (bridge fdb requires IP address)
-        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip)
-            .map_err(|e| scop::tonic::Status::internal(format!("failed to resolve peer {}: {e:#}", request.peer_host_ip)))?;
-        net::remove_overlay_peer(&peer_ip)
-            .map_err(|e| scop::tonic::Status::internal(format!("remove overlay peer failed: {e:#}")))?;
+        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip).map_err(|e| {
+            scop::tonic::Status::internal(format!(
+                "failed to resolve peer {}: {e:#}",
+                request.peer_host_ip
+            ))
+        })?;
+        net::remove_overlay_peer(&peer_ip).map_err(|e| {
+            scop::tonic::Status::internal(format!("remove overlay peer failed: {e:#}"))
+        })?;
         Ok(scop::RemoveOverlayPeerResponse {})
     }
 
@@ -719,14 +730,22 @@ async fn main() -> Result<()> {
                 .pod_cidr
                 .parse()
                 .expect("orchestrator returned invalid pod_cidr");
-            tracing::info!("Registered with orchestrator, assigned pod CIDR: {}", pod_cidr);
+            tracing::info!(
+                "Registered with orchestrator, assigned pod CIDR: {}",
+                pod_cidr
+            );
 
             // Parse the cluster CIDR for egress allow-list enforcement
             let cluster_cidr = if register_response.cluster_cidr.is_empty() {
-                tracing::warn!("orchestrator did not provide cluster_cidr, egress allow-list enforcement disabled");
+                tracing::warn!(
+                    "orchestrator did not provide cluster_cidr, egress allow-list enforcement disabled"
+                );
                 None
             } else {
-                tracing::info!("cluster CIDR for egress rules: {}", register_response.cluster_cidr);
+                tracing::info!(
+                    "cluster CIDR for egress rules: {}",
+                    register_response.cluster_cidr
+                );
                 Some(register_response.cluster_cidr)
             };
 
@@ -743,7 +762,14 @@ async fn main() -> Result<()> {
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
             // Create the conduit with networking support
-            let conduit = CriConduit::new(cri, ldb_publisher, ipam, pod_cidr, cluster_cidr, dns_servers);
+            let conduit = CriConduit::new(
+                cri,
+                ldb_publisher,
+                ipam,
+                pod_cidr,
+                cluster_cidr,
+                dns_servers,
+            );
 
             // Spawn heartbeat task
             let node_name_heartbeat = node_name.clone();
@@ -775,9 +801,8 @@ async fn main() -> Result<()> {
 
             // Start Conduit server in a separate task
             let bind_target = format!("http://{}", bind);
-            let server_handle = tokio::spawn(async move {
-                scop::serve_conduit(&bind_target, conduit).await
-            });
+            let server_handle =
+                tokio::spawn(async move { scop::serve_conduit(&bind_target, conduit).await });
 
             // Wait for shutdown signal
             tokio::select! {
@@ -804,17 +829,14 @@ async fn main() -> Result<()> {
 
             // Unregister from orchestrator
             tracing::info!("Unregistering from orchestrator");
-            if let Ok(mut client) =
-                scop::OrchestratorClient::connect(orchestrator_address).await
-            {
-                if let Err(e) = client
+            if let Ok(mut client) = scop::OrchestratorClient::connect(orchestrator_address).await
+                && let Err(e) = client
                     .unregister_node(scop::UnregisterNodeRequest {
                         node_name: node_name.clone(),
                     })
                     .await
-                {
-                    tracing::error!("Failed to unregister: {}", e);
-                }
+            {
+                tracing::error!("Failed to unregister: {}", e);
             }
         }
 
@@ -903,10 +925,7 @@ async fn main() -> Result<()> {
 /// Extract the host from a conduit address like "http://192.168.1.10:50054" or "http://scoc-1:50054".
 fn extract_host_from_address(addr: &str) -> String {
     // Strip scheme (e.g., "http://")
-    let without_scheme = addr
-        .split("://")
-        .nth(1)
-        .unwrap_or(addr);
+    let without_scheme = addr.split("://").nth(1).unwrap_or(addr);
     // Strip path
     let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
     // Strip port

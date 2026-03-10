@@ -20,3 +20,6 @@ tracing = "0.1.41"
 [build-dependencies]
 protoc-bin-vendored = "3.2.0"
 tonic-build = "0.12.3"
+
+[lints]
+workspace = true

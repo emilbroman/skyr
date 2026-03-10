@@ -339,16 +339,15 @@ where
                 );
                 tonic::Status::invalid_argument(format!("invalid resource.outputs_json: {error}"))
             })?;
-        let inputs: sclc::Record =
-            serde_json::from_str(&request.inputs_json).map_err(|error| {
-                warn!(
-                    resource_type = resource_id.ty.as_str(),
-                    resource_id = resource_id.id.as_str(),
-                    err = %error,
-                    "invalid update_resource input payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid inputs_json: {error}"))
-            })?;
+        let inputs: sclc::Record = serde_json::from_str(&request.inputs_json).map_err(|error| {
+            warn!(
+                resource_type = resource_id.ty.as_str(),
+                resource_id = resource_id.id.as_str(),
+                err = %error,
+                "invalid update_resource input payload"
+            );
+            tonic::Status::invalid_argument(format!("invalid inputs_json: {error}"))
+        })?;
 
         let resource = {
             let mut plugin = self.plugin.write().await;
@@ -403,16 +402,15 @@ where
             deployment_id = request.deployment_id.as_str(),
             "received delete_resource RPC"
         );
-        let inputs: sclc::Record =
-            serde_json::from_str(&current.inputs_json).map_err(|error| {
-                warn!(
-                    resource_type = resource_id.ty.as_str(),
-                    resource_id = resource_id.id.as_str(),
-                    err = %error,
-                    "invalid delete_resource input payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
-            })?;
+        let inputs: sclc::Record = serde_json::from_str(&current.inputs_json).map_err(|error| {
+            warn!(
+                resource_type = resource_id.ty.as_str(),
+                resource_id = resource_id.id.as_str(),
+                err = %error,
+                "invalid delete_resource input payload"
+            );
+            tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
+        })?;
         let outputs: sclc::Record =
             serde_json::from_str(&current.outputs_json).map_err(|error| {
                 warn!(
@@ -463,7 +461,12 @@ where
 
         let plugin = self.plugin.read().await;
         let healthy = plugin
-            .health(&request.environment_qid, &request.deployment_id, id.clone(), parsed)
+            .health(
+                &request.environment_qid,
+                &request.deployment_id,
+                id.clone(),
+                parsed,
+            )
             .await
             .map_err(|error| {
                 error!(

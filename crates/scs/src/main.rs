@@ -8,10 +8,10 @@ use std::{
 
 use anyhow::{anyhow, bail};
 use cdb::DeploymentState;
-use ids::{EnvironmentId, RepoQid};
 use clap::Parser;
 use gix_protocol::futures_lite::AsyncWriteExt;
 use gix_ref::Reference;
+use ids::{EnvironmentId, RepoQid};
 use russh::{
     Channel, ChannelId, MethodKind,
     keys::{PrivateKey, ssh_key::PublicKey},
@@ -64,29 +64,26 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             tracing::info!("listening on {address}");
-            ConfigServer {
-                client,
-                udb_client,
-            }
-            .run_on_address(
-                Arc::new(Config {
-                    methods: (&[MethodKind::PublicKey][..]).into(),
-                    keys: vec![PrivateKey::from_openssh(
-                        std::fs::read_to_string(&key)
-                            .map_err(|e| {
-                                anyhow::anyhow!(
-                                    "failed to load private key from {}: {}",
-                                    key.display(),
-                                    e
-                                )
-                            })?
-                            .as_bytes(),
-                    )?],
-                    ..Default::default()
-                }),
-                address,
-            )
-            .await?;
+            ConfigServer { client, udb_client }
+                .run_on_address(
+                    Arc::new(Config {
+                        methods: (&[MethodKind::PublicKey][..]).into(),
+                        keys: vec![PrivateKey::from_openssh(
+                            std::fs::read_to_string(&key)
+                                .map_err(|e| {
+                                    anyhow::anyhow!(
+                                        "failed to load private key from {}: {}",
+                                        key.display(),
+                                        e
+                                    )
+                                })?
+                                .as_bytes(),
+                        )?],
+                        ..Default::default()
+                    }),
+                    address,
+                )
+                .await?;
             Ok(())
         }
     }
@@ -156,11 +153,7 @@ impl Handler for ConfigHandler {
         };
 
         let Some(user) = user else {
-            tracing::info!(
-                username,
-                fingerprint,
-                "rejecting auth for unknown user",
-            );
+            tracing::info!(username, fingerprint, "rejecting auth for unknown user",);
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
                 partial_success: false,
@@ -174,11 +167,7 @@ impl Handler for ConfigHandler {
             .map_err(|err| anyhow!("failed to check pubkey for user {username}: {err}"))?;
 
         if !fingerprint_allowed {
-            tracing::info!(
-                username,
-                fingerprint,
-                "rejecting auth for unknown pubkey",
-            );
+            tracing::info!(username, fingerprint, "rejecting auth for unknown pubkey",);
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
                 partial_success: false,
@@ -201,61 +190,64 @@ impl Handler for ConfigHandler {
         let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
         let user = self.user.clone();
         let client = self.client.clone();
-        task::spawn(async move {
-            loop {
-                let client = client.clone();
-                let result: anyhow::Result<()> = match (&user, rx.recv().await) {
-                    (None, _) => Err(anyhow!("not authenticated")),
-                    (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
-                        if let Err(err) = ensure_repo_access(user, &repo) {
-                            Err(err)
-                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
-                            Err(err)
-                        } else {
-                            CommandHandler {
-                                _user: user,
-                                channel: &mut channel,
-                                client: client.repo(repo),
+        task::spawn(
+            async move {
+                loop {
+                    let client = client.clone();
+                    let result: anyhow::Result<()> = match (&user, rx.recv().await) {
+                        (None, _) => Err(anyhow!("not authenticated")),
+                        (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
+                            if let Err(err) = ensure_repo_access(user, &repo) {
+                                Err(err)
+                            } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
+                                Err(err)
+                            } else {
+                                CommandHandler {
+                                    _user: user,
+                                    channel: &mut channel,
+                                    client: client.repo(repo),
+                                }
+                                .receive_pack()
+                                .await
                             }
-                            .receive_pack()
-                            .await
                         }
-                    }
-                    (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
-                        if let Err(err) = ensure_repo_access(user, &repo) {
-                            Err(err)
-                        } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
-                            Err(err)
-                        } else {
-                            CommandHandler {
-                                _user: user,
-                                channel: &mut channel,
-                                client: client.repo(repo),
+                        (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
+                            if let Err(err) = ensure_repo_access(user, &repo) {
+                                Err(err)
+                            } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
+                                Err(err)
+                            } else {
+                                CommandHandler {
+                                    _user: user,
+                                    channel: &mut channel,
+                                    client: client.repo(repo),
+                                }
+                                .upload_pack()
+                                .await
                             }
-                            .upload_pack()
-                            .await
                         }
-                    }
-                    (_, Some(Err(e))) => Err(e.into()),
-                    (_, None) => break,
-                };
+                        (_, Some(Err(e))) => Err(e.into()),
+                        (_, None) => break,
+                    };
 
-                match result {
-                    Ok(()) => {
-                        channel.exit_status(0).await.unwrap_or_default();
-                    }
-                    Err(e) => {
-                        channel
-                            .extended_data(1, format!("{e}\n").as_bytes())
-                            .await
-                            .unwrap_or_default();
-                        channel.exit_status(1).await.unwrap_or_default();
+                    match result {
+                        Ok(()) => {
+                            channel.exit_status(0).await.unwrap_or_default();
+                        }
+                        Err(e) => {
+                            channel
+                                .extended_data(1, format!("{e}\n").as_bytes())
+                                .await
+                                .unwrap_or_default();
+                            channel.exit_status(1).await.unwrap_or_default();
+                        }
                     }
                 }
-            }
 
-            channel.close().await.unwrap_or_default();
-        }.instrument(span));
+                channel.close().await.unwrap_or_default();
+            }
+            .instrument(span),
+        );
         Ok(true)
     }
 
@@ -278,10 +270,10 @@ impl Handler for ConfigHandler {
             comma::parse_command(String::from_utf8_lossy(data).as_ref()).unwrap_or(vec![]);
         args.insert(0, "ssh skyr".into());
         // Strip leading slash from repo path (ssh:// URLs produce paths like "/org/repo")
-        if let Some(repo_arg) = args.get_mut(2) {
-            if let Some(stripped) = repo_arg.strip_prefix('/') {
-                *repo_arg = stripped.to_string();
-            }
+        if let Some(repo_arg) = args.get_mut(2)
+            && let Some(stripped) = repo_arg.strip_prefix('/')
+        {
+            *repo_arg = stripped.to_string();
         }
         let result = ChannelCommand::try_parse_from(args);
         if let Some(tx) = self.channels.remove(&channel) {
@@ -324,7 +316,7 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"", futures_util::stream::iter(refs.into_iter()))
+        self.advertise_refs(b"", futures_util::stream::iter(refs))
             .await?;
 
         let mut r = self.channel.make_reader();
@@ -551,7 +543,7 @@ impl<'a> CommandHandler<'a> {
 
         self.advertise_refs(
             b"report-status delete-refs",
-            futures_util::stream::iter(refs.into_iter()),
+            futures_util::stream::iter(refs),
         )
         .await?;
 
@@ -792,9 +784,7 @@ impl<'a> CommandHandler<'a> {
                 )?;
                 let consumed = (decompressor.total_in() - before_in) as usize;
                 let produced = (decompressor.total_out() - before_out) as usize;
-                if consumed > 0 {
-                    have_input = false;
-                } else if produced == 0 {
+                if consumed > 0 || produced == 0 {
                     have_input = false;
                 }
                 written += produced;
@@ -897,18 +887,18 @@ impl<'a> CommandHandler<'a> {
 
         loop {
             let mut progress = false;
-            for entry_idx in 0..entries.len() {
-                let pack_offset = entries[entry_idx].pack_offset;
+            for entry in &mut entries {
+                let pack_offset = entry.pack_offset;
                 if oid_by_offset.contains_key(&pack_offset) {
                     continue;
                 }
-                match entries[entry_idx].header {
+                match entry.header {
                     header @ gix_pack::data::entry::Header::Commit
                     | header @ gix_pack::data::entry::Header::Tree
                     | header @ gix_pack::data::entry::Header::Blob
                     | header @ gix_pack::data::entry::Header::Tag => {
                         let kind = header.as_kind().expect("base objects have a kind");
-                        let data = entries[entry_idx]
+                        let data = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing base object data"))?;
@@ -931,7 +921,7 @@ impl<'a> CommandHandler<'a> {
                             self.client.read_raw_object(base_id).await.map_err(|err| {
                                 anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
                             })?;
-                        let delta = entries[entry_idx]
+                        let delta = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
@@ -959,7 +949,7 @@ impl<'a> CommandHandler<'a> {
                         };
                         let kind = infer_object_kind(base_id, &base_data)?;
 
-                        let delta = entries[entry_idx]
+                        let delta = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
@@ -990,7 +980,9 @@ impl<'a> CommandHandler<'a> {
             if update.new != null_oid {
                 let deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self.client.deployment(environment_id.clone(), deployment_id);
+                let deployment = self
+                    .client
+                    .deployment(environment_id.clone(), deployment_id);
                 deployment.set(DeploymentState::Desired).await?;
             }
 
@@ -1002,7 +994,9 @@ impl<'a> CommandHandler<'a> {
                 };
                 let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self.client.deployment(environment_id.clone(), old_deployment_id);
+                let deployment = self
+                    .client
+                    .deployment(environment_id.clone(), old_deployment_id);
                 let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
                 let (r1, r2) = futures::join!(
@@ -1053,9 +1047,8 @@ impl<'a> CommandHandler<'a> {
             }
 
             let git_ref = deployment.environment.to_git_ref();
-            let commit_oid = gix_hash::ObjectId::from_hex(
-                deployment.deployment.as_str().as_bytes(),
-            )?;
+            let commit_oid =
+                gix_hash::ObjectId::from_hex(deployment.deployment.as_str().as_bytes())?;
             refs.push(Reference {
                 name: gix_ref::FullName::try_from(git_ref.as_str())?,
                 target: gix_ref::Target::Object(commit_oid),

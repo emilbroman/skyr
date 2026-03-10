@@ -332,7 +332,7 @@ impl User {
     }
 
     fn fullname(&self) -> Option<&str> {
-        self.user.fullname.as_ref().map(|s| s.as_str())
+        self.user.fullname.as_deref()
     }
 }
 
@@ -379,8 +379,8 @@ impl Repository {
         }
 
         Ok(env_map
-            .into_iter()
-            .map(|(_, deployments)| {
+            .into_values()
+            .map(|deployments| {
                 let qid = deployments[0].environment_qid();
                 Environment { qid, deployments }
             })
@@ -447,9 +447,7 @@ impl Environment {
             match load_deployment_logs(context, deployment_qid.clone(), amount).await {
                 Ok(logs) => all_logs.extend(logs),
                 Err(error) => {
-                    tracing::warn!(
-                        "Failed to fetch logs for deployment {deployment_qid}: {error}"
-                    );
+                    tracing::warn!("Failed to fetch logs for deployment {deployment_qid}: {error}");
                 }
             }
         }
@@ -530,16 +528,20 @@ impl Deployment {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
-        load_deployment_logs(context, self.deployment.deployment_qid().to_string(), amount)
-            .await
-            .map_err(|error| {
-                tracing::error!(
-                    "Failed to fetch deployment logs for {}: {}",
-                    self.deployment.deployment_qid().to_string(),
-                    error
-                );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
-            })
+        load_deployment_logs(
+            context,
+            self.deployment.deployment_qid().to_string(),
+            amount,
+        )
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                "Failed to fetch deployment logs for {}: {}",
+                self.deployment.deployment_qid().to_string(),
+                error
+            );
+            juniper::FieldError::new("Internal server error", juniper::Value::Null)
+        })
     }
 }
 
@@ -649,17 +651,13 @@ impl Resource {
             .deployments()
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to list deployments for owner repository {repo_qid}: {e}"
-                );
+                tracing::error!("Failed to list deployments for owner repository {repo_qid}: {e}");
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| {
-                tracing::error!(
-                    "Failed to read deployments for owner repository {repo_qid}: {e}"
-                );
+                tracing::error!("Failed to read deployments for owner repository {repo_qid}: {e}");
                 juniper::FieldError::new("Internal server error", juniper::Value::Null)
             })?;
 
@@ -869,7 +867,9 @@ impl Subscription {
             .build_consumer()
             .await
             .map_err(|e| {
-                tracing::error!("Failed to build ldb consumer for environment logs subscription: {e}");
+                tracing::error!(
+                    "Failed to build ldb consumer for environment logs subscription: {e}"
+                );
                 juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
             })?;
 
@@ -1253,6 +1253,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[axum::debug_handler]
+#[allow(clippy::too_many_arguments)]
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
@@ -1317,6 +1318,7 @@ async fn graphiql() -> Html<String> {
 }
 
 #[axum::debug_handler]
+#[allow(clippy::too_many_arguments)]
 async fn graphql_ws_handler(
     ws: WebSocketUpgrade,
     Extension(schema): Extension<Arc<Schema>>,
@@ -1684,7 +1686,7 @@ async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, conte
 
 async fn send_ws_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
     socket
-        .send(WsMessage::Text(value.to_string().into()))
+        .send(WsMessage::Text(value.to_string()))
         .await
         .is_ok()
 }

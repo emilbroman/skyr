@@ -53,12 +53,9 @@ impl SourceRepo for cdb::DeploymentClient {
 
     fn package_id(&self) -> ModuleId {
         let repo_qid = self.repo_qid();
-        [
-            repo_qid.org.to_string(),
-            repo_qid.repo.to_string(),
-        ]
-        .into_iter()
-        .collect::<ModuleId>()
+        [repo_qid.org.to_string(), repo_qid.repo.to_string()]
+            .into_iter()
+            .collect::<ModuleId>()
     }
 
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {

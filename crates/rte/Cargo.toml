@@ -15,3 +15,6 @@ sclc = { path = "../sclc" }
 serde_json = "1.0.149"
 rdb = { path = "../rdb" }
 ldb = { path = "../ldb" }
+
+[lints]
+workspace = true

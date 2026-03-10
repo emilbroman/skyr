@@ -93,7 +93,9 @@ fn is_valid_symbol(s: &str) -> bool {
 
 /// Returns `true` if `s` is a valid 40-character lowercase hexadecimal string.
 fn is_valid_oid_hex(s: &str) -> bool {
-    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    s.len() == 40
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 // ---------------------------------------------------------------------------
@@ -121,7 +123,9 @@ pub enum ParseIdError {
     #[error("invalid deployment ID: {0:?} (must be 40-char lowercase hex)")]
     InvalidDeploymentId(String),
 
-    #[error("invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@DeploymentId)")]
+    #[error(
+        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@DeploymentId)"
+    )]
     InvalidDeploymentQid(String),
 
     #[error("invalid git ref: {0:?} (expected refs/heads/... or refs/tags/...)")]
@@ -575,10 +579,7 @@ impl DeploymentId {
                 bytes.len()
             )));
         }
-        let hex = bytes
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>();
+        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
         Ok(Self(hex))
     }
 
@@ -798,9 +799,7 @@ mod tests {
 
     #[test]
     fn deployment_id_valid() {
-        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
-            .parse()
-            .unwrap();
+        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
         assert_eq!(id.as_str(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
     }
 
@@ -821,9 +820,7 @@ mod tests {
 
     #[test]
     fn deployment_id_bytes_roundtrip() {
-        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
-            .parse()
-            .unwrap();
+        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
         let bytes = id.to_bytes();
         let id2 = DeploymentId::from_bytes(&bytes).unwrap();
         assert_eq!(id, id2);

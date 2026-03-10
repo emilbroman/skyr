@@ -1,5 +1,5 @@
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-#[repr(packed)]
+#[repr(C, packed)]
 pub struct Position {
     line: u32,
     character: u32,

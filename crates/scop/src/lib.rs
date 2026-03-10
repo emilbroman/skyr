@@ -71,8 +71,8 @@ pub use proto::{
     ClosePortResponse, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
     CreatePodRequest, CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue,
     NodeCapacity, NodeUsage, OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest,
-    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse, RemovePodRequest,
-    RemovePodResponse, RemoveOverlayPeerRequest, RemoveOverlayPeerResponse,
+    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse,
+    RemoveOverlayPeerRequest, RemoveOverlayPeerResponse, RemovePodRequest, RemovePodResponse,
     StartContainerRequest, StartContainerResponse, StopContainerRequest, StopContainerResponse,
     UnregisterNodeRequest, UnregisterNodeResponse,
 };
@@ -196,7 +196,10 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
         &self,
         request: tonic::Request<RegisterNodeRequest>,
     ) -> Result<tonic::Response<RegisterNodeResponse>, tonic::Status> {
-        let response = self.orchestrator.register_node(request.into_inner()).await?;
+        let response = self
+            .orchestrator
+            .register_node(request.into_inner())
+            .await?;
         Ok(tonic::Response::new(response))
     }
 
@@ -212,7 +215,10 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
         &self,
         request: tonic::Request<UnregisterNodeRequest>,
     ) -> Result<tonic::Response<UnregisterNodeResponse>, tonic::Status> {
-        let response = self.orchestrator.unregister_node(request.into_inner()).await?;
+        let response = self
+            .orchestrator
+            .unregister_node(request.into_inner())
+            .await?;
         Ok(tonic::Response::new(response))
     }
 }
@@ -311,10 +317,7 @@ pub trait Conduit: Send + Sync + 'static {
     ) -> Result<RemoveOverlayPeerResponse, tonic::Status>;
 
     /// Open an ingress firewall port on a pod.
-    async fn open_port(
-        &self,
-        request: OpenPortRequest,
-    ) -> Result<OpenPortResponse, tonic::Status>;
+    async fn open_port(&self, request: OpenPortRequest) -> Result<OpenPortResponse, tonic::Status>;
 
     /// Close an ingress firewall port on a pod.
     async fn close_port(
