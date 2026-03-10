@@ -783,14 +783,20 @@ impl ContainerPlugin {
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let pod_name = inputs
-            .get("podName")
+        let pod_id = inputs
+            .get("podId")
             .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?;
+            .map_err(|e| PluginError::InvalidInput(format!("podId: {e}")))?
+            .to_string();
         let pod_address = inputs
             .get("podAddress")
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("podAddress: {e}")))?
+            .to_string();
+        let node_name = inputs
+            .get("node")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("node: {e}")))?
             .to_string();
         let port = inputs
             .get("port")
@@ -805,15 +811,26 @@ impl ContainerPlugin {
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
-            pod_name = %pod_name,
+            pod_id = %pod_id,
+            node = %node_name,
             port = %port,
             protocol = %protocol,
             "creating pod port"
         );
 
+        // Open the firewall port on the target node via SCOC
+        let mut conduit = self.get_conduit(&node_name).await?;
+        conduit
+            .open_port(scop::OpenPortRequest {
+                pod_id,
+                port: *port as i32,
+                protocol: protocol.clone(),
+            })
+            .await
+            .map_err(|e| PluginError::Connect(format!("open_port failed: {e}")))?;
+
         // Build outputs — the port resource records which address/port/protocol
-        // is now open. Actual firewall rule application is handled by SCOC when
-        // network namespaces are in place.
+        // is now open.
         let mut outputs = sclc::Record::default();
         outputs.insert(String::from("address"), Value::Str(pod_address));
         outputs.insert(String::from("port"), Value::Int(*port));
@@ -865,11 +882,50 @@ impl ContainerPlugin {
     async fn delete_port(
         &self,
         id: sclc::ResourceId,
-        _inputs: sclc::Record,
+        inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        // Firewall rule cleanup will be handled by SCOC in a future phase.
-        // For now, the port resource is purely declarative.
+        let pod_id = inputs.get("podId").assert_str_ref().ok().map(String::from);
+        let node_name = inputs.get("node").assert_str_ref().ok().map(String::from);
+        let port = inputs.get("port").assert_int_ref().ok().copied();
+        let protocol = inputs
+            .get("protocol")
+            .assert_str_ref()
+            .ok()
+            .map(String::from);
+
+        if let (Some(pod_id), Some(node_name), Some(port), Some(protocol)) =
+            (pod_id, node_name, port, protocol)
+        {
+            match self.get_conduit(&node_name).await {
+                Ok(mut conduit) => {
+                    if let Err(e) = conduit
+                        .close_port(scop::ClosePortRequest {
+                            pod_id: pod_id.clone(),
+                            port: port as i32,
+                            protocol,
+                        })
+                        .await
+                    {
+                        warn!(
+                            resource_id = %id.id,
+                            pod_id = %pod_id,
+                            error = %e,
+                            "failed to close port (pod may already be gone)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        resource_id = %id.id,
+                        node = %node_name,
+                        error = %e,
+                        "failed to connect to node for port close (node may be gone)"
+                    );
+                }
+            }
+        }
+
         info!(
             resource_type = %id.ty,
             resource_id = %id.id,
@@ -971,6 +1027,33 @@ fn extract_allowed_destinations(
         other => Err(PluginError::InvalidInput(format!(
             "allow: expected List? but got {other}"
         ))),
+    }
+}
+
+/// Extract the host IP from a conduit address like "http://192.168.1.10:50054".
+fn extract_overlay_endpoint(addr: &str) -> Option<String> {
+    let without_scheme = addr.split("://").nth(1).unwrap_or(addr);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    if authority.starts_with('[') {
+        // IPv6
+        Some(
+            authority
+                .split(']')
+                .next()
+                .unwrap_or(authority)
+                .trim_start_matches('[')
+                .to_owned(),
+        )
+    } else {
+        let host = authority
+            .rsplit_once(':')
+            .map(|(h, _)| h)
+            .unwrap_or(authority);
+        if host.is_empty() {
+            None
+        } else {
+            Some(host.to_owned())
+        }
     }
 }
 
@@ -1128,6 +1211,16 @@ impl scop::Orchestrator for ContainerPlugin {
             max_pods: capacity.max_pods,
         };
 
+        // Extract overlay endpoint (host IP) from conduit address
+        let overlay_endpoint = extract_overlay_endpoint(&request.conduit_address)
+            .unwrap_or_default();
+
+        // List existing nodes before registering (for peer notification)
+        let existing_nodes = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry.list().await.unwrap_or_default()
+        };
+
         let mut registry = self.inner.node_registry.write().await;
         match registry
             .register(
@@ -1135,6 +1228,8 @@ impl scop::Orchestrator for ContainerPlugin {
                 &request.conduit_address,
                 node_capacity,
                 request.labels,
+                &pod_cidr,
+                &overlay_endpoint,
             )
             .await
         {
@@ -1142,8 +1237,74 @@ impl scop::Orchestrator for ContainerPlugin {
                 info!(
                     node_name = %node.name,
                     pod_cidr = %pod_cidr,
+                    overlay_endpoint = %overlay_endpoint,
                     "node registered successfully"
                 );
+                // Drop registry lock before peer notification
+                drop(registry);
+
+                // Notify existing nodes about the new peer, and the new node
+                // about existing peers (overlay mesh setup)
+                if !overlay_endpoint.is_empty() {
+                    for existing in &existing_nodes {
+                        if existing.overlay_endpoint.is_empty() {
+                            continue;
+                        }
+
+                        // Tell existing node about new peer
+                        match scop::ConduitClient::connect(existing.address.clone()).await {
+                            Ok(mut client) => {
+                                if let Err(e) = client
+                                    .add_overlay_peer(scop::AddOverlayPeerRequest {
+                                        peer_host_ip: overlay_endpoint.clone(),
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        node = %existing.name,
+                                        peer = %overlay_endpoint,
+                                        error = %e,
+                                        "failed to notify existing node about new peer"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    node = %existing.name,
+                                    error = %e,
+                                    "failed to connect to existing node for peer notification"
+                                );
+                            }
+                        }
+
+                        // Tell new node about existing peer
+                        match scop::ConduitClient::connect(request.conduit_address.clone()).await {
+                            Ok(mut client) => {
+                                if let Err(e) = client
+                                    .add_overlay_peer(scop::AddOverlayPeerRequest {
+                                        peer_host_ip: existing.overlay_endpoint.clone(),
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        node = %request.node_name,
+                                        peer = %existing.overlay_endpoint,
+                                        error = %e,
+                                        "failed to notify new node about existing peer"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    node = %request.node_name,
+                                    error = %e,
+                                    "failed to connect to new node for peer notification"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 Ok(scop::RegisterNodeResponse {
                     success: true,
                     error: String::new(),
@@ -1153,6 +1314,7 @@ impl scop::Orchestrator for ContainerPlugin {
             }
             Err(e) => {
                 // Release the subnet on registry failure
+                drop(registry);
                 let mut allocator = self.inner.subnet_allocator.write().await;
                 allocator.release(&request.node_name);
 
@@ -1198,6 +1360,17 @@ impl scop::Orchestrator for ContainerPlugin {
     ) -> Result<scop::UnregisterNodeResponse, scop::tonic::Status> {
         info!(node_name = %request.node_name, "unregistering node");
 
+        // Read departing node info before unregistering (for overlay endpoint)
+        let departing_endpoint = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry
+                .get(&request.node_name)
+                .await
+                .ok()
+                .map(|n| n.overlay_endpoint.clone())
+                .unwrap_or_default()
+        };
+
         // Release the node's subnet allocation
         {
             let mut allocator = self.inner.subnet_allocator.write().await;
@@ -1208,6 +1381,43 @@ impl scop::Orchestrator for ContainerPlugin {
         match registry.unregister(&request.node_name).await {
             Ok(()) => {
                 info!(node_name = %request.node_name, "node unregistered successfully");
+
+                // Notify remaining nodes to remove the departing peer
+                if !departing_endpoint.is_empty() {
+                    let remaining_nodes = registry.list().await.unwrap_or_default();
+                    drop(registry);
+
+                    for node in &remaining_nodes {
+                        if node.overlay_endpoint.is_empty() {
+                            continue;
+                        }
+                        match scop::ConduitClient::connect(node.address.clone()).await {
+                            Ok(mut client) => {
+                                if let Err(e) = client
+                                    .remove_overlay_peer(scop::RemoveOverlayPeerRequest {
+                                        peer_host_ip: departing_endpoint.clone(),
+                                    })
+                                    .await
+                                {
+                                    warn!(
+                                        node = %node.name,
+                                        peer = %departing_endpoint,
+                                        error = %e,
+                                        "failed to notify node about peer removal"
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!(
+                                    node = %node.name,
+                                    error = %e,
+                                    "failed to connect to node for peer removal"
+                                );
+                            }
+                        }
+                    }
+                }
+
                 Ok(scop::UnregisterNodeResponse { success: true })
             }
             Err(e) => {

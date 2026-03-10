@@ -133,6 +133,18 @@ service Conduit {
 
   // RemoveContainer removes a container.
   rpc RemoveContainer(RemoveContainerRequest) returns (RemoveContainerResponse);
+
+  // AddOverlayPeer adds a VXLAN overlay peer for cross-node pod communication.
+  rpc AddOverlayPeer(AddOverlayPeerRequest) returns (AddOverlayPeerResponse);
+
+  // RemoveOverlayPeer removes a VXLAN overlay peer.
+  rpc RemoveOverlayPeer(RemoveOverlayPeerRequest) returns (RemoveOverlayPeerResponse);
+
+  // OpenPort opens an ingress firewall port on a pod.
+  rpc OpenPort(OpenPortRequest) returns (OpenPortResponse);
+
+  // ClosePort closes an ingress firewall port on a pod.
+  rpc ClosePort(ClosePortRequest) returns (ClosePortResponse);
 }
 
 // ============================================================================
@@ -249,3 +261,51 @@ message KeyValue {
   string key = 1;
   string value = 2;
 }
+
+// ============================================================================
+// Overlay Network Messages
+// ============================================================================
+
+// Request to add a VXLAN overlay peer.
+message AddOverlayPeerRequest {
+  // The remote node's underlay IP address for VXLAN tunneling.
+  string peer_host_ip = 1;
+}
+
+// Response from adding an overlay peer.
+message AddOverlayPeerResponse {}
+
+// Request to remove a VXLAN overlay peer.
+message RemoveOverlayPeerRequest {
+  // The remote node's underlay IP address.
+  string peer_host_ip = 1;
+}
+
+// Response from removing an overlay peer.
+message RemoveOverlayPeerResponse {}
+
+// Request to open an ingress firewall port on a pod.
+message OpenPortRequest {
+  // The pod identifier.
+  string pod_id = 1;
+  // The port number to open.
+  int32 port = 2;
+  // The protocol: "tcp" or "udp".
+  string protocol = 3;
+}
+
+// Response from opening a port.
+message OpenPortResponse {}
+
+// Request to close an ingress firewall port on a pod.
+message ClosePortRequest {
+  // The pod identifier.
+  string pod_id = 1;
+  // The port number to close.
+  int32 port = 2;
+  // The protocol: "tcp" or "udp".
+  string protocol = 3;
+}
+
+// Response from closing a port.
+message ClosePortResponse {}

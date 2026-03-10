@@ -148,6 +148,8 @@ struct PodInfo {
     name: String,
     /// Allocated IP address for the pod.
     ip: Ipv4Addr,
+    /// Path to the pod's network namespace (for port opening/closing).
+    netns_path: String,
 }
 
 /// Tracked container info for log streaming lifecycle.
@@ -385,6 +387,7 @@ impl scop::Conduit for CriConduit {
                     environment_qid: config.environment_qid,
                     name: config.name,
                     ip,
+                    netns_path,
                 },
             );
         }
@@ -515,6 +518,55 @@ impl scop::Conduit for CriConduit {
         }
 
         Ok(scop::RemoveContainerResponse {})
+    }
+
+    async fn add_overlay_peer(
+        &self,
+        request: scop::AddOverlayPeerRequest,
+    ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
+        net::add_overlay_peer(&request.peer_host_ip)
+            .map_err(|e| scop::tonic::Status::internal(format!("add overlay peer failed: {e:#}")))?;
+        Ok(scop::AddOverlayPeerResponse {})
+    }
+
+    async fn remove_overlay_peer(
+        &self,
+        request: scop::RemoveOverlayPeerRequest,
+    ) -> Result<scop::RemoveOverlayPeerResponse, scop::tonic::Status> {
+        net::remove_overlay_peer(&request.peer_host_ip)
+            .map_err(|e| scop::tonic::Status::internal(format!("remove overlay peer failed: {e:#}")))?;
+        Ok(scop::RemoveOverlayPeerResponse {})
+    }
+
+    async fn open_port(
+        &self,
+        request: scop::OpenPortRequest,
+    ) -> Result<scop::OpenPortResponse, scop::tonic::Status> {
+        let pods = self.pods.lock().await;
+        let pod = pods.get(&request.pod_id).ok_or_else(|| {
+            scop::tonic::Status::not_found(format!("pod not found: {}", request.pod_id))
+        })?;
+        net::open_port(&pod.netns_path, request.port, &request.protocol)
+            .map_err(|e| scop::tonic::Status::internal(format!("open port failed: {e:#}")))?;
+        Ok(scop::OpenPortResponse {})
+    }
+
+    async fn close_port(
+        &self,
+        request: scop::ClosePortRequest,
+    ) -> Result<scop::ClosePortResponse, scop::tonic::Status> {
+        let pods = self.pods.lock().await;
+        let Some(pod) = pods.get(&request.pod_id) else {
+            // Pod already gone — treat as success (idempotent)
+            tracing::warn!(
+                pod_id = %request.pod_id,
+                "close_port: pod not found, treating as success"
+            );
+            return Ok(scop::ClosePortResponse {});
+        };
+        net::close_port(&pod.netns_path, request.port, &request.protocol)
+            .map_err(|e| scop::tonic::Status::internal(format!("close port failed: {e:#}")))?;
+        Ok(scop::ClosePortResponse {})
     }
 }
 
@@ -675,6 +727,10 @@ async fn main() -> Result<()> {
             // Set up the pod bridge network with the assigned CIDR
             net::setup_bridge(&pod_cidr)?;
 
+            // Set up VXLAN overlay for cross-node pod communication
+            let local_ip = extract_host_from_address(&conduit_address);
+            net::setup_vxlan(&local_ip)?;
+
             let ipam = net::Ipam::new(pod_cidr);
             let dns_servers = net::host_nameservers();
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
@@ -730,6 +786,9 @@ async fn main() -> Result<()> {
 
             // Cancel heartbeat task
             heartbeat_handle.abort();
+
+            // Tear down VXLAN overlay
+            let _ = net::teardown_vxlan();
 
             // Tear down pod bridge network
             if let Err(e) = net::teardown_bridge(&pod_cidr) {
@@ -832,4 +891,33 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Extract the host IP from a conduit address like "http://192.168.1.10:50054".
+fn extract_host_from_address(addr: &str) -> String {
+    // Strip scheme (e.g., "http://")
+    let without_scheme = addr
+        .split("://")
+        .nth(1)
+        .unwrap_or(addr);
+    // Strip path
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    // Strip port
+    // Handle IPv6 addresses in brackets: [::1]:port
+    if authority.starts_with('[') {
+        // IPv6: [host]:port
+        authority
+            .split(']')
+            .next()
+            .unwrap_or(authority)
+            .trim_start_matches('[')
+            .to_owned()
+    } else {
+        // IPv4 or hostname: host:port
+        authority
+            .rsplit_once(':')
+            .map(|(host, _)| host)
+            .unwrap_or(authority)
+            .to_owned()
+    }
 }
