@@ -179,7 +179,7 @@ Exception types are defined with the `exception` keyword and can optionally carr
 
 ```scl
 let NotFound = exception           // No payload
-let ParseError = exception: Str    // Carries a Str (note the colon)
+let ParseError = exception(Str)    // Carries a Str payload
 ```
 
 Exceptions are raised with `raise` and caught with `try`/`catch` (see [Syntax Reference](syntax.md#exceptions)).

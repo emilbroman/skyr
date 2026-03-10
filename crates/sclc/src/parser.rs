@@ -431,13 +431,12 @@ peg::parser! {
             }
 
         rule exception_expr() -> Loc<Expr>
-            = exception_kw_span:exception_keyword() colon() ty:type_expr() {
+            = exception_kw_span:exception_keyword() open_paren() ty:type_expr() end:close_paren() {
                 let id = *exception_id;
                 *exception_id += 1;
-                let end = ty.span().end();
                 Loc::new(
                     Expr::Exception(ExceptionExpr { exception_id: id, ty: Some(ty) }),
-                    Span::new(exception_kw_span.start(), end),
+                    Span::new(exception_kw_span.start(), end.end()),
                 )
             }
             / exception_kw_span:exception_keyword() {
