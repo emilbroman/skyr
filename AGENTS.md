@@ -2,10 +2,6 @@
 
 This file contains guidance for AI agents working on the Skyr codebase. For architecture and crate descriptions, see the [README](README.md) and individual crate READMEs. For end-user documentation, see [docs/](docs/index.md).
 
-## Practical Guidance
-
-`docs/index.md` describes the target system. Treat it as design, not current behavior — see individual crate READMEs for what is actually implemented.
-
 ### Conventions and Gotchas
 
 - Keep deployment state transitions coherent across `scs` and `de`.
@@ -24,8 +20,14 @@ This file contains guidance for AI agents working on the Skyr codebase. For arch
 See the [README](README.md#running-locally) for full service and port listings.
 
 For manual testing:
-- Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222`.
-- Start individual services with `cargo run -p <crate> -- daemon` with appropriate flags.
+- Build the CLI with `cargo build -p cli`
+- Run `make up`
+- Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222` for the repo `test/test`.
+- Run `git push`
+- The server will be protected by key auth, so if the server rejects the SSH connection, run `skyr signup --username test --email test@test.com` (`skyr` will be at `target/debug/skyr`)
+- The server also requires creating the repo before making the first push, so if it rejects a push for that reason, run `skyr repo create test/test`
+- Make any changes you want to the `.scl` files in `test-repo` (they aren't checked into Git)
+- Make any commits and pushes you want in `test-repo` too
 
 ## Environment Notes
 
