@@ -28,6 +28,7 @@ std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",
     encoding => "Encoding.scl",
+    list => "List.scl",
     num => "Num.scl",
     random => "Random.scl",
 }
