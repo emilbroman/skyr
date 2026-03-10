@@ -9,7 +9,7 @@ use crate::{
     ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
     ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
     RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
-    TypeExpr, UnaryExpr, UnaryOp, Var,
+    TypeExpr, TypeParam, UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -309,8 +309,12 @@ peg::parser! {
                 }), Span::new(fn_kw_span.start(), end))
             }
 
-        rule type_params() -> Vec<Loc<Var>>
-            = less() params:(var() ++ comma()) comma()? greater() { params }
+        rule type_param() -> TypeParam
+            = v:var() less_colon() bound:type_expr() { TypeParam { var: v, bound: Some(bound) } }
+            / v:var() { TypeParam { var: v, bound: None } }
+
+        rule type_params() -> Vec<TypeParam>
+            = less() params:(type_param() ++ comma()) comma()? greater() { params }
 
         rule fn_params() -> Vec<FnParam>
             = params:(fn_param() ++ comma()) comma()? { params }
@@ -743,6 +747,11 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::Less)] { token.span() }
             }
             / expected!("<")
+        rule less_colon() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::LessColon)] { token.span() }
+            }
+            / expected!("<:")
         rule less_eq() -> Span
             = quiet!{
                 [token if matches!(token.as_ref(), Token::LessEq)] { token.span() }

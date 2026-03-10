@@ -353,8 +353,14 @@ pub struct PropertyAccessExpr {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeParam {
+    pub var: Loc<Var>,
+    pub bound: Option<Loc<TypeExpr>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnExpr {
-    pub type_params: Vec<Loc<Var>>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<FnParam>,
     pub body: Box<Loc<Expr>>,
 }
@@ -377,7 +383,7 @@ pub enum TypeExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnTypeExpr {
-    pub type_params: Vec<Loc<Var>>,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Loc<TypeExpr>>,
     pub ret: Box<Loc<TypeExpr>>,
 }

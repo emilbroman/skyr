@@ -24,6 +24,7 @@ pub enum Token<'a> {
     Star,
     BangEq,
     Less,
+    LessColon,
     LessEq,
     Greater,
     GreaterEq,
@@ -464,7 +465,10 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                 }
                 "<" => {
-                    if let Some((_, "=")) = self.graphemes.peek().copied() {
+                    if let Some((_, ":")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::LessColon
+                    } else if let Some((_, "=")) = self.graphemes.peek().copied() {
                         self.next_grapheme().expect("peek returned Some");
                         Token::LessEq
                     } else {
