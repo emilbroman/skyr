@@ -249,3 +249,102 @@ impl std::fmt::Display for DictType {
         write!(f, "#{{{}: {}}}", self.key, self.value)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typevar_name_letters() {
+        assert_eq!(typevar_name(0), "A");
+        assert_eq!(typevar_name(1), "B");
+        assert_eq!(typevar_name(25), "Z");
+        assert_eq!(typevar_name(26), "A1");
+        assert_eq!(typevar_name(27), "B1");
+        assert_eq!(typevar_name(52), "A2");
+    }
+
+    #[test]
+    fn display_var_without_scope_falls_back() {
+        let ty = Type::Var(99);
+        assert_eq!(ty.to_string(), "T99");
+    }
+
+    #[test]
+    fn display_generic_fn_single_param() {
+        // fn<A>(A) A
+        let ty = Type::Fn(FnType {
+            type_params: vec![10],
+            params: vec![Type::Var(10)],
+            ret: Box::new(Type::Var(10)),
+        });
+        assert_eq!(ty.to_string(), "fn<A>(A) A");
+    }
+
+    #[test]
+    fn display_generic_fn_two_params() {
+        // fn<A, B>(A, B) A
+        let ty = Type::Fn(FnType {
+            type_params: vec![5, 6],
+            params: vec![Type::Var(5), Type::Var(6)],
+            ret: Box::new(Type::Var(5)),
+        });
+        assert_eq!(ty.to_string(), "fn<A, B>(A, B) A");
+    }
+
+    #[test]
+    fn display_non_generic_fn() {
+        let ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int, Type::Str],
+            ret: Box::new(Type::Bool),
+        });
+        assert_eq!(ty.to_string(), "fn(Int, Str) Bool");
+    }
+
+    #[test]
+    fn display_generic_fn_with_complex_types() {
+        // fn<A>(A, [A]) A?
+        let ty = Type::Fn(FnType {
+            type_params: vec![42],
+            params: vec![
+                Type::Var(42),
+                Type::List(Box::new(Type::Var(42))),
+            ],
+            ret: Box::new(Type::Optional(Box::new(Type::Var(42)))),
+        });
+        assert_eq!(ty.to_string(), "fn<A>(A, [A]) A?");
+    }
+
+    #[test]
+    fn display_nested_generic_fns() {
+        // Outer fn has type param id=1, inner has id=2.
+        // When outer formats: stack = [1], so Var(1) = A.
+        // When inner formats: stack = [1, 2], so Var(2) = B, Var(1) = A.
+        let inner = Type::Fn(FnType {
+            type_params: vec![2],
+            params: vec![Type::Var(2)],
+            ret: Box::new(Type::Var(1)),
+        });
+        let outer = Type::Fn(FnType {
+            type_params: vec![1],
+            params: vec![Type::Var(1)],
+            ret: Box::new(inner),
+        });
+        assert_eq!(outer.to_string(), "fn<A>(A) fn<B>(B) A");
+    }
+
+    #[test]
+    fn display_stack_cleaned_up_after_formatting() {
+        // Format a generic fn, then check that a bare Var falls back.
+        let generic = Type::Fn(FnType {
+            type_params: vec![7],
+            params: vec![Type::Var(7)],
+            ret: Box::new(Type::Var(7)),
+        });
+        assert_eq!(generic.to_string(), "fn<A>(A) A");
+
+        let bare = Type::Var(7);
+        assert_eq!(bare.to_string(), "T7");
+    }
+}
