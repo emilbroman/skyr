@@ -348,9 +348,10 @@ peg::parser! {
             }
 
         rule type_expr_fn() -> Loc<TypeExpr>
-            = fn_kw_span:fn_keyword() open_paren() params:type_expr_params() close_paren() ret:type_expr() {
+            = fn_kw_span:fn_keyword() tp:type_params()? open_paren() params:type_expr_params() close_paren() ret:type_expr() {
                 let end = ret.span().end();
                 Loc::new(TypeExpr::Fn(crate::FnTypeExpr {
+                    type_params: tp.unwrap_or_default(),
                     params,
                     ret: Box::new(ret),
                 }), Span::new(fn_kw_span.start(), end))

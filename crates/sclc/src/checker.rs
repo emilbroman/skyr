@@ -495,6 +495,60 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     rhs.clone(),
                 ))),
             },
+            Type::Fn(lhs_fn) => match rhs {
+                Type::Fn(rhs_fn) => {
+                    if lhs_fn.type_params.len() != rhs_fn.type_params.len() {
+                        return Err(TypeError::new(TypeIssue::Mismatch(
+                            lhs.clone(),
+                            rhs.clone(),
+                        )));
+                    }
+                    if lhs_fn.params.len() != rhs_fn.params.len() {
+                        return Err(TypeError::new(TypeIssue::Mismatch(
+                            lhs.clone(),
+                            rhs.clone(),
+                        )));
+                    }
+                    // Alpha-rename: map rhs type param IDs to lhs type param IDs
+                    let rhs_fn = if !lhs_fn.type_params.is_empty() {
+                        let replacements: Vec<(usize, Type)> = rhs_fn
+                            .type_params
+                            .iter()
+                            .zip(lhs_fn.type_params.iter())
+                            .map(|(rhs_id, lhs_id)| (*rhs_id, Type::Var(*lhs_id)))
+                            .collect();
+                        std::borrow::Cow::Owned(FnType {
+                            type_params: lhs_fn.type_params.clone(),
+                            params: rhs_fn
+                                .params
+                                .iter()
+                                .map(|p| p.substitute(&replacements))
+                                .collect(),
+                            ret: Box::new(rhs_fn.ret.substitute(&replacements)),
+                        })
+                    } else {
+                        std::borrow::Cow::Borrowed(rhs_fn)
+                    };
+                    // Contravariant params: rhs param must be assignable to lhs param
+                    for (lhs_param, rhs_param) in
+                        lhs_fn.params.iter().zip(rhs_fn.params.iter())
+                    {
+                        self.assign_type(lhs_param, rhs_param).map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    }
+                    // Covariant return
+                    self.assign_type(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref())
+                        .map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    Ok(())
+                }
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
             _ => Err(TypeError::new(TypeIssue::Mismatch(
                 lhs.clone(),
                 rhs.clone(),
@@ -1395,14 +1449,22 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Type::List(Box::new(inner_ty))
             }
             ast::TypeExpr::Fn(fn_ty) => {
+                let mut fn_env = env.inner();
+                let mut type_param_ids = Vec::with_capacity(fn_ty.type_params.len());
+                for type_param in &fn_ty.type_params {
+                    let type_id = next_type_id();
+                    type_param_ids.push(type_id);
+                    fn_env =
+                        fn_env.with_type_var(type_param.name.clone(), Type::Var(type_id));
+                }
                 let params = fn_ty
                     .params
                     .iter()
-                    .map(|param| self.resolve_type_expr(env, param).unpack(&mut diags))
+                    .map(|param| self.resolve_type_expr(&fn_env, param).unpack(&mut diags))
                     .collect();
-                let ret = self.resolve_type_expr(env, &fn_ty.ret).unpack(&mut diags);
+                let ret = self.resolve_type_expr(&fn_env, &fn_ty.ret).unpack(&mut diags);
                 Type::Fn(FnType {
-                    type_params: vec![],
+                    type_params: type_param_ids,
                     params,
                     ret: Box::new(ret),
                 })

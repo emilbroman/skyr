@@ -377,6 +377,7 @@ pub enum TypeExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnTypeExpr {
+    pub type_params: Vec<Loc<Var>>,
     pub params: Vec<Loc<TypeExpr>>,
     pub ret: Box<Loc<TypeExpr>>,
 }
