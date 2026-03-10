@@ -120,14 +120,14 @@ prepared_statements! {
             )
         "#,
 
-        create_supercessions_table = r#"
-            CREATE TABLE IF NOT EXISTS cdb.supercessions (
+        create_supersessions_table = r#"
+            CREATE TABLE IF NOT EXISTS cdb.supersessions (
                 organization TEXT,
                 repository TEXT,
                 environment_id TEXT,
-                superceding_commit_hash BLOB,
-                superceded_commit_hash BLOB,
-                PRIMARY KEY ((organization), repository, environment_id, superceded_commit_hash)
+                superseding_commit_hash BLOB,
+                superseded_commit_hash BLOB,
+                PRIMARY KEY ((organization), repository, environment_id, superseded_commit_hash)
             )
         "#,
     }
@@ -227,32 +227,32 @@ prepared_statements! {
             AND commit_hash = ?
         "#,
 
-        create_supercession = r#"
-            UPDATE cdb.supercessions
-            SET superceding_commit_hash = ?
+        create_supersession = r#"
+            UPDATE cdb.supersessions
+            SET superseding_commit_hash = ?
             WHERE organization = ?
             AND repository = ?
             AND environment_id = ?
-            AND superceded_commit_hash = ?
+            AND superseded_commit_hash = ?
         "#,
 
-        get_superceded_commits = r#"
-            SELECT superceded_commit_hash
-            FROM cdb.supercessions
+        get_superseded_commits = r#"
+            SELECT superseded_commit_hash
+            FROM cdb.supersessions
             WHERE organization = ?
             AND repository = ?
             AND environment_id = ?
-            AND superceding_commit_hash = ?
+            AND superseding_commit_hash = ?
             ALLOW FILTERING
         "#,
 
-        get_superceding_commit = r#"
-            SELECT superceding_commit_hash
-            FROM cdb.supercessions
+        get_superseding_commit = r#"
+            SELECT superseding_commit_hash
+            FROM cdb.supersessions
             WHERE organization = ?
             AND repository = ?
             AND environment_id = ?
-            AND superceded_commit_hash = ?
+            AND superseded_commit_hash = ?
         "#,
     }
 }
@@ -289,7 +289,7 @@ impl ClientBuilder {
             session.execute_unpaged(&statements.create_active_deployments_table, ()),
             session.execute_unpaged(&statements.create_deployments_by_id_table, ()),
             session.execute_unpaged(&statements.create_objects_table, ()),
-            session.execute_unpaged(&statements.create_supercessions_table, ()),
+            session.execute_unpaged(&statements.create_supersessions_table, ()),
         );
         r0?;
         r1?;
@@ -1020,19 +1020,19 @@ pub enum SetDeploymentError {
 }
 
 impl DeploymentClient {
-    pub async fn mark_superceded_by(
+    pub async fn mark_superseded_by(
         &self,
-        superceding_commit: &DeploymentId,
+        superseding_commit: &DeploymentId,
     ) -> Result<(), SetDeploymentError> {
-        let superceding_oid = deployment_id_to_oid(superceding_commit);
+        let superseding_oid = deployment_id_to_oid(superseding_commit);
         let this_oid = self.commit_hash();
         self.repo
             .client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.create_supercession,
+                &self.repo.client.statements.create_supersession,
                 (
-                    superceding_oid.as_bytes(),
+                    superseding_oid.as_bytes(),
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
                     self.environment.as_str(),
@@ -1043,14 +1043,14 @@ impl DeploymentClient {
         Ok(())
     }
 
-    pub async fn superceded(&self) -> Result<Vec<DeploymentClient>, DeploymentQueryError> {
+    pub async fn superseded(&self) -> Result<Vec<DeploymentClient>, DeploymentQueryError> {
         let this_oid = self.commit_hash();
         let pager = self
             .repo
             .client
             .session
             .execute_iter(
-                self.repo.client.statements.get_superceded_commits.clone(),
+                self.repo.client.statements.get_superseded_commits.clone(),
                 (
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
@@ -1060,7 +1060,7 @@ impl DeploymentClient {
             )
             .await?;
 
-        let superceded = pager
+        let superseded = pager
             .rows_stream::<(Vec<u8>,)>()?
             .map(|row| {
                 let (commit_hash,) = row?;
@@ -1073,17 +1073,17 @@ impl DeploymentClient {
             .try_collect::<Vec<_>>()
             .await?;
 
-        Ok(superceded)
+        Ok(superseded)
     }
 
-    pub async fn get_superceding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
+    pub async fn get_superseding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
         let this_oid = self.commit_hash();
         let r = self
             .repo
             .client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.get_superceding_commit,
+                &self.repo.client.statements.get_superseding_commit,
                 (
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
@@ -1096,8 +1096,8 @@ impl DeploymentClient {
         Ok(r.into_rows_result()?
             .single_row::<(Vec<u8>,)>()
             .ok()
-            .and_then(|(superceding,)| {
-                let deploy_id = DeploymentId::from_bytes(&superceding).ok()?;
+            .and_then(|(superseding,)| {
+                let deploy_id = DeploymentId::from_bytes(&superseding).ok()?;
                 Some(self.repo.deployment(self.environment.clone(), deploy_id))
             }))
     }

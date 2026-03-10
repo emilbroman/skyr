@@ -207,16 +207,16 @@ impl Worker {
 
                 match completeness {
                     EvalCompleteness::Complete => {
-                        for superceded in self.client.superceded().await? {
-                            let superceded_deployment = superceded.get().await?;
-                            if superceded_deployment.state == DeploymentState::Lingering {
-                                superceded.set(DeploymentState::Undesired).await?;
+                        for superseded in self.client.superseded().await? {
+                            let superseded_deployment = superseded.get().await?;
+                            if superseded_deployment.state == DeploymentState::Lingering {
+                                superseded.set(DeploymentState::Undesired).await?;
                             }
                         }
                     }
                     EvalCompleteness::Partial => {
                         tracing::info!(
-                            "evaluation incomplete; deferring superceded deployment teardown"
+                            "evaluation incomplete; deferring superseded deployment teardown"
                         );
                     }
                 }
@@ -315,23 +315,23 @@ impl Worker {
                 let mut cursor = self.client.clone();
                 let mut seen = HashSet::new();
 
-                while let Some(superceding) = cursor.get_superceding().await? {
-                    let superceding_deployment = superceding.get().await?;
-                    let commit_hash = superceding_deployment.deployment.clone();
+                while let Some(superseding) = cursor.get_superseding().await? {
+                    let superseding_deployment = superseding.get().await?;
+                    let commit_hash = superseding_deployment.deployment.clone();
 
                     if !seen.insert(commit_hash.clone()) {
-                        tracing::warn!("detected supercession cycle while lingering");
+                        tracing::warn!("detected supersession cycle while lingering");
                         break;
                     }
 
-                    if superceding_deployment.state == DeploymentState::Desired {
+                    if superseding_deployment.state == DeploymentState::Desired {
                         self.client
-                            .mark_superceded_by(&superceding_deployment.deployment)
+                            .mark_superseded_by(&superseding_deployment.deployment)
                             .await?;
                         break;
                     }
 
-                    cursor = superceding;
+                    cursor = superseding;
                 }
 
                 Ok(())
