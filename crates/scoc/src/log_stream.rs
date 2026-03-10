@@ -62,7 +62,7 @@ pub async fn stream_container_logs(
                                     "P" => {
                                         partial_buf.push_str(message);
                                     }
-                                    "F" | _ => {
+                                    _ => {
                                         let full_message = if partial_buf.is_empty() {
                                             message.to_string()
                                         } else {

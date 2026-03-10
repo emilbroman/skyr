@@ -277,11 +277,13 @@ impl CriClient {
     }
 
     /// Get a reference to the image service client for image operations.
+    #[allow(dead_code)]
     pub fn images(&mut self) -> &mut ImageServiceClient<Channel> {
         &mut self.images
     }
 
     /// Get a reference to the runtime service client for advanced operations.
+    #[allow(dead_code)]
     pub fn runtime(&mut self) -> &mut RuntimeServiceClient<Channel> {
         &mut self.runtime
     }

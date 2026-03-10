@@ -34,6 +34,7 @@ const VXLAN_PORT: u16 = 4789;
 ///
 /// Allocates IPs sequentially from .2 upward (.1 is the gateway on the bridge).
 /// Released IPs are recycled.
+#[allow(dead_code)]
 pub struct Ipam {
     subnet: Ipv4Net,
     gateway: Ipv4Addr,
@@ -62,11 +63,13 @@ impl Ipam {
     }
 
     /// The gateway IP for this subnet (assigned to the bridge).
+    #[allow(dead_code)]
     pub fn gateway(&self) -> Ipv4Addr {
         self.gateway
     }
 
     /// The subnet managed by this IPAM.
+    #[allow(dead_code)]
     pub fn subnet(&self) -> &Ipv4Net {
         &self.subnet
     }

@@ -143,6 +143,7 @@ enum ContainerAction {
 }
 
 /// Tracked pod info for log streaming and network teardown.
+#[allow(dead_code)]
 struct PodInfo {
     environment_qid: String,
     name: String,
@@ -828,15 +829,14 @@ async fn main() -> Result<()> {
 
             // Unregister from orchestrator
             tracing::info!("Unregistering from orchestrator");
-            if let Ok(mut client) = scop::OrchestratorClient::connect(orchestrator_address).await {
-                if let Err(e) = client
+            if let Ok(mut client) = scop::OrchestratorClient::connect(orchestrator_address).await
+                && let Err(e) = client
                     .unregister_node(scop::UnregisterNodeRequest {
                         node_name: node_name.clone(),
                     })
                     .await
-                {
-                    tracing::error!("Failed to unregister: {}", e);
-                }
+            {
+                tracing::error!("Failed to unregister: {}", e);
             }
         }
 
