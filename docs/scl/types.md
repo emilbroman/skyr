@@ -155,6 +155,35 @@ let configure: fn({ port: Int }) Str = fn(config: { port: Int })
     "Configured on port {config.port}"
 ```
 
+### Generic Functions
+
+Functions can be parameterized over types using type parameters in angle brackets:
+
+```scl
+let identity = fn<T>(x: T) x
+let first = fn<T, U>(a: T, b: U) a
+```
+
+Type parameters can have upper bounds with `<:`, constraining them to subtypes:
+
+```scl
+let getName = fn<T <: { name: Str }>(item: T) item.name
+getName({ name: "alice", age: 30 })   // "alice"
+```
+
+At call sites, type arguments are inferred from the argument types. Generic functions enable reusable utilities like `List.map` and `Option.unwrap` that work with any type.
+
+### Exception Types
+
+Exception types are defined with the `exception` keyword and can optionally carry a payload:
+
+```scl
+let NotFound = exception           // No payload
+let ParseError = exception Str     // Carries a Str
+```
+
+Exceptions are raised with `raise` and caught with `try`/`catch` (see [Syntax Reference](syntax.md#exceptions)).
+
 ## Type Inference
 
 SCL infers types from values and context. You rarely need explicit annotations.

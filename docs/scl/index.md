@@ -89,6 +89,24 @@ let double = fn(x: Int) x * 2
 let result = double(21)  // 42
 ```
 
+Generic functions work with any type:
+
+```scl
+let identity = fn<T>(x: T) x
+let first = fn<T <: { name: Str }>(item: T) item.name
+```
+
+### Exception Handling
+
+Define exceptions and handle them with `try`/`catch`:
+
+```scl
+import Std/Option
+
+let value = try Option.unwrap(maybeValue)
+    catch Option.UnexpectedNil: "fallback"
+```
+
 ### List Comprehensions
 
 Transform and filter collections:
