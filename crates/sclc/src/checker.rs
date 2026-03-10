@@ -13,6 +13,7 @@ pub struct TypeEnv<'a> {
     globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     locals: HashMap<&'a str, Type>,
+    type_vars: HashMap<String, Type>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -22,6 +23,7 @@ impl<'a> TypeEnv<'a> {
             globals: None,
             imports: None,
             locals: HashMap::new(),
+            type_vars: HashMap::new(),
         }
     }
 
@@ -31,6 +33,7 @@ impl<'a> TypeEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
+            type_vars: self.type_vars.clone(),
         }
     }
 
@@ -40,6 +43,7 @@ impl<'a> TypeEnv<'a> {
             globals: Some(globals),
             imports: self.imports,
             locals: HashMap::new(),
+            type_vars: self.type_vars.clone(),
         }
     }
 
@@ -52,6 +56,7 @@ impl<'a> TypeEnv<'a> {
             globals: self.globals,
             imports: Some(imports),
             locals: HashMap::new(),
+            type_vars: self.type_vars.clone(),
         }
     }
 
@@ -61,6 +66,7 @@ impl<'a> TypeEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
+            type_vars: self.type_vars.clone(),
         }
     }
 
@@ -70,13 +76,24 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    pub fn with_type_var(&self, name: String, ty: Type) -> Self {
+        let mut env = self.inner();
+        env.type_vars.insert(name, ty);
+        env
+    }
+
     pub fn without_locals(&self) -> Self {
         Self {
             module_id: self.module_id,
             globals: self.globals,
             imports: self.imports,
             locals: HashMap::new(),
+            type_vars: self.type_vars.clone(),
         }
+    }
+
+    pub fn lookup_type_var(&self, name: &str) -> Option<&Type> {
+        self.type_vars.get(name)
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&Type> {
@@ -353,6 +370,62 @@ impl crate::Diag for UnexpectedCatchArg {
 }
 
 #[derive(Error, Debug)]
+#[error("wrong number of type arguments: expected {expected}, got {got}")]
+pub struct WrongTypeArgCount {
+    pub module_id: crate::ModuleId,
+    pub expected: usize,
+    pub got: usize,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for WrongTypeArgCount {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("missing type arguments: expected {expected}")]
+pub struct MissingTypeArgs {
+    pub module_id: crate::ModuleId,
+    pub expected: usize,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for MissingTypeArgs {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("type arguments provided to non-generic function")]
+pub struct UnexpectedTypeArgs {
+    pub module_id: crate::ModuleId,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for UnexpectedTypeArgs {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("unknown type: {name}")]
+pub struct UnknownType {
+    pub module_id: crate::ModuleId,
+    pub name: String,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for UnknownType {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -417,6 +490,40 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Type::List(rhs_inner) => self
                     .assign_type(lhs_inner.as_ref(), rhs_inner.as_ref())
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+                _ => Err(TypeError::new(TypeIssue::Mismatch(
+                    lhs.clone(),
+                    rhs.clone(),
+                ))),
+            },
+            Type::Fn(lhs_fn) => match rhs {
+                Type::Fn(rhs_fn) => {
+                    // Generic function subtyping requires instantiation/unification
+                    // which is not yet implemented. Reject for now.
+                    if !lhs_fn.type_params.is_empty() || !rhs_fn.type_params.is_empty() {
+                        return Err(TypeError::new(TypeIssue::Mismatch(
+                            lhs.clone(),
+                            rhs.clone(),
+                        )));
+                    }
+                    if lhs_fn.params.len() != rhs_fn.params.len() {
+                        return Err(TypeError::new(TypeIssue::Mismatch(
+                            lhs.clone(),
+                            rhs.clone(),
+                        )));
+                    }
+                    for (lhs_param, rhs_param) in
+                        lhs_fn.params.iter().zip(rhs_fn.params.iter())
+                    {
+                        self.assign_type(lhs_param, rhs_param).map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    }
+                    self.assign_type(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref())
+                        .map_err(|err| {
+                            err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
+                        })?;
+                    Ok(())
+                }
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
                     lhs.clone(),
                     rhs.clone(),
@@ -556,12 +663,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Str(_) => {
                 self.apply_expected_type(env, expr.span(), Type::Str, expected_type)
             }
-            ast::Expr::Extern(extern_expr) => self.apply_expected_type(
-                env,
-                expr.span(),
-                self.resolve_type_expr(&extern_expr.ty),
-                expected_type,
-            ),
+            ast::Expr::Extern(extern_expr) => {
+                let mut diags = DiagList::new();
+                let resolved_ty = self
+                    .resolve_type_expr(env, &extern_expr.ty)
+                    .unpack(&mut diags);
+                let ty = self
+                    .apply_expected_type(env, expr.span(), resolved_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
+            }
             ast::Expr::If(if_expr) => {
                 let mut diags = DiagList::new();
                 let bool_ty = Type::Bool;
@@ -605,10 +716,21 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Fn(fn_expr) => {
                 let mut diags = DiagList::new();
                 let mut fn_env = env.inner();
-                let mut params = Vec::with_capacity(fn_expr.params.len());
 
+                // Allocate type variable IDs for generic type parameters
+                let mut type_param_ids = Vec::with_capacity(fn_expr.type_params.len());
+                for type_param in &fn_expr.type_params {
+                    let type_id = next_type_id();
+                    type_param_ids.push(type_id);
+                    fn_env =
+                        fn_env.with_type_var(type_param.name.clone(), Type::Var(type_id));
+                }
+
+                let mut params = Vec::with_capacity(fn_expr.params.len());
                 for param in &fn_expr.params {
-                    let param_ty = self.resolve_type_expr(&param.ty);
+                    let param_ty = self
+                        .resolve_type_expr(&fn_env, &param.ty)
+                        .unpack(&mut diags);
                     fn_env = fn_env.with_local(param.var.name.as_str(), param_ty.clone());
                     params.push(param_ty);
                 }
@@ -621,6 +743,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         env,
                         expr.span(),
                         Type::Fn(FnType {
+                            type_params: type_param_ids,
                             params,
                             ret: Box::new(ret),
                         }),
@@ -642,6 +765,54 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         span: call_expr.callee.span(),
                     });
                     return Ok(Diagnosed::new(Type::Never, diags));
+                };
+
+                // Handle type argument instantiation for generic functions
+                let fn_ty = if !call_expr.type_args.is_empty() {
+                    if fn_ty.type_params.is_empty() {
+                        diags.push(UnexpectedTypeArgs {
+                            module_id: env.module_id()?,
+                            span: expr.span(),
+                        });
+                        fn_ty
+                    } else if call_expr.type_args.len() != fn_ty.type_params.len() {
+                        diags.push(WrongTypeArgCount {
+                            module_id: env.module_id()?,
+                            expected: fn_ty.type_params.len(),
+                            got: call_expr.type_args.len(),
+                            span: expr.span(),
+                        });
+                        fn_ty
+                    } else {
+                        // Build substitution map from type param IDs to resolved type args
+                        let replacements: Vec<(usize, Type)> = fn_ty
+                            .type_params
+                            .iter()
+                            .zip(call_expr.type_args.iter())
+                            .map(|(id, type_arg)| {
+                                (*id, self.resolve_type_expr(env, type_arg).unpack(&mut diags))
+                            })
+                            .collect();
+                        FnType {
+                            type_params: vec![],
+                            params: fn_ty
+                                .params
+                                .iter()
+                                .map(|p| p.substitute(&replacements))
+                                .collect(),
+                            ret: Box::new(fn_ty.ret.substitute(&replacements)),
+                        }
+                    }
+                } else if !fn_ty.type_params.is_empty() {
+                    // Generic function called without type arguments
+                    diags.push(MissingTypeArgs {
+                        module_id: env.module_id()?,
+                        expected: fn_ty.type_params.len(),
+                        span: call_expr.callee.span(),
+                    });
+                    fn_ty
+                } else {
+                    fn_ty
                 };
 
                 if call_expr.args.len() < fn_ty.params.len() {
@@ -1039,16 +1210,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Ok(Diagnosed::new(Type::Never, diags))
             }
             ast::Expr::Exception(exception_expr) => {
+                let mut diags = DiagList::new();
                 let exception_ty = Type::Exception(exception_expr.exception_id);
                 if let Some(ty_expr) = &exception_expr.ty {
-                    let param_ty = self.resolve_type_expr(ty_expr);
+                    let param_ty = self
+                        .resolve_type_expr(env, ty_expr)
+                        .unpack(&mut diags);
                     let fn_ty = Type::Fn(FnType {
+                        type_params: vec![],
                         params: vec![param_ty],
                         ret: Box::new(exception_ty),
                     });
-                    self.apply_expected_type(env, expr.span(), fn_ty, expected_type)
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), fn_ty, expected_type)?
+                        .unpack(&mut diags);
+                    Ok(Diagnosed::new(ty, diags))
                 } else {
-                    self.apply_expected_type(env, expr.span(), exception_ty, expected_type)
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), exception_ty, expected_type)?
+                        .unpack(&mut diags);
+                    Ok(Diagnosed::new(ty, diags))
                 }
             }
             ast::Expr::Raise(raise_expr) => {
@@ -1213,40 +1394,81 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         ))
     }
 
-    fn resolve_type_expr(&self, type_expr: &crate::Loc<ast::TypeExpr>) -> Type {
-        match type_expr.as_ref() {
+    fn resolve_type_expr(
+        &self,
+        env: &TypeEnv<'_>,
+        type_expr: &crate::Loc<ast::TypeExpr>,
+    ) -> Diagnosed<Type> {
+        let mut diags = DiagList::new();
+        let ty = match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Any" => Type::Any,
             ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
             ast::TypeExpr::Var(var) if var.name == "Float" => Type::Float,
             ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
+            ast::TypeExpr::Var(var) => {
+                if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
+                    ty.clone()
+                } else {
+                    if let Ok(module_id) = env.module_id() {
+                        diags.push(UnknownType {
+                            module_id,
+                            name: var.name.clone(),
+                            span: type_expr.span(),
+                        });
+                    }
+                    Type::Never
+                }
+            }
             ast::TypeExpr::Optional(inner) => {
-                Type::Optional(Box::new(self.resolve_type_expr(inner.as_ref())))
+                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                Type::Optional(Box::new(inner_ty))
             }
             ast::TypeExpr::List(inner) => {
-                Type::List(Box::new(self.resolve_type_expr(inner.as_ref())))
+                let inner_ty = self.resolve_type_expr(env, inner.as_ref()).unpack(&mut diags);
+                Type::List(Box::new(inner_ty))
             }
-            ast::TypeExpr::Fn(fn_ty) => Type::Fn(FnType {
-                params: fn_ty
+            ast::TypeExpr::Fn(fn_ty) => {
+                let mut fn_env = env.inner();
+                let mut type_param_ids = Vec::with_capacity(fn_ty.type_params.len());
+                for type_param in &fn_ty.type_params {
+                    let type_id = next_type_id();
+                    type_param_ids.push(type_id);
+                    fn_env =
+                        fn_env.with_type_var(type_param.name.clone(), Type::Var(type_id));
+                }
+                let params = fn_ty
                     .params
                     .iter()
-                    .map(|param| self.resolve_type_expr(param))
-                    .collect(),
-                ret: Box::new(self.resolve_type_expr(&fn_ty.ret)),
-            }),
+                    .map(|param| self.resolve_type_expr(&fn_env, param).unpack(&mut diags))
+                    .collect();
+                let ret = self.resolve_type_expr(&fn_env, &fn_ty.ret).unpack(&mut diags);
+                Type::Fn(FnType {
+                    type_params: type_param_ids,
+                    params,
+                    ret: Box::new(ret),
+                })
+            }
             ast::TypeExpr::Record(record_ty) => {
                 let mut resolved = RecordType::default();
                 for field in &record_ty.fields {
-                    resolved.insert(field.var.name.clone(), self.resolve_type_expr(&field.ty));
+                    let field_ty = self
+                        .resolve_type_expr(env, &field.ty)
+                        .unpack(&mut diags);
+                    resolved.insert(field.var.name.clone(), field_ty);
                 }
                 Type::Record(resolved)
             }
-            ast::TypeExpr::Dict(dict_ty) => Type::Dict(DictType {
-                key: Box::new(self.resolve_type_expr(&dict_ty.key)),
-                value: Box::new(self.resolve_type_expr(&dict_ty.value)),
-            }),
-            ast::TypeExpr::Var(_) => Type::Never,
-        }
+            ast::TypeExpr::Dict(dict_ty) => {
+                let key = self.resolve_type_expr(env, &dict_ty.key).unpack(&mut diags);
+                let value = self.resolve_type_expr(env, &dict_ty.value).unpack(&mut diags);
+                Type::Dict(DictType {
+                    key: Box::new(key),
+                    value: Box::new(value),
+                })
+            }
+        };
+        Diagnosed::new(ty, diags)
     }
 
     fn find_imports<'a>(
@@ -1335,9 +1557,9 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
 
 #[cfg(test)]
 mod tests {
-    use super::TypeChecker;
+    use super::{TypeChecker, next_type_id};
     use crate::{
-        DictType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
+        DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -1765,5 +1987,158 @@ mod tests {
             .check_expr(&env, &and_expr, None)
             .expect("type check should succeed with diags");
         assert!(matches!(*diagnosed, Type::Never));
+    }
+
+    #[test]
+    fn assign_type_fn_exact_match() {
+        let checker = checker();
+        let ty = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&ty, &ty).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_covariant_return() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Optional(Box::new(Type::Str))),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_return_type_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Bool),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_param_count_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int, Type::Bool],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_param_type_mismatch() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Bool],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_fn_rejects_non_fn_rhs() {
+        let checker = checker();
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        assert!(checker.assign_type(&lhs, &Type::Int).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_lhs_fn_rejected() {
+        let checker = checker();
+        let id_a = next_type_id();
+
+        // fn<A>(A) A  vs  fn(Int) Int — generic lhs always rejected
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_generic_rhs_fn_rejected() {
+        let checker = checker();
+        let id_a = next_type_id();
+
+        // fn(Int) Int  vs  fn<A>(A) A — generic rhs always rejected
+        let lhs = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Int),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
+    }
+
+    #[test]
+    fn assign_type_both_generic_fns_rejected() {
+        let checker = checker();
+        let id_a = next_type_id();
+        let id_b = next_type_id();
+
+        // fn<A>(A) A  vs  fn<B>(B) B — both generic, rejected
+        let lhs = Type::Fn(FnType {
+            type_params: vec![id_a],
+            params: vec![Type::Var(id_a)],
+            ret: Box::new(Type::Var(id_a)),
+        });
+        let rhs = Type::Fn(FnType {
+            type_params: vec![id_b],
+            params: vec![Type::Var(id_b)],
+            ret: Box::new(Type::Var(id_b)),
+        });
+
+        assert!(checker.assign_type(&lhs, &rhs).is_err());
     }
 }

@@ -354,6 +354,7 @@ pub struct PropertyAccessExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnExpr {
+    pub type_params: Vec<Loc<Var>>,
     pub params: Vec<FnParam>,
     pub body: Box<Loc<Expr>>,
 }
@@ -376,6 +377,7 @@ pub enum TypeExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnTypeExpr {
+    pub type_params: Vec<Loc<Var>>,
     pub params: Vec<Loc<TypeExpr>>,
     pub ret: Box<Loc<TypeExpr>>,
 }
@@ -424,6 +426,7 @@ pub struct CatchClause {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallExpr {
     pub callee: Box<Loc<Expr>>,
+    pub type_args: Vec<Loc<TypeExpr>>,
     pub args: Vec<Loc<Expr>>,
 }
 
@@ -459,6 +462,7 @@ mod tests {
                 RecordField {
                     var: var("b"),
                     expr: expr_loc(Expr::Fn(FnExpr {
+                        type_params: vec![],
                         params: vec![
                             FnParam {
                                 var: var("x"),
