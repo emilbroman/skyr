@@ -316,7 +316,7 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"", futures_util::stream::iter(refs.into_iter()))
+        self.advertise_refs(b"", futures_util::stream::iter(refs))
             .await?;
 
         let mut r = self.channel.make_reader();
@@ -543,7 +543,7 @@ impl<'a> CommandHandler<'a> {
 
         self.advertise_refs(
             b"report-status delete-refs",
-            futures_util::stream::iter(refs.into_iter()),
+            futures_util::stream::iter(refs),
         )
         .await?;
 

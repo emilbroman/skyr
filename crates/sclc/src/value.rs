@@ -323,6 +323,38 @@ impl std::fmt::Display for FnValue {
     }
 }
 
+impl std::fmt::Display for Record {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{{")?;
+
+        let mut fields = self.fields.iter().peekable();
+        while let Some((name, value)) = fields.next() {
+            write!(f, "{name}: {value}")?;
+            if fields.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, "}}")
+    }
+}
+
+impl std::fmt::Display for Dict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "#{{")?;
+
+        let mut entries = self.entries.iter().peekable();
+        while let Some((key, value)) = entries.next() {
+            write!(f, "{key}: {value}")?;
+            if entries.peek().is_some() {
+                write!(f, ", ")?;
+            }
+        }
+
+        write!(f, "}}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{TrackedValue, Value};
@@ -381,37 +413,5 @@ mod tests {
 
         assert_eq!(mapped.value, Value::Int(2));
         assert!(mapped.dependencies.contains(&dep("outer")));
-    }
-}
-
-impl std::fmt::Display for Record {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{{")?;
-
-        let mut fields = self.fields.iter().peekable();
-        while let Some((name, value)) = fields.next() {
-            write!(f, "{name}: {value}")?;
-            if fields.peek().is_some() {
-                write!(f, ", ")?;
-            }
-        }
-
-        write!(f, "}}")
-    }
-}
-
-impl std::fmt::Display for Dict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "#{{")?;
-
-        let mut entries = self.entries.iter().peekable();
-        while let Some((key, value)) = entries.next() {
-            write!(f, "{key}: {value}")?;
-            if entries.peek().is_some() {
-                write!(f, ", ")?;
-            }
-        }
-
-        write!(f, "}}")
     }
 }

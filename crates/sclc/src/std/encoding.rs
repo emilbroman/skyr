@@ -163,10 +163,10 @@ mod tests {
 
         let mut found = None;
         for (key, value) in dict.iter() {
-            if let Value::Str(key) = key {
-                if key == "values" {
-                    found = Some(value.clone());
-                }
+            if let Value::Str(key) = key
+                && key == "values"
+            {
+                found = Some(value.clone());
             }
         }
 
