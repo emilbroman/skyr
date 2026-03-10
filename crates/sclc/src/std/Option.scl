@@ -13,3 +13,9 @@ export let unwrap = fn<T>(value: T?)
 		uncheckedUnwrap<T>(value)
 	else
 		raise UnexpectedNil
+
+export let default = fn<T>(value: T?, fallback: T)
+	if (value != nil)
+		uncheckedUnwrap<T>(value)
+	else
+		fallback
