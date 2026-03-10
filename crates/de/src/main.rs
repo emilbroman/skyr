@@ -392,10 +392,10 @@ impl Worker {
                 ty: resource.resource_type.clone(),
                 id: resource.id.clone(),
             };
-            if resource.owner.as_deref() != Some(owner_deployment_qid.as_str()) {
-                if let Some(owner) = resource.owner.clone() {
-                    unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
-                }
+            if resource.owner.as_deref() != Some(owner_deployment_qid.as_str())
+                && let Some(owner) = resource.owner.clone()
+            {
+                unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
             }
 
             eval.add_resource(

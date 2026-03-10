@@ -35,10 +35,10 @@ pub struct AuthProof {
 }
 
 pub async fn acquire_token(client: &reqwest::Client, api_url: &str) -> anyhow::Result<String> {
-    if let Ok(token) = read_token().await {
-        if !is_expired_token(&token)? {
-            return Ok(token);
-        }
+    if let Ok(token) = read_token().await
+        && !is_expired_token(&token)?
+    {
+        return Ok(token);
     }
 
     let user = read_user_config().await?;

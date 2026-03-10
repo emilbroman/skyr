@@ -270,10 +270,10 @@ impl Handler for ConfigHandler {
             comma::parse_command(String::from_utf8_lossy(data).as_ref()).unwrap_or(vec![]);
         args.insert(0, "ssh skyr".into());
         // Strip leading slash from repo path (ssh:// URLs produce paths like "/org/repo")
-        if let Some(repo_arg) = args.get_mut(2) {
-            if let Some(stripped) = repo_arg.strip_prefix('/') {
-                *repo_arg = stripped.to_string();
-            }
+        if let Some(repo_arg) = args.get_mut(2)
+            && let Some(stripped) = repo_arg.strip_prefix('/')
+        {
+            *repo_arg = stripped.to_string();
         }
         let result = ChannelCommand::try_parse_from(args);
         if let Some(tx) = self.channels.remove(&channel) {
@@ -784,9 +784,7 @@ impl<'a> CommandHandler<'a> {
                 )?;
                 let consumed = (decompressor.total_in() - before_in) as usize;
                 let produced = (decompressor.total_out() - before_out) as usize;
-                if consumed > 0 {
-                    have_input = false;
-                } else if produced == 0 {
+                if consumed > 0 || produced == 0 {
                     have_input = false;
                 }
                 written += produced;
@@ -889,18 +887,18 @@ impl<'a> CommandHandler<'a> {
 
         loop {
             let mut progress = false;
-            for entry_idx in 0..entries.len() {
-                let pack_offset = entries[entry_idx].pack_offset;
+            for entry in &mut entries {
+                let pack_offset = entry.pack_offset;
                 if oid_by_offset.contains_key(&pack_offset) {
                     continue;
                 }
-                match entries[entry_idx].header {
+                match entry.header {
                     header @ gix_pack::data::entry::Header::Commit
                     | header @ gix_pack::data::entry::Header::Tree
                     | header @ gix_pack::data::entry::Header::Blob
                     | header @ gix_pack::data::entry::Header::Tag => {
                         let kind = header.as_kind().expect("base objects have a kind");
-                        let data = entries[entry_idx]
+                        let data = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing base object data"))?;
@@ -923,7 +921,7 @@ impl<'a> CommandHandler<'a> {
                             self.client.read_raw_object(base_id).await.map_err(|err| {
                                 anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
                             })?;
-                        let delta = entries[entry_idx]
+                        let delta = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
@@ -951,7 +949,7 @@ impl<'a> CommandHandler<'a> {
                         };
                         let kind = infer_object_kind(base_id, &base_data)?;
 
-                        let delta = entries[entry_idx]
+                        let delta = entry
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
