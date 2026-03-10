@@ -120,9 +120,10 @@ impl<'a> TypeEnv<'a> {
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
         if let Type::Var(id) = ty
-            && let Some(bound) = self.type_var_bounds.get(id) {
-                return bound;
-            }
+            && let Some(bound) = self.type_var_bounds.get(id)
+        {
+            return bound;
+        }
         ty
     }
 
@@ -512,11 +513,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
         // If rhs is a bounded type variable, check assignability via its upper bound.
         if let Type::Var(id) = rhs
-            && let Some(upper_bound) = bounds.get(id) {
-                return self
-                    .assign_type_with_bounds(lhs, upper_bound, bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
-            }
+            && let Some(upper_bound) = bounds.get(id)
+        {
+            return self
+                .assign_type_with_bounds(lhs, upper_bound, bounds)
+                .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
+        }
 
         match lhs {
             Type::Optional(lhs_inner) => match rhs {
@@ -771,20 +773,21 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<(), TypeError> {
         // If rhs is a free type variable, record the bound from lhs
         if let Type::Var(id) = rhs
-            && free_vars.contains(id) {
-                let entry = assertions.get_mut(id).expect("free var must have entry");
-                match variance {
-                    Variance::Covariant => {
-                        // lhs is an upper bound for this variable
-                        self.tighten_upper(&mut entry.1, lhs)?;
-                    }
-                    Variance::Contravariant => {
-                        // lhs is a lower bound for this variable
-                        self.tighten_lower(&mut entry.0, lhs)?;
-                    }
+            && free_vars.contains(id)
+        {
+            let entry = assertions.get_mut(id).expect("free var must have entry");
+            match variance {
+                Variance::Covariant => {
+                    // lhs is an upper bound for this variable
+                    self.tighten_upper(&mut entry.1, lhs)?;
                 }
-                return Ok(());
+                Variance::Contravariant => {
+                    // lhs is a lower bound for this variable
+                    self.tighten_lower(&mut entry.0, lhs)?;
+                }
             }
+            return Ok(());
+        }
 
         // Structural recursion for matching type constructors
         match (lhs, rhs) {
@@ -902,13 +905,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         if let Some(expected_type) = expected_type
             && let Err(error) =
                 self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
-            {
-                diags.push(InvalidType {
-                    module_id: env.module_id()?,
-                    error,
-                    span,
-                });
-            }
+        {
+            diags.push(InvalidType {
+                module_id: env.module_id()?,
+                error,
+                span,
+            });
+        }
 
         Ok(Diagnosed::new(ty, diags))
     }
