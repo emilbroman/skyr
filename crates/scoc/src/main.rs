@@ -601,11 +601,13 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::AddServiceRouteRequest,
     ) -> Result<scop::AddServiceRouteResponse, scop::tonic::Status> {
+        let svc_cidr = self.service_cidr.as_deref().unwrap_or("");
         net::add_service_route(
             &request.vip,
             request.port,
             &request.protocol,
             &request.backends,
+            svc_cidr,
         )
         .map_err(|e| scop::tonic::Status::internal(format!("add service route failed: {e:#}")))?;
         Ok(scop::AddServiceRouteResponse {})

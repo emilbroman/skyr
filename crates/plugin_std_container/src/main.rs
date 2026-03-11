@@ -12,7 +12,7 @@
 //! - `Std/Container.Pod.Container` - Container lifecycle within a pod
 //! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
-//! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
+//! - `Std/Container.Host.Port` - Load-balanced port routing (supports pod and host port backends)
 
 mod buildkit;
 mod node_registry;

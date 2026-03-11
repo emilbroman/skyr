@@ -93,14 +93,19 @@ export let Host = extern "Std/Container.Host": fn({
 }) {
     // The DNS hostname for this host (e.g., "my-host.namespace.skyr.local")
     hostname: Str,
-    // Configure a port on this host to route traffic to backend pod ports
+    // Configure a port on this host to route traffic to backend ports.
+    // Backends can be Pod.Port or Host.Port resources (chaining), enabling
+    // complex routing topologies such as internal API gateways.
     Port: fn({
         // Port number to expose on the host
         port: Int,
         // Protocol: "tcp" (default) or "udp"
         protocol: Str?,
-        // List of backend pod ports to route traffic to.
-        // Each entry is a Pod.Port output: { address: Str, port: Int, protocol: Str }.
+        // List of backend ports to route traffic to.
+        // Each entry must have { address: Str, port: Int, protocol: Str }.
+        // Both Pod.Port and Host.Port outputs satisfy this shape.
+        // When a Host.Port is used as a backend, traffic is forwarded through
+        // its load-balancing rules to the ultimate pod backends.
         backends: [{ address: Str, port: Int, protocol: Str }],
     }) {
         // The DNS hostname for this host
