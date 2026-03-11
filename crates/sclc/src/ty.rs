@@ -152,7 +152,23 @@ impl std::fmt::Display for Type {
             Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
             Type::Record(record) => write!(f, "{record}"),
             Type::Dict(dict) => write!(f, "{dict}"),
-            Type::IsoRec(id, ty) => write!(f, "IsoRec({id}, {ty})"),
+            Type::IsoRec(id, ty) => {
+                let name = DISPLAY_TYPE_PARAMS.with(|stack| {
+                    let mut stack = stack.borrow_mut();
+                    let name = typevar_name(stack.len());
+                    stack.push(*id);
+                    name
+                });
+
+                write!(f, "µ{name}.{ty}")?;
+
+                DISPLAY_TYPE_PARAMS.with(|stack| {
+                    let mut s = stack.borrow_mut();
+                    s.pop();
+                });
+
+                Ok(())
+            }
             Type::Var(id) => {
                 let name = DISPLAY_TYPE_PARAMS.with(|stack| {
                     stack

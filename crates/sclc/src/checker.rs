@@ -507,6 +507,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         rhs: &Type,
         bounds: &HashMap<usize, Type>,
     ) -> Result<(), TypeError> {
+        // Unfold iso-recursive types to expose their underlying structure.
+        // This handles cases like µA.{a: Int} being assigned to {a: Int}.
+        let lhs = &lhs.unfold();
+        let rhs = &rhs.unfold();
+
         if lhs == rhs || matches!(lhs, Type::Any) || matches!(rhs, Type::Never) {
             return Ok(());
         }
