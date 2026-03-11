@@ -220,7 +220,7 @@ jobs:
           merge-multiple: true
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.4.2
         with:
           tag_name: ${{ github.sha }}
           name: ${{ github.sha }}
