@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 mod cri;
+mod dns;
 mod log_stream;
 mod net;
 
@@ -172,18 +173,25 @@ struct CriConduit {
     pod_cidr: Ipv4Net,
     /// The cluster-wide CIDR (for egress allow-list rules).
     cluster_cidr: Option<String>,
+    /// The service CIDR for Host VIPs (for egress allow-list rules).
+    service_cidr: Option<String>,
     /// DNS servers to configure in pods.
     dns_servers: Vec<String>,
+    /// Shared DNS records for the internal DNS server.
+    dns_records: dns::DnsRecords,
 }
 
 impl CriConduit {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         cri: CriClient,
         ldb_publisher: Option<ldb::Publisher>,
         ipam: net::Ipam,
         pod_cidr: Ipv4Net,
         cluster_cidr: Option<String>,
+        service_cidr: Option<String>,
         dns_servers: Vec<String>,
+        dns_records: dns::DnsRecords,
     ) -> Self {
         Self {
             cri: Arc::new(Mutex::new(cri)),
@@ -194,7 +202,9 @@ impl CriConduit {
             ipam: Arc::new(Mutex::new(ipam)),
             pod_cidr,
             cluster_cidr,
+            service_cidr,
             dns_servers,
+            dns_records,
         }
     }
 
@@ -367,6 +377,7 @@ impl scop::Conduit for CriConduit {
             &netns_path,
             &config.allowed_destinations,
             self.cluster_cidr.as_deref(),
+            self.service_cidr.as_deref(),
         ) {
             let mut ipam = self.ipam.lock().await;
             ipam.release(&pod_id);
@@ -585,6 +596,78 @@ impl scop::Conduit for CriConduit {
             .map_err(|e| scop::tonic::Status::internal(format!("close port failed: {e:#}")))?;
         Ok(scop::ClosePortResponse {})
     }
+
+    async fn add_service_route(
+        &self,
+        request: scop::AddServiceRouteRequest,
+    ) -> Result<scop::AddServiceRouteResponse, scop::tonic::Status> {
+        net::add_service_route(
+            &request.vip,
+            request.port,
+            &request.protocol,
+            &request.backends,
+        )
+        .map_err(|e| scop::tonic::Status::internal(format!("add service route failed: {e:#}")))?;
+        Ok(scop::AddServiceRouteResponse {})
+    }
+
+    async fn remove_service_route(
+        &self,
+        request: scop::RemoveServiceRouteRequest,
+    ) -> Result<scop::RemoveServiceRouteResponse, scop::tonic::Status> {
+        net::remove_service_route(&request.vip, request.port, &request.protocol).map_err(|e| {
+            scop::tonic::Status::internal(format!("remove service route failed: {e:#}"))
+        })?;
+        Ok(scop::RemoveServiceRouteResponse {})
+    }
+
+    async fn set_dns_record(
+        &self,
+        request: scop::SetDnsRecordRequest,
+    ) -> Result<scop::SetDnsRecordResponse, scop::tonic::Status> {
+        let ip: std::net::Ipv4Addr = request
+            .address
+            .parse()
+            .map_err(|e| scop::tonic::Status::invalid_argument(format!("invalid IP: {e}")))?;
+
+        let mut records = self
+            .dns_records
+            .write()
+            .map_err(|e| scop::tonic::Status::internal(format!("DNS lock poisoned: {e}")))?;
+        records.insert(request.hostname.clone(), ip);
+        tracing::info!(
+            hostname = %request.hostname,
+            address = %request.address,
+            "DNS record set"
+        );
+        Ok(scop::SetDnsRecordResponse {})
+    }
+
+    async fn remove_dns_record(
+        &self,
+        request: scop::RemoveDnsRecordRequest,
+    ) -> Result<scop::RemoveDnsRecordResponse, scop::tonic::Status> {
+        let mut records = self
+            .dns_records
+            .write()
+            .map_err(|e| scop::tonic::Status::internal(format!("DNS lock poisoned: {e}")))?;
+        records.remove(&request.hostname);
+        tracing::info!(
+            hostname = %request.hostname,
+            "DNS record removed"
+        );
+        Ok(scop::RemoveDnsRecordResponse {})
+    }
+
+    async fn configure_service_cidr(
+        &self,
+        request: scop::ConfigureServiceCidrRequest,
+    ) -> Result<scop::ConfigureServiceCidrResponse, scop::tonic::Status> {
+        net::configure_service_cidr_forwarding(&request.service_cidr).map_err(|e| {
+            scop::tonic::Status::internal(format!("configure service CIDR failed: {e:#}"))
+        })?;
+        Ok(scop::ConfigureServiceCidrResponse {})
+    }
 }
 
 #[tokio::main]
@@ -749,6 +832,20 @@ async fn main() -> Result<()> {
                 Some(register_response.cluster_cidr)
             };
 
+            // Parse the service CIDR (for Host VIP routing)
+            let service_cidr = if register_response.service_cidr.is_empty() {
+                tracing::warn!(
+                    "orchestrator did not provide service_cidr, Host VIP routing disabled"
+                );
+                None
+            } else {
+                tracing::info!(
+                    "service CIDR for Host VIPs: {}",
+                    register_response.service_cidr
+                );
+                Some(register_response.service_cidr)
+            };
+
             // Set up the pod bridge network with the assigned CIDR
             net::setup_bridge(&pod_cidr)?;
 
@@ -757,8 +854,36 @@ async fn main() -> Result<()> {
             let local_ip = resolve_hostname_to_ip(&local_host)?;
             net::setup_vxlan(&local_ip)?;
 
+            // Set up the DNAT services chain for Host.Port load balancing
+            net::setup_services_chain()?;
+
+            // Configure service CIDR forwarding if available
+            if let Some(ref svc_cidr) = service_cidr
+                && let Err(e) = net::configure_service_cidr_forwarding(svc_cidr)
+            {
+                tracing::warn!("failed to configure service CIDR forwarding: {e:#}");
+            }
+
+            // Set up the internal DNS server for *.internal resolution
+            let dns_records = dns::new_records();
+            let gateway = std::net::Ipv4Addr::from(u32::from(pod_cidr.network()) + 1);
+            let dns_bind_addr = std::net::SocketAddr::new(gateway.into(), 53);
+            let dns_records_clone = dns_records.clone();
+            let upstream_dns = net::host_nameservers();
+            tracing::info!("Starting internal DNS server on {}", dns_bind_addr);
+            let dns_handle = std::thread::spawn(move || {
+                if let Err(e) =
+                    dns::run_dns_server(dns_bind_addr, dns_records_clone, upstream_dns.clone())
+                {
+                    tracing::error!("DNS server error: {e:#}");
+                }
+            });
+            let _ = dns_handle; // DNS thread runs until process exits
+
             let ipam = net::Ipam::new(pod_cidr);
-            let dns_servers = net::host_nameservers();
+            // Configure pods to use the bridge gateway as their DNS server
+            // (where our internal DNS resolver runs)
+            let dns_servers = vec![gateway.to_string()];
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
             // Create the conduit with networking support
@@ -768,7 +893,9 @@ async fn main() -> Result<()> {
                 ipam,
                 pod_cidr,
                 cluster_cidr,
+                service_cidr,
                 dns_servers,
+                dns_records,
             );
 
             // Spawn heartbeat task
@@ -818,6 +945,9 @@ async fn main() -> Result<()> {
 
             // Cancel heartbeat task
             heartbeat_handle.abort();
+
+            // Tear down services chain
+            let _ = net::teardown_services_chain();
 
             // Tear down VXLAN overlay
             let _ = net::teardown_vxlan();

@@ -71,11 +71,43 @@ export let Pod = extern "Std/Container.Pod": fn({
         // Port number to open
         port: Int,
         // Protocol: "tcp" (default) or "udp"
-        protocol: Str,
+        protocol: Str?,
     }) {
         // The pod's IP address
         address: Str,
         // The opened port number
+        port: Int,
+        // The protocol
+        protocol: Str,
+    },
+}
+
+// Host resource - creates a virtual load balancer with DNS name
+//
+// A Host provides a stable DNS hostname and virtual IP address that can
+// load-balance traffic across multiple pod backends. Use Host.Port to
+// configure port routing to backend pod ports.
+export let Host = extern "Std/Container.Host": fn({
+    // Host name (used to derive the DNS hostname)
+    name: Str,
+}) {
+    // The DNS hostname for this host (e.g., "my-host.namespace.skyr.local")
+    hostname: Str,
+    // Configure a port on this host to route traffic to backend pod ports
+    Port: fn({
+        // Port number to expose on the host
+        port: Int,
+        // Protocol: "tcp" (default) or "udp"
+        protocol: Str?,
+        // List of backend pod ports to route traffic to.
+        // Each entry is a Pod.Port output: { address: Str, port: Int, protocol: Str }.
+        backends: [{ address: Str, port: Int, protocol: Str }],
+    }) {
+        // The DNS hostname for this host
+        hostname: Str,
+        // The host's virtual IP address
+        address: Str,
+        // The exposed port number
         port: Int,
         // The protocol
         protocol: Str,

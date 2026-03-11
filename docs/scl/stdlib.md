@@ -100,6 +100,59 @@ let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
 
 Port resources act as access tokens. Pass them to another pod's `allow` list to grant that pod egress access to this port.
 
+### Host
+
+Create a virtual load balancer with a cluster-internal DNS name:
+
+```scl
+let apiHost = Container.Host({ name: "api" })
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `Str` | Host name (becomes `{name}.internal` for DNS) |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hostname` | `Str` | Full DNS hostname (e.g., `api.internal`) |
+| `Port` | `fn({...}) {...}` | Function to create load-balanced ports on this host |
+
+A Host is a virtual network appliance — it doesn't run any containers. It acts as a DNS entry and load balancer. Use `host.Port` to create load-balanced ports that route to backend pod ports.
+
+### Host.Port
+
+Create a load-balanced port on a Host. Accessed via `host.Port`:
+
+```scl
+let apiHostPort = apiHost.Port({
+    port: 80,
+    backends: [apiPort1, apiPort2, apiPort3],
+})
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | `Int` | Port number to expose on the Host VIP |
+| `backends` | `[{ address: Str, port: Int, protocol: Str }]` | Backend pod ports to load-balance across |
+| `protocol` | `Str?` | Protocol: `"tcp"` (default) or `"udp"` |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hostname` | `Str` | The Host's DNS hostname |
+| `address` | `Str` | The Host's VIP address |
+| `port` | `Int` | The exposed port number |
+| `protocol` | `Str` | The protocol |
+
+Host.Port resources can be passed to a pod's `allow` list just like Pod.Port resources. Traffic is load-balanced across backends using round-robin. Backends can be Pod.Port resources or other Host.Port resources, enabling complex routing topologies.
+
 ### Container
 
 Create a container within a pod. Accessed via `pod.Container`:
@@ -156,6 +209,48 @@ clientPod.Container({
     image: "curlimages/curl",
 })
 ```
+
+### Networking Example
+
+```scl
+import Std/Container
+
+// Database tier
+let dbPod = Container.Pod({ name: "postgres" })
+dbPod.Container({
+    name: "postgres",
+    image: "postgres:16",
+    envs: { POSTGRES_PASSWORD: "secret" },
+})
+let dbPort = dbPod.Port({ port: 5432 })
+
+// API tier with access to the database
+let apiPod = Container.Pod({ name: "api", allow: [dbPort] })
+apiPod.Container({
+    name: "api",
+    image: image.fullname,
+    envs: { DATABASE_URL: "postgres://postgres:secret@{dbPort.address}:5432/app" },
+})
+let apiPort = apiPod.Port({ port: 8080 })
+
+// Load-balanced API host
+let apiHost = Container.Host({ name: "api" })
+let apiHostPort = apiHost.Port({ port: 80, backends: [apiPort] })
+
+// Frontend pod that accesses the API via DNS
+let frontendPod = Container.Pod({ name: "frontend", allow: [apiHostPort] })
+frontendPod.Container({
+    name: "nginx",
+    image: "nginx:latest",
+    envs: { API_URL: "http://{apiHostPort.hostname}:{apiHostPort.port}" },
+})
+```
+
+In this example:
+- The database is only reachable by the API pod (via `dbPort`)
+- The API is load-balanced behind `api.internal:80`
+- The frontend reaches the API via the Host DNS name
+- No pod can reach the database except the API tier
 
 ## Std/Artifact
 

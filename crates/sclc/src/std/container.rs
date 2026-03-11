@@ -1,12 +1,15 @@
 //! Std/Container - Container orchestration resources
 //!
-//! This module provides Image, Pod, Container, and Port resources for container orchestration.
+//! This module provides Image, Pod, Container, Port, Host, and Host.Port resources
+//! for container orchestration and networking.
 //!
 //! Resource types:
 //! - `Std/Container.Image` - Container image build via BuildKit
 //! - `Std/Container.Pod` - Pod sandbox lifecycle
 //! - `Std/Container.Pod.Container` - Container lifecycle within a pod
 //! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
+//! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
+//! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
 
 use crate::{EvalCtx, ExternFnValue, Record, ResourceId, TrackedValue, Value, ValueAssertions};
 
@@ -14,10 +17,13 @@ const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
 const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
 const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
+const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
+const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn(IMAGE_RESOURCE_TYPE, image_extern_fn);
     eval.add_extern_fn(POD_RESOURCE_TYPE, pod_extern_fn);
+    eval.add_extern_fn(HOST_RESOURCE_TYPE, host_extern_fn);
 }
 
 /// Extern function for building container images via BuildKit.
@@ -372,6 +378,166 @@ fn create_port_fn(
         // Build the result record
         let mut result = Record::default();
         result.insert(String::from("address"), Value::Str(address));
+        result.insert(String::from("port"), Value::Int(out_port));
+        result.insert(String::from("protocol"), Value::Str(out_protocol));
+
+        argument_dependencies.insert(resource_id);
+        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+    }))
+}
+
+/// Extern function for creating Host resources (virtual load balancer with DNS).
+///
+/// Input: `{ name: Str }`
+/// Output: `{ hostname: Str, Port: fn(...) }`
+fn host_extern_fn(
+    args: Vec<TrackedValue>,
+    eval_ctx: &EvalCtx,
+) -> Result<TrackedValue, crate::EvalError> {
+    let mut args = args.into_iter();
+    let config_arg = args
+        .next()
+        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+    let mut argument_dependencies = config_arg.dependencies.clone();
+
+    let config = config_arg.value.assert_record()?;
+
+    // Extract the name from input
+    let name = config.get("name").assert_str_ref()?.to_owned();
+
+    let resource_id = ResourceId {
+        ty: HOST_RESOURCE_TYPE.to_string(),
+        id: name.clone(),
+    };
+
+    // Build inputs for the RTP plugin
+    let mut inputs = Record::default();
+    inputs.insert(String::from("name"), Value::Str(name.clone()));
+
+    let Some(outputs) = eval_ctx.resource(
+        HOST_RESOURCE_TYPE,
+        &name,
+        &inputs,
+        argument_dependencies.clone(),
+    )?
+    else {
+        // Resource is pending
+        argument_dependencies.insert(resource_id);
+        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+    };
+
+    // Extract outputs from the plugin
+    let hostname = outputs
+        .get("hostname")
+        .assert_str_ref()
+        .unwrap_or("")
+        .to_owned();
+    let vip = outputs
+        .get("vip")
+        .assert_str_ref()
+        .unwrap_or("")
+        .to_owned();
+
+    // Build the result record with outputs
+    let mut result = Record::default();
+    result.insert(String::from("hostname"), Value::Str(hostname.clone()));
+
+    // Create the Port function that captures the host's context
+    let port_fn = create_host_port_fn(hostname, vip, resource_id.clone());
+    result.insert(String::from("Port"), Value::ExternFn(port_fn));
+
+    argument_dependencies.insert(resource_id);
+    Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+}
+
+/// Creates an ExternFnValue for creating ports on a Host.
+///
+/// The returned function captures the host's context (hostname, vip)
+/// and uses them when creating Host.Port resources.
+fn create_host_port_fn(
+    host_hostname: String,
+    host_vip: String,
+    host_resource_id: ResourceId,
+) -> ExternFnValue {
+    ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
+        let mut args = args.into_iter();
+        let config_arg = args
+            .next()
+            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+        let mut argument_dependencies = config_arg.dependencies.clone();
+
+        // The host port depends on the host
+        argument_dependencies.insert(host_resource_id.clone());
+
+        let config = config_arg.value.assert_record()?;
+
+        // Extract port-specific inputs
+        let port = *config.get("port").assert_int_ref()?;
+        let protocol = config
+            .get("protocol")
+            .assert_str_ref()
+            .unwrap_or("tcp")
+            .to_lowercase();
+
+        // Extract backends (list of port resource records)
+        let backends_value = config.get("backends").clone();
+
+        // Build the resource ID: "{hostname}:{port}/{protocol}"
+        let resource_id_str = format!("{}:{}/{}", host_hostname, port, protocol);
+        let resource_id = ResourceId {
+            ty: HOST_PORT_RESOURCE_TYPE.to_string(),
+            id: resource_id_str.clone(),
+        };
+
+        // Build inputs for the RTP plugin
+        let mut inputs = Record::default();
+        inputs.insert(String::from("hostHostname"), Value::Str(host_hostname.clone()));
+        inputs.insert(String::from("hostVip"), Value::Str(host_vip.clone()));
+        inputs.insert(String::from("port"), Value::Int(port));
+        inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
+        inputs.insert(String::from("backends"), backends_value);
+
+        let Some(outputs) = eval_ctx.resource(
+            HOST_PORT_RESOURCE_TYPE,
+            &resource_id_str,
+            &inputs,
+            argument_dependencies.clone(),
+        )?
+        else {
+            // Resource is pending
+            argument_dependencies.insert(resource_id);
+            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        };
+
+        // Extract outputs from the plugin
+        let out_hostname = outputs
+            .get("hostname")
+            .assert_str_ref()
+            .unwrap_or(&host_hostname)
+            .to_owned();
+        let out_address = outputs
+            .get("address")
+            .assert_str_ref()
+            .unwrap_or(&host_vip)
+            .to_owned();
+        let out_port = outputs
+            .get("port")
+            .assert_int_ref()
+            .copied()
+            .unwrap_or(port);
+        let out_protocol = outputs
+            .get("protocol")
+            .assert_str_ref()
+            .unwrap_or(&protocol)
+            .to_owned();
+
+        // Build the result record.
+        // Host.Port outputs include both hostname and address so that it can be:
+        // 1. Used in allow lists (address + port + protocol)
+        // 2. Used for DNS-based access (hostname + port)
+        let mut result = Record::default();
+        result.insert(String::from("hostname"), Value::Str(out_hostname));
+        result.insert(String::from("address"), Value::Str(out_address));
         result.insert(String::from("port"), Value::Int(out_port));
         result.insert(String::from("protocol"), Value::Str(out_protocol));
 

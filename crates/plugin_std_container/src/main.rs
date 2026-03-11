@@ -11,10 +11,13 @@
 //! - `Std/Container.Pod` - Pod sandbox lifecycle
 //! - `Std/Container.Pod.Container` - Container lifecycle within a pod
 //! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
+//! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
+//! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
 
 mod buildkit;
 mod node_registry;
 mod subnet_allocator;
+mod vip_allocator;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -61,6 +64,11 @@ struct Args {
     /// Nodes request their preferred subnet size via --pod-netmask.
     #[arg(long, default_value = "10.42.0.0/16")]
     cluster_cidr: String,
+
+    /// Service CIDR for Host VIPs (e.g., "10.43.0.0/16").
+    /// Each Host resource gets a VIP from this range.
+    #[arg(long, default_value = "10.43.0.0/16")]
+    service_cidr: String,
 }
 
 // Resource type constants
@@ -68,6 +76,8 @@ const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
 const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
 const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
+const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
+const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 
 /// Inner state shared between Orchestrator and RTP servers.
 struct ContainerPluginInner {
@@ -85,6 +95,10 @@ struct ContainerPluginInner {
     subnet_allocator: RwLock<subnet_allocator::SubnetAllocator>,
     /// The cluster-wide CIDR for pod networking, sent to nodes during registration.
     cluster_cidr: String,
+    /// The service CIDR for Host VIPs, sent to nodes during registration.
+    service_cidr: String,
+    /// Allocates VIPs from the service CIDR for Host resources.
+    vip_allocator: RwLock<vip_allocator::VipAllocator>,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -96,6 +110,7 @@ pub struct ContainerPlugin {
 }
 
 impl ContainerPlugin {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         node_registry: node_registry::Client,
         cdb: cdb::Client,
@@ -104,6 +119,8 @@ impl ContainerPlugin {
         ldb_publisher: ldb::Publisher,
         subnet_allocator: subnet_allocator::SubnetAllocator,
         cluster_cidr: String,
+        service_cidr: String,
+        vip_allocator: vip_allocator::VipAllocator,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -114,6 +131,8 @@ impl ContainerPlugin {
                 ldb_publisher,
                 subnet_allocator: RwLock::new(subnet_allocator),
                 cluster_cidr,
+                service_cidr,
+                vip_allocator: RwLock::new(vip_allocator),
             }),
         }
     }
@@ -932,6 +951,449 @@ impl ContainerPlugin {
 
         Ok(())
     }
+
+    // =========================================================================
+    // Host Resource Handlers
+    // =========================================================================
+
+    /// Create a Host resource (virtual load balancer with DNS name).
+    ///
+    /// Inputs:
+    /// - `name`: Host name (required). Becomes `{name}.internal` for DNS.
+    ///
+    /// Outputs:
+    /// - `hostname`: The full DNS hostname (e.g., "web-api.internal")
+    /// - `vip`: The allocated virtual IP address
+    async fn create_host(
+        &self,
+        _environment_qid: &str,
+        id: sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let name = inputs
+            .get("name")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
+            .to_string();
+
+        let hostname = format!("{name}.internal");
+
+        // Allocate a VIP for this host
+        let vip = {
+            let mut allocator = self.inner.vip_allocator.write().await;
+            allocator
+                .allocate(&hostname)
+                .map_err(|e| PluginError::Internal(format!("VIP allocation failed: {e}")))?
+        };
+        let vip_str = vip.to_string();
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            hostname = %hostname,
+            vip = %vip_str,
+            "creating host"
+        );
+
+        // Broadcast DNS record to all nodes
+        self.broadcast_dns_set(&hostname, &vip_str).await;
+
+        // Build outputs
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("hostname"), Value::Str(hostname));
+        outputs.insert(String::from("vip"), Value::Str(vip_str));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Update a Host resource.
+    ///
+    /// Hosts are immutable — name changes require recreation.
+    async fn update_host(
+        &self,
+        environment_qid: &str,
+        id: sclc::ResourceId,
+        prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        if inputs_changed(&prev_inputs, &inputs) {
+            warn!(
+                resource_type = %id.ty,
+                resource_id = %id.id,
+                "host inputs changed, recreating"
+            );
+            self.delete_host(id.clone(), prev_inputs, prev_outputs)
+                .await?;
+            return self.create_host(environment_qid, id, inputs).await;
+        }
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            "host update is a no-op (no changes)"
+        );
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs: prev_outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Delete a Host resource.
+    async fn delete_host(
+        &self,
+        id: sclc::ResourceId,
+        _inputs: sclc::Record,
+        outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        let hostname = outputs
+            .get("hostname")
+            .assert_str_ref()
+            .unwrap_or("")
+            .to_string();
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            hostname = %hostname,
+            "deleting host"
+        );
+
+        // Broadcast DNS record removal to all nodes
+        if !hostname.is_empty() {
+            self.broadcast_dns_remove(&hostname).await;
+
+            // Release the VIP
+            let mut allocator = self.inner.vip_allocator.write().await;
+            allocator.release(&hostname);
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Host.Port Resource Handlers
+    // =========================================================================
+
+    /// Create a Host.Port resource (load-balanced port on a Host VIP).
+    ///
+    /// Inputs:
+    /// - `hostHostname`: The Host's DNS hostname (required)
+    /// - `hostVip`: The Host's VIP address (required)
+    /// - `port`: Port number (required)
+    /// - `protocol`: Protocol, "tcp" or "udp" (required)
+    /// - `backends`: List of backend port records with address/port/protocol (required)
+    ///
+    /// Outputs:
+    /// - `hostname`: The Host's DNS hostname
+    /// - `address`: The Host's VIP address
+    /// - `port`: The port number
+    /// - `protocol`: The protocol
+    async fn create_host_port(
+        &self,
+        _environment_qid: &str,
+        id: sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let host_hostname = inputs
+            .get("hostHostname")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("hostHostname: {e}")))?
+            .to_string();
+        let host_vip = inputs
+            .get("hostVip")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("hostVip: {e}")))?
+            .to_string();
+        let port = *inputs
+            .get("port")
+            .assert_int_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("port: {e}")))?;
+        let protocol = inputs
+            .get("protocol")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("protocol: {e}")))?
+            .to_string();
+
+        // Extract backend port records
+        let backends = extract_service_backends(inputs.get("backends"))?;
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            hostname = %host_hostname,
+            vip = %host_vip,
+            port = %port,
+            protocol = %protocol,
+            num_backends = %backends.len(),
+            "creating host port"
+        );
+
+        // Broadcast service route to all nodes
+        self.broadcast_service_route_add(&host_vip, port as i32, &protocol, &backends)
+            .await;
+
+        // Build outputs
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("hostname"), Value::Str(host_hostname));
+        outputs.insert(String::from("address"), Value::Str(host_vip));
+        outputs.insert(String::from("port"), Value::Int(port));
+        outputs.insert(String::from("protocol"), Value::Str(protocol));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Update a Host.Port resource.
+    ///
+    /// Host ports are recreated when inputs change (backends, port, etc.).
+    async fn update_host_port(
+        &self,
+        environment_qid: &str,
+        id: sclc::ResourceId,
+        prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        if inputs_changed(&prev_inputs, &inputs) {
+            warn!(
+                resource_type = %id.ty,
+                resource_id = %id.id,
+                "host port inputs changed, recreating"
+            );
+            self.delete_host_port(id.clone(), prev_inputs, prev_outputs)
+                .await?;
+            return self.create_host_port(environment_qid, id, inputs).await;
+        }
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            "host port update is a no-op (no changes)"
+        );
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs: prev_outputs,
+            dependencies: vec![],
+        })
+    }
+
+    /// Delete a Host.Port resource.
+    async fn delete_host_port(
+        &self,
+        id: sclc::ResourceId,
+        _inputs: sclc::Record,
+        outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        let host_vip = outputs
+            .get("address")
+            .assert_str_ref()
+            .unwrap_or("")
+            .to_string();
+        let port = outputs.get("port").assert_int_ref().copied().unwrap_or(0);
+        let protocol = outputs
+            .get("protocol")
+            .assert_str_ref()
+            .unwrap_or("tcp")
+            .to_string();
+
+        info!(
+            resource_type = %id.ty,
+            resource_id = %id.id,
+            vip = %host_vip,
+            port = %port,
+            protocol = %protocol,
+            "deleting host port"
+        );
+
+        // Broadcast service route removal to all nodes
+        if !host_vip.is_empty() {
+            self.broadcast_service_route_remove(&host_vip, port as i32, &protocol)
+                .await;
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Broadcast helpers (send to all registered nodes)
+    // =========================================================================
+
+    /// Broadcast a DNS record to all registered nodes.
+    async fn broadcast_dns_set(&self, hostname: &str, address: &str) {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for DNS broadcast");
+                return;
+            }
+        };
+
+        for node in &nodes {
+            match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(mut client) => {
+                    if let Err(e) = client
+                        .set_dns_record(scop::SetDnsRecordRequest {
+                            hostname: hostname.to_string(),
+                            address: address.to_string(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            node = %node.name,
+                            hostname = %hostname,
+                            error = %e,
+                            "failed to set DNS record on node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        error = %e,
+                        "failed to connect to node for DNS broadcast"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Broadcast DNS record removal to all registered nodes.
+    async fn broadcast_dns_remove(&self, hostname: &str) {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for DNS removal broadcast");
+                return;
+            }
+        };
+
+        for node in &nodes {
+            match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(mut client) => {
+                    if let Err(e) = client
+                        .remove_dns_record(scop::RemoveDnsRecordRequest {
+                            hostname: hostname.to_string(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            node = %node.name,
+                            hostname = %hostname,
+                            error = %e,
+                            "failed to remove DNS record on node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        error = %e,
+                        "failed to connect to node for DNS removal"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Broadcast a service route (DNAT rule) to all registered nodes.
+    async fn broadcast_service_route_add(
+        &self,
+        vip: &str,
+        port: i32,
+        protocol: &str,
+        backends: &[scop::ServiceBackend],
+    ) {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for service route broadcast");
+                return;
+            }
+        };
+
+        for node in &nodes {
+            match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(mut client) => {
+                    if let Err(e) = client
+                        .add_service_route(scop::AddServiceRouteRequest {
+                            vip: vip.to_string(),
+                            port,
+                            protocol: protocol.to_string(),
+                            backends: backends.to_vec(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            node = %node.name,
+                            vip = %vip,
+                            port = %port,
+                            error = %e,
+                            "failed to add service route on node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        error = %e,
+                        "failed to connect to node for service route broadcast"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Broadcast service route removal to all registered nodes.
+    async fn broadcast_service_route_remove(&self, vip: &str, port: i32, protocol: &str) {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for service route removal");
+                return;
+            }
+        };
+
+        for node in &nodes {
+            match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(mut client) => {
+                    if let Err(e) = client
+                        .remove_service_route(scop::RemoveServiceRouteRequest {
+                            vip: vip.to_string(),
+                            port,
+                            protocol: protocol.to_string(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            node = %node.name,
+                            vip = %vip,
+                            port = %port,
+                            error = %e,
+                            "failed to remove service route on node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        error = %e,
+                        "failed to connect to node for service route removal"
+                    );
+                }
+            }
+        }
+    }
 }
 
 // =============================================================================
@@ -1022,6 +1484,47 @@ fn extract_allowed_destinations(
         }
         other => Err(PluginError::InvalidInput(format!(
             "allow: expected List? but got {other}"
+        ))),
+    }
+}
+
+/// Extract service backends from the `backends` input value.
+///
+/// The backends list is a `Value::List` of records, each with `address`, `port`,
+/// and `protocol` fields (matching Pod.Port or Host.Port output shape).
+fn extract_service_backends(value: &Value) -> Result<Vec<scop::ServiceBackend>, PluginError> {
+    match value {
+        Value::Nil => Ok(vec![]),
+        Value::List(list) => {
+            let mut backends = Vec::with_capacity(list.len());
+            for (i, item) in list.iter().enumerate() {
+                let record = item.assert_record_ref().map_err(|e| {
+                    PluginError::InvalidInput(format!("backends[{i}]: expected record: {e}"))
+                })?;
+                let address = record
+                    .get("address")
+                    .assert_str_ref()
+                    .map_err(|e| PluginError::InvalidInput(format!("backends[{i}].address: {e}")))?
+                    .to_string();
+                let port =
+                    *record.get("port").assert_int_ref().map_err(|e| {
+                        PluginError::InvalidInput(format!("backends[{i}].port: {e}"))
+                    })? as i32;
+                let protocol = record
+                    .get("protocol")
+                    .assert_str_ref()
+                    .map_err(|e| PluginError::InvalidInput(format!("backends[{i}].protocol: {e}")))?
+                    .to_string();
+                backends.push(scop::ServiceBackend {
+                    address,
+                    port,
+                    protocol,
+                });
+            }
+            Ok(backends)
+        }
+        other => Err(PluginError::InvalidInput(format!(
+            "backends: expected List? but got {other}"
         ))),
     }
 }
@@ -1210,6 +1713,7 @@ impl scop::Orchestrator for ContainerPlugin {
                         error: e,
                         pod_cidr: String::new(),
                         cluster_cidr: String::new(),
+                        service_cidr: String::new(),
                     });
                 }
             }
@@ -1321,6 +1825,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     error: String::new(),
                     pod_cidr,
                     cluster_cidr: self.inner.cluster_cidr.clone(),
+                    service_cidr: self.inner.service_cidr.clone(),
                 })
             }
             Err(e) => {
@@ -1336,6 +1841,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     error,
                     pod_cidr: String::new(),
                     cluster_cidr: String::new(),
+                    service_cidr: String::new(),
                 })
             }
         }
@@ -1511,6 +2017,32 @@ impl rtp::Plugin for ContainerPlugin {
                 }
                 result
             }
+            HOST_RESOURCE_TYPE => {
+                let result = self.create_host(environment_qid, id.clone(), inputs).await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host create_resource failed"
+                    );
+                }
+                result
+            }
+            HOST_PORT_RESOURCE_TYPE => {
+                let result = self
+                    .create_host_port(environment_qid, id.clone(), inputs)
+                    .await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host port create_resource failed"
+                    );
+                }
+                result
+            }
             _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
         }
     }
@@ -1606,6 +2138,46 @@ impl rtp::Plugin for ContainerPlugin {
                 }
                 result
             }
+            HOST_RESOURCE_TYPE => {
+                let result = self
+                    .update_host(
+                        environment_qid,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
+                    .await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host update_resource failed"
+                    );
+                }
+                result
+            }
+            HOST_PORT_RESOURCE_TYPE => {
+                let result = self
+                    .update_host_port(
+                        environment_qid,
+                        id.clone(),
+                        prev_inputs,
+                        prev_outputs,
+                        inputs,
+                    )
+                    .await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host port update_resource failed"
+                    );
+                }
+                result
+            }
             _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
         }
     }
@@ -1668,6 +2240,30 @@ impl rtp::Plugin for ContainerPlugin {
                 }
                 result
             }
+            HOST_RESOURCE_TYPE => {
+                let result = self.delete_host(id.clone(), inputs, outputs).await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host delete_resource failed"
+                    );
+                }
+                result
+            }
+            HOST_PORT_RESOURCE_TYPE => {
+                let result = self.delete_host_port(id.clone(), inputs, outputs).await;
+                if let Err(ref e) = result {
+                    error!(
+                        resource_type = %id.ty,
+                        resource_id = %id.id,
+                        err = %e,
+                        "host port delete_resource failed"
+                    );
+                }
+                result
+            }
             _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
         }
     }
@@ -1719,6 +2315,7 @@ async fn main() -> Result<()> {
     info!("  registry_url: {}", args.registry_url);
     info!("  ldb_hostname: {}", args.ldb_hostname);
     info!("  cluster_cidr: {}", args.cluster_cidr);
+    info!("  service_cidr: {}", args.service_cidr);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -1752,6 +2349,13 @@ async fn main() -> Result<()> {
         .expect("invalid --cluster-cidr, expected CIDR notation (e.g., 10.42.0.0/16)");
     let subnet_allocator = subnet_allocator::SubnetAllocator::new(cluster_cidr);
 
+    // Set up VIP allocator for Host resources
+    let service_cidr: ipnet::Ipv4Net = args
+        .service_cidr
+        .parse()
+        .expect("invalid --service-cidr, expected CIDR notation (e.g., 10.43.0.0/16)");
+    let vip_alloc = vip_allocator::VipAllocator::new(service_cidr);
+
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
         node_registry,
@@ -1761,6 +2365,8 @@ async fn main() -> Result<()> {
         ldb_publisher,
         subnet_allocator,
         cluster_cidr.to_string(),
+        service_cidr.to_string(),
+        vip_alloc,
     );
 
     // Clone for the RTP server (since ContainerPlugin is Clone via Arc)
