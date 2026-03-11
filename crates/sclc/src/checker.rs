@@ -1124,6 +1124,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
                 let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
+                if matches!(callee_ty, Type::Never) {
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
