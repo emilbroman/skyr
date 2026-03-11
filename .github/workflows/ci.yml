@@ -213,6 +213,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Compute version tag
+        id: version
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          date_tag="$(date -u +'%Y.%-m.%-d')"
+          echo "tag=v${date_tag}-${short_sha}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
@@ -222,8 +229,8 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2.4.2
         with:
-          tag_name: ${{ github.sha }}
-          name: ${{ github.sha }}
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
           body: |
             Automated release for commit ${{ github.sha }}.
 
