@@ -634,8 +634,25 @@ impl Worker {
             .instrument(tracing::Span::current()),
         );
 
-        if let Err(e) = program.evaluate(&module_id, &eval).await {
-            self.log_publisher.error(format!("{e}")).await;
+        match program.evaluate(&module_id, &eval).await {
+            Ok(eval_diagnosed) => {
+                for diag in eval_diagnosed.diags().iter() {
+                    let (module_id, span) = diag.locate();
+                    self.log_publisher
+                        .log(
+                            match diag.level() {
+                                sclc::DiagLevel::Error => ldb::Severity::Error,
+                                sclc::DiagLevel::Warning => ldb::Severity::Warning,
+                            },
+                            format!("{module_id}:{span}: {diag}"),
+                        )
+                        .await
+                        .unwrap_or_default();
+                }
+            }
+            Err(e) => {
+                self.log_publisher.error(format!("{e}")).await;
+            }
         }
         drop(eval);
         let completeness = effects_task.await?;
