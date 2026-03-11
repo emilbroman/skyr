@@ -1801,7 +1801,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
-    fn check_global_let_bind(
+    pub fn check_global_let_bind(
         &self,
         env: &TypeEnv<'_>,
         let_bind: &ast::LetBind,
