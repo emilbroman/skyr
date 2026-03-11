@@ -3,7 +3,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::{FileMod, ImportStmt, Loc, ModStmt, SourceRepo, parse_file_mod};
+use crate::{DiagList, Diagnosed, FileMod, ImportStmt, Loc, ModStmt, SourceRepo, parse_file_mod};
 
 #[derive(Clone)]
 pub struct Package<S> {
@@ -21,9 +21,6 @@ pub enum OpenError {
 
     #[error("encoding error: {0}")]
     Encoding(#[from] std::string::FromUtf8Error),
-
-    #[error("parse error: {0}")]
-    Parse(String),
 }
 
 impl<S> Package<S> {
@@ -58,13 +55,20 @@ impl<S: SourceRepo> Package<S> {
         SourceRepo::package_id(&self.source)
     }
 
-    pub async fn open(&mut self, path: impl AsRef<Path>) -> Result<&FileMod, OpenError> {
+    pub async fn open(
+        &mut self,
+        path: impl AsRef<Path>,
+    ) -> Result<Diagnosed<Option<&FileMod>>, OpenError> {
         let path = path.as_ref().to_path_buf();
         if self.files.contains_key(&path) {
-            return Ok(self
-                .files
-                .get(&path)
-                .expect("cached file must be present in package map"));
+            return Ok(Diagnosed::new(
+                Some(
+                    self.files
+                        .get(&path)
+                        .expect("cached file must be present in package map"),
+                ),
+                DiagList::new(),
+            ));
         }
 
         let source_data = SourceRepo::read_file(&self.source, &path)
@@ -75,19 +79,15 @@ impl<S: SourceRepo> Package<S> {
         let package_id = self.package_id();
         let module_id = module_id_for_path(&package_id, &path);
         let diagnosed = parse_file_mod(&source, &module_id);
-        if diagnosed.as_ref().is_none() {
-            let message = diagnosed
-                .diags()
-                .iter()
-                .next()
-                .map(|diag| diag.to_string())
-                .unwrap_or_else(|| "parse error".to_string());
-            return Err(OpenError::Parse(message));
+        let mut diags = DiagList::new();
+        let parsed = diagnosed.unpack(&mut diags);
+        match parsed {
+            Some(file_mod) => {
+                let file_mod = self.files.entry(path.clone()).or_insert(file_mod);
+                Ok(Diagnosed::new(Some(file_mod), diags))
+            }
+            None => Ok(Diagnosed::new(None, diags)),
         }
-        let file_mod = diagnosed
-            .into_inner()
-            .expect("checked parse result before unwrapping");
-        Ok(self.files.entry(path.clone()).or_insert(file_mod))
     }
 }
 

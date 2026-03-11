@@ -43,7 +43,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         }
     });
 
-    program.evaluate(&module_id, &eval).await?;
+    report(program.evaluate(&module_id, &eval).await?);
 
     effects_task.await?;
     Ok(())

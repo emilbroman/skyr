@@ -20,7 +20,9 @@ pub async fn compile<S: SourceRepo>(source: S) -> Result<Diagnosed<Program<S>>, 
     let mut diags = DiagList::new();
     let mut program = Program::new();
     let package = program.open_package(source).await;
-    let _ = package.open("Main.scl").await?;
+    if package.open("Main.scl").await?.unpack(&mut diags).is_none() {
+        return Ok(Diagnosed::new(program, diags));
+    }
 
     program.resolve_imports().await?.unpack(&mut diags);
     program.check_types()?.unpack(&mut diags);

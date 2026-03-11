@@ -113,7 +113,12 @@ impl<S: SourceRepo> Program<S> {
             }
 
             for (import_path, import_stmt) in pending_imports {
-                if self.resolve_import(&import_path).await?.is_none() {
+                if self
+                    .resolve_import(&import_path)
+                    .await?
+                    .unpack(&mut diags)
+                    .is_none()
+                {
                     diags.push(InvalidImport {
                         module_id: import_path,
                         import: import_stmt,
@@ -128,16 +133,16 @@ impl<S: SourceRepo> Program<S> {
     pub async fn resolve_import(
         &mut self,
         import_path: &ModuleId,
-    ) -> Result<Option<&crate::ast::FileMod>, ResolveImportError> {
+    ) -> Result<Diagnosed<Option<&crate::ast::FileMod>>, ResolveImportError> {
         let Some(package_name) = self.package_name_for_import(import_path) else {
-            return Ok(None);
+            return Ok(Diagnosed::new(None, DiagList::new()));
         };
 
         let Some(module_segments) = import_path.suffix_after(&package_name) else {
-            return Ok(None);
+            return Ok(Diagnosed::new(None, DiagList::new()));
         };
         if module_segments.is_empty() {
-            return Ok(None);
+            return Ok(Diagnosed::new(None, DiagList::new()));
         }
 
         let module_path = module_segments
@@ -147,12 +152,12 @@ impl<S: SourceRepo> Program<S> {
             .to_path_buf_with_extension("scl");
 
         let Some(package) = self.packages.get_mut(&package_name) else {
-            return Ok(None);
+            return Ok(Diagnosed::new(None, DiagList::new()));
         };
 
         match package.open(&module_path).await {
-            Ok(file_mod) => Ok(Some(file_mod)),
-            Err(OpenError::NotFound(_)) => Ok(None),
+            Ok(diagnosed) => Ok(diagnosed),
+            Err(OpenError::NotFound(_)) => Ok(Diagnosed::new(None, DiagList::new())),
             Err(source) => Err(ResolveImportError::Open {
                 import_path: import_path.clone(),
                 package_name,
@@ -174,7 +179,9 @@ impl<S: SourceRepo> Program<S> {
         &mut self,
         module_id: &ModuleId,
         eval: &crate::Eval,
-    ) -> Result<(), EvaluateError> {
+    ) -> Result<Diagnosed<()>, EvaluateError> {
+        let mut diags = DiagList::new();
+
         let Some(package_name) = self.package_name_for_import(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
         };
@@ -196,11 +203,15 @@ impl<S: SourceRepo> Program<S> {
             let Some(package) = self.packages.get_mut(&package_name) else {
                 return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
             };
-            package
+            let open_result = package
                 .open(&module_path)
                 .await
                 .map_err(|err| EvaluateError::Open(module_id.clone(), err))?
-                .clone()
+                .unpack(&mut diags);
+            match open_result {
+                Some(file_mod) => file_mod.clone(),
+                None => return Ok(Diagnosed::new((), diags)),
+            }
         };
         let imports = self.find_imports(&file_mod);
 
@@ -209,7 +220,7 @@ impl<S: SourceRepo> Program<S> {
             .with_imports(&imports);
         eval.eval_file_mod(&env, &file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
-        Ok(())
+        Ok(Diagnosed::new((), diags))
     }
 
     fn find_imports<'a>(
