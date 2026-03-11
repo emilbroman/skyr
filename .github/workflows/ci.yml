@@ -155,7 +155,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: skyr-${{ matrix.target }}
+          name: bin-skyr-${{ matrix.target }}
           path: dist/skyr-${{ matrix.target }}
 
   # ---------------------------------------------------------------------------
@@ -199,7 +199,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: scoc-${{ matrix.target }}
+          name: bin-scoc-${{ matrix.target }}
           path: dist/scoc-${{ matrix.target }}
 
   # ---------------------------------------------------------------------------
@@ -216,9 +216,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: artifacts
-          pattern: |
-            skyr-*
-            scoc-*
+          pattern: bin-*
           merge-multiple: true
 
       - name: Create release
