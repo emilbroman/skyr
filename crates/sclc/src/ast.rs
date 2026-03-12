@@ -399,12 +399,19 @@ pub enum TypeExpr {
     Record(RecordTypeExpr),
     Dict(DictTypeExpr),
     PropertyAccess(TypePropertyAccessExpr),
+    Application(TypeApplicationExpr),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypePropertyAccessExpr {
     pub expr: Box<Loc<TypeExpr>>,
     pub property: Loc<Var>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeApplicationExpr {
+    pub base: Box<Loc<TypeExpr>>,
+    pub args: Vec<Loc<TypeExpr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

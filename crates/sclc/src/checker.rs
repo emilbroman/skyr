@@ -982,15 +982,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
         let mut diags = DiagList::new();
 
-        // Resolve type defs and populate type-level namespace before checking statements.
-        // This allows type defs to be used anywhere in the module, regardless of order.
-        for type_def in file_mod.find_type_defs() {
-            let resolved_ty = self.resolve_type_def(&env, type_def).unpack(&mut diags);
-            env = env.with_type_level(type_def.var.name.clone(), resolved_ty);
-        }
-
-        // Also populate type-level namespace from imports.
-        self.populate_import_type_level(&mut env, file_mod, &mut diags)?;
+        self.build_module_type_env(&mut env, file_mod, &mut diags)?;
 
         let mut exports = RecordType::default();
 
@@ -1012,16 +1004,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let mut diags = DiagList::new();
         let mut type_exports = RecordType::default();
 
-        // Build a temporary env with the module's own type defs resolved
         let globals = file_mod.find_globals();
         let imports = self.find_imports(file_mod);
         let mut inner_env = env.with_globals(&globals).with_imports(&imports);
 
-        for type_def in file_mod.find_type_defs() {
-            let resolved_ty = self
-                .resolve_type_def(&inner_env, type_def)
-                .unpack(&mut diags);
-            inner_env = inner_env.with_type_level(type_def.var.name.clone(), resolved_ty);
+        // Reuse the shared helper — this also populates import type-level,
+        // which is needed for transitive type re-exports (e.g., `export type Alias B.SomeType`).
+        if let Err(_err) = self.build_module_type_env(&mut inner_env, file_mod, &mut diags) {
+            return Diagnosed::new(type_exports, diags);
         }
 
         for statement in &file_mod.statements {
@@ -1033,6 +1023,40 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
 
         Diagnosed::new(type_exports, diags)
+    }
+
+    /// Build the type-level environment for a module:
+    /// 1. Populate import type-level bindings.
+    /// 2. Two-pass resolve of local type defs (first pass: collect names, second pass: resolve bodies).
+    fn build_module_type_env(
+        &self,
+        env: &mut TypeEnv<'_>,
+        file_mod: &ast::FileMod,
+        diags: &mut DiagList,
+    ) -> Result<(), TypeCheckError> {
+        // Populate type-level namespace from imports first, so type defs can reference imported types.
+        self.populate_import_type_level(env, file_mod, diags)?;
+
+        let type_defs = file_mod.find_type_defs();
+
+        // Pass 1: Register all type def names with placeholder types (Never).
+        // This allows forward references between type defs in the same module.
+        for type_def in &type_defs {
+            *env = env.with_type_level(type_def.var.name.clone(), Type::Never);
+        }
+
+        // Pass 2: Resolve the bodies. Run two iterations so that forward references
+        // (type B A / type A Int) resolve correctly — the first iteration resolves
+        // definitions whose dependencies are already resolved, and the second iteration
+        // picks up any that referenced not-yet-resolved definitions.
+        for _ in 0..2 {
+            for type_def in &type_defs {
+                let resolved_ty = self.resolve_type_def(env, type_def).unpack(diags);
+                *env = env.with_type_level(type_def.var.name.clone(), resolved_ty);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn check_stmt(
@@ -1969,6 +1993,73 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     key: Box::new(key),
                     value: Box::new(value),
                 })
+            }
+            ast::TypeExpr::Application(app) => {
+                let base_ty = self
+                    .resolve_type_expr(env, app.base.as_ref())
+                    .unpack(&mut diags);
+                match &base_ty {
+                    Type::Fn(fn_ty) if fn_ty.params.is_empty() && !fn_ty.type_params.is_empty() => {
+                        if fn_ty.type_params.len() != app.args.len() {
+                            if let Ok(module_id) = env.module_id() {
+                                diags.push(WrongTypeArgCount {
+                                    module_id,
+                                    expected: fn_ty.type_params.len(),
+                                    got: app.args.len(),
+                                    span: type_expr.span(),
+                                });
+                            }
+                            Type::Never
+                        } else {
+                            let resolved_args: Vec<Type> = app
+                                .args
+                                .iter()
+                                .map(|arg| self.resolve_type_expr(env, arg).unpack(&mut diags))
+                                .collect();
+                            // Check that each arg satisfies its bound
+                            for ((id, bound), arg_ty) in
+                                fn_ty.type_params.iter().zip(resolved_args.iter())
+                            {
+                                let instantiated_bound = bound.substitute(
+                                    &fn_ty
+                                        .type_params
+                                        .iter()
+                                        .zip(resolved_args.iter())
+                                        .map(|((id, _), ty)| (*id, ty.clone()))
+                                        .collect::<Vec<_>>(),
+                                );
+                                if self.assign_type(&instantiated_bound, arg_ty).is_err()
+                                    && let Ok(module_id) = env.module_id()
+                                {
+                                    diags.push(TypeArgBoundViolation {
+                                        module_id,
+                                        actual: arg_ty.clone(),
+                                        bound: instantiated_bound,
+                                        span: type_expr.span(),
+                                    });
+                                }
+                                let _ = id;
+                            }
+                            // Substitute type params with the provided args
+                            let replacements: Vec<(usize, Type)> = fn_ty
+                                .type_params
+                                .iter()
+                                .zip(resolved_args)
+                                .map(|((id, _), ty)| (*id, ty))
+                                .collect();
+                            fn_ty.ret.substitute(&replacements)
+                        }
+                    }
+                    _ => {
+                        if let Ok(module_id) = env.module_id() {
+                            diags.push(UnexpectedTypeArgs {
+                                module_id,
+                                span: type_expr.span(),
+                            });
+                        }
+                        Type::Never
+                    }
+                }
             }
             ast::TypeExpr::PropertyAccess(prop_access) => {
                 let lhs_ty = self
@@ -3057,6 +3148,157 @@ mod tests {
             checker
                 .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
                 .is_ok()
+        );
+    }
+
+    // --- Type declaration tests ---
+
+    fn check_module(source: &str) -> crate::Diagnosed<Type> {
+        let module_id = ModuleId::default();
+        let file_mod = crate::parser::parse_file_mod(source, &module_id)
+            .into_inner()
+            .expect("source should parse");
+        let program = Box::new(Program::<StdSourceRepo>::new());
+        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let checker = TypeChecker::new(program);
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        checker
+            .check_file_mod(&env, &file_mod)
+            .expect("type check should not error")
+    }
+
+    /// Helper to extract an export's Fn type from a check_module result,
+    /// unfolding any iso-recursive wrapper.
+    fn get_export_fn(diagnosed: &crate::Diagnosed<Type>, name: &str) -> FnType {
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type, got: {}", diagnosed.as_ref());
+        };
+        let Some(ty) = exports.get(name) else {
+            panic!("expected export '{name}'");
+        };
+        let unfolded = ty.unfold();
+        let Type::Fn(fn_ty) = unfolded else {
+            panic!("expected fn type for '{name}', got: {}", ty);
+        };
+        fn_ty
+    }
+
+    #[test]
+    fn simple_type_alias_resolves() {
+        let diagnosed = check_module("type Port Int\nexport let p = fn(x: Port) x");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "p");
+        assert_eq!(fn_ty.params[0], Type::Int);
+        assert_eq!(*fn_ty.ret, Type::Int);
+    }
+
+    #[test]
+    fn generic_type_def_produces_fn_type() {
+        let diagnosed = check_module(
+            "type Pair<A, B> { fst: A, snd: B }\nexport let p = fn(x: Pair<Int, Str>) x.fst",
+        );
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "p");
+        // param should be { fst: Int, snd: Str }
+        let Type::Record(param_rec) = &fn_ty.params[0] else {
+            panic!("expected record param type, got: {}", fn_ty.params[0]);
+        };
+        assert_eq!(param_rec.get("fst"), Some(&Type::Int));
+        assert_eq!(param_rec.get("snd"), Some(&Type::Str));
+        // return should be Int
+        assert_eq!(*fn_ty.ret, Type::Int);
+    }
+
+    #[test]
+    fn forward_reference_between_type_defs() {
+        // B references A which is defined after B
+        let diagnosed = check_module("type B A\ntype A Int\nexport let f = fn(x: B) x");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "f");
+        assert_eq!(fn_ty.params[0], Type::Int);
+    }
+
+    #[test]
+    fn type_def_and_value_coexist() {
+        // Same name as both a type and a value
+        let diagnosed = check_module(
+            "type Config { port: Int }\nexport let Config = fn(port: Int) { port: port }",
+        );
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type");
+        };
+        // The value export should exist
+        assert!(exports.get("Config").is_some());
+    }
+
+    #[test]
+    fn exported_type_appears_in_type_level_exports() {
+        let module_id = ModuleId::default();
+        let file_mod = crate::parser::parse_file_mod(
+            "export type Config { host: Str, port: Int }",
+            &module_id,
+        )
+        .into_inner()
+        .expect("source should parse");
+        let program = Box::new(Program::<StdSourceRepo>::new());
+        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let checker = TypeChecker::new(program);
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let diagnosed = checker.type_level_exports(&env, &file_mod);
+        assert!(!diagnosed.diags().has_errors());
+        let type_exports = diagnosed.into_inner();
+        let Some(config_ty) = type_exports.get("Config") else {
+            panic!("expected exported type 'Config'");
+        };
+        let Type::Record(config_rec) = config_ty else {
+            panic!("expected record type");
+        };
+        assert_eq!(config_rec.get("host"), Some(&Type::Str));
+        assert_eq!(config_rec.get("port"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn unknown_type_in_type_def_reports_error() {
+        let diagnosed = check_module("type Foo Nonexistent\nexport let f = fn(x: Foo) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for unknown type"
+        );
+    }
+
+    #[test]
+    fn wrong_type_arg_count_reports_error() {
+        let diagnosed =
+            check_module("type Pair<A, B> { fst: A, snd: B }\nexport let f = fn(x: Pair<Int>) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for wrong arg count"
+        );
+    }
+
+    #[test]
+    fn type_application_to_non_generic_reports_error() {
+        let diagnosed = check_module("type Name Str\nexport let f = fn(x: Name<Int>) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for applying args to non-generic"
         );
     }
 }

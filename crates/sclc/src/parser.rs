@@ -9,7 +9,8 @@ use crate::{
     ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
     ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
     RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
-    TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
+    TypeApplicationExpr, TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp,
+    Var,
 };
 
 #[derive(Error, Debug)]
@@ -44,6 +45,11 @@ impl Diag for SyntaxError {
 enum Postfix {
     Property(Loc<Var>),
     Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
+}
+
+enum TypeExprSuffix {
+    Property(Loc<Var>),
+    Application(Vec<Loc<TypeExpr>>, Position),
 }
 
 fn decode_string(raw: &str) -> String {
@@ -336,18 +342,33 @@ peg::parser! {
             }
 
         rule type_expr_base() -> Loc<TypeExpr>
-            = head:type_expr_atom() suffixes:(dot() property:var() { property })* {
+            = head:type_expr_atom() suffixes:type_expr_suffix()* {
                 let mut expr = head;
-                for property in suffixes {
-                    let start = expr.span().start();
-                    let end = property.span().end();
-                    expr = Loc::new(TypeExpr::PropertyAccess(TypePropertyAccessExpr {
-                        expr: Box::new(expr),
-                        property,
-                    }), Span::new(start, end));
+                for suffix in suffixes {
+                    match suffix {
+                        TypeExprSuffix::Property(property) => {
+                            let start = expr.span().start();
+                            let end = property.span().end();
+                            expr = Loc::new(TypeExpr::PropertyAccess(TypePropertyAccessExpr {
+                                expr: Box::new(expr),
+                                property,
+                            }), Span::new(start, end));
+                        }
+                        TypeExprSuffix::Application(args, end_pos) => {
+                            let start = expr.span().start();
+                            expr = Loc::new(TypeExpr::Application(TypeApplicationExpr {
+                                base: Box::new(expr),
+                                args,
+                            }), Span::new(start, end_pos));
+                        }
+                    }
                 }
                 expr
             }
+
+        rule type_expr_suffix() -> TypeExprSuffix
+            = dot() property:var() { TypeExprSuffix::Property(property) }
+            / less() args:(type_expr() ++ comma()) comma()? end:greater() { TypeExprSuffix::Application(args, end.end()) }
 
         rule type_expr_atom() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
@@ -1663,5 +1684,122 @@ mod tests {
             panic!("expected float expression");
         };
         assert_eq!(float.value.to_string(), "3.14");
+    }
+
+    #[test]
+    fn parses_simple_type_def() {
+        let file_mod = parse_file_mod("type Port Int", &ModuleId::default())
+            .into_inner()
+            .expect("type def should parse");
+        let crate::ModStmt::TypeDef(type_def) = &file_mod.statements[0] else {
+            panic!("expected type def statement");
+        };
+        assert_eq!(type_def.var.name, "Port");
+        assert!(type_def.type_params.is_empty());
+        let crate::TypeExpr::Var(var) = type_def.ty.as_ref() else {
+            panic!("expected type var");
+        };
+        assert_eq!(var.name, "Int");
+    }
+
+    #[test]
+    fn parses_export_type_def() {
+        let file_mod = parse_file_mod(
+            "export type Config { host: Str, port: Int }",
+            &ModuleId::default(),
+        )
+        .into_inner()
+        .expect("export type def should parse");
+        let crate::ModStmt::ExportTypeDef(type_def) = &file_mod.statements[0] else {
+            panic!("expected export type def statement");
+        };
+        assert_eq!(type_def.var.name, "Config");
+        let crate::TypeExpr::Record(record) = type_def.ty.as_ref() else {
+            panic!("expected record type expr");
+        };
+        assert_eq!(record.fields.len(), 2);
+    }
+
+    #[test]
+    fn parses_generic_type_def() {
+        let file_mod = parse_file_mod("type Pair<A, B> { fst: A, snd: B }", &ModuleId::default())
+            .into_inner()
+            .expect("generic type def should parse");
+        let crate::ModStmt::TypeDef(type_def) = &file_mod.statements[0] else {
+            panic!("expected type def statement");
+        };
+        assert_eq!(type_def.var.name, "Pair");
+        assert_eq!(type_def.type_params.len(), 2);
+        assert_eq!(type_def.type_params[0].var.name, "A");
+        assert_eq!(type_def.type_params[1].var.name, "B");
+    }
+
+    #[test]
+    fn parses_type_level_property_access() {
+        let file_mod = parse_file_mod("export let f = fn(x: Mod.Config) x", &ModuleId::default())
+            .into_inner()
+            .expect("type-level property access should parse");
+        let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
+            panic!("expected export let bind");
+        };
+        let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
+            panic!("expected fn expression");
+        };
+        let crate::TypeExpr::PropertyAccess(prop) = fn_expr.params[0].ty.as_ref() else {
+            panic!("expected type-level property access");
+        };
+        assert_eq!(prop.property.name, "Config");
+        let crate::TypeExpr::Var(var) = prop.expr.as_ref().as_ref() else {
+            panic!("expected type var as base");
+        };
+        assert_eq!(var.name, "Mod");
+    }
+
+    #[test]
+    fn parses_type_application() {
+        let file_mod = parse_file_mod(
+            "export let f = fn(x: Pair<Int, Str>) x",
+            &ModuleId::default(),
+        )
+        .into_inner()
+        .expect("type application should parse");
+        let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
+            panic!("expected export let bind");
+        };
+        let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
+            panic!("expected fn expression");
+        };
+        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref() else {
+            panic!("expected type application");
+        };
+        let crate::TypeExpr::Var(base_var) = app.base.as_ref().as_ref() else {
+            panic!("expected type var as base");
+        };
+        assert_eq!(base_var.name, "Pair");
+        assert_eq!(app.args.len(), 2);
+    }
+
+    #[test]
+    fn parses_type_application_on_property_access() {
+        let file_mod = parse_file_mod(
+            "export let f = fn(x: Mod.Pair<Int, Str>) x",
+            &ModuleId::default(),
+        )
+        .into_inner()
+        .expect("type application on property access should parse");
+        let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
+            panic!("expected export let bind");
+        };
+        let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
+            panic!("expected fn expression");
+        };
+        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref() else {
+            panic!("expected type application");
+        };
+        let crate::TypeExpr::PropertyAccess(prop) = app.base.as_ref().as_ref() else {
+            panic!("expected property access as base");
+        };
+        assert_eq!(prop.property.name, "Pair");
+        assert_eq!(app.args.len(), 2);
     }
 }
