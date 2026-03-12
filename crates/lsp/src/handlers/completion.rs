@@ -1,12 +1,13 @@
-use std::path::PathBuf;
-
 use lsp_types::{
     CompletionItem, CompletionItemKind, CompletionList, CompletionParams, CompletionResponse,
     CompletionTriggerKind,
 };
-use sclc::{ModuleId, Program, SourceRepo, TypeChecker, TypeEnv};
+use sclc::{ModuleId, Program, SourceRepo, TypeChecker};
 
 use crate::convert::{lsp_to_position, uri_to_path};
+use crate::helpers::{
+    find_file_mod_in_program, find_module_by_path, get_var_type, package_module_id,
+};
 use crate::overlay::OverlaySource;
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
@@ -130,15 +131,15 @@ fn scope_completions<S: SourceRepo>(
     }
 
     // Import path suggestions (known modules from the compiled program)
-    for (package_id, package) in program.packages() {
+    for (pkg_id, package) in program.packages() {
         for (module_path, _) in package.modules() {
-            let mid = package_module_id(package_id, module_path);
+            let mid = package_module_id(pkg_id, module_path);
             let import_path = mid
                 .as_slice()
                 .iter()
                 .map(|s| s.as_str())
                 .collect::<Vec<_>>()
-                .join(".");
+                .join("/");
             let label = mid.as_slice().last().cloned().unwrap_or_default();
             items.push(CompletionItem {
                 label,
@@ -170,15 +171,12 @@ fn dot_completions<S: SourceRepo>(
     file_mod: &sclc::FileMod,
     lsp_pos: lsp_types::Position,
 ) -> Vec<CompletionItem> {
-    // The cursor is right after the `.`. We need to find the expression before the dot.
-    // Position the cursor one character before the dot to find the expression.
-    let before_dot = sclc::Position::new(lsp_pos.line + 1, lsp_pos.character); // character is 0-based in LSP; sclc is 1-based, and we want one before the trigger
+    // The cursor is right after the `.`. Position one character before the dot
+    // to find the expression.
     let pos = lsp_to_position(lsp_types::Position {
         line: lsp_pos.line,
         character: lsp_pos.character.saturating_sub(1),
     });
-
-    let _ = before_dot; // use `pos` which already accounts for the offset
 
     // Find the node at the position before the dot.
     let Some(node) = crate::query::node_at_position(file_mod, pos) else {
@@ -223,84 +221,6 @@ fn type_member_completions(ty: &sclc::Type) -> Vec<CompletionItem> {
     }
 
     items
-}
-
-/// Get the type of a variable by running the type checker.
-fn get_var_type<S: SourceRepo>(
-    program: &Program<OverlaySource<S>>,
-    module_id: &ModuleId,
-    file_mod: &sclc::FileMod,
-    var_name: &str,
-) -> Option<sclc::Type> {
-    let globals = file_mod.find_globals();
-    let checker = TypeChecker::new(program);
-    let imports = checker.find_imports(file_mod);
-    let env = TypeEnv::new()
-        .with_module_id(module_id)
-        .with_globals(&globals)
-        .with_imports(&imports);
-
-    if let Some(global_expr) = globals.get(var_name)
-        && let Ok(diagnosed) = checker.check_expr(&env, global_expr, None)
-    {
-        return Some(diagnosed.into_inner());
-    }
-
-    if let Some((_, Some(import_file_mod))) = imports.get(var_name) {
-        let import_env = TypeEnv::new().with_module_id(module_id);
-        if let Ok(diagnosed) = checker.check_file_mod(&import_env, import_file_mod) {
-            return Some(diagnosed.into_inner());
-        }
-    }
-
-    None
-}
-
-fn find_module_by_path<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    root_path: &Option<PathBuf>,
-    path: &std::path::Path,
-) -> Option<(ModuleId, &'a sclc::FileMod)> {
-    let root = root_path.as_deref().unwrap_or(std::path::Path::new("."));
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            if root.join(module_path) == path {
-                let module_id = package_module_id(package_id, module_path);
-                return Some((module_id, file_mod));
-            }
-        }
-    }
-    None
-}
-
-fn find_file_mod_in_program<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    target_module_id: &ModuleId,
-) -> Option<&'a sclc::FileMod> {
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            let mid = package_module_id(package_id, module_path);
-            if mid == *target_module_id {
-                return Some(file_mod);
-            }
-        }
-    }
-    None
-}
-
-fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
-    let mut segments: Vec<String> = package_id.as_slice().to_vec();
-    if let Some(parent) = module_path.parent() {
-        for component in parent.components() {
-            if let std::path::Component::Normal(part) = component {
-                segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-    if let Some(stem) = module_path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
-    }
-    ModuleId::new(segments)
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]

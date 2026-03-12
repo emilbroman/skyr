@@ -1,10 +1,8 @@
-use std::path::PathBuf;
-
 use lsp_types::{DocumentFormattingParams, TextEdit};
-use sclc::{ModuleId, Program, SourceRepo};
+use sclc::SourceRepo;
 
 use crate::convert::uri_to_path;
-use crate::overlay::OverlaySource;
+use crate::helpers::find_module_by_path;
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
 pub async fn handle_formatting<S: SourceRepo + 'static>(
@@ -406,36 +404,4 @@ fn format_type_expr(out: &mut String, type_expr: &sclc::Loc<sclc::TypeExpr>) {
             out.push('}');
         }
     }
-}
-
-fn find_module_by_path<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    root_path: &Option<PathBuf>,
-    path: &std::path::Path,
-) -> Option<(ModuleId, &'a sclc::FileMod)> {
-    let root = root_path.as_deref().unwrap_or(std::path::Path::new("."));
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            if root.join(module_path) == path {
-                let module_id = package_module_id(package_id, module_path);
-                return Some((module_id, file_mod));
-            }
-        }
-    }
-    None
-}
-
-fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
-    let mut segments: Vec<String> = package_id.as_slice().to_vec();
-    if let Some(parent) = module_path.parent() {
-        for component in parent.components() {
-            if let std::path::Component::Normal(part) = component {
-                segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-    if let Some(stem) = module_path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
-    }
-    ModuleId::new(segments)
 }

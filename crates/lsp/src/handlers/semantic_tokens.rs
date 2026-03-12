@@ -1,14 +1,12 @@
-use std::path::PathBuf;
-
 use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities,
 };
-use sclc::{ModuleId, Program, SourceRepo, TypeChecker};
+use sclc::{SourceRepo, TypeChecker};
 
 use crate::convert::uri_to_path;
-use crate::overlay::OverlaySource;
+use crate::helpers::find_module_by_path;
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
 /// The token types we emit, in order. The index into this array is the token type ID.
@@ -32,8 +30,6 @@ const TT_FUNCTION: u32 = 2;
 const TT_PARAMETER: u32 = 3;
 const TT_STRING: u32 = 4;
 const TT_NUMBER: u32 = 5;
-#[allow(dead_code)]
-const TT_OPERATOR: u32 = 6;
 const TT_TYPE: u32 = 7;
 const TT_NAMESPACE: u32 = 8;
 const TT_PROPERTY: u32 = 9;
@@ -392,36 +388,4 @@ fn collect_type_expr_tokens(type_expr: &sclc::Loc<sclc::TypeExpr>, collector: &m
             collect_type_expr_tokens(&dict.value, collector);
         }
     }
-}
-
-fn find_module_by_path<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    root_path: &Option<PathBuf>,
-    path: &std::path::Path,
-) -> Option<(ModuleId, &'a sclc::FileMod)> {
-    let root = root_path.as_deref().unwrap_or(std::path::Path::new("."));
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            if root.join(module_path) == path {
-                let module_id = package_module_id(package_id, module_path);
-                return Some((module_id, file_mod));
-            }
-        }
-    }
-    None
-}
-
-fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
-    let mut segments: Vec<String> = package_id.as_slice().to_vec();
-    if let Some(parent) = module_path.parent() {
-        for component in parent.components() {
-            if let std::path::Component::Normal(part) = component {
-                segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-    if let Some(stem) = module_path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
-    }
-    ModuleId::new(segments)
 }

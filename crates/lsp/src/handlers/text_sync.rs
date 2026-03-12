@@ -8,6 +8,7 @@ use lsp_types::{
 use sclc::SourceRepo;
 
 use crate::convert::{diag_to_lsp, path_to_uri, uri_to_path};
+use crate::helpers::module_id_to_path;
 use crate::overlay::OverlaySource;
 use crate::{LanguageServer, OutgoingMessage};
 
@@ -21,7 +22,7 @@ pub async fn handle_did_open<S: SourceRepo + 'static>(
 
     {
         let mut documents = server.documents.lock().await;
-        documents.open(&uri, content, version);
+        documents.upsert(&uri, content, version);
     }
 
     compile_and_publish(server, &uri).await
@@ -36,7 +37,7 @@ pub async fn handle_did_change<S: SourceRepo + 'static>(
 
     if let Some(change) = params.content_changes.into_iter().last() {
         let mut documents = server.documents.lock().await;
-        documents.update(&uri, change.text, version);
+        documents.upsert(&uri, change.text, version);
     }
 
     compile_and_publish(server, &uri).await
@@ -153,22 +154,4 @@ fn collect_diagnostics(
     }
 
     messages
-}
-
-fn module_id_to_path(root_path: &std::path::Path, module_id: &sclc::ModuleId) -> PathBuf {
-    let segments = module_id.as_slice();
-    if segments.len() < 3 {
-        return root_path.to_path_buf();
-    }
-
-    let file_segments = &segments[2..];
-    let mut path = root_path.to_path_buf();
-    for (i, segment) in file_segments.iter().enumerate() {
-        if i == file_segments.len() - 1 {
-            path.push(format!("{}.scl", segment));
-        } else {
-            path.push(segment);
-        }
-    }
-    path
 }

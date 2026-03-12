@@ -54,5 +54,5 @@ pub fn handle_shutdown<S: SourceRepo>(server: &mut LanguageServer<S>) {
 }
 
 pub fn handle_exit<S: SourceRepo>(server: &mut LanguageServer<S>) {
-    server.shutdown_requested = true;
+    server.exited = true;
 }

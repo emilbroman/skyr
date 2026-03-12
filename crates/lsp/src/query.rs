@@ -6,7 +6,6 @@ fn span_contains(span: Span, pos: Position) -> bool {
 }
 
 /// The result of looking up what's at a cursor position.
-#[allow(dead_code)]
 pub enum NodeAtPosition<'a> {
     /// A variable reference in an expression.
     Var(&'a Loc<Var>),
@@ -18,6 +17,8 @@ pub enum NodeAtPosition<'a> {
         property: &'a Loc<Var>,
     },
     /// An expression (fallback when no more specific node matches).
+    #[allow(dead_code)]
+    // inner value reserved for future use (e.g. hover on arbitrary expressions)
     Expr(&'a Loc<Expr>),
 }
 
@@ -115,7 +116,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
 
         Expr::Record(record) => {
             for field in &record.fields {
-                if let Some(n) = node_in_expr_ref(&field.expr, pos) {
+                if let Some(n) = node_in_expr(&field.expr, pos) {
                     return Some(n);
                 }
             }
@@ -124,10 +125,10 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
 
         Expr::Dict(dict) => {
             for entry in &dict.entries {
-                if let Some(n) = node_in_expr_ref(&entry.key, pos) {
+                if let Some(n) = node_in_expr(&entry.key, pos) {
                     return Some(n);
                 }
-                if let Some(n) = node_in_expr_ref(&entry.value, pos) {
+                if let Some(n) = node_in_expr(&entry.value, pos) {
                     return Some(n);
                 }
             }
@@ -167,7 +168,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                 {
                     return Some(NodeAtPosition::Var(catch_arg));
                 }
-                if let Some(n) = node_in_expr_ref(&catch.body, pos) {
+                if let Some(n) = node_in_expr(&catch.body, pos) {
                     return Some(n);
                 }
             }
@@ -257,13 +258,13 @@ fn collect_refs_in_expr(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
         }
         Expr::Record(record) => {
             for field in &record.fields {
-                collect_refs_in_expr_ref(&field.expr, name, spans);
+                collect_refs_in_expr(&field.expr, name, spans);
             }
         }
         Expr::Dict(dict) => {
             for entry in &dict.entries {
-                collect_refs_in_expr_ref(&entry.key, name, spans);
-                collect_refs_in_expr_ref(&entry.value, name, spans);
+                collect_refs_in_expr(&entry.key, name, spans);
+                collect_refs_in_expr(&entry.value, name, spans);
             }
         }
         Expr::List(list) => {
@@ -285,7 +286,7 @@ fn collect_refs_in_expr(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
         Expr::Try(try_expr) => {
             collect_refs_in_expr(&try_expr.expr, name, spans);
             for catch in &try_expr.catches {
-                collect_refs_in_expr_ref(&catch.body, name, spans);
+                collect_refs_in_expr(&catch.body, name, spans);
             }
         }
         // Leaf nodes: Int, Float, Bool, Nil, Str, Extern, Exception
@@ -293,13 +294,9 @@ fn collect_refs_in_expr(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
     }
 }
 
-fn collect_refs_in_expr_ref(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
-    collect_refs_in_expr(expr, name, spans);
-}
-
 fn collect_refs_in_list_item(item: &sclc::ListItem, name: &str, spans: &mut Vec<Span>) {
     match item {
-        sclc::ListItem::Expr(expr) => collect_refs_in_expr_ref(expr, name, spans),
+        sclc::ListItem::Expr(expr) => collect_refs_in_expr(expr, name, spans),
         sclc::ListItem::If(if_item) => {
             collect_refs_in_expr(&if_item.condition, name, spans);
             collect_refs_in_list_item(&if_item.then_item, name, spans);
@@ -314,18 +311,9 @@ fn collect_refs_in_list_item(item: &sclc::ListItem, name: &str, spans: &mut Vec<
     }
 }
 
-/// Like `node_in_expr` but for a `Loc<Expr>` by reference (not behind Box).
-fn node_in_expr_ref(expr: &Loc<Expr>, pos: Position) -> Option<NodeAtPosition<'_>> {
-    if !span_contains(expr.span(), pos) {
-        return None;
-    }
-    // Re-use the same logic. We need a small trick since Loc<Expr> and &Loc<Expr> are the same.
-    node_in_expr(expr, pos)
-}
-
 fn node_in_list_item<'a>(item: &'a sclc::ListItem, pos: Position) -> Option<NodeAtPosition<'a>> {
     match item {
-        sclc::ListItem::Expr(expr) => node_in_expr_ref(expr, pos),
+        sclc::ListItem::Expr(expr) => node_in_expr(expr, pos),
         sclc::ListItem::If(if_item) => node_in_expr(&if_item.condition, pos)
             .or_else(|| node_in_list_item(&if_item.then_item, pos)),
         sclc::ListItem::For(for_item) => {

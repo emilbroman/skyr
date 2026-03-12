@@ -1,6 +1,7 @@
 mod convert;
 mod document;
 mod handlers;
+pub mod helpers;
 mod overlay;
 mod query;
 mod transport;
@@ -23,6 +24,7 @@ pub struct LanguageServer<S> {
     root_path: Option<PathBuf>,
     initialized: bool,
     shutdown_requested: bool,
+    exited: bool,
     last_program: Option<Program<OverlaySource<S>>>,
 }
 
@@ -37,6 +39,7 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
             root_path: None,
             initialized: false,
             shutdown_requested: false,
+            exited: false,
             last_program: None,
         }
     }
@@ -58,6 +61,18 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
         method: &str,
         params: serde_json::Value,
     ) -> Vec<OutgoingMessage> {
+        // Allow `initialize` and `shutdown` before initialization; reject everything else.
+        if !self.initialized
+            && method != lsp_types::request::Initialize::METHOD
+            && method != lsp_types::request::Shutdown::METHOD
+        {
+            return vec![OutgoingMessage::error(
+                id,
+                -32002,
+                "Server not yet initialized".to_string(),
+            )];
+        }
+
         match method {
             lsp_types::request::Initialize::METHOD => {
                 let params: lsp_types::InitializeParams = match serde_json::from_value(params) {
@@ -281,7 +296,7 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
     }
 
     pub fn should_exit(&self) -> bool {
-        self.shutdown_requested
+        self.exited
     }
 
     pub fn exit_code(&self) -> i32 {

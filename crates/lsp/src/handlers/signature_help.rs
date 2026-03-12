@@ -1,12 +1,10 @@
-use std::path::PathBuf;
-
 use lsp_types::{
     ParameterInformation, ParameterLabel, SignatureHelp, SignatureHelpParams, SignatureInformation,
 };
-use sclc::{ModuleId, Program, SourceRepo, TypeChecker, TypeEnv};
+use sclc::SourceRepo;
 
 use crate::convert::{lsp_to_position, uri_to_path};
-use crate::overlay::OverlaySource;
+use crate::helpers::{find_module_by_path, get_var_type};
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
 pub async fn handle_signature_help<S: SourceRepo + 'static>(
@@ -237,66 +235,4 @@ fn get_fn_param_names(file_mod: &sclc::FileMod, name: &str) -> Option<Vec<String
     } else {
         None
     }
-}
-
-fn get_var_type<S: SourceRepo>(
-    program: &Program<OverlaySource<S>>,
-    module_id: &ModuleId,
-    file_mod: &sclc::FileMod,
-    var_name: &str,
-) -> Option<sclc::Type> {
-    let globals = file_mod.find_globals();
-    let checker = TypeChecker::new(program);
-    let imports = checker.find_imports(file_mod);
-    let env = TypeEnv::new()
-        .with_module_id(module_id)
-        .with_globals(&globals)
-        .with_imports(&imports);
-
-    if let Some(global_expr) = globals.get(var_name)
-        && let Ok(diagnosed) = checker.check_expr(&env, global_expr, None)
-    {
-        return Some(diagnosed.into_inner());
-    }
-
-    if let Some((_, Some(import_file_mod))) = imports.get(var_name) {
-        let import_env = TypeEnv::new().with_module_id(module_id);
-        if let Ok(diagnosed) = checker.check_file_mod(&import_env, import_file_mod) {
-            return Some(diagnosed.into_inner());
-        }
-    }
-
-    None
-}
-
-fn find_module_by_path<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    root_path: &Option<PathBuf>,
-    path: &std::path::Path,
-) -> Option<(ModuleId, &'a sclc::FileMod)> {
-    let root = root_path.as_deref().unwrap_or(std::path::Path::new("."));
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            if root.join(module_path) == path {
-                let module_id = package_module_id(package_id, module_path);
-                return Some((module_id, file_mod));
-            }
-        }
-    }
-    None
-}
-
-fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
-    let mut segments: Vec<String> = package_id.as_slice().to_vec();
-    if let Some(parent) = module_path.parent() {
-        for component in parent.components() {
-            if let std::path::Component::Normal(part) = component {
-                segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-    if let Some(stem) = module_path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
-    }
-    ModuleId::new(segments)
 }
