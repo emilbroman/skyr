@@ -9,6 +9,7 @@ use crate::fs_source::FsSource;
 struct Repl {
     line_number: usize,
     bindings: HashMap<String, (sclc::Type, sclc::TrackedValue)>,
+    type_defs: HashMap<String, sclc::Type>,
     eval: sclc::Eval,
 }
 
@@ -17,6 +18,7 @@ impl Repl {
         Self {
             line_number: 0,
             bindings: HashMap::new(),
+            type_defs: HashMap::new(),
             eval,
         }
     }
@@ -36,7 +38,7 @@ impl Repl {
         };
 
         let mut program = sclc::Program::<FsSource>::new();
-        let type_env = Self::type_env(&self.bindings, &module_id);
+        let type_env = Self::type_env(&self.bindings, &self.type_defs, &module_id);
         let pending_binding = match statement {
             sclc::ModStmt::Import(import_stmt) => {
                 let import_path = import_stmt
@@ -99,15 +101,25 @@ impl Repl {
                 println!("{}", value.value);
                 None
             }
-            stmt => {
+            sclc::ModStmt::Export(let_bind) => {
                 let checker = sclc::TypeChecker::new(&program);
-                let diagnosed = checker.check_stmt(&type_env, stmt)?;
-                let Some(_) = Self::report(diagnosed) else {
+                let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
+                let Some(ty) = Self::report(diagnosed) else {
                     return Ok(());
                 };
 
                 let eval_env = Self::eval_env(&self.bindings, &module_id);
-                let _ = self.eval.eval_stmt(&eval_env, stmt)?;
+                let value = self.eval.eval_expr(&eval_env, &let_bind.expr)?;
+                println!("{} : {}", let_bind.var.name, ty);
+                Some((let_bind.var.name.clone(), (ty, value)))
+            }
+            sclc::ModStmt::TypeDef(type_def) | sclc::ModStmt::ExportTypeDef(type_def) => {
+                let checker = sclc::TypeChecker::new(&program);
+                let Some(ty) = Self::report(checker.resolve_type_def(&type_env, type_def)) else {
+                    return Ok(());
+                };
+
+                self.type_defs.insert(type_def.var.name.clone(), ty);
                 None
             }
         };
@@ -134,12 +146,16 @@ impl Repl {
 
     fn type_env<'a>(
         bindings: &'a HashMap<String, (sclc::Type, sclc::TrackedValue)>,
+        type_defs: &'a HashMap<String, sclc::Type>,
         module_id: &'a sclc::ModuleId,
     ) -> sclc::TypeEnv<'a> {
-        bindings.iter().fold(
+        let env = bindings.iter().fold(
             sclc::TypeEnv::new().with_module_id(module_id),
             |env, (name, (ty, _))| env.with_local(name.as_str(), ty.clone()),
-        )
+        );
+        type_defs.iter().fold(env, |env, (name, ty)| {
+            env.with_type_level(name.clone(), ty.clone())
+        })
     }
 
     fn eval_env<'a>(

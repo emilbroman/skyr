@@ -2103,7 +2103,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     /// For generic type defs like `type Pair<A, B> { fst: A, snd: B }`,
     /// this produces a function type `fn<A, B>() { fst: A, snd: B }` that
     /// acts as a type-level constructor.
-    fn resolve_type_def(&self, env: &TypeEnv<'_>, type_def: &ast::TypeDef) -> Diagnosed<Type> {
+    pub fn resolve_type_def(&self, env: &TypeEnv<'_>, type_def: &ast::TypeDef) -> Diagnosed<Type> {
         let mut diags = DiagList::new();
 
         if type_def.type_params.is_empty() {
