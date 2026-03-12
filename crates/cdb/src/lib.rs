@@ -2,9 +2,10 @@ mod client;
 mod deployment;
 mod repository;
 
-pub use client::*;
-pub use deployment::*;
-pub use repository::*;
-
-// Re-export ids crate for convenience.
-pub use ids;
+pub use client::{
+    Client, ClientBuilder, ConnectError, CreateRepositoryError, DeploymentClient,
+    DeploymentQueryError, FileError, LoadObjectError, ReadObjectError, RepositoryClient,
+    RepositoryQueryError, SetDeploymentError, WriteObjectError,
+};
+pub use deployment::{Deployment, DeploymentState, InvalidDeploymentState};
+pub use repository::Repository;

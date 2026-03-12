@@ -4,7 +4,7 @@ use aws_sdk_s3::error::ProvideErrorMetadata;
 use aws_sdk_s3::{
     Client as S3Client,
     config::{Builder as S3ConfigBuilder, Credentials, Region},
-    error::{DisplayErrorContext, SdkError},
+    error::SdkError,
     operation::{
         create_bucket::CreateBucketError, get_object::GetObjectError, head_object::HeadObjectError,
         list_objects_v2::ListObjectsV2Error, put_object::PutObjectError,
@@ -127,19 +127,21 @@ impl ClientBuilder {
             }
         };
 
-        let endpoint_url = self.endpoint_url.clone();
+        let presign_endpoint_url = self
+            .presign_endpoint_url
+            .or_else(|| self.endpoint_url.clone());
 
         let s3 = build_s3_client(
             &region,
             credentials.clone(),
-            endpoint_url.clone(),
+            self.endpoint_url.clone(),
             self.force_path_style,
         );
 
         let presign_s3 = build_s3_client(
             &region,
             credentials,
-            self.presign_endpoint_url.or(endpoint_url.clone()),
+            presign_endpoint_url,
             self.force_path_style,
         );
 
@@ -147,7 +149,7 @@ impl ClientBuilder {
             s3,
             presign_s3,
             bucket,
-            private_endpoint_url: endpoint_url,
+            private_endpoint_url: self.endpoint_url,
             force_path_style: self.force_path_style,
         };
 
@@ -359,7 +361,7 @@ impl Client {
                 .prefix(&prefix)
                 .max_keys(1000);
 
-            if let Some(token) = continuation_token.clone() {
+            if let Some(token) = continuation_token.take() {
                 request = request.continuation_token(token);
             }
 
@@ -508,9 +510,7 @@ pub enum PresignError {
     InvalidExpiry(#[from] PresigningConfigError),
 
     #[error("failed to create presigned URL: {0}")]
-    Presign(
-        #[source] aws_sdk_s3::error::SdkError<aws_sdk_s3::operation::get_object::GetObjectError>,
-    ),
+    Presign(#[source] SdkError<GetObjectError>),
 }
 
 #[derive(Debug, Error)]
@@ -533,20 +533,11 @@ fn key(namespace: &str, name: &str) -> String {
 }
 
 fn name_from_key(namespace: &str, key: &str) -> Option<String> {
-    let encoded_prefix = format!("{}/", escaped_segment(namespace));
-    let encoded_name = key.strip_prefix(&encoded_prefix)?;
-    urlencoding::decode(encoded_name)
-        .ok()
-        .map(|name| name.into_owned())
+    let prefix = escaped_segment(namespace);
+    let encoded_name = key.strip_prefix(prefix.as_str())?.strip_prefix('/')?;
+    urlencoding::decode(encoded_name).ok().map(Into::into)
 }
 
 fn escaped_segment(value: &str) -> String {
     urlencoding::encode(value).into_owned()
-}
-
-pub fn describe_sdk_error<E>(error: &SdkError<E>) -> String
-where
-    E: std::error::Error + Send + Sync + 'static,
-{
-    format!("{}", DisplayErrorContext(error))
 }

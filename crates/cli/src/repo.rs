@@ -73,21 +73,7 @@ async fn create_repository(
         .json()
         .await
         .context("failed to decode create repository response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "repository create failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("create repository response did not include data")?;
+    let data = auth::graphql_response_data(response, "repository create")?;
 
     #[derive(Serialize)]
     struct CreateRepositoryOutput {
@@ -124,21 +110,7 @@ async fn list_repositories(
         .json()
         .await
         .context("failed to decode repositories response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "repository list failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("repositories response did not include data")?;
+    let data = auth::graphql_response_data(response, "repository list")?;
 
     #[derive(Serialize)]
     struct RepositoryOutput {

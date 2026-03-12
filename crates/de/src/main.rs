@@ -15,6 +15,57 @@ use tokio::{
 };
 use tracing::Instrument;
 
+fn map_dependencies(namespace: &str, deps: Vec<sclc::ResourceId>) -> Vec<rtq::ResourceRef> {
+    deps.into_iter()
+        .map(|dep| rtq::ResourceRef {
+            environment_qid: namespace.to_owned(),
+            resource_type: dep.ty,
+            resource_id: dep.id,
+        })
+        .collect()
+}
+
+fn resource_ref(namespace: &str, id: &sclc::ResourceId) -> rtq::ResourceRef {
+    rtq::ResourceRef {
+        environment_qid: namespace.to_owned(),
+        resource_type: id.ty.clone(),
+        resource_id: id.id.clone(),
+    }
+}
+
+fn serialize_inputs(
+    id: &sclc::ResourceId,
+    inputs: &sclc::Record,
+    context: &str,
+) -> Option<serde_json::Value> {
+    match serde_json::to_value(inputs) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            tracing::error!(
+                resource_type = %id.ty,
+                resource_id = %id.id,
+                error = %error,
+                "failed to encode {context} inputs",
+            );
+            None
+        }
+    }
+}
+
+fn extract_deployment_id(owner_qid: String) -> String {
+    owner_qid
+        .rsplit_once('@')
+        .map(|(_, id)| id.to_string())
+        .unwrap_or(owner_qid)
+}
+
+fn diag_severity(level: sclc::DiagLevel) -> ldb::Severity {
+    match level {
+        sclc::DiagLevel::Error => ldb::Severity::Error,
+        sclc::DiagLevel::Warning => ldb::Severity::Warning,
+    }
+}
+
 #[derive(Parser)]
 enum Program {
     Daemon {
@@ -162,7 +213,6 @@ struct Worker {
     log_publisher: ldb::NamespacePublisher,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EvalCompleteness {
     Complete,
     Partial,
@@ -264,11 +314,7 @@ impl Worker {
                     }
 
                     let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                        resource: rtq::ResourceRef {
-                            environment_qid: self.namespace.namespace().to_owned(),
-                            resource_type: resource.resource_type.clone(),
-                            resource_id: resource.id.clone(),
-                        },
+                        resource: resource_ref(self.namespace.namespace(), &resource_id),
                         deployment_id: deployment.deployment.to_string(),
                     });
                     self.rtq_publisher.enqueue(&message).await?;
@@ -319,7 +365,7 @@ impl Worker {
                     let superseding_deployment = superseding.get().await?;
                     let commit_hash = superseding_deployment.deployment.clone();
 
-                    if !seen.insert(commit_hash.clone()) {
+                    if !seen.insert(commit_hash) {
                         tracing::warn!("detected supersession cycle while lingering");
                         break;
                     }
@@ -339,9 +385,8 @@ impl Worker {
         }
     }
 
-    async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalCompleteness> {
-        let diagnosed = sclc::compile(self.client.clone()).await?;
-        for diag in diagnosed.diags().iter() {
+    async fn publish_diagnostics(&self, diags: &sclc::DiagList) {
+        for diag in diags.iter() {
             let (module_id, span) = diag.locate();
             tracing::info!(
                 module = %module_id,
@@ -349,22 +394,19 @@ impl Worker {
                 diag = %diag,
                 "compile diagnostic",
             );
-        }
-
-        for diag in diagnosed.diags().iter() {
-            let (module_id, span) = diag.locate();
-
             self.log_publisher
                 .log(
-                    match diag.level() {
-                        sclc::DiagLevel::Error => ldb::Severity::Error,
-                        sclc::DiagLevel::Warning => ldb::Severity::Warning,
-                    },
+                    diag_severity(diag.level()),
                     format!("{module_id}:{span}: {diag}"),
                 )
                 .await
                 .unwrap_or_default();
         }
+    }
+
+    async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalCompleteness> {
+        let diagnosed = sclc::compile(self.client.clone()).await?;
+        self.publish_diagnostics(diagnosed.diags()).await;
 
         if diagnosed.diags().has_errors() {
             tracing::info!("compile produced errors; skipping evaluation");
@@ -424,33 +466,15 @@ impl Worker {
                                 dependencies,
                             } => {
                                 had_effect = true;
+                                let Some(inputs_value) = serialize_inputs(&id, &inputs, "create")
+                                else {
+                                    continue;
+                                };
                                 let message = rtq::Message::Create(rtq::CreateMessage {
-                                    resource: rtq::ResourceRef {
-                                        environment_qid: namespace_id.clone(),
-                                        resource_type: id.ty.clone(),
-                                        resource_id: id.id.clone(),
-                                    },
+                                    resource: resource_ref(&namespace_id, &id),
                                     deployment_id: deployment_id.clone(),
-                                    inputs: match serde_json::to_value(&inputs) {
-                                        Ok(value) => value,
-                                        Err(error) => {
-                                            tracing::error!(
-                                                resource_type = %id.ty,
-                                                resource_id = %id.id,
-                                                error = %error,
-                                                "failed to encode create inputs",
-                                            );
-                                            continue;
-                                        }
-                                    },
-                                    dependencies: dependencies
-                                        .into_iter()
-                                        .map(|dependency| rtq::ResourceRef {
-                                            environment_qid: namespace_id.clone(),
-                                            resource_type: dependency.ty,
-                                            resource_id: dependency.id,
-                                        })
-                                        .collect(),
+                                    inputs: inputs_value,
+                                    dependencies: map_dependencies(&namespace_id, dependencies),
                                 });
                                 if let Err(error) = rtq_publisher.enqueue(&message).await {
                                     tracing::error!(
@@ -481,51 +505,24 @@ impl Worker {
                                 dependencies,
                             } => {
                                 had_effect = true;
-                                let desired_inputs = match serde_json::to_value(&inputs) {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            resource_type = %id.ty,
-                                            resource_id = %id.id,
-                                            error = %error,
-                                            "failed to encode update inputs",
-                                        );
-                                        continue;
-                                    }
+                                let Some(desired_inputs) = serialize_inputs(&id, &inputs, "update")
+                                else {
+                                    continue;
                                 };
-                                let dependencies = dependencies
-                                    .into_iter()
-                                    .map(|dependency| rtq::ResourceRef {
-                                        environment_qid: namespace_id.clone(),
-                                        resource_type: dependency.ty,
-                                        resource_id: dependency.id,
-                                    })
-                                    .collect::<Vec<_>>();
+                                let dependencies = map_dependencies(&namespace_id, dependencies);
                                 let message = if let Some(from_owner_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    let from_deploy_id = from_owner_qid
-                                        .rsplit_once('@')
-                                        .map(|(_, id)| id.to_string())
-                                        .unwrap_or(from_owner_qid);
                                     rtq::Message::Adopt(rtq::AdoptMessage {
-                                        resource: rtq::ResourceRef {
-                                            environment_qid: namespace_id.clone(),
-                                            resource_type: id.ty.clone(),
-                                            resource_id: id.id.clone(),
-                                        },
-                                        from_deployment_id: from_deploy_id,
+                                        resource: resource_ref(&namespace_id, &id),
+                                        from_deployment_id: extract_deployment_id(from_owner_qid),
                                         to_deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies,
                                     })
                                 } else {
                                     rtq::Message::Restore(rtq::RestoreMessage {
-                                        resource: rtq::ResourceRef {
-                                            environment_qid: namespace_id.clone(),
-                                            resource_type: id.ty.clone(),
-                                            resource_id: id.id.clone(),
-                                        },
+                                        resource: resource_ref(&namespace_id, &id),
                                         deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies,
@@ -563,41 +560,19 @@ impl Worker {
                                 else {
                                     continue;
                                 };
-                                let from_deployment_id = from_owner_deployment_qid
-                                    .rsplit_once('@')
-                                    .map(|(_, id)| id.to_string())
-                                    .unwrap_or(from_owner_deployment_qid);
                                 had_effect = true;
-                                let desired_inputs = match serde_json::to_value(&inputs) {
-                                    Ok(value) => value,
-                                    Err(error) => {
-                                        tracing::error!(
-                                            resource_type = %id.ty,
-                                            resource_id = %id.id,
-                                            error = %error,
-                                            "failed to encode touch inputs",
-                                        );
-                                        continue;
-                                    }
+                                let Some(desired_inputs) = serialize_inputs(&id, &inputs, "touch")
+                                else {
+                                    continue;
                                 };
-                                let dependencies = dependencies
-                                    .into_iter()
-                                    .map(|dependency| rtq::ResourceRef {
-                                        environment_qid: namespace_id.clone(),
-                                        resource_type: dependency.ty,
-                                        resource_id: dependency.id,
-                                    })
-                                    .collect::<Vec<_>>();
                                 let message = rtq::Message::Adopt(rtq::AdoptMessage {
-                                    resource: rtq::ResourceRef {
-                                        environment_qid: namespace_id.clone(),
-                                        resource_type: id.ty.clone(),
-                                        resource_id: id.id.clone(),
-                                    },
-                                    from_deployment_id,
+                                    resource: resource_ref(&namespace_id, &id),
+                                    from_deployment_id: extract_deployment_id(
+                                        from_owner_deployment_qid,
+                                    ),
                                     to_deployment_id: deployment_id.clone(),
                                     desired_inputs,
-                                    dependencies,
+                                    dependencies: map_dependencies(&namespace_id, dependencies),
                                 });
                                 if let Err(error) = rtq_publisher.enqueue(&message).await {
                                     tracing::error!(
@@ -640,10 +615,7 @@ impl Worker {
                     let (module_id, span) = diag.locate();
                     self.log_publisher
                         .log(
-                            match diag.level() {
-                                sclc::DiagLevel::Error => ldb::Severity::Error,
-                                sclc::DiagLevel::Warning => ldb::Severity::Warning,
-                            },
+                            diag_severity(diag.level()),
                             format!("{module_id}:{span}: {diag}"),
                         )
                         .await

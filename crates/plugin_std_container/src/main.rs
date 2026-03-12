@@ -105,7 +105,7 @@ struct ContainerPluginInner {
 ///
 /// This is Clone and can be shared across servers via Arc.
 #[derive(Clone)]
-pub struct ContainerPlugin {
+struct ContainerPlugin {
     inner: Arc<ContainerPluginInner>,
 }
 
@@ -138,7 +138,7 @@ impl ContainerPlugin {
     }
 
     /// Get a conduit client to a node by name.
-    pub async fn get_conduit(
+    async fn get_conduit(
         &self,
         node_name: &str,
     ) -> Result<scop::ConduitClient<scop::tonic::transport::Channel>, PluginError> {
@@ -161,7 +161,7 @@ impl ContainerPlugin {
     }
 
     /// List all registered nodes.
-    pub async fn list_nodes(&self) -> Result<Vec<node_registry::Node>, PluginError> {
+    async fn list_nodes(&self) -> Result<Vec<node_registry::Node>, PluginError> {
         let mut registry = self.inner.node_registry.write().await;
         registry
             .list()
@@ -1229,84 +1229,73 @@ impl ContainerPlugin {
     // Broadcast helpers (send to all registered nodes)
     // =========================================================================
 
-    /// Broadcast a DNS record to all registered nodes.
+    async fn broadcast_to_nodes<F, Fut>(&self, operation: &str, f: F)
+    where
+        F: Fn(scop::ConduitClient<scop::tonic::transport::Channel>, String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), scop::tonic::Status>>,
+    {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, operation = %operation, "failed to list nodes for broadcast");
+                return;
+            }
+        };
+
+        for node in &nodes {
+            match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(client) => {
+                    if let Err(e) = f(client, node.name.clone()).await {
+                        warn!(
+                            node = %node.name,
+                            operation = %operation,
+                            error = %e,
+                            "broadcast operation failed on node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        operation = %operation,
+                        error = %e,
+                        "failed to connect to node for broadcast"
+                    );
+                }
+            }
+        }
+    }
+
     async fn broadcast_dns_set(&self, hostname: &str, address: &str) {
-        let nodes = match self.list_nodes().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!(error = %e, "failed to list nodes for DNS broadcast");
-                return;
+        let hostname = hostname.to_string();
+        let address = address.to_string();
+        self.broadcast_to_nodes("set_dns_record", |mut client, _| {
+            let hostname = hostname.clone();
+            let address = address.clone();
+            async move {
+                client
+                    .set_dns_record(scop::SetDnsRecordRequest { hostname, address })
+                    .await
+                    .map(|_| ())
             }
-        };
-
-        for node in &nodes {
-            match scop::ConduitClient::connect(node.address.clone()).await {
-                Ok(mut client) => {
-                    if let Err(e) = client
-                        .set_dns_record(scop::SetDnsRecordRequest {
-                            hostname: hostname.to_string(),
-                            address: address.to_string(),
-                        })
-                        .await
-                    {
-                        warn!(
-                            node = %node.name,
-                            hostname = %hostname,
-                            error = %e,
-                            "failed to set DNS record on node"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        error = %e,
-                        "failed to connect to node for DNS broadcast"
-                    );
-                }
-            }
-        }
+        })
+        .await;
     }
 
-    /// Broadcast DNS record removal to all registered nodes.
     async fn broadcast_dns_remove(&self, hostname: &str) {
-        let nodes = match self.list_nodes().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!(error = %e, "failed to list nodes for DNS removal broadcast");
-                return;
+        let hostname = hostname.to_string();
+        self.broadcast_to_nodes("remove_dns_record", |mut client, _| {
+            let hostname = hostname.clone();
+            async move {
+                client
+                    .remove_dns_record(scop::RemoveDnsRecordRequest { hostname })
+                    .await
+                    .map(|_| ())
             }
-        };
-
-        for node in &nodes {
-            match scop::ConduitClient::connect(node.address.clone()).await {
-                Ok(mut client) => {
-                    if let Err(e) = client
-                        .remove_dns_record(scop::RemoveDnsRecordRequest {
-                            hostname: hostname.to_string(),
-                        })
-                        .await
-                    {
-                        warn!(
-                            node = %node.name,
-                            hostname = %hostname,
-                            error = %e,
-                            "failed to remove DNS record on node"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        error = %e,
-                        "failed to connect to node for DNS removal"
-                    );
-                }
-            }
-        }
+        })
+        .await;
     }
 
-    /// Broadcast a service route (DNAT rule) to all registered nodes.
     async fn broadcast_service_route_add(
         &self,
         vip: &str,
@@ -1314,85 +1303,46 @@ impl ContainerPlugin {
         protocol: &str,
         backends: &[scop::ServiceBackend],
     ) {
-        let nodes = match self.list_nodes().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!(error = %e, "failed to list nodes for service route broadcast");
-                return;
+        let vip = vip.to_string();
+        let protocol = protocol.to_string();
+        let backends = backends.to_vec();
+        self.broadcast_to_nodes("add_service_route", |mut client, _| {
+            let vip = vip.clone();
+            let protocol = protocol.clone();
+            let backends = backends.clone();
+            async move {
+                client
+                    .add_service_route(scop::AddServiceRouteRequest {
+                        vip,
+                        port,
+                        protocol,
+                        backends,
+                    })
+                    .await
+                    .map(|_| ())
             }
-        };
-
-        for node in &nodes {
-            match scop::ConduitClient::connect(node.address.clone()).await {
-                Ok(mut client) => {
-                    if let Err(e) = client
-                        .add_service_route(scop::AddServiceRouteRequest {
-                            vip: vip.to_string(),
-                            port,
-                            protocol: protocol.to_string(),
-                            backends: backends.to_vec(),
-                        })
-                        .await
-                    {
-                        warn!(
-                            node = %node.name,
-                            vip = %vip,
-                            port = %port,
-                            error = %e,
-                            "failed to add service route on node"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        error = %e,
-                        "failed to connect to node for service route broadcast"
-                    );
-                }
-            }
-        }
+        })
+        .await;
     }
 
-    /// Broadcast service route removal to all registered nodes.
     async fn broadcast_service_route_remove(&self, vip: &str, port: i32, protocol: &str) {
-        let nodes = match self.list_nodes().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!(error = %e, "failed to list nodes for service route removal");
-                return;
+        let vip = vip.to_string();
+        let protocol = protocol.to_string();
+        self.broadcast_to_nodes("remove_service_route", |mut client, _| {
+            let vip = vip.clone();
+            let protocol = protocol.clone();
+            async move {
+                client
+                    .remove_service_route(scop::RemoveServiceRouteRequest {
+                        vip,
+                        port,
+                        protocol,
+                    })
+                    .await
+                    .map(|_| ())
             }
-        };
-
-        for node in &nodes {
-            match scop::ConduitClient::connect(node.address.clone()).await {
-                Ok(mut client) => {
-                    if let Err(e) = client
-                        .remove_service_route(scop::RemoveServiceRouteRequest {
-                            vip: vip.to_string(),
-                            port,
-                            protocol: protocol.to_string(),
-                        })
-                        .await
-                    {
-                        warn!(
-                            node = %node.name,
-                            vip = %vip,
-                            port = %port,
-                            error = %e,
-                            "failed to remove service route on node"
-                        );
-                    }
-                }
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        error = %e,
-                        "failed to connect to node for service route removal"
-                    );
-                }
-            }
-        }
+        })
+        .await;
     }
 }
 
@@ -1578,7 +1528,7 @@ async fn extract_context(
     let tree_path = if context_path == "." || context_path.is_empty() {
         None
     } else {
-        Some(std::path::Path::new(context_path))
+        Some(Path::new(context_path))
     };
 
     // Read the directory at the context path
@@ -1588,8 +1538,7 @@ async fn extract_context(
         .map_err(|e| PluginError::Internal(format!("failed to read context dir: {e}")))?;
 
     // Extract the tree recursively
-    let context_path_buf = std::path::PathBuf::from(context_path);
-    extract_tree_recursive(client, &tree, &context_path_buf, dest).await?;
+    extract_tree_recursive(client, &tree, Path::new(context_path), dest).await?;
 
     Ok(())
 }
@@ -1598,8 +1547,8 @@ async fn extract_context(
 async fn extract_tree_recursive(
     client: &cdb::DeploymentClient,
     tree: &gix_object::Tree,
-    tree_path: &std::path::Path,
-    dest: &std::path::Path,
+    tree_path: &Path,
+    dest: &Path,
 ) -> Result<(), PluginError> {
     // Create destination directory
     std::fs::create_dir_all(dest).map_err(|e| {
@@ -1955,6 +1904,20 @@ impl scop::Orchestrator for ContainerPlugin {
 // RTP Plugin Implementation
 // =============================================================================
 
+macro_rules! log_on_error {
+    ($result:expr, $id:expr, $op:expr) => {{
+        if let Err(ref e) = $result {
+            error!(
+                resource_type = %$id.ty,
+                resource_id = %$id.id,
+                err = %e,
+                "{} failed", $op
+            );
+        }
+        $result
+    }};
+}
+
 #[async_trait::async_trait]
 impl rtp::Plugin for ContainerPlugin {
     async fn create_resource(
@@ -1964,87 +1927,25 @@ impl rtp::Plugin for ContainerPlugin {
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        let result = match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
-                let result = self
-                    .create_image(environment_qid, deployment_id, id.clone(), inputs)
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "image create_resource failed"
-                    );
-                }
-                result
+                self.create_image(environment_qid, deployment_id, id.clone(), inputs)
+                    .await
             }
-            POD_RESOURCE_TYPE => {
-                let result = self.create_pod(environment_qid, id.clone(), inputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "pod create_resource failed"
-                    );
-                }
-                result
-            }
+            POD_RESOURCE_TYPE => self.create_pod(environment_qid, id.clone(), inputs).await,
             CONTAINER_RESOURCE_TYPE => {
-                let result = self
-                    .create_container(environment_qid, id.clone(), inputs)
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "container create_resource failed"
-                    );
-                }
-                result
+                self.create_container(environment_qid, id.clone(), inputs)
+                    .await
             }
-            PORT_RESOURCE_TYPE => {
-                let result = self.create_port(environment_qid, id.clone(), inputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "port create_resource failed"
-                    );
-                }
-                result
-            }
-            HOST_RESOURCE_TYPE => {
-                let result = self.create_host(environment_qid, id.clone(), inputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host create_resource failed"
-                    );
-                }
-                result
-            }
+            PORT_RESOURCE_TYPE => self.create_port(environment_qid, id.clone(), inputs).await,
+            HOST_RESOURCE_TYPE => self.create_host(environment_qid, id.clone(), inputs).await,
             HOST_PORT_RESOURCE_TYPE => {
-                let result = self
-                    .create_host_port(environment_qid, id.clone(), inputs)
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host port create_resource failed"
-                    );
-                }
-                result
+                self.create_host_port(environment_qid, id.clone(), inputs)
+                    .await
             }
-            _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
-        }
+            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+        };
+        log_on_error!(result, id, "create_resource")
     }
 
     async fn update_resource(
@@ -2056,130 +1957,71 @@ impl rtp::Plugin for ContainerPlugin {
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        let result = match id.ty.as_str() {
             IMAGE_RESOURCE_TYPE => {
-                let result = self
-                    .update_image(
-                        environment_qid,
-                        deployment_id,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "image update_resource failed"
-                    );
-                }
-                result
+                self.update_image(
+                    environment_qid,
+                    deployment_id,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
             POD_RESOURCE_TYPE => {
-                let result = self
-                    .update_pod(
-                        environment_qid,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "pod update_resource failed"
-                    );
-                }
-                result
+                self.update_pod(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
             CONTAINER_RESOURCE_TYPE => {
-                let result = self
-                    .update_container(
-                        environment_qid,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "container update_resource failed"
-                    );
-                }
-                result
+                self.update_container(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
             PORT_RESOURCE_TYPE => {
-                let result = self
-                    .update_port(
-                        environment_qid,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "port update_resource failed"
-                    );
-                }
-                result
+                self.update_port(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
             HOST_RESOURCE_TYPE => {
-                let result = self
-                    .update_host(
-                        environment_qid,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host update_resource failed"
-                    );
-                }
-                result
+                self.update_host(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
             HOST_PORT_RESOURCE_TYPE => {
-                let result = self
-                    .update_host_port(
-                        environment_qid,
-                        id.clone(),
-                        prev_inputs,
-                        prev_outputs,
-                        inputs,
-                    )
-                    .await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host port update_resource failed"
-                    );
-                }
-                result
+                self.update_host_port(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
             }
-            _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
-        }
+            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+        };
+        log_on_error!(result, id, "update_resource")
     }
 
     async fn delete_resource(
@@ -2191,86 +2033,21 @@ impl rtp::Plugin for ContainerPlugin {
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
         let _ = (environment_qid, deployment_id);
-        match id.ty.as_str() {
-            IMAGE_RESOURCE_TYPE => {
-                let result = self.delete_image(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "image delete_resource failed"
-                    );
-                }
-                result
-            }
-            POD_RESOURCE_TYPE => {
-                let result = self.delete_pod(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "pod delete_resource failed"
-                    );
-                }
-                result
-            }
-            CONTAINER_RESOURCE_TYPE => {
-                let result = self.delete_container(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "container delete_resource failed"
-                    );
-                }
-                result
-            }
-            PORT_RESOURCE_TYPE => {
-                let result = self.delete_port(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "port delete_resource failed"
-                    );
-                }
-                result
-            }
-            HOST_RESOURCE_TYPE => {
-                let result = self.delete_host(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host delete_resource failed"
-                    );
-                }
-                result
-            }
-            HOST_PORT_RESOURCE_TYPE => {
-                let result = self.delete_host_port(id.clone(), inputs, outputs).await;
-                if let Err(ref e) = result {
-                    error!(
-                        resource_type = %id.ty,
-                        resource_id = %id.id,
-                        err = %e,
-                        "host port delete_resource failed"
-                    );
-                }
-                result
-            }
-            _ => Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
-        }
+        let result = match id.ty.as_str() {
+            IMAGE_RESOURCE_TYPE => self.delete_image(id.clone(), inputs, outputs).await,
+            POD_RESOURCE_TYPE => self.delete_pod(id.clone(), inputs, outputs).await,
+            CONTAINER_RESOURCE_TYPE => self.delete_container(id.clone(), inputs, outputs).await,
+            PORT_RESOURCE_TYPE => self.delete_port(id.clone(), inputs, outputs).await,
+            HOST_RESOURCE_TYPE => self.delete_host(id.clone(), inputs, outputs).await,
+            HOST_PORT_RESOURCE_TYPE => self.delete_host_port(id.clone(), inputs, outputs).await,
+            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+        };
+        log_on_error!(result, id, "delete_resource")
     }
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum PluginError {
+enum PluginError {
     #[error("node lookup failed: {0}")]
     NodeLookup(String),
 

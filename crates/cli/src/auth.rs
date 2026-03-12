@@ -23,18 +23,21 @@ struct AuthChallenge;
 struct Signin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserConfig {
-    pub username: String,
-    pub key: String,
+struct UserConfig {
+    username: String,
+    key: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct AuthProof {
-    pub pubkey: String,
-    pub signature: String,
+pub(crate) struct AuthProof {
+    pub(crate) pubkey: String,
+    pub(crate) signature: String,
 }
 
-pub async fn acquire_token(client: &reqwest::Client, api_url: &str) -> anyhow::Result<String> {
+pub(crate) async fn acquire_token(
+    client: &reqwest::Client,
+    api_url: &str,
+) -> anyhow::Result<String> {
     if let Ok(token) = read_token().await
         && !is_expired_token(&token)?
     {
@@ -48,7 +51,7 @@ pub async fn acquire_token(client: &reqwest::Client, api_url: &str) -> anyhow::R
     Ok(token)
 }
 
-pub async fn signin_with_key(
+pub(crate) async fn signin_with_key(
     client: &reqwest::Client,
     endpoint: &str,
     username: &str,
@@ -71,25 +74,11 @@ pub async fn signin_with_key(
         .json()
         .await
         .context("failed to decode signin response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "signin failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("signin response did not include data")?;
+    let data = graphql_response_data(response, "signin")?;
     Ok(data.signin.token)
 }
 
-pub async fn build_auth_proof(
+pub(crate) async fn build_auth_proof(
     client: &reqwest::Client,
     endpoint: &str,
     username: &str,
@@ -121,7 +110,7 @@ pub async fn build_auth_proof(
     })
 }
 
-pub async fn query_auth_challenge(
+async fn query_auth_challenge(
     client: &reqwest::Client,
     endpoint: &str,
     username: &str,
@@ -141,25 +130,11 @@ pub async fn query_auth_challenge(
         .json()
         .await
         .context("failed to decode auth challenge response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "auth challenge failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("auth challenge response did not include data")?;
+    let data = graphql_response_data(response, "auth challenge")?;
     Ok(data.auth_challenge)
 }
 
-pub async fn persist_auth_state(
+pub(crate) async fn persist_auth_state(
     username: &str,
     key_path: &Path,
     token: &str,
@@ -194,7 +169,26 @@ pub async fn persist_auth_state(
     Ok(())
 }
 
-pub fn graphql_endpoint(api_url: &str) -> String {
+pub(crate) fn graphql_response_data<T>(
+    response: graphql_client::Response<T>,
+    operation: &str,
+) -> anyhow::Result<T> {
+    if let Some(errors) = response.errors {
+        return Err(anyhow!(
+            "{operation} failed: {}",
+            errors
+                .iter()
+                .map(|e| e.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    response
+        .data
+        .ok_or_else(|| anyhow!("{operation} response did not include data"))
+}
+
+pub(crate) fn graphql_endpoint(api_url: &str) -> String {
     let base = if api_url.starts_with("http://") || api_url.starts_with("https://") {
         api_url.to_string()
     } else {
@@ -208,7 +202,7 @@ pub fn graphql_endpoint(api_url: &str) -> String {
     }
 }
 
-pub fn expand_tilde(path: &str) -> anyhow::Result<PathBuf> {
+pub(crate) fn expand_tilde(path: &str) -> anyhow::Result<PathBuf> {
     if path == "~" {
         return home_dir();
     }

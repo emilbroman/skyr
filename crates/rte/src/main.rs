@@ -41,19 +41,18 @@ impl FromStr for PluginSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let parts = s.split('@').collect::<Vec<_>>();
-        if parts.len() != 2 {
-            return Err(format!(
+        let (name_str, target_str) = s.split_once('@').ok_or_else(|| {
+            format!(
                 "invalid plugin spec `{s}`: expected NAME@TARGET (e.g. Std/Random@tcp://127.0.0.1:50051)"
-            ));
-        }
+            )
+        })?;
 
-        let name = parts[0]
+        let name = name_str
             .parse::<sclc::ModuleId>()
-            .map_err(|error| format!("invalid plugin name `{}`: {error}", parts[0]))?;
-        let target = parts[1]
+            .map_err(|error| format!("invalid plugin name `{name_str}`: {error}"))?;
+        let target = target_str
             .parse::<rtp::Target>()
-            .map_err(|error| format!("invalid plugin target `{}`: {error}", parts[1]))?;
+            .map_err(|error| format!("invalid plugin target `{target_str}`: {error}"))?;
 
         Ok(Self { name, target })
     }
@@ -125,15 +124,12 @@ async fn main() -> anyhow::Result<()> {
                     "started rtq consumer",
                 );
 
-                handles.push(task::spawn(
-                    worker_loop(
-                        consumer,
-                        rdb_client.clone(),
-                        ldb_publisher.clone(),
-                        plugins.clone(),
-                    )
-                    .instrument(span),
-                ));
+                let ctx = WorkerContext {
+                    rdb_client: rdb_client.clone(),
+                    ldb_publisher: ldb_publisher.clone(),
+                    plugins: plugins.clone(),
+                };
+                handles.push(task::spawn(worker_loop(consumer, ctx).instrument(span)));
             }
 
             for handle in handles {
@@ -145,22 +141,21 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn worker_loop(
-    mut consumer: rtq::Consumer,
+struct WorkerContext {
     rdb_client: rdb::Client,
     ldb_publisher: ldb::Publisher,
     plugins: HashMap<String, rtp::PluginClient>,
-) {
+}
+
+async fn worker_loop(mut consumer: rtq::Consumer, ctx: WorkerContext) {
     loop {
-        let keep_running =
-            match worker_loop_iteration(&mut consumer, &rdb_client, &ldb_publisher, &plugins).await
-            {
-                Ok(keep_running) => keep_running,
-                Err(error) => {
-                    tracing::error!(error = %error, "worker loop iteration failed");
-                    true
-                }
-            };
+        let keep_running = match worker_loop_iteration(&mut consumer, &ctx).await {
+            Ok(keep_running) => keep_running,
+            Err(error) => {
+                tracing::error!(error = %error, "worker loop iteration failed");
+                true
+            }
+        };
 
         if !keep_running {
             return;
@@ -170,9 +165,7 @@ async fn worker_loop(
 
 async fn worker_loop_iteration(
     consumer: &mut rtq::Consumer,
-    rdb_client: &rdb::Client,
-    ldb_publisher: &ldb::Publisher,
-    plugins: &HashMap<String, rtp::PluginClient>,
+    ctx: &WorkerContext,
 ) -> anyhow::Result<bool> {
     tracing::info!("polling rtq consumer for next message");
     let Some(delivery) = consumer.next().await? else {
@@ -191,809 +184,16 @@ async fn worker_loop_iteration(
 
     match &delivery.message {
         rtq::Message::Create(message) => {
-            let resource_client = rdb_client
-                .namespace(message.resource.environment_qid.clone())
-                .resource(
-                    message.resource.resource_type.clone(),
-                    message.resource.resource_id.clone(),
-                );
-            match resource_client.get().await {
-                Ok(Some(_)) => {
-                    tracing::info!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "dropping idempotent create for existing resource",
-                    );
-                    delivery.ack().await?;
-                    return Ok(true);
-                }
-                Ok(None) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to read resource state before create",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            }
-
-            let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
-            else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    "invalid resource type for create",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-            let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    plugin = plugin_name,
-                    "no plugin configured for resource type",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-
-            let inputs: sclc::Record = match serde_json::from_value(message.inputs.clone()) {
-                Ok(inputs) => inputs,
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "invalid create inputs json",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-
-            let id = sclc::ResourceId {
-                ty: message.resource.resource_type.clone(),
-                id: message.resource.resource_id.clone(),
-            };
-            tracing::info!(
-                plugin = plugin_name,
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                "calling plugin create_resource",
-            );
-            let resource = match plugin
-                .create_resource(
-                    &message.resource.environment_qid,
-                    &message.deployment_id,
-                    id,
-                    inputs,
-                )
-                .await
-            {
-                Ok(resource) => resource,
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "create_resource plugin call failed",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-
-            let deployment_qid = format!(
-                "{}@{}",
-                message.resource.environment_qid, message.deployment_id
-            );
-
-            if let Err(error) = resource_client
-                .set_input(resource.inputs.clone(), deployment_qid.clone())
-                .await
-            {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist created resource inputs",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-
-            let dependencies = dependencies_from_refs(&message.dependencies);
-            if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist created resource dependencies",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-
-            if let Err(error) = resource_client.set_output(resource.outputs).await {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist created resource outputs",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-
-            tracing::info!(
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                "created resource",
-            );
-            log_deployment_event(
-                ldb_publisher,
-                &deployment_qid,
-                Severity::Info,
-                format!(
-                    "Created {}.{} for {}",
-                    message.resource.resource_type,
-                    message.resource.resource_id,
-                    &message.deployment_id[..8]
-                ),
-            )
-            .await;
+            handle_create(message, &delivery, ctx).await?;
         }
         rtq::Message::Destroy(message) => {
-            let resource_client = rdb_client
-                .namespace(message.resource.environment_qid.clone())
-                .resource(
-                    message.resource.resource_type.clone(),
-                    message.resource.resource_id.clone(),
-                );
-            let deployment_qid = format!(
-                "{}@{}",
-                message.resource.environment_qid, message.deployment_id
-            );
-
-            let current = match resource_client.get().await {
-                Ok(Some(resource)) => {
-                    if resource.owner.as_deref() != Some(deployment_qid.as_str()) {
-                        tracing::info!(
-                            environment_qid = %message.resource.environment_qid,
-                            resource_type = %message.resource.resource_type,
-                            resource_id = %message.resource.resource_id,
-                            message_owner = %deployment_qid,
-                            current_owner = ?resource.owner,
-                            "dropping delete for non-matching owner",
-                        );
-                        delivery.ack().await?;
-                        return Ok(true);
-                    }
-                    resource
-                }
-                Ok(None) => {
-                    tracing::info!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "dropping idempotent delete for missing resource",
-                    );
-                    delivery.ack().await?;
-                    return Ok(true);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to read resource state before delete",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-
-            let inputs = match current.inputs {
-                Some(inputs) => inputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current inputs for delete",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let outputs = match current.outputs {
-                Some(outputs) => outputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current outputs for delete",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-
-            let Some(plugin_name) = plugin_name_for_resource_type(&message.resource.resource_type)
-            else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    "invalid resource type for delete",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-            let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    plugin = plugin_name,
-                    "no plugin configured for resource type",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            };
-
-            let id = sclc::ResourceId {
-                ty: message.resource.resource_type.clone(),
-                id: message.resource.resource_id.clone(),
-            };
-            tracing::info!(
-                plugin = plugin_name,
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                "calling plugin delete_resource",
-            );
-            if let Err(error) = plugin
-                .delete_resource(
-                    &message.resource.environment_qid,
-                    &message.deployment_id,
-                    id,
-                    inputs,
-                    outputs,
-                )
-                .await
-            {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "delete_resource plugin call failed",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-
-            if let Err(error) = resource_client.delete().await {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to delete resource from rdb",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-
-            tracing::info!(
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                "deleted resource",
-            );
-            log_deployment_event(
-                ldb_publisher,
-                &deployment_qid,
-                Severity::Info,
-                format!(
-                    "Destroyed {}.{} for {}",
-                    message.resource.resource_type,
-                    message.resource.resource_id,
-                    &message.deployment_id[..8]
-                ),
-            )
-            .await;
+            handle_destroy(message, &delivery, ctx).await?;
         }
         rtq::Message::Adopt(message) => {
-            let resource_client = rdb_client
-                .namespace(message.resource.environment_qid.clone())
-                .resource(
-                    message.resource.resource_type.clone(),
-                    message.resource.resource_id.clone(),
-                );
-            let current = match resource_client.get().await {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    tracing::info!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "dropping adopt for missing resource",
-                    );
-                    delivery.ack().await?;
-                    return Ok(true);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to read resource state before adopt",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let from_deployment_qid = format!(
-                "{}@{}",
-                message.resource.environment_qid, message.from_deployment_id
-            );
-            let to_deployment_qid = format!(
-                "{}@{}",
-                message.resource.environment_qid, message.to_deployment_id
-            );
-
-            if current.owner.as_deref() != Some(from_deployment_qid.as_str()) {
-                tracing::info!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    from_owner = %from_deployment_qid,
-                    current_owner = ?current.owner,
-                    "dropping adopt for non-matching owner",
-                );
-                delivery.ack().await?;
-                return Ok(true);
-            }
-
-            let prev_inputs = match current.inputs {
-                Some(inputs) => inputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current inputs for adopt",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let prev_outputs = match current.outputs.clone() {
-                Some(outputs) => outputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current outputs for adopt",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let desired_inputs: sclc::Record =
-                match serde_json::from_value(message.desired_inputs.clone()) {
-                    Ok(inputs) => inputs,
-                    Err(error) => {
-                        tracing::warn!(
-                            environment_qid = %message.resource.environment_qid,
-                            resource_type = %message.resource.resource_type,
-                            resource_id = %message.resource.resource_id,
-                            error = %error,
-                            "invalid adopt desired_inputs json",
-                        );
-                        delivery.nack(false).await?;
-                        return Ok(true);
-                    }
-                };
-
-            let mut inputs_to_persist = prev_inputs.clone();
-            let mut outputs_to_persist = current.outputs.clone();
-
-            if prev_inputs != desired_inputs {
-                let Some(plugin_name) =
-                    plugin_name_for_resource_type(&message.resource.resource_type)
-                else {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        "invalid resource type for adopt",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                };
-                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        plugin = plugin_name,
-                        "no plugin configured for resource type",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                };
-
-                let id = sclc::ResourceId {
-                    ty: message.resource.resource_type.clone(),
-                    id: message.resource.resource_id.clone(),
-                };
-                tracing::info!(
-                    plugin = plugin_name,
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "calling plugin update_resource for adopt",
-                );
-                let resource = match plugin
-                    .update_resource(
-                        &message.resource.environment_qid,
-                        &message.to_deployment_id,
-                        id,
-                        prev_inputs,
-                        prev_outputs,
-                        desired_inputs,
-                    )
-                    .await
-                {
-                    Ok(resource) => resource,
-                    Err(error) => {
-                        tracing::warn!(
-                            environment_qid = %message.resource.environment_qid,
-                            resource_type = %message.resource.resource_type,
-                            resource_id = %message.resource.resource_id,
-                            error = %error,
-                            "update_resource plugin call failed for adopt",
-                        );
-                        delivery.nack(false).await?;
-                        return Ok(true);
-                    }
-                };
-                inputs_to_persist = resource.inputs;
-                outputs_to_persist = Some(resource.outputs);
-            } else {
-                tracing::info!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "skipping plugin update_resource for adopt with unchanged inputs",
-                );
-            }
-
-            if let Err(error) = resource_client
-                .set_input(inputs_to_persist, to_deployment_qid.clone())
-                .await
-            {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist adopted resource inputs",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-            let dependencies = dependencies_from_refs(&message.dependencies);
-            if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist adopted resource dependencies",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-            if let Some(outputs) = outputs_to_persist {
-                if let Err(error) = resource_client.set_output(outputs).await {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to persist adopted resource outputs",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            } else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "adopted resource has no outputs to persist",
-                );
-            }
-
-            tracing::info!(
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                from_owner = %from_deployment_qid,
-                to_owner = %to_deployment_qid,
-                "adopted resource",
-            );
-            log_deployment_event(
-                ldb_publisher,
-                &from_deployment_qid,
-                Severity::Info,
-                format!(
-                    "Relinquished {}.{} to {}",
-                    message.resource.resource_type,
-                    message.resource.resource_id,
-                    &message.to_deployment_id[..8]
-                ),
-            )
-            .await;
-            log_deployment_event(
-                ldb_publisher,
-                &to_deployment_qid,
-                Severity::Info,
-                format!(
-                    "Adopted {}.{} from {}",
-                    message.resource.resource_type,
-                    message.resource.resource_id,
-                    &message.from_deployment_id[..8]
-                ),
-            )
-            .await;
+            handle_adopt(message, &delivery, ctx).await?;
         }
         rtq::Message::Restore(message) => {
-            let resource_client = rdb_client
-                .namespace(message.resource.environment_qid.clone())
-                .resource(
-                    message.resource.resource_type.clone(),
-                    message.resource.resource_id.clone(),
-                );
-            let current = match resource_client.get().await {
-                Ok(Some(resource)) => resource,
-                Ok(None) => {
-                    tracing::info!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "dropping restore for missing resource",
-                    );
-                    delivery.ack().await?;
-                    return Ok(true);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to read resource state before restore",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let deployment_qid = format!(
-                "{}@{}",
-                message.resource.environment_qid, message.deployment_id
-            );
-
-            if current.owner.as_deref() != Some(deployment_qid.as_str()) {
-                tracing::info!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    message_owner = %deployment_qid,
-                    current_owner = ?current.owner,
-                    "dropping restore for non-matching owner",
-                );
-                delivery.ack().await?;
-                return Ok(true);
-            }
-
-            let prev_inputs = match current.inputs {
-                Some(inputs) => inputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current inputs for restore",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let prev_outputs = match current.outputs.clone() {
-                Some(outputs) => outputs,
-                None => {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        "missing current outputs for restore",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            };
-            let desired_inputs: sclc::Record =
-                match serde_json::from_value(message.desired_inputs.clone()) {
-                    Ok(inputs) => inputs,
-                    Err(error) => {
-                        tracing::warn!(
-                            environment_qid = %message.resource.environment_qid,
-                            resource_type = %message.resource.resource_type,
-                            resource_id = %message.resource.resource_id,
-                            error = %error,
-                            "invalid restore desired_inputs json",
-                        );
-                        delivery.nack(false).await?;
-                        return Ok(true);
-                    }
-                };
-
-            let mut inputs_to_persist = prev_inputs.clone();
-            let mut outputs_to_persist = current.outputs.clone();
-
-            if prev_inputs != desired_inputs {
-                let Some(plugin_name) =
-                    plugin_name_for_resource_type(&message.resource.resource_type)
-                else {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        "invalid resource type for restore",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                };
-                let Some(mut plugin) = plugins.get(plugin_name).cloned() else {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        plugin = plugin_name,
-                        "no plugin configured for resource type",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                };
-
-                let id = sclc::ResourceId {
-                    ty: message.resource.resource_type.clone(),
-                    id: message.resource.resource_id.clone(),
-                };
-                tracing::info!(
-                    plugin = plugin_name,
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "calling plugin update_resource for restore",
-                );
-                let resource = match plugin
-                    .update_resource(
-                        &message.resource.environment_qid,
-                        &message.deployment_id,
-                        id,
-                        prev_inputs,
-                        prev_outputs,
-                        desired_inputs,
-                    )
-                    .await
-                {
-                    Ok(resource) => resource,
-                    Err(error) => {
-                        tracing::warn!(
-                            environment_qid = %message.resource.environment_qid,
-                            resource_type = %message.resource.resource_type,
-                            resource_id = %message.resource.resource_id,
-                            error = %error,
-                            "update_resource plugin call failed for restore",
-                        );
-                        delivery.nack(false).await?;
-                        return Ok(true);
-                    }
-                };
-                inputs_to_persist = resource.inputs;
-                outputs_to_persist = Some(resource.outputs);
-            } else {
-                tracing::info!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "skipping plugin update_resource for restore with unchanged inputs",
-                );
-            }
-
-            if let Err(error) = resource_client
-                .set_input(inputs_to_persist, deployment_qid.clone())
-                .await
-            {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist restored resource inputs",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-            let dependencies = dependencies_from_refs(&message.dependencies);
-            if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    error = %error,
-                    "failed to persist restored resource dependencies",
-                );
-                delivery.nack(false).await?;
-                return Ok(true);
-            }
-            if let Some(outputs) = outputs_to_persist {
-                if let Err(error) = resource_client.set_output(outputs).await {
-                    tracing::warn!(
-                        environment_qid = %message.resource.environment_qid,
-                        resource_type = %message.resource.resource_type,
-                        resource_id = %message.resource.resource_id,
-                        error = %error,
-                        "failed to persist restored resource outputs",
-                    );
-                    delivery.nack(false).await?;
-                    return Ok(true);
-                }
-            } else {
-                tracing::warn!(
-                    environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_id = %message.resource.resource_id,
-                    "restored resource has no outputs to persist",
-                );
-            }
-
-            tracing::info!(
-                environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_id = %message.resource.resource_id,
-                owner = %deployment_qid,
-                "restored resource",
-            );
-            log_deployment_event(
-                ldb_publisher,
-                &deployment_qid,
-                Severity::Info,
-                format!(
-                    "Restored {}.{} for {}",
-                    message.resource.resource_type,
-                    message.resource.resource_id,
-                    &message.deployment_id[..8]
-                ),
-            )
-            .await;
+            handle_restore(message, &delivery, ctx).await?;
         }
     }
 
@@ -1007,6 +207,657 @@ async fn worker_loop_iteration(
         "acknowledged rtq message",
     );
     Ok(true)
+}
+
+fn deployment_qid(environment_qid: &str, deployment_id: &str) -> String {
+    format!("{environment_qid}@{deployment_id}")
+}
+
+fn resolve_plugin<'a>(
+    resource_type: &'a str,
+    plugins: &'a HashMap<String, rtp::PluginClient>,
+) -> Option<(&'a str, rtp::PluginClient)> {
+    let plugin_name = plugin_name_for_resource_type(resource_type)?;
+    let client = plugins.get(plugin_name)?;
+    Some((plugin_name, client.clone()))
+}
+
+fn resource_id_from_ref(resource: &rtq::ResourceRef) -> sclc::ResourceId {
+    sclc::ResourceId {
+        ty: resource.resource_type.clone(),
+        id: resource.resource_id.clone(),
+    }
+}
+
+async fn handle_create(
+    message: &rtq::CreateMessage,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<()> {
+    let resource_client = ctx
+        .rdb_client
+        .namespace(message.resource.environment_qid.clone())
+        .resource(
+            message.resource.resource_type.clone(),
+            message.resource.resource_id.clone(),
+        );
+    match resource_client.get().await {
+        Ok(Some(_)) => {
+            tracing::info!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "dropping idempotent create for existing resource",
+            );
+            delivery.ack().await?;
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "failed to read resource state before create",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    }
+
+    let Some((plugin_name, mut plugin)) =
+        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+    else {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            "no plugin available for resource type on create",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    };
+
+    let inputs: sclc::Record = match serde_json::from_value(message.inputs.clone()) {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "invalid create inputs json",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let id = resource_id_from_ref(&message.resource);
+    tracing::info!(
+        plugin = plugin_name,
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "calling plugin create_resource",
+    );
+    let resource = match plugin
+        .create_resource(
+            &message.resource.environment_qid,
+            &message.deployment_id,
+            id,
+            inputs,
+        )
+        .await
+    {
+        Ok(resource) => resource,
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "create_resource plugin call failed",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+
+    if let Err(error) = resource_client
+        .set_input(resource.inputs.clone(), dep_qid.clone())
+        .await
+    {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to persist created resource inputs",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    let dependencies = dependencies_from_refs(&message.dependencies);
+    if let Err(error) = resource_client.set_dependencies(&dependencies).await {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to persist created resource dependencies",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    if let Err(error) = resource_client.set_output(resource.outputs).await {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to persist created resource outputs",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    tracing::info!(
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "created resource",
+    );
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        Severity::Info,
+        format!(
+            "Created {}.{} for {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.deployment_id[..8]
+        ),
+    )
+    .await;
+    Ok(())
+}
+
+async fn handle_destroy(
+    message: &rtq::DestroyMessage,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<()> {
+    let resource_client = ctx
+        .rdb_client
+        .namespace(message.resource.environment_qid.clone())
+        .resource(
+            message.resource.resource_type.clone(),
+            message.resource.resource_id.clone(),
+        );
+    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+
+    let current = match resource_client.get().await {
+        Ok(Some(resource)) => {
+            if resource.owner.as_deref() != Some(dep_qid.as_str()) {
+                tracing::info!(
+                    environment_qid = %message.resource.environment_qid,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    message_owner = %dep_qid,
+                    current_owner = ?resource.owner,
+                    "dropping delete for non-matching owner",
+                );
+                delivery.ack().await?;
+                return Ok(());
+            }
+            resource
+        }
+        Ok(None) => {
+            tracing::info!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "dropping idempotent delete for missing resource",
+            );
+            delivery.ack().await?;
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "failed to read resource state before delete",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let inputs = match current.inputs {
+        Some(inputs) => inputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "missing current inputs for delete",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+    let outputs = match current.outputs {
+        Some(outputs) => outputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "missing current outputs for delete",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let Some((plugin_name, mut plugin)) =
+        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+    else {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            "no plugin available for resource type on delete",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    };
+
+    let id = resource_id_from_ref(&message.resource);
+    tracing::info!(
+        plugin = plugin_name,
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "calling plugin delete_resource",
+    );
+    if let Err(error) = plugin
+        .delete_resource(
+            &message.resource.environment_qid,
+            &message.deployment_id,
+            id,
+            inputs,
+            outputs,
+        )
+        .await
+    {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "delete_resource plugin call failed",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    if let Err(error) = resource_client.delete().await {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to delete resource from rdb",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    tracing::info!(
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "deleted resource",
+    );
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        Severity::Info,
+        format!(
+            "Destroyed {}.{} for {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.deployment_id[..8]
+        ),
+    )
+    .await;
+    Ok(())
+}
+
+struct UpdateParams<'a> {
+    resource: &'a rtq::ResourceRef,
+    owner_deployment_qid: &'a str,
+    target_deployment_id: &'a str,
+    desired_inputs: serde_json::Value,
+    dependencies: &'a [rtq::ResourceRef],
+    operation: &'a str,
+}
+
+async fn handle_update_inputs(
+    params: UpdateParams<'_>,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<Option<String>> {
+    let resource = params.resource;
+    let owner_deployment_qid = params.owner_deployment_qid;
+    let target_deployment_id = params.target_deployment_id;
+    let desired_inputs = params.desired_inputs;
+    let dependencies = params.dependencies;
+    let operation = params.operation;
+    let resource_client = ctx
+        .rdb_client
+        .namespace(resource.environment_qid.clone())
+        .resource(resource.resource_type.clone(), resource.resource_id.clone());
+    let current = match resource_client.get().await {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            tracing::info!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                "dropping {operation} for missing resource",
+            );
+            delivery.ack().await?;
+            return Ok(None);
+        }
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                error = %error,
+                "failed to read resource state before {operation}",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+    };
+
+    if current.owner.as_deref() != Some(owner_deployment_qid) {
+        tracing::info!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            message_owner = %owner_deployment_qid,
+            current_owner = ?current.owner,
+            "dropping {operation} for non-matching owner",
+        );
+        delivery.ack().await?;
+        return Ok(None);
+    }
+
+    let prev_inputs = match current.inputs {
+        Some(inputs) => inputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                "missing current inputs for {operation}",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+    };
+    let prev_outputs = match current.outputs.clone() {
+        Some(outputs) => outputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                "missing current outputs for {operation}",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+    };
+    let desired_inputs: sclc::Record = match serde_json::from_value(desired_inputs) {
+        Ok(inputs) => inputs,
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                error = %error,
+                "invalid {operation} desired_inputs json",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+    };
+
+    let mut inputs_to_persist = prev_inputs.clone();
+    let mut outputs_to_persist = current.outputs.clone();
+
+    if prev_inputs != desired_inputs {
+        let Some((plugin_name, mut plugin)) = resolve_plugin(&resource.resource_type, &ctx.plugins)
+        else {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                "no plugin available for resource type on {operation}",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        };
+
+        let id = resource_id_from_ref(resource);
+        tracing::info!(
+            plugin = plugin_name,
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            "calling plugin update_resource for {operation}",
+        );
+        let updated = match plugin
+            .update_resource(
+                &resource.environment_qid,
+                target_deployment_id,
+                id,
+                prev_inputs,
+                prev_outputs,
+                desired_inputs,
+            )
+            .await
+        {
+            Ok(r) => r,
+            Err(error) => {
+                tracing::warn!(
+                    environment_qid = %resource.environment_qid,
+                    resource_type = %resource.resource_type,
+                    resource_id = %resource.resource_id,
+                    error = %error,
+                    "update_resource plugin call failed for {operation}",
+                );
+                delivery.nack(false).await?;
+                return Ok(None);
+            }
+        };
+        inputs_to_persist = updated.inputs;
+        outputs_to_persist = Some(updated.outputs);
+    } else {
+        tracing::info!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            "skipping plugin update_resource for {operation} with unchanged inputs",
+        );
+    }
+
+    let target_dep_qid = deployment_qid(&resource.environment_qid, target_deployment_id);
+
+    if let Err(error) = resource_client
+        .set_input(inputs_to_persist, target_dep_qid.clone())
+        .await
+    {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            error = %error,
+            "failed to persist {operation} resource inputs",
+        );
+        delivery.nack(false).await?;
+        return Ok(None);
+    }
+    let deps = dependencies_from_refs(dependencies);
+    if let Err(error) = resource_client.set_dependencies(&deps).await {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            error = %error,
+            "failed to persist {operation} resource dependencies",
+        );
+        delivery.nack(false).await?;
+        return Ok(None);
+    }
+    if let Some(outputs) = outputs_to_persist {
+        if let Err(error) = resource_client.set_output(outputs).await {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type,
+                resource_id = %resource.resource_id,
+                error = %error,
+                "failed to persist {operation} resource outputs",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+    } else {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            "{operation} resource has no outputs to persist",
+        );
+    }
+
+    Ok(Some(target_dep_qid))
+}
+
+async fn handle_adopt(
+    message: &rtq::AdoptMessage,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<()> {
+    let from_dep_qid = deployment_qid(
+        &message.resource.environment_qid,
+        &message.from_deployment_id,
+    );
+    let Some(to_dep_qid) = handle_update_inputs(
+        UpdateParams {
+            resource: &message.resource,
+            owner_deployment_qid: &from_dep_qid,
+            target_deployment_id: &message.to_deployment_id,
+            desired_inputs: message.desired_inputs.clone(),
+            dependencies: &message.dependencies,
+            operation: "adopt",
+        },
+        delivery,
+        ctx,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+
+    tracing::info!(
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        from_owner = %from_dep_qid,
+        to_owner = %to_dep_qid,
+        "adopted resource",
+    );
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &from_dep_qid,
+        Severity::Info,
+        format!(
+            "Relinquished {}.{} to {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.to_deployment_id[..8]
+        ),
+    )
+    .await;
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &to_dep_qid,
+        Severity::Info,
+        format!(
+            "Adopted {}.{} from {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.from_deployment_id[..8]
+        ),
+    )
+    .await;
+    Ok(())
+}
+
+async fn handle_restore(
+    message: &rtq::RestoreMessage,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<()> {
+    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let Some(dep_qid) = handle_update_inputs(
+        UpdateParams {
+            resource: &message.resource,
+            owner_deployment_qid: &dep_qid,
+            target_deployment_id: &message.deployment_id,
+            desired_inputs: message.desired_inputs.clone(),
+            dependencies: &message.dependencies,
+            operation: "restore",
+        },
+        delivery,
+        ctx,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+
+    tracing::info!(
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        owner = %dep_qid,
+        "restored resource",
+    );
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        Severity::Info,
+        format!(
+            "Restored {}.{} for {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.deployment_id[..8]
+        ),
+    )
+    .await;
+    Ok(())
 }
 
 fn message_meta(message: &rtq::Message) -> (&'static str, &rtq::ResourceRef) {

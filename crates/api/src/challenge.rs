@@ -5,25 +5,25 @@ use sha2::Digest;
 const CHALLENGE_FRAME_SECONDS: i64 = 10;
 const CHALLENGE_NAMESPACE: &str = "skyr-auth-challenge";
 
-pub struct Challenger {
+pub(crate) struct Challenger {
     salt: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CheckSignatureError {
+pub(crate) enum CheckSignatureError {
     InvalidSignature,
 }
 
 impl Challenger {
-    pub fn new(salt: Vec<u8>) -> Self {
+    pub(crate) fn new(salt: Vec<u8>) -> Self {
         Self { salt }
     }
 
-    pub fn challenge(&self, now: DateTime<Utc>, username: &str) -> String {
+    pub(crate) fn challenge(&self, now: DateTime<Utc>, username: &str) -> String {
         self.challenge_for_frame(Self::frame_start(now.timestamp()), username)
     }
 
-    pub fn check(
+    pub(crate) fn check(
         &self,
         public_key: &russh::keys::ssh_key::PublicKey,
         signature: &str,

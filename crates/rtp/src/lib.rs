@@ -13,7 +13,7 @@ pub mod proto {
     tonic::include_proto!("rtp.v1");
 }
 
-pub use proto::{
+use proto::{
     CapabilityRequest, CapabilityResponse, CreateResourceRequest, CreateResourceResponse,
     DeleteResourceRequest, HealthRequest, HealthResponse, Resource, UpdateResourceRequest,
     UpdateResourceResponse,
@@ -539,14 +539,7 @@ impl PluginClient {
             .into_inner();
 
         let resource = response.resource.context("missing resource in response")?;
-        let inputs: sclc::Record = serde_json::from_str(&resource.inputs_json)?;
-        let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)?;
-
-        Ok(sclc::Resource {
-            inputs,
-            outputs,
-            dependencies: vec![],
-        })
+        decode_resource(resource).map_err(Into::into)
     }
 
     pub async fn update_resource(
@@ -589,14 +582,7 @@ impl PluginClient {
             .into_inner();
 
         let resource = response.resource.context("missing resource in response")?;
-        let inputs: sclc::Record = serde_json::from_str(&resource.inputs_json)?;
-        let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)?;
-
-        Ok(sclc::Resource {
-            inputs,
-            outputs,
-            dependencies: vec![],
-        })
+        decode_resource(resource).map_err(Into::into)
     }
 
     pub async fn delete_resource(
@@ -651,13 +637,10 @@ impl PluginClient {
             })
             .await?
             .into_inner();
-        decode_resource(
-            response
-                .resource
-                .context("missing resource in health response")
-                .map_err(|error| tonic::Status::internal(error.to_string()))?,
-        )
-        .map_err(Into::into)
+        let resource = response
+            .resource
+            .context("missing resource in health response")?;
+        decode_resource(resource).map_err(Into::into)
     }
 }
 
@@ -732,11 +715,7 @@ async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, Dial
         Target::Tcp(addr) => {
             debug!(addr = %addr, "dialing RTP over TCP");
             resolve_tcp_authority(&addr).await?;
-            let client =
-                proto::resource_transition_plugin_client::ResourceTransitionPluginClient::connect(
-                    format!("http://{addr}"),
-                )
-                .await?;
+            let client = ResourceTransitionPluginClient::connect(format!("http://{addr}")).await?;
             Ok(client)
         }
         Target::Unix(path) => {
@@ -752,11 +731,7 @@ async fn dial_raw(target: Target) -> Result<ResourceTransitionPluginClient, Dial
                     }
                 }))
                 .await?;
-            Ok(
-                proto::resource_transition_plugin_client::ResourceTransitionPluginClient::new(
-                    channel,
-                ),
-            )
+            Ok(ResourceTransitionPluginClient::new(channel))
         }
     }
 }

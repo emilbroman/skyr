@@ -55,7 +55,7 @@ use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 use thiserror::Error;
 use tokio_stream::wrappers::UnixListenerStream;
-use tonic::transport::Server;
+use tonic::transport::{Server, server::Router};
 use tracing::info;
 
 // Re-export tonic for the async_trait macro
@@ -180,16 +180,9 @@ pub trait Orchestrator: Send + Sync + 'static {
     ) -> Result<UnregisterNodeResponse, tonic::Status>;
 }
 
-struct OrchestratorService<O: Orchestrator> {
+#[derive(Clone)]
+struct OrchestratorService<O> {
     orchestrator: Arc<O>,
-}
-
-impl<O: Orchestrator> Clone for OrchestratorService<O> {
-    fn clone(&self) -> Self {
-        Self {
-            orchestrator: Arc::clone(&self.orchestrator),
-        }
-    }
 }
 
 #[tonic::async_trait]
@@ -225,42 +218,46 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
     }
 }
 
+async fn serve(target: Target, name: &str, router: Router) -> Result<(), ServeError> {
+    match target {
+        Target::Tcp(addr) => {
+            let addr: SocketAddr = addr
+                .parse()
+                .map_err(|_| ServeError::InvalidTcpBindAddress(addr.clone()))?;
+            info!(addr = %addr, "serving {name} over TCP");
+            router.serve(addr).await?;
+        }
+        Target::Unix(path) => {
+            if path.exists() {
+                tokio::fs::remove_file(&path).await?;
+            }
+            info!(path = %path.display(), "serving {name} over Unix socket");
+            let listener = tokio::net::UnixListener::bind(path)?;
+            let incoming = UnixListenerStream::new(listener);
+            router.serve_with_incoming(incoming).await?;
+        }
+    }
+    Ok(())
+}
+
 /// Serve the Orchestrator service (container plugin side).
 pub async fn serve_orchestrator<O: Orchestrator>(
     target: impl AsRef<str>,
     orchestrator: O,
 ) -> Result<(), ServeError> {
     let target: Target = target.as_ref().parse()?;
-    info!(target = ?&target, "starting Orchestrator server");
+    info!(target = ?target, "starting Orchestrator server");
 
     let service = proto::orchestrator_server::OrchestratorServer::new(OrchestratorService {
         orchestrator: Arc::new(orchestrator),
     });
 
-    match target {
-        Target::Tcp(addr) => {
-            let addr: SocketAddr = addr
-                .parse()
-                .map_err(|_| ServeError::InvalidTcpBindAddress(addr.clone()))?;
-            info!(addr = %addr, "serving Orchestrator over TCP");
-            Server::builder().add_service(service).serve(addr).await?;
-        }
-        Target::Unix(path) => {
-            if path.exists() {
-                tokio::fs::remove_file(&path).await?;
-            }
-            info!(path = %path.display(), "serving Orchestrator over Unix socket");
-            let listener = tokio::net::UnixListener::bind(path)?;
-            let incoming = UnixListenerStream::new(listener);
-
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming)
-                .await?;
-        }
-    }
-
-    Ok(())
+    serve(
+        target,
+        "Orchestrator",
+        Server::builder().add_service(service),
+    )
+    .await
 }
 
 // ============================================================================
@@ -358,16 +355,9 @@ pub trait Conduit: Send + Sync + 'static {
     ) -> Result<ConfigureServiceCidrResponse, tonic::Status>;
 }
 
-struct ConduitService<C: Conduit> {
+#[derive(Clone)]
+struct ConduitService<C> {
     conduit: Arc<C>,
-}
-
-impl<C: Conduit> Clone for ConduitService<C> {
-    fn clone(&self) -> Self {
-        Self {
-            conduit: Arc::clone(&self.conduit),
-        }
-    }
 }
 
 #[tonic::async_trait]
@@ -508,34 +498,11 @@ pub async fn serve_conduit<C: Conduit>(
     conduit: C,
 ) -> Result<(), ServeError> {
     let target: Target = target.as_ref().parse()?;
-    info!(target = ?&target, "starting Conduit server");
+    info!(target = ?target, "starting Conduit server");
 
     let service = proto::conduit_server::ConduitServer::new(ConduitService {
         conduit: Arc::new(conduit),
     });
 
-    match target {
-        Target::Tcp(addr) => {
-            let addr: SocketAddr = addr
-                .parse()
-                .map_err(|_| ServeError::InvalidTcpBindAddress(addr.clone()))?;
-            info!(addr = %addr, "serving Conduit over TCP");
-            Server::builder().add_service(service).serve(addr).await?;
-        }
-        Target::Unix(path) => {
-            if path.exists() {
-                tokio::fs::remove_file(&path).await?;
-            }
-            info!(path = %path.display(), "serving Conduit over Unix socket");
-            let listener = tokio::net::UnixListener::bind(path)?;
-            let incoming = UnixListenerStream::new(listener);
-
-            Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming)
-                .await?;
-        }
-    }
-
-    Ok(())
+    serve(target, "Conduit", Server::builder().add_service(service)).await
 }

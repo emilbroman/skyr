@@ -34,10 +34,8 @@ const VXLAN_PORT: u16 = 4789;
 ///
 /// Allocates IPs sequentially from .2 upward (.1 is the gateway on the bridge).
 /// Released IPs are recycled.
-#[allow(dead_code)]
-pub struct Ipam {
+pub(crate) struct Ipam {
     subnet: Ipv4Net,
-    gateway: Ipv4Addr,
     /// IPs currently in use, keyed by pod ID.
     allocated: HashMap<String, Ipv4Addr>,
     /// IPs that were released and can be reused.
@@ -50,32 +48,17 @@ impl Ipam {
     /// Create a new IPAM for the given subnet.
     ///
     /// The gateway is the first usable host address (.1), and pod IPs start at .2.
-    pub fn new(subnet: Ipv4Net) -> Self {
-        let network = subnet.network();
-        let gateway = Ipv4Addr::from(u32::from(network) + 1);
+    pub(crate) fn new(subnet: Ipv4Net) -> Self {
         Self {
             subnet,
-            gateway,
             allocated: HashMap::new(),
             free_pool: Vec::new(),
             next_offset: 2, // .0 is network, .1 is gateway, pods start at .2
         }
     }
 
-    /// The gateway IP for this subnet (assigned to the bridge).
-    #[allow(dead_code)]
-    pub fn gateway(&self) -> Ipv4Addr {
-        self.gateway
-    }
-
-    /// The subnet managed by this IPAM.
-    #[allow(dead_code)]
-    pub fn subnet(&self) -> &Ipv4Net {
-        &self.subnet
-    }
-
     /// Allocate an IP for a pod. Returns the assigned address.
-    pub fn allocate(&mut self, pod_id: &str) -> Result<Ipv4Addr> {
+    pub(crate) fn allocate(&mut self, pod_id: &str) -> Result<Ipv4Addr> {
         if let Some(&existing) = self.allocated.get(pod_id) {
             return Ok(existing);
         }
@@ -102,7 +85,7 @@ impl Ipam {
     }
 
     /// Release a pod's IP back to the pool.
-    pub fn release(&mut self, pod_id: &str) {
+    pub(crate) fn release(&mut self, pod_id: &str) {
         if let Some(ip) = self.allocated.remove(pod_id) {
             info!(pod_id = %pod_id, ip = %ip, "released pod IP");
             self.free_pool.push(ip);
@@ -118,7 +101,7 @@ impl Ipam {
 ///
 /// Creates the `skyr0` bridge, assigns the gateway IP, enables IP forwarding,
 /// and installs iptables rules for NAT and inter-pod isolation.
-pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
+pub(crate) fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
     let gateway = Ipv4Addr::from(u32::from(subnet.network()) + 1);
     let gateway_cidr = format!("{}/{}", gateway, subnet.prefix_len());
 
@@ -194,7 +177,7 @@ pub fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
 }
 
 /// Tear down the node bridge and remove associated iptables rules.
-pub fn teardown_bridge(subnet: &Ipv4Net) -> Result<()> {
+pub(crate) fn teardown_bridge(subnet: &Ipv4Net) -> Result<()> {
     info!(bridge = BRIDGE_NAME, "tearing down pod bridge");
 
     // Remove iptables rules (ignore errors — rules may not exist)
@@ -260,7 +243,7 @@ fn bridge_exists() -> Result<bool> {
 /// installs deny-all ingress firewall rules. If an allow list and cluster CIDR
 /// are provided, egress rules are also configured to restrict cluster-internal
 /// traffic to only the allowed destinations.
-pub fn setup_pod_network(
+pub(crate) fn setup_pod_network(
     pod_id: &str,
     ip: Ipv4Addr,
     subnet: &Ipv4Net,
@@ -342,7 +325,7 @@ pub fn setup_pod_network(
 ///
 /// Deletes the host-side veth interface (the pod-side is cleaned up when
 /// the network namespace is destroyed by the CRI).
-pub fn teardown_pod_network(pod_id: &str) -> Result<()> {
+pub(crate) fn teardown_pod_network(pod_id: &str) -> Result<()> {
     let host_veth = veth_host_name(pod_id);
     info!(pod_id = %pod_id, host_veth = %host_veth, "tearing down pod network");
 
@@ -534,7 +517,7 @@ fn setup_pod_egress_rules(
 /// This enables cross-node pod communication. The VXLAN uses the bridge's
 /// L2 learning for MAC-to-VTEP resolution after BUM traffic is flooded
 /// to all peers via FDB entries.
-pub fn setup_vxlan(local_ip: &str) -> Result<()> {
+pub(crate) fn setup_vxlan(local_ip: &str) -> Result<()> {
     let vni = VXLAN_VNI.to_string();
     let port = VXLAN_PORT.to_string();
 
@@ -575,7 +558,7 @@ pub fn setup_vxlan(local_ip: &str) -> Result<()> {
 }
 
 /// Tear down the VXLAN interface.
-pub fn teardown_vxlan() -> Result<()> {
+pub(crate) fn teardown_vxlan() -> Result<()> {
     info!(vxlan = VXLAN_NAME, "tearing down VXLAN overlay");
     let _ = run_cmd("ip", &["link", "del", VXLAN_NAME]);
     Ok(())
@@ -585,7 +568,7 @@ pub fn teardown_vxlan() -> Result<()> {
 ///
 /// Adds an FDB entry that directs BUM (broadcast, unknown-unicast, multicast)
 /// traffic to the peer's underlay IP. This enables ARP resolution across nodes.
-pub fn add_overlay_peer(peer_ip: &str) -> Result<()> {
+pub(crate) fn add_overlay_peer(peer_ip: &str) -> Result<()> {
     info!(peer_ip = %peer_ip, "adding overlay peer");
     run_cmd(
         "bridge",
@@ -603,7 +586,7 @@ pub fn add_overlay_peer(peer_ip: &str) -> Result<()> {
 }
 
 /// Remove a VXLAN overlay peer.
-pub fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
+pub(crate) fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
     info!(peer_ip = %peer_ip, "removing overlay peer");
     run_cmd(
         "bridge",
@@ -628,7 +611,7 @@ pub fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
 ///
 /// Appends an iptables INPUT ACCEPT rule for the specified port/protocol
 /// in the pod's network namespace.
-pub fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+pub(crate) fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -650,7 +633,7 @@ pub fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
 ///
 /// Deletes the matching iptables INPUT ACCEPT rule from the pod's
 /// network namespace.
-pub fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+pub(crate) fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -680,7 +663,7 @@ const SERVICES_CHAIN: &str = "SKYR-SERVICES";
 /// Creates a custom chain and hooks it into PREROUTING and OUTPUT so that
 /// both incoming bridge traffic (from pods) and locally-originated traffic
 /// are subject to DNAT rules.
-pub fn setup_services_chain() -> Result<()> {
+pub(crate) fn setup_services_chain() -> Result<()> {
     info!("setting up SKYR-SERVICES iptables chain");
 
     // Create the custom chain in the nat table
@@ -715,7 +698,7 @@ pub fn setup_services_chain() -> Result<()> {
 }
 
 /// Tear down the services DNAT chain and all per-service chains.
-pub fn teardown_services_chain() -> Result<()> {
+pub(crate) fn teardown_services_chain() -> Result<()> {
     info!("tearing down SKYR-SERVICES iptables chain and per-service chains");
     let _ = run_cmd(
         "iptables",
@@ -781,7 +764,7 @@ fn service_chain_name(vip: &str, port: i32, protocol: &str) -> String {
 ///
 /// For multiple backends, uses the iptables `statistic` module with
 /// `--probability` for round-robin load balancing.
-pub fn add_service_route(
+pub(crate) fn add_service_route(
     vip: &str,
     port: i32,
     protocol: &str,
@@ -891,7 +874,7 @@ pub fn add_service_route(
 ///
 /// Removes the dispatch rule from SKYR-SERVICES and flushes/deletes the
 /// per-service chain.
-pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> {
+pub(crate) fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> {
     let port_str = port.to_string();
     let chain = service_chain_name(vip, port, protocol);
 
@@ -942,7 +925,7 @@ pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> 
 ///
 /// Allows forwarding of traffic destined to the service CIDR through the bridge,
 /// so DNAT'd packets can reach their backend pods.
-pub fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
+pub(crate) fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
     info!(
         service_cidr = %service_cidr,
         "configuring service CIDR forwarding"
@@ -975,7 +958,7 @@ pub fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
 /// Read the host's DNS configuration for forwarding to pods.
 ///
 /// Returns a list of nameserver IPs found in /etc/resolv.conf.
-pub fn host_nameservers() -> Vec<String> {
+pub(crate) fn host_nameservers() -> Vec<String> {
     let content = match std::fs::read_to_string("/etc/resolv.conf") {
         Ok(c) => c,
         Err(_) => return vec!["8.8.8.8".to_string()],

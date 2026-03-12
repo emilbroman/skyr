@@ -17,7 +17,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
 use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
 
-pub struct Context {
+struct Context {
     udb_client: udb::Client,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
@@ -29,7 +29,7 @@ pub struct Context {
 
 impl Context {
     async fn check_auth(&self) -> FieldResult<(udb::UserClient, udb::User)> {
-        let err = juniper::FieldError::new("Not authenticated", juniper::Value::Null);
+        let err = field_error("Not authenticated");
 
         let Some(mut client) = self.user.clone() else {
             return Err(err);
@@ -46,7 +46,15 @@ impl Context {
 
 impl juniper::Context for Context {}
 
-pub struct Query;
+fn field_error(message: &str) -> juniper::FieldError {
+    juniper::FieldError::new(message, juniper::Value::Null)
+}
+
+fn internal_error() -> juniper::FieldError {
+    field_error("Internal server error")
+}
+
+struct Query;
 
 #[juniper::graphql_object(Context = Context)]
 impl Query {
@@ -68,10 +76,7 @@ impl Query {
 
     async fn auth_challenge(context: &Context, username: String) -> FieldResult<String> {
         if !USERNAME_REGEX.is_match(&username) {
-            return Err(juniper::FieldError::new(
-                "Invalid username",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid username"));
         }
 
         Ok(context.challenger.challenge(Utc::now(), &username))
@@ -85,23 +90,22 @@ impl Query {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to list repositories: {}", e);
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?
             .map(|repository| repository.map(|repository| Repository { repository }))
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| {
                 tracing::error!("Failed to read repository row: {}", e);
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })
     }
 }
 
-pub struct Mutation;
+struct Mutation;
 
-lazy_static::lazy_static! {
-    static ref USERNAME_REGEX: regex::Regex = regex::Regex::new(r"^[a-zA-Z0-9_-]{3,20}$").unwrap();
-}
+static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"^[a-zA-Z0-9_-]{3,20}$").unwrap());
 
 #[juniper::graphql_object(Context = Context)]
 impl Mutation {
@@ -113,25 +117,19 @@ impl Mutation {
         let (_, user) = context.check_auth().await?;
 
         if organization != user.username {
-            return Err(juniper::FieldError::new(
-                "Permission denied",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Permission denied"));
         }
 
         if !USERNAME_REGEX.is_match(&repository) {
-            return Err(juniper::FieldError::new(
-                "Invalid repository name",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid repository name"));
         }
 
-        let org: ids::OrgId = organization.parse().map_err(|_| {
-            juniper::FieldError::new("Invalid organization name", juniper::Value::Null)
-        })?;
-        let repo: ids::RepoId = repository.parse().map_err(|_| {
-            juniper::FieldError::new("Invalid repository name", juniper::Value::Null)
-        })?;
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
         let name = ids::RepoQid { org, repo };
 
         let repository = context
@@ -141,11 +139,11 @@ impl Mutation {
             .await
             .map_err(|e| match e {
                 cdb::CreateRepositoryError::AlreadyExists => {
-                    juniper::FieldError::new("Repository already exists", juniper::Value::Null)
+                    field_error("Repository already exists")
                 }
                 _ => {
                     tracing::error!("Failed to create repository: {}", e);
-                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    internal_error()
                 }
             })?;
 
@@ -160,41 +158,31 @@ impl Mutation {
         signature: String,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
-            return Err(juniper::FieldError::new(
-                "Invalid username",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid username"));
         }
 
         if email.split('@').take(3).count() != 2 {
-            return Err(juniper::FieldError::new(
-                "Invalid email",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid email"));
         }
 
         let public_key =
             russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
                 tracing::warn!("Invalid pubkey format: {}", e);
-                juniper::FieldError::new("Invalid credentials", juniper::Value::Null)
+                field_error("Invalid credentials")
             })?;
         context
             .challenger
             .check(&public_key, &signature, &username, Utc::now())
-            .map_err(|_| juniper::FieldError::new("Invalid credentials", juniper::Value::Null))?;
+            .map_err(|_| field_error("Invalid credentials"))?;
         let pubkey_fingerprint = public_key.fingerprint(Default::default()).to_string();
 
         match context.udb_client.user(&username).register(email).await {
-            Err(udb::RegisterUserError::UsernameTaken) => Err(juniper::FieldError::new(
-                "Username already taken",
-                juniper::Value::Null,
-            )),
+            Err(udb::RegisterUserError::UsernameTaken) => {
+                Err(field_error("Username already taken"))
+            }
             Err(e) => {
                 tracing::error!("Failed to register user: {}", e);
-                Err(juniper::FieldError::new(
-                    "Internal server error",
-                    juniper::Value::Null,
-                ))
+                Err(internal_error())
             }
             Ok(user) => {
                 context
@@ -205,7 +193,7 @@ impl Mutation {
                     .await
                     .map_err(|e| {
                         tracing::error!("Failed to add pubkey fingerprint: {}", e);
-                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                        internal_error()
                     })?;
 
                 let token = context
@@ -216,7 +204,7 @@ impl Mutation {
                     .await
                     .map_err(|e| {
                         tracing::error!("Failed to issue token: {}", e);
-                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                        internal_error()
                     })?;
 
                 Ok(AuthSuccess {
@@ -234,16 +222,13 @@ impl Mutation {
         pubkey: String,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
-            return Err(juniper::FieldError::new(
-                "Invalid username",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid username"));
         }
 
         let public_key =
             russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
                 tracing::warn!("Invalid pubkey format: {}", e);
-                juniper::FieldError::new("Invalid credentials", juniper::Value::Null)
+                field_error("Invalid credentials")
             })?;
         let fingerprint = public_key.fingerprint(Default::default()).to_string();
 
@@ -251,37 +236,28 @@ impl Mutation {
         let user = match user_client.get().await {
             Ok(user) => user,
             Err(udb::UserQueryError::NotFound) => {
-                return Err(juniper::FieldError::new(
-                    "Invalid credentials",
-                    juniper::Value::Null,
-                ));
+                return Err(field_error("Invalid credentials"));
             }
             Err(e) => {
                 tracing::error!("Failed to lookup user: {}", e);
-                return Err(juniper::FieldError::new(
-                    "Internal server error",
-                    juniper::Value::Null,
-                ));
+                return Err(internal_error());
             }
         };
 
         let mut pubkeys = user_client.pubkeys();
         let has_fingerprint = pubkeys.contains(&fingerprint).await.map_err(|e| {
             tracing::error!("Failed to check pubkey fingerprint: {}", e);
-            juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            internal_error()
         })?;
 
         if !has_fingerprint {
-            return Err(juniper::FieldError::new(
-                "Invalid credentials",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("Invalid credentials"));
         }
 
         context
             .challenger
             .check(&public_key, &signature, &username, Utc::now())
-            .map_err(|_| juniper::FieldError::new("Invalid credentials", juniper::Value::Null))?;
+            .map_err(|_| field_error("Invalid credentials"))?;
 
         let token = context
             .udb_client
@@ -291,7 +267,7 @@ impl Mutation {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to issue token: {}", e);
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?;
 
         Ok(AuthSuccess {
@@ -301,7 +277,7 @@ impl Mutation {
     }
 }
 
-pub struct AuthSuccess {
+struct AuthSuccess {
     user: User,
     token: String,
 }
@@ -317,7 +293,7 @@ impl AuthSuccess {
     }
 }
 
-pub struct User {
+struct User {
     user: udb::User,
 }
 
@@ -336,7 +312,7 @@ impl User {
     }
 }
 
-pub struct Repository {
+struct Repository {
     repository: cdb::Repository,
 }
 
@@ -358,7 +334,7 @@ impl Repository {
                     self.repository.name,
                     e
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?
             .try_collect::<Vec<_>>()
             .await
@@ -368,7 +344,7 @@ impl Repository {
                     self.repository.name,
                     e
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?;
 
         let mut env_map: std::collections::BTreeMap<String, Vec<cdb::Deployment>> =
@@ -388,7 +364,7 @@ impl Repository {
     }
 }
 
-pub struct Environment {
+struct Environment {
     qid: ids::EnvironmentQid,
     deployments: Vec<cdb::Deployment>,
 }
@@ -424,7 +400,7 @@ impl Environment {
                 tracing::error!(
                     "Failed to list resources for environment namespace {namespace}: {e}"
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?
             .map(|resource| resource.map(|resource| Resource { resource }))
             .try_collect::<Vec<_>>()
@@ -433,7 +409,7 @@ impl Environment {
                 tracing::error!(
                     "Failed to load resources for environment namespace {namespace}: {e}"
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })
     }
 
@@ -458,7 +434,7 @@ impl Environment {
     }
 }
 
-pub struct Deployment {
+struct Deployment {
     deployment: cdb::Deployment,
 }
 
@@ -499,7 +475,7 @@ impl Deployment {
                 tracing::error!(
                     "Failed to list resources for deployment namespace {namespace} and owner {owner}: {e}"
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?
             .map(|resource| resource.map(|resource| Resource { resource }))
             .try_collect::<Vec<_>>()
@@ -508,7 +484,7 @@ impl Deployment {
                 tracing::error!(
                     "Failed to load resources for deployment namespace {namespace} and owner {owner}: {e}"
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })
     }
 
@@ -516,7 +492,7 @@ impl Deployment {
         let namespace = self.deployment.deployment_qid().to_string();
         let artifacts = context.adb_client.list(&namespace).await.map_err(|error| {
             tracing::error!("Failed to list artifacts for deployment {namespace}: {error}");
-            juniper::FieldError::new("Internal server error", juniper::Value::Null)
+            internal_error()
         })?;
 
         Ok(artifacts
@@ -528,24 +504,17 @@ impl Deployment {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
-        load_deployment_logs(
-            context,
-            self.deployment.deployment_qid().to_string(),
-            amount,
-        )
-        .await
-        .map_err(|error| {
-            tracing::error!(
-                "Failed to fetch deployment logs for {}: {}",
-                self.deployment.deployment_qid().to_string(),
-                error
-            );
-            juniper::FieldError::new("Internal server error", juniper::Value::Null)
-        })
+        let deployment_qid = self.deployment.deployment_qid().to_string();
+        load_deployment_logs(context, deployment_qid.clone(), amount)
+            .await
+            .map_err(|error| {
+                tracing::error!("Failed to fetch deployment logs for {deployment_qid}: {error}");
+                internal_error()
+            })
     }
 }
 
-pub struct Artifact {
+struct Artifact {
     header: adb::ArtifactHeader,
 }
 
@@ -580,12 +549,12 @@ impl Artifact {
                     self.header.name,
                     error
                 );
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })
     }
 }
 
-pub struct Resource {
+struct Resource {
     resource: rdb::Resource,
 }
 
@@ -609,7 +578,7 @@ impl Resource {
                     .map(JsonValue)
                     .map_err(|error| {
                         tracing::error!("Failed to serialize resource inputs to JSON: {error}");
-                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                        internal_error()
                     })
             })
             .transpose()
@@ -624,7 +593,7 @@ impl Resource {
                     .map(JsonValue)
                     .map_err(|error| {
                         tracing::error!("Failed to serialize resource outputs to JSON: {error}");
-                        juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                        internal_error()
                     })
             })
             .transpose()
@@ -652,13 +621,13 @@ impl Resource {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to list deployments for owner repository {repo_qid}: {e}");
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?
             .try_collect::<Vec<_>>()
             .await
             .map_err(|e| {
                 tracing::error!("Failed to read deployments for owner repository {repo_qid}: {e}");
-                juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                internal_error()
             })?;
 
         Ok(deployments
@@ -685,7 +654,7 @@ impl Resource {
                         self.resource.namespace,
                         error
                     );
-                    juniper::FieldError::new("Internal server error", juniper::Value::Null)
+                    internal_error()
                 })?;
 
             if let Some(resource) = resource {
@@ -762,7 +731,7 @@ impl Log {
     }
 }
 
-pub struct Subscription;
+struct Subscription;
 
 type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
 
@@ -772,12 +741,13 @@ impl Subscription {
         context: &Context,
         deployment_id: String,
         initial_amount: Option<i32>,
-    ) -> juniper::FieldResult<LogStream> {
+    ) -> FieldResult<LogStream> {
         let (_, user) = context.check_auth().await?;
 
-        let organization = deployment_organization(&deployment_id).ok_or_else(|| {
-            juniper::FieldError::new("invalid deployment id", juniper::Value::Null)
-        })?;
+        let deployment_qid: ids::DeploymentQid = deployment_id
+            .parse()
+            .map_err(|_| field_error("invalid deployment id"))?;
+        let organization = deployment_qid.repo_qid().org.to_string();
 
         if organization != user.username {
             tracing::warn!(
@@ -785,10 +755,7 @@ impl Subscription {
                 deployment_id,
                 user.username
             );
-            return Err(juniper::FieldError::new(
-                "deployment outside user organization",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("deployment outside user organization"));
         }
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
@@ -799,12 +766,12 @@ impl Subscription {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to build ldb consumer for subscription: {}", e);
-                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+                field_error("failed to tail logs")
             })?;
 
         let namespace = consumer.namespace(deployment_id).await.map_err(|e| {
             tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
-            juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+            field_error("failed to tail logs")
         })?;
         let mut inner = namespace
             .tail(ldb::TailConfig {
@@ -814,7 +781,7 @@ impl Subscription {
             .await
             .map_err(|e| {
                 tracing::error!("Failed to tail deployment logs subscription: {e}");
-                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+                field_error("failed to tail logs")
             })?;
 
         Ok(Box::pin(async_stream::stream! {
@@ -840,12 +807,12 @@ impl Subscription {
         context: &Context,
         environment_qid: String,
         initial_amount: Option<i32>,
-    ) -> juniper::FieldResult<LogStream> {
+    ) -> FieldResult<LogStream> {
         let (_, user) = context.check_auth().await?;
 
-        let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|_| {
-            juniper::FieldError::new("invalid environment QID", juniper::Value::Null)
-        })?;
+        let env_qid: ids::EnvironmentQid = environment_qid
+            .parse()
+            .map_err(|_| field_error("invalid environment QID"))?;
 
         let organization = env_qid.repo.org.to_string();
         if organization != user.username {
@@ -854,10 +821,7 @@ impl Subscription {
                 environment_qid,
                 user.username
             );
-            return Err(juniper::FieldError::new(
-                "environment outside user organization",
-                juniper::Value::Null,
-            ));
+            return Err(field_error("environment outside user organization"));
         }
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
@@ -870,7 +834,7 @@ impl Subscription {
                 tracing::error!(
                     "Failed to build ldb consumer for environment logs subscription: {e}"
                 );
-                juniper::FieldError::new("failed to tail logs", juniper::Value::Null)
+                field_error("failed to tail logs")
             })?;
 
         let cdb_client = context.cdb_client.clone();
@@ -999,14 +963,9 @@ fn format_timestamp(timestamp_millis: u64) -> String {
         .unwrap_or_else(|| String::from("9999-12-31T23:59:59.999+00:00"))
 }
 
-fn deployment_organization(deployment_qid: &str) -> Option<String> {
-    let qid: ids::DeploymentQid = deployment_qid.parse().ok()?;
-    Some(qid.repo_qid().org.to_string())
-}
-
 #[derive(Clone, Debug)]
 #[graphql_scalar(with = json_scalar, parse_token(String), name = "JSON")]
-pub struct JsonValue(pub serde_json::Value);
+struct JsonValue(serde_json::Value);
 
 mod json_scalar {
     use super::*;
@@ -1140,10 +1099,17 @@ fn graphql_value_to_json(value: &Value) -> serde_json::Value {
     }
 }
 
-pub type Schema = RootNode<'static, Query, Mutation, Subscription>;
+type Schema = RootNode<'static, Query, Mutation, Subscription>;
 
-pub fn schema() -> Schema {
+fn schema() -> Schema {
     Schema::new(Query, Mutation, Subscription)
+}
+
+fn extract_bearer_token(headers: &http::header::HeaderMap) -> Option<String> {
+    headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
+        .and_then(|v| String::from_utf8(v.to_vec()).ok())
 }
 
 #[derive(Parser, Debug)]
@@ -1265,10 +1231,7 @@ async fn graphql_handler(
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
-    let auth_header = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
-        .and_then(|v| String::from_utf8(v.to_vec()).ok());
+    let auth_header = extract_bearer_token(&headers);
 
     if let Some(token) = auth_header {
         match udb_client.lookup_token(token).await {
@@ -1330,10 +1293,7 @@ async fn graphql_ws_handler(
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
 ) -> Response {
-    let auth_header = headers
-        .get(http::header::AUTHORIZATION)
-        .and_then(|h| h.as_bytes().strip_prefix(b"Bearer "))
-        .and_then(|v| String::from_utf8(v.to_vec()).ok());
+    let auth_header = extract_bearer_token(&headers);
 
     let user = if let Some(token) = auth_header {
         match udb_client.lookup_token(token).await {

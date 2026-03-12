@@ -80,22 +80,18 @@ use thiserror::Error;
 /// Returns `true` if `s` is a valid SCL symbol: non-empty, first character is
 /// alphabetic or underscore, remaining characters are alphanumeric or underscore.
 fn is_valid_symbol(s: &str) -> bool {
-    if s.is_empty() {
+    let [first, rest @ ..] = s.as_bytes() else {
         return false;
-    }
-    let mut chars = s.chars();
-    let first = chars.next().unwrap();
-    if !first.is_ascii_alphabetic() && first != '_' {
-        return false;
-    }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    (first.is_ascii_alphabetic() || *first == b'_')
+        && rest.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
 }
 
 /// Returns `true` if `s` is a valid 40-character lowercase hexadecimal string.
 fn is_valid_oid_hex(s: &str) -> bool {
     s.len() == 40
-        && s.chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +185,10 @@ impl From<OrgId> for String {
 impl TryFrom<String> for OrgId {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
+        if !is_valid_symbol(&s) {
+            return Err(ParseIdError::InvalidOrgId(s));
+        }
+        Ok(Self(s))
     }
 }
 
@@ -247,7 +246,10 @@ impl From<RepoId> for String {
 impl TryFrom<String> for RepoId {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
+        if !is_valid_symbol(&s) {
+            return Err(ParseIdError::InvalidRepoId(s));
+        }
+        Ok(Self(s))
     }
 }
 
@@ -305,10 +307,6 @@ impl FromStr for RepoQid {
         let Some((org, repo)) = s.split_once('/') else {
             return Err(ParseIdError::InvalidRepoQid(s.to_string()));
         };
-        // Repo ID may not contain further slashes; org cannot contain slashes (it's a symbol).
-        if repo.contains('/') {
-            return Err(ParseIdError::InvalidRepoQid(s.to_string()));
-        }
         Ok(Self {
             org: org
                 .parse()
@@ -448,7 +446,10 @@ impl From<EnvironmentId> for String {
 impl TryFrom<String> for EnvironmentId {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
+        if s.is_empty() {
+            return Err(ParseIdError::InvalidEnvironmentId(s));
+        }
+        Ok(Self(s))
     }
 }
 
@@ -514,9 +515,6 @@ impl FromStr for EnvironmentQid {
         let Some((repo_part, env_part)) = s.split_once("::") else {
             return Err(ParseIdError::InvalidEnvironmentQid(s.to_string()));
         };
-        if env_part.is_empty() {
-            return Err(ParseIdError::InvalidEnvironmentQid(s.to_string()));
-        }
         Ok(Self {
             repo: repo_part
                 .parse()
@@ -579,7 +577,11 @@ impl DeploymentId {
                 bytes.len()
             )));
         }
-        let hex = bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        use std::fmt::Write;
+        let mut hex = String::with_capacity(40);
+        for b in bytes {
+            write!(hex, "{b:02x}").unwrap();
+        }
         Ok(Self(hex))
     }
 
@@ -634,7 +636,10 @@ impl From<DeploymentId> for String {
 impl TryFrom<String> for DeploymentId {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        s.parse()
+        if !is_valid_oid_hex(&s) {
+            return Err(ParseIdError::InvalidDeploymentId(s));
+        }
+        Ok(Self(s))
     }
 }
 

@@ -104,7 +104,7 @@ impl Node {
 /// - Node A requests /24 → gets `10.42.0.0/24`
 /// - Node B requests /28 → gets `10.42.1.0/28`
 /// - Node C requests /24 → gets `10.42.2.0/24` (skips past B's /28 region)
-pub struct SubnetAllocator {
+pub(crate) struct SubnetAllocator {
     /// The cluster-wide CIDR.
     cluster_cidr: Ipv4Net,
     /// Root of the allocation tree.
@@ -115,7 +115,7 @@ pub struct SubnetAllocator {
 
 impl SubnetAllocator {
     /// Create a new subnet allocator for the given cluster CIDR.
-    pub fn new(cluster_cidr: Ipv4Net) -> Self {
+    pub(crate) fn new(cluster_cidr: Ipv4Net) -> Self {
         tracing::info!(
             cluster_cidr = %cluster_cidr,
             "subnet allocator initialized"
@@ -132,7 +132,7 @@ impl SubnetAllocator {
     ///
     /// If the node already has an allocation, returns the existing one
     /// (ignoring the requested prefix length).
-    pub fn allocate(&mut self, node_name: &str, prefix_len: u8) -> Result<Ipv4Net, String> {
+    pub(crate) fn allocate(&mut self, node_name: &str, prefix_len: u8) -> Result<Ipv4Net, String> {
         // Validate prefix length
         let cluster_prefix = self.cluster_cidr.prefix_len();
         if prefix_len <= cluster_prefix {
@@ -173,7 +173,7 @@ impl SubnetAllocator {
     }
 
     /// Release a node's subnet allocation.
-    pub fn release(&mut self, node_name: &str) {
+    pub(crate) fn release(&mut self, node_name: &str) {
         if self.allocated.remove(node_name).is_some() {
             self.root.release(node_name);
             tracing::info!(

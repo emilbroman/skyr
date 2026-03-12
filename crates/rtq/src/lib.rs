@@ -28,15 +28,15 @@ pub enum Message {
 }
 
 impl Message {
-    pub fn encode_json(&self) -> Result<Vec<u8>, serde_json::Error> {
+    fn encode_json(&self) -> Result<Vec<u8>, serde_json::Error> {
         serde_json::to_vec(self)
     }
 
-    pub fn decode_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+    fn decode_json(bytes: &[u8]) -> Result<Self, serde_json::Error> {
         serde_json::from_slice(bytes)
     }
 
-    fn resource(&self) -> &ResourceRef {
+    pub fn resource(&self) -> &ResourceRef {
         match self {
             Message::Create(msg) => &msg.resource,
             Message::Restore(msg) => &msg.resource,
@@ -54,7 +54,7 @@ pub struct ResourceRef {
 }
 
 impl ResourceRef {
-    pub fn uid(&self) -> String {
+    fn uid(&self) -> String {
         format!(
             "{}:{}:{}",
             self.environment_qid, self.resource_type, self.resource_id

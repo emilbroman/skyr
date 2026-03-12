@@ -19,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 /// 5. Publishes each log line to LDB
 ///
 /// All errors are logged via tracing and never cause a panic.
-pub async fn stream_container_logs(
+pub(crate) async fn stream_container_logs(
     log_path: PathBuf,
     publisher: ldb::NamespacePublisher,
     cancel: CancellationToken,
@@ -99,7 +99,10 @@ pub async fn stream_container_logs(
 }
 
 /// Wait for the log file to appear, retrying up to 30 seconds.
-async fn wait_for_file(path: &PathBuf, cancel: &CancellationToken) -> Option<tokio::fs::File> {
+async fn wait_for_file(
+    path: &std::path::Path,
+    cancel: &CancellationToken,
+) -> Option<tokio::fs::File> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
 
     loop {

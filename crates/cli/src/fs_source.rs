@@ -1,8 +1,8 @@
 use std::path::{Path, PathBuf};
 
-pub struct FsSource {
-    pub root: PathBuf,
-    pub package_id: sclc::ModuleId,
+pub(crate) struct FsSource {
+    pub(crate) root: PathBuf,
+    pub(crate) package_id: sclc::ModuleId,
 }
 
 impl sclc::SourceRepo for FsSource {

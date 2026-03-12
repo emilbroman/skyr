@@ -40,7 +40,7 @@ impl ArtifactPlugin {
 
     async fn materialize_artifact(
         &self,
-        id: sclc::ResourceId,
+        id: &sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         if id.ty != ARTIFACT_RESOURCE_TYPE {
@@ -96,6 +96,8 @@ impl ArtifactPlugin {
             "artifact resource materialized"
         );
 
+        let private_url = self.adb.private_read_url(&header.namespace, &header.name)?;
+
         let mut outputs = sclc::Record::default();
         outputs.insert(
             String::from("namespace"),
@@ -106,8 +108,6 @@ impl ArtifactPlugin {
             String::from("media_type"),
             sclc::Value::Str(header.media_type),
         );
-
-        let private_url = self.adb.private_read_url(namespace, name)?;
         outputs.insert(String::from("url"), sclc::Value::Str(private_url));
 
         Ok(sclc::Resource {
@@ -115,6 +115,24 @@ impl ArtifactPlugin {
             outputs,
             dependencies: vec![],
         })
+    }
+
+    async fn materialize_with_error_log(
+        &self,
+        id: &sclc::ResourceId,
+        inputs: sclc::Record,
+        operation: &str,
+    ) -> anyhow::Result<sclc::Resource> {
+        let result = self.materialize_artifact(id, inputs).await;
+        if let Err(err) = &result {
+            error!(
+                resource_type = id.ty.as_str(),
+                resource_id = id.id.as_str(),
+                err = %err,
+                "artifact {operation} failed"
+            );
+        }
+        result
     }
 }
 
@@ -127,16 +145,8 @@ impl rtp::Plugin for ArtifactPlugin {
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let result = self.materialize_artifact(id.clone(), inputs).await;
-        if let Err(error) = &result {
-            error!(
-                resource_type = id.ty.as_str(),
-                resource_id = id.id.as_str(),
-                err = %error,
-                "artifact create_resource failed"
-            );
-        }
-        result
+        self.materialize_with_error_log(&id, inputs, "create_resource")
+            .await
     }
 
     async fn update_resource(
@@ -148,16 +158,8 @@ impl rtp::Plugin for ArtifactPlugin {
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let result = self.materialize_artifact(id.clone(), inputs).await;
-        if let Err(error) = &result {
-            error!(
-                resource_type = id.ty.as_str(),
-                resource_id = id.id.as_str(),
-                err = %error,
-                "artifact update_resource failed"
-            );
-        }
-        result
+        self.materialize_with_error_log(&id, inputs, "update_resource")
+            .await
     }
 
     async fn delete_resource(

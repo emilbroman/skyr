@@ -2,6 +2,8 @@ use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use sclc::ValueAssertions;
 
+const INT_RESOURCE_TYPE: &str = "Std/Random.Int";
+
 #[derive(Parser)]
 struct Args {
     #[arg(long)]
@@ -16,6 +18,17 @@ impl RandomPlugin {
     fn new() -> Self {
         Self {
             rng: StdRng::from_os_rng(),
+        }
+    }
+
+    fn dispatch(
+        &mut self,
+        id: &sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        match id.ty.as_str() {
+            INT_RESOURCE_TYPE => self.gen_int_resource(inputs),
+            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
         }
     }
 
@@ -43,10 +56,7 @@ impl rtp::Plugin for RandomPlugin {
         id: sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
-            "Std/Random.Int" => self.gen_int_resource(inputs),
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
-        }
+        self.dispatch(&id, inputs)
     }
 
     async fn update_resource(
@@ -58,10 +68,7 @@ impl rtp::Plugin for RandomPlugin {
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
-            "Std/Random.Int" => self.gen_int_resource(inputs),
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
-        }
+        self.dispatch(&id, inputs)
     }
 }
 

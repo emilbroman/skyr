@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum ConnectError {
+pub(crate) enum ConnectError {
     #[error("failed to create redis client: {0}")]
     RedisClient(#[from] redis::RedisError),
 
@@ -19,26 +19,26 @@ pub enum ConnectError {
 }
 
 #[derive(Default)]
-pub struct ClientBuilder {
+pub(crate) struct ClientBuilder {
     known_nodes: Vec<String>,
 }
 
 impl ClientBuilder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn known_node(mut self, hostname: impl AsRef<str>) -> Self {
+    pub(crate) fn known_node(mut self, hostname: impl AsRef<str>) -> Self {
         self.known_nodes.push(hostname.as_ref().to_owned());
         self
     }
 
-    pub async fn build(&self) -> Result<Client, ConnectError> {
+    pub(crate) async fn build(&self) -> Result<Client, ConnectError> {
         let node = self
             .known_nodes
             .first()
-            .cloned()
-            .unwrap_or_else(|| "127.0.0.1".to_owned());
+            .map(String::as_str)
+            .unwrap_or("127.0.0.1");
         let url = format!("redis://{node}/");
 
         let redis_client = RedisClient::open(url)?;
@@ -52,7 +52,7 @@ impl ClientBuilder {
 }
 
 #[derive(Error, Debug)]
-pub enum NodeError {
+pub(crate) enum NodeError {
     #[error("failed to execute query: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -65,7 +65,7 @@ pub enum NodeError {
 
 /// Resource capacity of a worker node.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeCapacity {
+pub(crate) struct NodeCapacity {
     /// CPU capacity in millicores (e.g., 4000 = 4 cores).
     pub cpu_millis: i64,
     /// Memory capacity in bytes.
@@ -76,7 +76,7 @@ pub struct NodeCapacity {
 
 /// Current resource usage of a worker node.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct NodeUsage {
+pub(crate) struct NodeUsage {
     /// CPU usage in millicores.
     pub cpu_millis: i64,
     /// Memory usage in bytes.
@@ -87,7 +87,7 @@ pub struct NodeUsage {
 
 /// Information about a registered worker node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Node {
+pub(crate) struct Node {
     /// Unique name of the node.
     pub name: String,
     /// Conduit address of the node (e.g., "http://node-1:50054").
@@ -109,7 +109,7 @@ pub struct Node {
 }
 
 #[derive(Clone)]
-pub struct Client {
+pub(crate) struct Client {
     conn: redis::aio::MultiplexedConnection,
 }
 
@@ -125,7 +125,7 @@ fn now_secs() -> u64 {
 
 impl Client {
     /// Register a node with its address and capacity.
-    pub async fn register(
+    pub(crate) async fn register(
         &mut self,
         name: impl Into<String>,
         address: impl Into<String>,
@@ -158,7 +158,7 @@ impl Client {
     }
 
     /// Update a node's heartbeat timestamp and usage.
-    pub async fn heartbeat(
+    pub(crate) async fn heartbeat(
         &mut self,
         name: impl AsRef<str>,
         usage: Option<NodeUsage>,
@@ -178,7 +178,7 @@ impl Client {
     }
 
     /// Remove a node from the registry.
-    pub async fn unregister(&mut self, name: impl AsRef<str>) -> Result<(), NodeError> {
+    pub(crate) async fn unregister(&mut self, name: impl AsRef<str>) -> Result<(), NodeError> {
         let name = name.as_ref();
         let key = format!("{PREFIX_NODE}{name}");
 
@@ -192,7 +192,7 @@ impl Client {
     }
 
     /// Get a node by name.
-    pub async fn get(&mut self, name: impl AsRef<str>) -> Result<Node, NodeError> {
+    pub(crate) async fn get(&mut self, name: impl AsRef<str>) -> Result<Node, NodeError> {
         let name = name.as_ref();
         let key = format!("{PREFIX_NODE}{name}");
 
@@ -206,7 +206,7 @@ impl Client {
     }
 
     /// List all registered nodes.
-    pub async fn list(&mut self) -> Result<Vec<Node>, NodeError> {
+    pub(crate) async fn list(&mut self) -> Result<Vec<Node>, NodeError> {
         let names: Vec<String> = self.conn.smembers(SET_NODES).await?;
         let mut nodes = Vec::with_capacity(names.len());
 

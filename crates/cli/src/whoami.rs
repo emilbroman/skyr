@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use clap::Args;
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
@@ -36,19 +36,7 @@ pub async fn run_whoami(args: WhoamiArgs, format: OutputFormat) -> anyhow::Resul
         .json()
         .await
         .context("failed to decode me response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "whoami failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response.data.context("me response did not include data")?;
+    let data = auth::graphql_response_data(response, "whoami")?;
 
     #[derive(Serialize)]
     struct WhoamiOutput {
