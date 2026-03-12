@@ -1906,7 +1906,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         Diagnosed::new(ty, diags)
     }
 
-    fn find_imports<'a>(
+    pub fn find_imports<'a>(
         &'a self,
         file_mod: &'a ast::FileMod,
     ) -> HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)> {
