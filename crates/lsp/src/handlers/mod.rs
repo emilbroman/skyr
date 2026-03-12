@@ -1,4 +1,3 @@
-pub mod formatting;
 pub mod lifecycle;
 pub mod navigation;
 pub mod rename;

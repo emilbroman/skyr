@@ -33,7 +33,6 @@ pub fn handle_initialize<S: SourceRepo>(
                 retrigger_characters: None,
                 work_done_progress_options: Default::default(),
             }),
-            document_formatting_provider: Some(OneOf::Left(true)),
             semantic_tokens_provider: Some(semantic_tokens_capability()),
             ..Default::default()
         },

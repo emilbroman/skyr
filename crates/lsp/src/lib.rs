@@ -184,20 +184,6 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
                 };
                 handlers::signature_help::handle_signature_help(self, id, params).await
             }
-            lsp_types::request::Formatting::METHOD => {
-                let params: lsp_types::DocumentFormattingParams =
-                    match serde_json::from_value(params) {
-                        Ok(p) => p,
-                        Err(e) => {
-                            return vec![OutgoingMessage::error(
-                                id,
-                                -32602,
-                                format!("Invalid params: {}", e),
-                            )];
-                        }
-                    };
-                handlers::formatting::handle_formatting(self, id, params).await
-            }
             lsp_types::request::SemanticTokensFullRequest::METHOD => {
                 let params: lsp_types::SemanticTokensParams = match serde_json::from_value(params) {
                     Ok(p) => p,
