@@ -7,6 +7,7 @@ members = [
   "crates/ids",
   "crates/de",
   "crates/ldb",
+  "crates/lsp",
   "crates/plugin_std_artifact",
   "crates/plugin_std_container",
   "crates/plugin_std_random",

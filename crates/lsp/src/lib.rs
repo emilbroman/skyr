@@ -1,0 +1,141 @@
+mod convert;
+mod document;
+mod handlers;
+mod overlay;
+mod transport;
+
+pub use transport::{IncomingMessage, OutgoingMessage, RequestId};
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use lsp_types::{notification::Notification, request::Request};
+use sclc::SourceRepo;
+use tokio::sync::Mutex;
+
+use document::DocumentCache;
+
+pub struct LanguageServer<S> {
+    documents: Arc<Mutex<DocumentCache>>,
+    source_factory: Box<dyn Fn() -> S + Send + Sync>,
+    root_path: Option<PathBuf>,
+    initialized: bool,
+    shutdown_requested: bool,
+}
+
+impl<S: SourceRepo + 'static> LanguageServer<S> {
+    pub fn new<F>(source_factory: F) -> Self
+    where
+        F: Fn() -> S + Send + Sync + 'static,
+    {
+        Self {
+            documents: Arc::new(Mutex::new(DocumentCache::new())),
+            source_factory: Box::new(source_factory),
+            root_path: None,
+            initialized: false,
+            shutdown_requested: false,
+        }
+    }
+
+    pub async fn handle(&mut self, msg: IncomingMessage) -> Vec<OutgoingMessage> {
+        match msg {
+            IncomingMessage::Request { id, method, params } => {
+                self.handle_request(id, &method, params).await
+            }
+            IncomingMessage::Notification { method, params } => {
+                self.handle_notification(&method, params).await
+            }
+        }
+    }
+
+    async fn handle_request(
+        &mut self,
+        id: RequestId,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Vec<OutgoingMessage> {
+        match method {
+            lsp_types::request::Initialize::METHOD => {
+                let params: lsp_types::InitializeParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                let result = handlers::lifecycle::handle_initialize(self, params);
+                vec![OutgoingMessage::response(id, result)]
+            }
+            lsp_types::request::Shutdown::METHOD => {
+                handlers::lifecycle::handle_shutdown(self);
+                vec![OutgoingMessage::response(id, serde_json::Value::Null)]
+            }
+            _ => vec![OutgoingMessage::error(
+                id,
+                -32601,
+                format!("Method not found: {}", method),
+            )],
+        }
+    }
+
+    async fn handle_notification(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Vec<OutgoingMessage> {
+        match method {
+            lsp_types::notification::Initialized::METHOD => {
+                self.initialized = true;
+                vec![]
+            }
+            lsp_types::notification::Exit::METHOD => {
+                handlers::lifecycle::handle_exit(self);
+                vec![]
+            }
+            lsp_types::notification::DidOpenTextDocument::METHOD => {
+                let params: lsp_types::DidOpenTextDocumentParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(_) => return vec![],
+                    };
+                handlers::text_sync::handle_did_open(self, params).await
+            }
+            lsp_types::notification::DidChangeTextDocument::METHOD => {
+                let params: lsp_types::DidChangeTextDocumentParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(_) => return vec![],
+                    };
+                handlers::text_sync::handle_did_change(self, params).await
+            }
+            lsp_types::notification::DidCloseTextDocument::METHOD => {
+                let params: lsp_types::DidCloseTextDocumentParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(_) => return vec![],
+                    };
+                handlers::text_sync::handle_did_close(self, params).await
+            }
+            lsp_types::notification::DidSaveTextDocument::METHOD => {
+                let params: lsp_types::DidSaveTextDocumentParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(_) => return vec![],
+                    };
+                handlers::text_sync::handle_did_save(self, params).await
+            }
+            _ => vec![],
+        }
+    }
+
+    pub fn should_exit(&self) -> bool {
+        self.shutdown_requested
+    }
+
+    pub fn exit_code(&self) -> i32 {
+        if self.shutdown_requested { 0 } else { 1 }
+    }
+}
