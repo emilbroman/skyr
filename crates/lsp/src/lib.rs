@@ -116,6 +116,19 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
                 };
                 handlers::navigation::handle_hover(self, id, params).await
             }
+            lsp_types::request::References::METHOD => {
+                let params: lsp_types::ReferenceParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::navigation::handle_references(self, id, params).await
+            }
             _ => vec![OutgoingMessage::error(
                 id,
                 -32601,

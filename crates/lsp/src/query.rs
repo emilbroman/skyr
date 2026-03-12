@@ -179,6 +179,141 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
     }
 }
 
+/// Collect all top-level variable references with the given name in a file module.
+///
+/// This finds `Expr::Var` nodes whose name matches, as well as let/export binding
+/// sites. It does **not** perform scope analysis — it collects all textual matches,
+/// which is a reasonable approximation for single-file references of globals/imports.
+pub fn find_var_references(file_mod: &FileMod, name: &str) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for stmt in &file_mod.statements {
+        collect_refs_in_stmt(stmt, name, &mut spans);
+    }
+    spans
+}
+
+fn collect_refs_in_stmt(stmt: &ModStmt, name: &str, spans: &mut Vec<Span>) {
+    match stmt {
+        ModStmt::Import(import) => {
+            if let Some(last_var) = import.vars.last()
+                && last_var.name == name
+            {
+                spans.push(last_var.span());
+            }
+        }
+        ModStmt::Let(bind) | ModStmt::Export(bind) => {
+            if bind.var.name == name {
+                spans.push(bind.var.span());
+            }
+            collect_refs_in_expr(&bind.expr, name, spans);
+        }
+        ModStmt::Expr(expr) => {
+            collect_refs_in_expr(expr, name, spans);
+        }
+    }
+}
+
+fn collect_refs_in_expr(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
+    match expr.as_ref() {
+        Expr::Var(var) if var.name == name => {
+            spans.push(var.span());
+        }
+        Expr::Var(_) => {}
+        Expr::Let(let_expr) => {
+            if let_expr.bind.var.name == name {
+                spans.push(let_expr.bind.var.span());
+            }
+            collect_refs_in_expr(&let_expr.bind.expr, name, spans);
+            // If the let rebinds the name, references in the body refer to the local,
+            // not the outer definition. For simplicity, we still collect them.
+            collect_refs_in_expr(&let_expr.expr, name, spans);
+        }
+        Expr::Fn(fn_expr) => {
+            // If a parameter shadows the name, skip the body.
+            if fn_expr.params.iter().any(|p| p.var.name == name) {
+                return;
+            }
+            collect_refs_in_expr(&fn_expr.body, name, spans);
+        }
+        Expr::Call(call) => {
+            collect_refs_in_expr(&call.callee, name, spans);
+            for arg in &call.args {
+                collect_refs_in_expr(arg, name, spans);
+            }
+        }
+        Expr::If(if_expr) => {
+            collect_refs_in_expr(&if_expr.condition, name, spans);
+            collect_refs_in_expr(&if_expr.then_expr, name, spans);
+            if let Some(else_expr) = &if_expr.else_expr {
+                collect_refs_in_expr(else_expr, name, spans);
+            }
+        }
+        Expr::Binary(bin) => {
+            collect_refs_in_expr(&bin.lhs, name, spans);
+            collect_refs_in_expr(&bin.rhs, name, spans);
+        }
+        Expr::Unary(unary) => {
+            collect_refs_in_expr(&unary.expr, name, spans);
+        }
+        Expr::Record(record) => {
+            for field in &record.fields {
+                collect_refs_in_expr_ref(&field.expr, name, spans);
+            }
+        }
+        Expr::Dict(dict) => {
+            for entry in &dict.entries {
+                collect_refs_in_expr_ref(&entry.key, name, spans);
+                collect_refs_in_expr_ref(&entry.value, name, spans);
+            }
+        }
+        Expr::List(list) => {
+            for item in &list.items {
+                collect_refs_in_list_item(item, name, spans);
+            }
+        }
+        Expr::Interp(interp) => {
+            for part in &interp.parts {
+                collect_refs_in_expr(part, name, spans);
+            }
+        }
+        Expr::PropertyAccess(prop) => {
+            collect_refs_in_expr(&prop.expr, name, spans);
+        }
+        Expr::Raise(raise) => {
+            collect_refs_in_expr(&raise.expr, name, spans);
+        }
+        Expr::Try(try_expr) => {
+            collect_refs_in_expr(&try_expr.expr, name, spans);
+            for catch in &try_expr.catches {
+                collect_refs_in_expr_ref(&catch.body, name, spans);
+            }
+        }
+        // Leaf nodes: Int, Float, Bool, Nil, Str, Extern, Exception
+        _ => {}
+    }
+}
+
+fn collect_refs_in_expr_ref(expr: &Loc<Expr>, name: &str, spans: &mut Vec<Span>) {
+    collect_refs_in_expr(expr, name, spans);
+}
+
+fn collect_refs_in_list_item(item: &sclc::ListItem, name: &str, spans: &mut Vec<Span>) {
+    match item {
+        sclc::ListItem::Expr(expr) => collect_refs_in_expr_ref(expr, name, spans),
+        sclc::ListItem::If(if_item) => {
+            collect_refs_in_expr(&if_item.condition, name, spans);
+            collect_refs_in_list_item(&if_item.then_item, name, spans);
+        }
+        sclc::ListItem::For(for_item) => {
+            collect_refs_in_expr(&for_item.iterable, name, spans);
+            // If the for-variable shadows the name, skip the body.
+            if for_item.var.name != name {
+                collect_refs_in_list_item(&for_item.emit_item, name, spans);
+            }
+        }
+    }
+}
+
 /// Like `node_in_expr` but for a `Loc<Expr>` by reference (not behind Box).
 fn node_in_expr_ref(expr: &Loc<Expr>, pos: Position) -> Option<NodeAtPosition<'_>> {
     if !span_contains(expr.span(), pos) {

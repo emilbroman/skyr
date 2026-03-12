@@ -21,6 +21,7 @@ pub fn handle_initialize<S: SourceRepo>(
             document_symbol_provider: Some(OneOf::Left(true)),
             definition_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
+            references_provider: Some(OneOf::Left(true)),
             ..Default::default()
         },
         server_info: Some(ServerInfo {

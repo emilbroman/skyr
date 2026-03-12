@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use lsp_types::{
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, LanguageString, Location,
-    MarkedString, SymbolKind,
+    MarkedString, ReferenceParams, SymbolKind,
 };
 use sclc::{ModuleId, Program, SourceRepo, TypeChecker, TypeEnv};
 
@@ -226,6 +226,82 @@ pub async fn handle_hover<S: SourceRepo + 'static>(
     };
 
     vec![OutgoingMessage::response(id, hover)]
+}
+
+pub async fn handle_references<S: SourceRepo + 'static>(
+    server: &LanguageServer<S>,
+    id: RequestId,
+    params: ReferenceParams,
+) -> Vec<OutgoingMessage> {
+    let uri = &params.text_document_position.text_document.uri;
+    let lsp_pos = params.text_document_position.position;
+    let pos = lsp_to_position(lsp_pos);
+
+    let Some(path) = uri_to_path(uri) else {
+        return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)];
+    };
+
+    let Some(program) = server.last_program.as_ref() else {
+        return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)];
+    };
+
+    let Some((module_id, file_mod)) = find_module_by_path(program, &server.root_path, &path) else {
+        return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)];
+    };
+
+    let Some(node) = query::node_at_position(file_mod, pos) else {
+        return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)];
+    };
+
+    // Determine the variable name to search for.
+    let var_name = match node {
+        NodeAtPosition::Var(var) => &var.name,
+        NodeAtPosition::LetBindVar(bind) => &bind.var.name,
+        _ => return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)],
+    };
+
+    let root = server
+        .root_path
+        .as_deref()
+        .unwrap_or(std::path::Path::new("."));
+
+    // Determine the definition's scope: is this a global/export, import, or something else?
+    let globals = file_mod.find_globals();
+    let is_global = globals.contains_key(var_name.as_str());
+
+    let checker = TypeChecker::new(program);
+    let imports = checker.find_imports(file_mod);
+    let is_import = imports.contains_key(var_name.as_str());
+
+    let mut locations = Vec::new();
+
+    if is_global || is_import {
+        // Search the current module for all references to this name.
+        let spans = query::find_var_references(file_mod, var_name);
+        let def_path = module_id_to_path(root, &module_id);
+        if let Some(file_uri) = path_to_uri(&def_path) {
+            for span in spans {
+                locations.push(Location {
+                    uri: file_uri.clone(),
+                    range: span_to_range(span),
+                });
+            }
+        }
+    } else {
+        // For locals or unknown symbols, just search the current file by name.
+        let spans = query::find_var_references(file_mod, var_name);
+        let def_path = module_id_to_path(root, &module_id);
+        if let Some(file_uri) = path_to_uri(&def_path) {
+            for span in spans {
+                locations.push(Location {
+                    uri: file_uri.clone(),
+                    range: span_to_range(span),
+                });
+            }
+        }
+    }
+
+    vec![OutgoingMessage::response(id, Some(locations))]
 }
 
 /// Resolve a variable reference to its definition location.
