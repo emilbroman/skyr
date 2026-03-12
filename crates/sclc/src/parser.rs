@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::collections::HashSet;
 
 use peg::{Parse, ParseElem, RuleResult};
@@ -86,7 +88,15 @@ pub struct TokenStream<'a> {
 
 impl<'a> TokenStream<'a> {
     fn new(source: &'a str) -> Self {
-        let tokens = Lexer::new(source)
+        Self::from_lexer(Lexer::new(source))
+    }
+
+    fn with_cursor(source: &'a str, cursor: crate::Cursor) -> Self {
+        Self::from_lexer(Lexer::with_cursor(source, cursor))
+    }
+
+    fn from_lexer(lexer: Lexer<'a>) -> Self {
+        let tokens = lexer
             .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_) | Token::Comment(_)))
             .collect::<Vec<_>>();
         let eof_position = tokens
@@ -131,7 +141,7 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64) for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = statements:mod_stmt()* eof() { FileMod { statements } }
 
@@ -921,7 +931,10 @@ peg::parser! {
             = quiet!{
                 [token] {? match *token.as_ref() {
                     Token::Symbol(name) => {
-                        Ok(Loc::new(Var { name: name.to_owned() }, token.span()))
+                        Ok(Loc::new(Var { name: name.to_owned(), cursor: None }, token.span()))
+                    }
+                    Token::Cursor { content, offset } => {
+                        Ok(Loc::new(Var { name: content.to_string(), cursor: cursor.clone().map(|c| (c, offset)) }, token.span()))
                     }
                     _ => Err("symbol"),
                 } }
@@ -1014,13 +1027,26 @@ peg::parser! {
 }
 
 pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<FileMod>> {
+    parse_file_mod_with_cursor(source, module_id, None)
+}
+
+pub fn parse_file_mod_with_cursor(
+    source: &str,
+    module_id: &ModuleId,
+    cursor: Option<crate::Cursor>,
+) -> Diagnosed<Option<FileMod>> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
+    let token_stream = match &cursor {
+        Some(c) => TokenStream::with_cursor(source, c.clone()),
+        None => TokenStream::new(source),
+    };
     match grammar::file_mod(
-        &TokenStream::new(source),
+        &token_stream,
         &mut diags,
         module_id,
         &mut exception_id,
+        &cursor,
     ) {
         Ok(file_mod) => Diagnosed::new(Some(file_mod), diags),
         Err(error) => {
@@ -1034,13 +1060,26 @@ pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<Fi
 }
 
 pub fn parse_repl_line(source: &str, module_id: &ModuleId) -> Diagnosed<Option<ReplLine>> {
+    parse_repl_line_with_cursor(source, module_id, None)
+}
+
+pub fn parse_repl_line_with_cursor(
+    source: &str,
+    module_id: &ModuleId,
+    cursor: Option<crate::Cursor>,
+) -> Diagnosed<Option<ReplLine>> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
+    let token_stream = match &cursor {
+        Some(c) => TokenStream::with_cursor(source, c.clone()),
+        None => TokenStream::new(source),
+    };
     match grammar::repl_line(
-        &TokenStream::new(source),
+        &token_stream,
         &mut diags,
         module_id,
         &mut exception_id,
+        &cursor,
     ) {
         Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
         Err(error) => {

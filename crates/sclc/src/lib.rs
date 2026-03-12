@@ -1,6 +1,7 @@
 mod ast;
 mod checker;
 mod compile;
+mod cursor;
 mod diag;
 mod eval;
 mod lexer;
@@ -18,6 +19,7 @@ mod value;
 pub use ast::*;
 pub use checker::*;
 pub use compile::*;
+pub use cursor::*;
 pub use diag::*;
 pub use eval::*;
 pub use lexer::*;

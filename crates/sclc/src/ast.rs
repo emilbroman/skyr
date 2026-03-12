@@ -176,10 +176,19 @@ pub enum Expr {
     Try(TryExpr),
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Var {
     pub name: String,
+    pub cursor: Option<(crate::Cursor, usize)>,
 }
+
+impl PartialEq for Var {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+    }
+}
+
+impl Eq for Var {}
 
 impl std::fmt::Debug for Var {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -482,6 +491,7 @@ mod tests {
         Loc::new(
             Var {
                 name: name.to_owned(),
+                cursor: None,
             },
             crate::Span::default(),
         )

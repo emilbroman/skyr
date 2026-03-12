@@ -3,7 +3,7 @@ use unicode_segmentation::{GraphemeIndices, UnicodeSegmentation};
 
 use crate::{Loc, Position, Span};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
@@ -58,6 +58,7 @@ pub enum Token<'a> {
     Whitepace(&'a str),
     Comment(&'a str),
     Unknown(&'a str),
+    Cursor { content: &'a str, offset: usize },
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +71,7 @@ pub struct Lexer<'a> {
     graphemes: Peekable<GraphemeIndices<'a>>,
     current_position: Position,
     state_stack: Vec<LexerState>,
+    cursor: Option<crate::Cursor>,
 }
 
 impl<'a> Lexer<'a> {
@@ -79,6 +81,17 @@ impl<'a> Lexer<'a> {
             graphemes: source.grapheme_indices(true).peekable(),
             current_position: Position::default(),
             state_stack: Vec::new(),
+            cursor: None,
+        }
+    }
+
+    pub fn with_cursor(source: &'a str, cursor: crate::Cursor) -> Self {
+        Self {
+            source,
+            graphemes: source.grapheme_indices(true).peekable(),
+            current_position: Position::default(),
+            state_stack: Vec::new(),
+            cursor: Some(cursor),
         }
     }
 
@@ -272,6 +285,23 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Loc<Token<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Case A: cursor is between tokens (at the current position before consuming)
+        if self
+            .cursor
+            .as_ref()
+            .is_some_and(|c| c.position == self.current_position)
+        {
+            self.cursor.take();
+            let span = Span::new(self.current_position, self.current_position);
+            return Some(Loc::new(
+                Token::Cursor {
+                    content: "",
+                    offset: 0,
+                },
+                span,
+            ));
+        }
+
         let (grapheme_index, grapheme, start) = self.next_grapheme()?;
 
         if let Some(LexerState::InterpExpr { brace_depth }) = self.state_stack.last_mut() {
@@ -348,6 +378,29 @@ impl<'a> Iterator for Lexer<'a> {
             } else if symbol == "type" {
                 Token::TypeKeyword
             } else {
+                // Case B: cursor inside a symbol (not a keyword)
+                if let Some(cursor_pos) = self.cursor.as_ref().map(|c| c.position) {
+                    let symbol_start_pos = start;
+                    let symbol_end_pos = self.current_position;
+                    if cursor_pos > symbol_start_pos && cursor_pos <= symbol_end_pos {
+                        self.cursor.take();
+                        // Compute byte offset: count characters from start to cursor
+                        let char_offset = cursor_pos.character() - symbol_start_pos.character();
+                        // Convert character offset to byte offset
+                        let byte_offset = symbol
+                            .char_indices()
+                            .nth(char_offset as usize)
+                            .map(|(i, _)| i)
+                            .unwrap_or(symbol.len());
+                        return Some(Loc::new(
+                            Token::Cursor {
+                                content: symbol,
+                                offset: byte_offset,
+                            },
+                            Span::new(symbol_start_pos, symbol_end_pos),
+                        ));
+                    }
+                }
                 Token::Symbol(symbol)
             }
         } else if grapheme == "0" {
@@ -616,6 +669,116 @@ mod tests {
             tokens
                 .iter()
                 .any(|token| matches!(token.as_ref(), Token::Comment("// hi")))
+        );
+    }
+
+    #[test]
+    fn cursor_between_tokens() {
+        // "a = b" with cursor at 1:3 (the `=` sign position, but checked before consuming `=`)
+        // After consuming 'a' (1:1) and ' ' (1:2), current_position is 1:3
+        // Cursor at 1:3 fires Case A before consuming `=`
+        let cursor = crate::Cursor::new(crate::Position::new(1, 3));
+        let tokens: Vec<_> = Lexer::with_cursor("a = b", cursor).collect();
+        let non_ws: Vec<_> = tokens
+            .iter()
+            .filter(|t| !matches!(t.as_ref(), Token::Whitepace(_)))
+            .collect();
+        assert!(matches!(non_ws[0].as_ref(), Token::Symbol("a")));
+        assert!(
+            matches!(
+                non_ws[1].as_ref(),
+                Token::Cursor {
+                    content: "",
+                    offset: 0,
+                    ..
+                }
+            ),
+            "expected cursor between tokens, got {:?}",
+            non_ws[1].as_ref()
+        );
+        assert!(matches!(non_ws[2].as_ref(), Token::Equals));
+        assert!(matches!(non_ws[3].as_ref(), Token::Symbol("b")));
+    }
+
+    #[test]
+    fn cursor_at_start_of_symbol_is_between_tokens() {
+        // "foo" with cursor at 1:1 (start of foo)
+        let cursor = crate::Cursor::new(crate::Position::new(1, 1));
+        let tokens: Vec<_> = Lexer::with_cursor("foo", cursor).collect();
+        assert!(
+            matches!(
+                tokens[0].as_ref(),
+                Token::Cursor {
+                    content: "",
+                    offset: 0,
+                    ..
+                }
+            ),
+            "cursor at start of symbol should be Case A (between tokens)"
+        );
+        assert!(matches!(tokens[1].as_ref(), Token::Symbol("foo")));
+    }
+
+    #[test]
+    fn cursor_in_middle_of_symbol() {
+        // "hello" with cursor at 1:4 (after "hel", before "lo")
+        let cursor = crate::Cursor::new(crate::Position::new(1, 4));
+        let tokens: Vec<_> = Lexer::with_cursor("hello", cursor).collect();
+        assert_eq!(tokens.len(), 1);
+        assert!(
+            matches!(
+                tokens[0].as_ref(),
+                Token::Cursor {
+                    content: "hello",
+                    offset: 3,
+                    ..
+                }
+            ),
+            "expected cursor inside symbol at offset 3, got {:?}",
+            tokens[0].as_ref()
+        );
+    }
+
+    #[test]
+    fn cursor_at_end_of_symbol() {
+        // "bar" with cursor at 1:4 (after "bar")
+        let cursor = crate::Cursor::new(crate::Position::new(1, 4));
+        let tokens: Vec<_> = Lexer::with_cursor("bar", cursor).collect();
+        assert_eq!(tokens.len(), 1);
+        assert!(
+            matches!(
+                tokens[0].as_ref(),
+                Token::Cursor {
+                    content: "bar",
+                    offset: 3,
+                    ..
+                }
+            ),
+            "expected cursor at end of symbol, got {:?}",
+            tokens[0].as_ref()
+        );
+    }
+
+    #[test]
+    fn cursor_inside_keyword_emits_keyword() {
+        // "export" with cursor at 1:4 (inside the keyword)
+        let cursor = crate::Cursor::new(crate::Position::new(1, 4));
+        let tokens: Vec<_> = Lexer::with_cursor("export", cursor).collect();
+        assert_eq!(tokens.len(), 1);
+        assert!(
+            matches!(tokens[0].as_ref(), Token::ExportKeyword),
+            "cursor inside keyword should still emit keyword token"
+        );
+    }
+
+    #[test]
+    fn no_cursor_no_cursor_token() {
+        let tokens: Vec<_> = Lexer::new("foo bar").collect();
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t.as_ref(), Token::Cursor { .. })),
+            "no Cursor token should be emitted without a cursor"
         );
     }
 }

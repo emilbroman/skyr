@@ -179,6 +179,16 @@ impl<'a> TypeEnv<'a> {
             .cloned()
             .ok_or(TypeCheckError::ModuleIdMissing)
     }
+
+    pub fn local_names(&self) -> impl Iterator<Item = &str> {
+        self.locals.keys().copied()
+    }
+
+    pub fn global_names(&self) -> impl Iterator<Item = &str> {
+        self.globals
+            .into_iter()
+            .flat_map(|globals| globals.keys().copied())
+    }
 }
 
 pub struct TypeChecker<'p, S> {
@@ -1521,7 +1531,23 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Var(var) => {
+                if let Some((cursor, offset)) = &var.cursor {
+                    let prefix = &var.name[..*offset];
+                    for name in env.local_names().chain(env.global_names()) {
+                        if name.starts_with(prefix) {
+                            cursor.add_completion_candidate(crate::CompletionCandidate::Var(
+                                name.to_owned(),
+                            ));
+                        }
+                    }
+                }
+                let set_cursor_ty = |ty: &Type| {
+                    if let Some((cursor, _)) = &var.cursor {
+                        cursor.set_type(ty.clone());
+                    }
+                };
                 if let Some(local_ty) = env.lookup_local(var.name.as_str()) {
+                    set_cursor_ty(local_ty);
                     return self.apply_expected_type(
                         env,
                         expr.span(),
@@ -1546,6 +1572,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             expected_type,
                         )?
                         .unpack(&mut diags);
+                    set_cursor_ty(&ty);
                     return Ok(Diagnosed::new(ty, diags));
                 }
                 if let Some((target_module_id, maybe_import_file_mod)) =
@@ -1556,6 +1583,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     };
                     let import_env = TypeEnv::new().with_module_id(&target_module_id);
                     let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
+                    set_cursor_ty(&imported_ty);
                     return self.apply_expected_type(
                         env,
                         expr.span(),
@@ -1585,6 +1613,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     let field_ty = self
                         .check_expr(env, &field.expr, expected_field_ty)?
                         .unpack(&mut diags);
+                    if let Some((cursor, _)) = &field.var.cursor {
+                        cursor.set_type(field_ty.clone());
+                    }
                     record_ty.insert(field.var.name.clone(), field_ty);
                 }
                 let ty = Type::Record(record_ty);
@@ -1708,6 +1739,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if matches!(lhs_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
+                if let Some((cursor, offset)) = &property_access.property.cursor {
+                    let prefix = &property_access.property.name[..*offset];
+                    if let Type::Record(record_ty) = &lhs_ty {
+                        for (name, _) in record_ty.iter() {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::Member(name.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
                 let member_ty = match &lhs_ty {
                     Type::Record(record_ty) => record_ty
                         .get(property_access.property.name.as_str())
@@ -1715,6 +1758,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     _ => None,
                 };
                 if let Some(member_ty) = member_ty {
+                    if let Some((cursor, _)) = &property_access.property.cursor {
+                        cursor.set_type(member_ty.clone());
+                    }
                     let ty = self
                         .apply_expected_type(env, expr.span(), member_ty, expected_type)?
                         .unpack(&mut diags);
@@ -1914,14 +1960,39 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Diagnosed<Type> {
         let mut diags = DiagList::new();
         let ty = match type_expr.as_ref() {
-            ast::TypeExpr::Var(var) if var.name == "Any" => Type::Any,
-            ast::TypeExpr::Var(var) if var.name == "Int" => Type::Int,
-            ast::TypeExpr::Var(var) if var.name == "Float" => Type::Float,
-            ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
-            ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
+            ast::TypeExpr::Var(var) if var.name == "Any" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Any);
+                }
+                Type::Any
+            }
+            ast::TypeExpr::Var(var) if var.name == "Int" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Int);
+                }
+                Type::Int
+            }
+            ast::TypeExpr::Var(var) if var.name == "Float" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Float);
+                }
+                Type::Float
+            }
+            ast::TypeExpr::Var(var) if var.name == "Bool" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Bool);
+                }
+                Type::Bool
+            }
+            ast::TypeExpr::Var(var) if var.name == "Str" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Str);
+                }
+                Type::Str
+            }
             ast::TypeExpr::Var(var) => {
                 // Type variables (from fn<A>) take priority, then type-level bindings (from type defs/imports)
-                if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
+                let resolved = if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
                     ty.clone()
                 } else if let Some(ty) = env.lookup_type_level(var.name.as_str()) {
                     ty.clone()
@@ -1934,7 +2005,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         });
                     }
                     Type::Never
+                };
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(resolved.clone());
                 }
+                resolved
             }
             ast::TypeExpr::Optional(inner) => {
                 let inner_ty = self
@@ -2065,9 +2140,24 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let lhs_ty = self
                     .resolve_type_expr(env, prop_access.expr.as_ref())
                     .unpack(&mut diags);
+                if let Some((cursor, offset)) = &prop_access.property.cursor {
+                    let prefix = &prop_access.property.name[..*offset];
+                    if let Type::Record(record_ty) = &lhs_ty {
+                        for (name, _) in record_ty.iter() {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::Member(name.clone()),
+                                );
+                            }
+                        }
+                    }
+                }
                 match &lhs_ty {
                     Type::Record(record_ty) => {
                         if let Some(member_ty) = record_ty.get(prop_access.property.name.as_str()) {
+                            if let Some((cursor, _)) = &prop_access.property.cursor {
+                                cursor.set_type(member_ty.clone());
+                            }
                             member_ty.clone()
                         } else {
                             if let Ok(module_id) = env.module_id() {
@@ -2394,7 +2484,13 @@ mod tests {
         let record_expr = loc(
             Expr::Record(RecordExpr {
                 fields: vec![RecordField {
-                    var: loc(Var { name: "a".into() }, span),
+                    var: loc(
+                        Var {
+                            name: "a".into(),
+                            cursor: None,
+                        },
+                        span,
+                    ),
                     expr: loc(Expr::Int(Int { value: 1 }), span),
                 }],
             }),
@@ -2441,7 +2537,13 @@ mod tests {
         let record_expr = loc(
             Expr::Record(RecordExpr {
                 fields: vec![RecordField {
-                    var: loc(Var { name: "a".into() }, field_span),
+                    var: loc(
+                        Var {
+                            name: "a".into(),
+                            cursor: None,
+                        },
+                        field_span,
+                    ),
                     expr: loc(Expr::Int(Int { value: 1 }), field_span),
                 }],
             }),
