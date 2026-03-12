@@ -15,10 +15,10 @@ use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
 
 /// Shared DNS record table.
-pub type DnsRecords = Arc<RwLock<HashMap<String, Ipv4Addr>>>;
+pub(crate) type DnsRecords = Arc<RwLock<HashMap<String, Ipv4Addr>>>;
 
 /// Create a new shared DNS record table.
-pub fn new_records() -> DnsRecords {
+pub(crate) fn new_records() -> DnsRecords {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
@@ -36,7 +36,7 @@ const DNS_CLASS_IN: u16 = 1;
 ///
 /// The server listens for UDP DNS queries, resolves `*.internal` names from
 /// the record table, and forwards all other queries to upstream DNS.
-pub fn run_dns_server(
+pub(crate) fn run_dns_server(
     bind_addr: SocketAddr,
     records: DnsRecords,
     upstream_dns: Vec<String>,

@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::Context;
 use clap::Args;
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
@@ -50,21 +50,7 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
         .json()
         .await
         .context("failed to decode graphql response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "signup failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("signup response did not include data")?;
+    let data = auth::graphql_response_data(response, "signup")?;
     auth::persist_auth_state(&data.signup.user.username, &key_path, &data.signup.token).await?;
 
     #[derive(Serialize)]

@@ -144,11 +144,11 @@ enum ContainerAction {
 }
 
 /// Tracked pod info for log streaming and network teardown.
-#[allow(dead_code)]
 struct PodInfo {
     environment_qid: String,
     name: String,
     /// Allocated IP address for the pod.
+    #[allow(dead_code)]
     ip: Ipv4Addr,
     /// Path to the pod's network namespace (for port opening/closing).
     netns_path: String,
@@ -873,14 +873,12 @@ async fn main() -> Result<()> {
             let dns_records_clone = dns_records.clone();
             let upstream_dns = net::host_nameservers();
             tracing::info!("Starting internal DNS server on {}", dns_bind_addr);
-            let dns_handle = std::thread::spawn(move || {
-                if let Err(e) =
-                    dns::run_dns_server(dns_bind_addr, dns_records_clone, upstream_dns.clone())
+            std::thread::spawn(move || {
+                if let Err(e) = dns::run_dns_server(dns_bind_addr, dns_records_clone, upstream_dns)
                 {
                     tracing::error!("DNS server error: {e:#}");
                 }
             });
-            let _ = dns_handle; // DNS thread runs until process exits
 
             let ipam = net::Ipam::new(pod_cidr);
             // Configure pods to use the bridge gateway as their DNS server

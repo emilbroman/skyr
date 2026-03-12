@@ -1,7 +1,7 @@
 use base64::Engine;
 use rand::{Rng, SeedableRng};
 use redis::{AsyncCommands, Client as RedisClient};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -95,10 +95,19 @@ pub struct Client {
     rng: rand::rngs::StdRng,
 }
 
-const PREFIX_USER: &str = "u:";
-const PREFIX_PUBKEY: &str = "p:";
-const PREFIX_TOKEN: &str = "t:";
 const TOKEN_TTL_SECONDS: u64 = 900;
+
+fn user_key(username: &str) -> String {
+    format!("u:{username}")
+}
+
+fn pubkey_key(username: &str) -> String {
+    format!("p:{username}")
+}
+
+fn token_key(token: &str) -> String {
+    format!("t:{token}")
+}
 
 impl Client {
     pub fn user(&self, username: impl Into<String>) -> UserClient {
@@ -113,7 +122,7 @@ impl Client {
         token: impl Into<String>,
     ) -> Result<UserClient, LookupTokenError> {
         let token = token.into();
-        let username: Option<String> = self.conn.get(format!("{PREFIX_TOKEN}{}", &token)).await?;
+        let username: Option<String> = self.conn.get(token_key(&token)).await?;
 
         match username {
             Some(username) => Ok(self.user(username)),
@@ -143,7 +152,7 @@ impl UserClient {
         let result: i32 = self
             .client
             .conn
-            .hset_nx(format!("{PREFIX_USER}{}", &self.username), "email", &email)
+            .hset_nx(user_key(&self.username), "email", &email)
             .await?;
 
         if result == 0 {
@@ -166,11 +175,7 @@ impl UserClient {
         let result: i32 = self
             .client
             .conn
-            .hset(
-                format!("{PREFIX_USER}{}", &self.username),
-                "fullname",
-                &fullname,
-            )
+            .hset(user_key(&self.username), "fullname", &fullname)
             .await?;
 
         if result == 0 {
@@ -184,10 +189,7 @@ impl UserClient {
         let (email, fullname) = self
             .client
             .conn
-            .hmget(
-                format!("{PREFIX_USER}{}", &self.username),
-                &["email", "fullname"],
-            )
+            .hmget(user_key(&self.username), &["email", "fullname"])
             .await?;
 
         let Some(email) = email else {
@@ -214,7 +216,9 @@ impl TokensClient {
         base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode_string(self.user.client.rng.random::<[u8; 32]>(), &mut raw_token);
 
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs();
         let expiry = now + TOKEN_TTL_SECONDS;
         let expiry_u32 = u32::try_from(expiry).map_err(|_| UserQueryError::InvalidTokenExpiry)?;
         let expiry_hex = hex::encode(expiry_u32.to_be_bytes());
@@ -224,11 +228,7 @@ impl TokensClient {
             .user
             .client
             .conn
-            .set_ex(
-                format!("{PREFIX_TOKEN}{}", &token),
-                &self.user.username,
-                TOKEN_TTL_SECONDS,
-            )
+            .set_ex(token_key(&token), &self.user.username, TOKEN_TTL_SECONDS)
             .await?;
 
         Ok(token)
@@ -238,7 +238,7 @@ impl TokensClient {
         let token = token.into();
 
         let deleted: bool = redis::cmd("DELEX")
-            .arg(format!("{PREFIX_TOKEN}{}", &token))
+            .arg(token_key(&token))
             .arg("IFEQ")
             .arg(&self.user.username)
             .query_async(&mut self.user.client.conn)
@@ -265,7 +265,7 @@ impl PubkeysClient {
             .user
             .client
             .conn
-            .sadd(format!("{PREFIX_PUBKEY}{}", &self.user.username), &pubkey)
+            .sadd(pubkey_key(&self.user.username), &pubkey)
             .await?;
 
         Ok(())
@@ -278,7 +278,7 @@ impl PubkeysClient {
             .user
             .client
             .conn
-            .sismember(format!("{PREFIX_PUBKEY}{}", &self.user.username), &pubkey)
+            .sismember(pubkey_key(&self.user.username), &pubkey)
             .await?;
 
         Ok(contains)
@@ -291,7 +291,7 @@ impl PubkeysClient {
             .user
             .client
             .conn
-            .srem(format!("{PREFIX_PUBKEY}{}", &self.user.username), &pubkey)
+            .srem(pubkey_key(&self.user.username), &pubkey)
             .await?;
 
         Ok(())

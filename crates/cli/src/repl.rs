@@ -8,9 +8,9 @@ use rustyline::hint;
 use rustyline::validate;
 use rustyline::{Context, Editor, Helper};
 use sclc::Diag;
-use tokio::task;
 
 use crate::fs_source::FsSource;
+use crate::output::{report_diagnostics, spawn_effect_printer};
 
 struct ReplHelper {
     state: RefCell<CompletionState>,
@@ -129,7 +129,7 @@ impl Repl {
 
         let module_id = [format!("Repl{}", self.line_number)].into();
         let Some(repl_line) =
-            Self::report(sclc::parse_repl_line(line, &module_id)).and_then(|line| line)
+            report_diagnostics(sclc::parse_repl_line(line, &module_id)).and_then(|line| line)
         else {
             return Ok(());
         };
@@ -151,7 +151,7 @@ impl Repl {
             sclc::ModStmt::Let(let_bind) => {
                 let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
-                let Some(ty) = Self::report(diagnosed) else {
+                let Some(ty) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
@@ -163,7 +163,7 @@ impl Repl {
             sclc::ModStmt::Expr(expr) => {
                 let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
-                let Some(_) = Self::report(diagnosed) else {
+                let Some(_) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
@@ -175,7 +175,7 @@ impl Repl {
             sclc::ModStmt::Export(let_bind) => {
                 let checker = sclc::TypeChecker::new(&program);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
-                let Some(ty) = Self::report(diagnosed) else {
+                let Some(ty) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
@@ -186,7 +186,8 @@ impl Repl {
             }
             sclc::ModStmt::TypeDef(type_def) | sclc::ModStmt::ExportTypeDef(type_def) => {
                 let checker = sclc::TypeChecker::new(&program);
-                let Some(ty) = Self::report(checker.resolve_type_def(&type_env, type_def)) else {
+                let Some(ty) = report_diagnostics(checker.resolve_type_def(&type_env, type_def))
+                else {
                     return Ok(());
                 };
 
@@ -236,7 +237,7 @@ impl Repl {
         let checker = sclc::TypeChecker::new(&program);
         let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
         let diagnosed_ty = checker.check_file_mod(&type_env, &file_mod)?;
-        let Some(ty) = Self::report(diagnosed_ty) else {
+        let Some(ty) = report_diagnostics(diagnosed_ty) else {
             return Ok(());
         };
 
@@ -250,19 +251,6 @@ impl Repl {
             .insert(alias, (ty, value));
 
         Ok(())
-    }
-
-    fn report<T>(diagnosed: sclc::Diagnosed<T>) -> Option<T> {
-        for diag in diagnosed.diags().iter() {
-            let (module_id, span) = diag.locate();
-            println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
-        }
-
-        if diagnosed.diags().has_errors() {
-            return None;
-        }
-
-        Some(diagnosed.into_inner())
     }
 
     fn type_env<'a>(
@@ -291,22 +279,8 @@ impl Repl {
 }
 
 pub async fn run_repl() -> anyhow::Result<()> {
-    let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let effects_task = task::spawn(async move {
-        while let Some(effect) = effects_rx.recv().await {
-            match effect {
-                sclc::Effect::CreateResource { id, inputs, .. } => {
-                    println!("CREATE {}:{} {:?}", id.ty, id.id, inputs);
-                }
-                sclc::Effect::UpdateResource { id, inputs, .. } => {
-                    println!("UPDATE {}:{} {:?}", id.ty, id.id, inputs);
-                }
-                sclc::Effect::TouchResource { id, inputs, .. } => {
-                    println!("TOUCH {}:{} {:?}", id.ty, id.id, inputs);
-                }
-            }
-        }
-    });
+    let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
+    let effects_task = spawn_effect_printer(effects_rx);
     let eval = sclc::Eval::new::<FsSource>(effects_tx, String::from("cli/repl"));
     let mut repl = Repl::new(eval);
     let helper = ReplHelper::new();

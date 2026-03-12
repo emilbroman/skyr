@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_stream::try_stream;
-use base64::Engine;
+use base64::Engine as _;
 use chrono::Utc;
 use futures_util::stream::Stream;
 use rskafka::{
@@ -27,7 +27,6 @@ const FETCH_MAX_BYTES: i32 = 1_000_000;
 const PRODUCE_TIMEOUT: Duration = Duration::from_secs(2);
 const TAIL_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
 const TOPIC_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
-const TOPIC_CREATE_TIMEOUT_MS: i32 = 5_000;
 const TOPIC_PARTITIONS: i32 = 1;
 const TOPIC_REPLICATION_FACTOR: i16 = 1;
 
@@ -145,23 +144,22 @@ impl ClientBuilder {
         self
     }
 
-    pub async fn build_publisher(self) -> Result<Publisher, ConnectError> {
+    async fn connect(self) -> Result<Arc<rskafka::client::Client>, ConnectError> {
         let client = RskafkaClientBuilder::new(vec![self.brokers])
             .build()
             .await?;
+        Ok(Arc::new(client))
+    }
 
+    pub async fn build_publisher(self) -> Result<Publisher, ConnectError> {
         Ok(Publisher {
-            client: Arc::new(client),
+            client: self.connect().await?,
         })
     }
 
     pub async fn build_consumer(self) -> Result<Consumer, ConnectError> {
-        let client = RskafkaClientBuilder::new(vec![self.brokers])
-            .build()
-            .await?;
-
         Ok(Consumer {
-            client: Arc::new(client),
+            client: self.connect().await?,
         })
     }
 }
@@ -326,27 +324,20 @@ async fn ensure_topic(client: &rskafka::client::Client, topic: &str) -> Result<(
             topic.to_string(),
             TOPIC_PARTITIONS,
             TOPIC_REPLICATION_FACTOR,
-            TOPIC_CREATE_TIMEOUT_MS,
+            TOPIC_CREATE_TIMEOUT.as_millis() as i32,
         ),
     )
     .await
     .map_err(|_| NamespaceError::EnsureTimeout)?;
 
     match create {
-        Ok(()) => Ok(()),
-        Err(error) if topic_already_exists_error(&error) => Ok(()),
-        Err(error) => Err(NamespaceError::Kafka(error)),
-    }
-}
-
-fn topic_already_exists_error(error: &KafkaError) -> bool {
-    matches!(
-        error,
-        KafkaError::ServerError {
+        Ok(())
+        | Err(KafkaError::ServerError {
             protocol_error: ProtocolError::TopicAlreadyExists,
             ..
-        }
-    )
+        }) => Ok(()),
+        Err(error) => Err(NamespaceError::Kafka(error)),
+    }
 }
 
 async fn compute_offsets(
@@ -381,9 +372,7 @@ fn decode_payload(record: &RecordAndOffset) -> Result<(u64, Severity, String), T
         return Err(TailError::InvalidPayload);
     }
 
-    let mut timestamp = [0; 8];
-    timestamp.copy_from_slice(&payload[..8]);
-    let timestamp = u64::from_be_bytes(timestamp);
+    let timestamp = u64::from_be_bytes(payload[..8].try_into().unwrap());
 
     let severity = Severity::from_byte(payload[8]).ok_or(TailError::InvalidSeverity(payload[8]))?;
     let message = String::from_utf8(payload[9..].to_vec())?;

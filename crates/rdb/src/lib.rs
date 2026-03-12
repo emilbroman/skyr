@@ -121,6 +121,28 @@ prepared_statements! {
     }
 }
 
+type ResourceRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, ResourceError> {
+    let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row;
+    Ok(Resource {
+        namespace: namespace.to_owned(),
+        resource_type,
+        id,
+        inputs: decode_record(inputs_json)?,
+        outputs: decode_record(outputs_json)?,
+        dependencies: decode_dependencies(dependencies_json)?,
+        owner,
+    })
+}
+
 #[derive(Default)]
 pub struct ClientBuilder {
     inner: SessionBuilder,
@@ -208,26 +230,8 @@ impl NamespaceClient {
 
         let namespace = self.namespace.clone();
         Ok(pager
-            .rows_stream::<(
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            )>()?
-            .map(move |row| {
-                let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row?;
-                Ok::<_, ResourceError>(Resource {
-                    namespace: namespace.clone(),
-                    resource_type,
-                    id,
-                    inputs: decode_record(inputs_json)?,
-                    outputs: decode_record(outputs_json)?,
-                    dependencies: decode_dependencies(dependencies_json)?,
-                    owner,
-                })
-            }))
+            .rows_stream::<ResourceRow>()?
+            .map(move |row| map_resource_row(&namespace, row?)))
     }
 
     pub async fn list_resources_by_owner(
@@ -245,26 +249,8 @@ impl NamespaceClient {
 
         let namespace = self.namespace.clone();
         Ok(pager
-            .rows_stream::<(
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            )>()?
-            .map(move |row| {
-                let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row?;
-                Ok::<_, ResourceError>(Resource {
-                    namespace: namespace.clone(),
-                    resource_type,
-                    id,
-                    inputs: decode_record(inputs_json)?,
-                    outputs: decode_record(outputs_json)?,
-                    dependencies: decode_dependencies(dependencies_json)?,
-                    owner,
-                })
-            }))
+            .rows_stream::<ResourceRow>()?
+            .map(move |row| map_resource_row(&namespace, row?)))
     }
 }
 
@@ -276,19 +262,26 @@ pub struct ResourceClient {
 }
 
 impl ResourceClient {
+    fn session(&self) -> &Session {
+        &self.namespace.client.session
+    }
+
+    fn statements(&self) -> &PreparedStatements {
+        &self.namespace.client.statements
+    }
+
+    fn key(&self) -> (&str, &str, &str) {
+        (
+            self.namespace.namespace.as_str(),
+            self.resource_type.as_str(),
+            self.id.as_str(),
+        )
+    }
+
     pub async fn get(&self) -> Result<Option<Resource>, ResourceError> {
         let pager = self
-            .namespace
-            .client
-            .session
-            .execute_iter(
-                self.namespace.client.statements.get_resource.clone(),
-                (
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
-            )
+            .session()
+            .execute_iter(self.statements().get_resource.clone(), self.key())
             .await?;
 
         let (inputs_json, outputs_json, dependencies_json, owner) = match pager
@@ -322,19 +315,12 @@ impl ResourceClient {
         owner: String,
     ) -> Result<Resource, ResourceError> {
         let inputs_json = encode_record(&inputs)?;
+        let (namespace, resource_type, id) = self.key();
 
-        self.namespace
-            .client
-            .session
+        self.session()
             .execute_unpaged(
-                &self.namespace.client.statements.set_resource_input,
-                (
-                    inputs_json,
-                    owner.as_str(),
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
+                &self.statements().set_resource_input,
+                (inputs_json, owner.as_str(), namespace, resource_type, id),
             )
             .await?;
 
@@ -343,18 +329,12 @@ impl ResourceClient {
 
     pub async fn set_output(&self, outputs: Record) -> Result<Resource, ResourceError> {
         let outputs_json = encode_record(&outputs)?;
+        let (namespace, resource_type, id) = self.key();
 
-        self.namespace
-            .client
-            .session
+        self.session()
             .execute_unpaged(
-                &self.namespace.client.statements.set_resource_output,
-                (
-                    outputs_json,
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
+                &self.statements().set_resource_output,
+                (outputs_json, namespace, resource_type, id),
             )
             .await?;
 
@@ -366,18 +346,12 @@ impl ResourceClient {
         dependencies: &[sclc::ResourceId],
     ) -> Result<Resource, ResourceError> {
         let dependencies_json = encode_dependencies(dependencies)?;
+        let (namespace, resource_type, id) = self.key();
 
-        self.namespace
-            .client
-            .session
+        self.session()
             .execute_unpaged(
-                &self.namespace.client.statements.set_resource_dependencies,
-                (
-                    dependencies_json,
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
+                &self.statements().set_resource_dependencies,
+                (dependencies_json, namespace, resource_type, id),
             )
             .await?;
 
@@ -385,17 +359,8 @@ impl ResourceClient {
     }
 
     pub async fn delete(&self) -> Result<(), ResourceError> {
-        self.namespace
-            .client
-            .session
-            .execute_unpaged(
-                &self.namespace.client.statements.delete_resource,
-                (
-                    self.namespace.namespace.as_str(),
-                    self.resource_type.as_str(),
-                    self.id.as_str(),
-                ),
-            )
+        self.session()
+            .execute_unpaged(&self.statements().delete_resource, self.key())
             .await?;
 
         Ok(())
@@ -442,16 +407,16 @@ fn decode_record(value: Option<String>) -> Result<Option<Record>, ResourceError>
     }
 }
 
-fn encode_record(value: &Record) -> Result<String, ResourceError> {
-    Ok(serde_json::to_string(value)?)
-}
-
 fn decode_dependencies(value: Option<String>) -> Result<Vec<sclc::ResourceId>, ResourceError> {
     match value {
         None => Ok(Vec::new()),
         Some(text) if text.is_empty() => Ok(Vec::new()),
         Some(text) => Ok(serde_json::from_str(&text)?),
     }
+}
+
+fn encode_record(value: &Record) -> Result<String, ResourceError> {
+    Ok(serde_json::to_string(value)?)
 }
 
 fn encode_dependencies(value: &[sclc::ResourceId]) -> Result<String, ResourceError> {

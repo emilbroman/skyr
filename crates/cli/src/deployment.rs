@@ -100,15 +100,15 @@ async fn list_deployments(
             env.deployments
                 .into_iter()
                 .map(|deployment| DeploymentOutput {
-                    r#ref: deployment.ref_.to_owned(),
-                    commit: deployment.commit.to_owned(),
-                    created_at: deployment.created_at.to_owned(),
+                    r#ref: deployment.ref_,
+                    commit: deployment.commit,
+                    created_at: deployment.created_at,
                     state: format!("{:?}", deployment.state),
                     resources: deployment
                         .resources
                         .into_iter()
                         .map(|resource| ResourceOutput {
-                            r#type: resource.type_.to_owned(),
+                            r#type: resource.type_,
                             id: resource.id,
                             inputs: resource.inputs,
                             outputs: resource.outputs,
@@ -440,21 +440,7 @@ async fn query_repository_environments(
         .json()
         .await
         .context("failed to decode deployments response")?;
-
-    if let Some(errors) = response.errors {
-        return Err(anyhow!(
-            "deployment list failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        ));
-    }
-
-    let data = response
-        .data
-        .context("deployments response did not include data")?;
+    let data = auth::graphql_response_data(response, "deployment list")?;
     let repository = data
         .repositories
         .into_iter()

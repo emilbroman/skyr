@@ -1,4 +1,4 @@
-use futures_util::StreamExt;
+use futures::StreamExt;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     net::SocketAddr,
@@ -9,7 +9,7 @@ use std::{
 use anyhow::{anyhow, bail};
 use cdb::DeploymentState;
 use clap::Parser;
-use gix_protocol::futures_lite::AsyncWriteExt;
+use futures::AsyncWriteExt;
 use gix_ref::Reference;
 use ids::{EnvironmentId, RepoQid};
 use russh::{
@@ -196,34 +196,29 @@ impl Handler for ConfigHandler {
                     let client = client.clone();
                     let result: anyhow::Result<()> = match (&user, rx.recv().await) {
                         (None, _) => Err(anyhow!("not authenticated")),
-                        (Some(user), Some(Ok(ChannelCommand::ReceivePack { repo }))) => {
-                            if let Err(err) = ensure_repo_access(user, &repo) {
+                        (Some(user), Some(Ok(cmd))) => {
+                            let repo = match &cmd {
+                                ChannelCommand::ReceivePack { repo }
+                                | ChannelCommand::UploadPack { repo } => repo,
+                            };
+                            if let Err(err) = ensure_repo_access(user, repo) {
                                 Err(err)
-                            } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
-                                Err(err)
-                            } else {
-                                CommandHandler {
-                                    _user: user,
-                                    channel: &mut channel,
-                                    client: client.repo(repo),
-                                }
-                                .receive_pack()
-                                .await
-                            }
-                        }
-                        (Some(user), Some(Ok(ChannelCommand::UploadPack { repo }))) => {
-                            if let Err(err) = ensure_repo_access(user, &repo) {
-                                Err(err)
-                            } else if let Err(err) = ensure_repo_exists(&client, &repo).await {
+                            } else if let Err(err) = ensure_repo_exists(&client, repo).await {
                                 Err(err)
                             } else {
-                                CommandHandler {
+                                let handler = CommandHandler {
                                     _user: user,
                                     channel: &mut channel,
-                                    client: client.repo(repo),
+                                    client: client.repo(repo.clone()),
+                                };
+                                match cmd {
+                                    ChannelCommand::ReceivePack { .. } => {
+                                        handler.receive_pack().await
+                                    }
+                                    ChannelCommand::UploadPack { .. } => {
+                                        handler.upload_pack().await
+                                    }
                                 }
-                                .upload_pack()
-                                .await
                             }
                         }
                         (_, Some(Err(e))) => Err(e.into()),
@@ -316,7 +311,7 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"", futures_util::stream::iter(refs))
+        self.advertise_refs(b"", futures::stream::iter(refs))
             .await?;
 
         let mut r = self.channel.make_reader();
@@ -374,7 +369,6 @@ impl<'a> CommandHandler<'a> {
             r = pkt.into_inner().into_inner();
         }
 
-        #[derive(Clone)]
         struct PackObject {
             kind: gix_object::Kind,
             data: Vec<u8>,
@@ -541,11 +535,8 @@ impl<'a> CommandHandler<'a> {
     async fn receive_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(
-            b"report-status delete-refs",
-            futures_util::stream::iter(refs),
-        )
-        .await?;
+        self.advertise_refs(b"report-status delete-refs", futures::stream::iter(refs))
+            .await?;
 
         let mut r = self.channel.make_reader();
 
@@ -893,11 +884,11 @@ impl<'a> CommandHandler<'a> {
                     continue;
                 }
                 match entry.header {
-                    header @ gix_pack::data::entry::Header::Commit
-                    | header @ gix_pack::data::entry::Header::Tree
-                    | header @ gix_pack::data::entry::Header::Blob
-                    | header @ gix_pack::data::entry::Header::Tag => {
-                        let kind = header.as_kind().expect("base objects have a kind");
+                    gix_pack::data::entry::Header::Commit
+                    | gix_pack::data::entry::Header::Tree
+                    | gix_pack::data::entry::Header::Blob
+                    | gix_pack::data::entry::Header::Tag => {
+                        let kind = entry.header.as_kind().expect("base objects have a kind");
                         let data = entry
                             .data
                             .take()
@@ -994,9 +985,7 @@ impl<'a> CommandHandler<'a> {
                 };
                 let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self
-                    .client
-                    .deployment(environment_id.clone(), old_deployment_id);
+                let deployment = self.client.deployment(environment_id, old_deployment_id);
                 let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
                 let (r1, r2) = futures::join!(
@@ -1007,7 +996,7 @@ impl<'a> CommandHandler<'a> {
                 r2?;
             }
 
-            results.push((update.name.clone(), None::<String>));
+            results.push(update.name.clone());
         }
 
         drop(r);
@@ -1015,11 +1004,8 @@ impl<'a> CommandHandler<'a> {
         let mut pkt =
             gix_packetline::async_io::Writer::new(self.channel.make_writer().compat_write());
         pkt.write_all(b"unpack ok\n").await?;
-        for (name, err) in results {
-            let line = match err {
-                Some(err) => format!("ng {name} {err}\n"),
-                None => format!("ok {name}\n"),
-            };
+        for name in &results {
+            let line = format!("ok {name}\n");
             pkt.write_all(line.as_bytes()).await?;
         }
         gix_packetline::async_io::encode::write_packet_line(

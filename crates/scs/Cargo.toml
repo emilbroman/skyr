@@ -7,9 +7,7 @@ edition = "2024"
 anyhow = "1.0.101"
 clap = { version = "4.5.57", features = ["derive"] }
 comma = "1.0.0"
-gix-negotiate = "0.27.0"
 gix-packetline = { version = "0.21.1", features = ["async-io"] }
-gix-protocol = { version = "0.57.0", features = ["async-client"] }
 russh = "0.57.0"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -22,7 +20,6 @@ gix-object = "0.56.0"
 gix-hash = "0.22.1"
 gix-ref = "0.59.0"
 futures = "0.3.31"
-futures-util = "0.3.31"
 gix-pack = "0.66.0"
 gix-features = "0.46.1"
 

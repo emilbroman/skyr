@@ -13,7 +13,7 @@ use ipnet::Ipv4Net;
 ///
 /// VIPs start at .1 (there is no gateway for the service range — it's virtual).
 /// The .0 (network) and broadcast addresses are reserved.
-pub struct VipAllocator {
+pub(crate) struct VipAllocator {
     /// The service CIDR range.
     service_cidr: Ipv4Net,
     /// Map from host name to allocated VIP.
@@ -26,7 +26,7 @@ pub struct VipAllocator {
 
 impl VipAllocator {
     /// Create a new VIP allocator for the given service CIDR.
-    pub fn new(service_cidr: Ipv4Net) -> Self {
+    pub(crate) fn new(service_cidr: Ipv4Net) -> Self {
         tracing::info!(
             service_cidr = %service_cidr,
             "VIP allocator initialized"
@@ -40,7 +40,7 @@ impl VipAllocator {
     }
 
     /// Allocate a VIP for a host. Returns the existing VIP if already allocated.
-    pub fn allocate(&mut self, host_name: &str) -> Result<Ipv4Addr, String> {
+    pub(crate) fn allocate(&mut self, host_name: &str) -> Result<Ipv4Addr, String> {
         // Return existing allocation (idempotent)
         if let Some(&existing) = self.allocated.get(host_name) {
             return Ok(existing);
@@ -72,7 +72,7 @@ impl VipAllocator {
     }
 
     /// Release a host's VIP back to the pool.
-    pub fn release(&mut self, host_name: &str) {
+    pub(crate) fn release(&mut self, host_name: &str) {
         if let Some(ip) = self.allocated.remove(host_name) {
             tracing::info!(
                 host = %host_name,
@@ -83,9 +83,8 @@ impl VipAllocator {
         }
     }
 
-    /// Get the VIP allocated to a host, if any.
-    #[allow(dead_code)]
-    pub fn get(&self, host_name: &str) -> Option<Ipv4Addr> {
+    #[cfg(test)]
+    fn get(&self, host_name: &str) -> Option<Ipv4Addr> {
         self.allocated.get(host_name).copied()
     }
 }

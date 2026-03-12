@@ -23,14 +23,14 @@ use tracing::{debug, info};
 
 /// A CRI client connected to a container runtime via Unix socket.
 #[derive(Clone)]
-pub struct CriClient {
+pub(crate) struct CriClient {
     runtime: RuntimeServiceClient<Channel>,
     images: ImageServiceClient<Channel>,
 }
 
 impl CriClient {
     /// Connect to the containerd CRI socket.
-    pub async fn connect(socket_path: impl AsRef<Path>) -> Result<Self> {
+    pub(crate) async fn connect(socket_path: impl AsRef<Path>) -> Result<Self> {
         let socket_path = socket_path.as_ref().to_owned();
         info!(socket = %socket_path.display(), "connecting to CRI socket");
 
@@ -50,7 +50,7 @@ impl CriClient {
     }
 
     /// Check CRI version and connectivity.
-    pub async fn version(&mut self) -> Result<String> {
+    pub(crate) async fn version(&mut self) -> Result<String> {
         let response = self
             .runtime
             .version(VersionRequest {
@@ -70,7 +70,7 @@ impl CriClient {
     }
 
     /// Create and start a pod sandbox.
-    pub async fn run_pod_sandbox(&mut self, config: PodSandboxConfig) -> Result<String> {
+    pub(crate) async fn run_pod_sandbox(&mut self, config: PodSandboxConfig) -> Result<String> {
         let pod_name = config
             .metadata
             .as_ref()
@@ -93,7 +93,7 @@ impl CriClient {
     }
 
     /// Stop a pod sandbox.
-    pub async fn stop_pod_sandbox(&mut self, sandbox_id: &str) -> Result<()> {
+    pub(crate) async fn stop_pod_sandbox(&mut self, sandbox_id: &str) -> Result<()> {
         debug!(sandbox_id = %sandbox_id, "stopping pod sandbox");
 
         self.runtime
@@ -108,7 +108,7 @@ impl CriClient {
     }
 
     /// Remove a pod sandbox.
-    pub async fn remove_pod_sandbox(&mut self, sandbox_id: &str) -> Result<()> {
+    pub(crate) async fn remove_pod_sandbox(&mut self, sandbox_id: &str) -> Result<()> {
         debug!(sandbox_id = %sandbox_id, "removing pod sandbox");
 
         self.runtime
@@ -127,7 +127,7 @@ impl CriClient {
     /// Queries the CRI runtime for the sandbox status with verbose info,
     /// extracts the sandbox PID from containerd's info map, and returns
     /// the `/proc/<pid>/ns/net` path.
-    pub async fn pod_network_namespace(&mut self, sandbox_id: &str) -> Result<String> {
+    pub(crate) async fn pod_network_namespace(&mut self, sandbox_id: &str) -> Result<String> {
         debug!(sandbox_id = %sandbox_id, "querying pod sandbox status for network namespace");
 
         let response = self
@@ -165,7 +165,7 @@ impl CriClient {
     }
 
     /// Create a container within a pod sandbox.
-    pub async fn create_container(
+    pub(crate) async fn create_container(
         &mut self,
         sandbox_id: &str,
         sandbox_config: &PodSandboxConfig,
@@ -203,7 +203,7 @@ impl CriClient {
     }
 
     /// Start a container.
-    pub async fn start_container(&mut self, container_id: &str) -> Result<()> {
+    pub(crate) async fn start_container(&mut self, container_id: &str) -> Result<()> {
         debug!(container_id = %container_id, "starting container");
 
         self.runtime
@@ -218,7 +218,7 @@ impl CriClient {
     }
 
     /// Stop a container.
-    pub async fn stop_container(&mut self, container_id: &str, timeout: i64) -> Result<()> {
+    pub(crate) async fn stop_container(&mut self, container_id: &str, timeout: i64) -> Result<()> {
         debug!(container_id = %container_id, timeout = timeout, "stopping container");
 
         self.runtime
@@ -234,7 +234,7 @@ impl CriClient {
     }
 
     /// Remove a container.
-    pub async fn remove_container(&mut self, container_id: &str) -> Result<()> {
+    pub(crate) async fn remove_container(&mut self, container_id: &str) -> Result<()> {
         debug!(container_id = %container_id, "removing container");
 
         self.runtime
@@ -253,7 +253,11 @@ impl CriClient {
     /// This ensures the image is available in the CRI namespace (k8s.io) so that
     /// containers can be created with it. Images pulled via other tools (like `ctr`
     /// without a namespace flag, or `podman`) may not be visible to CRI.
-    pub async fn pull_image(&mut self, image: &str, auth: Option<&AuthConfig>) -> Result<String> {
+    pub(crate) async fn pull_image(
+        &mut self,
+        image: &str,
+        auth: Option<&AuthConfig>,
+    ) -> Result<String> {
         info!(image = %image, "pulling image");
 
         let response = self
@@ -275,18 +279,6 @@ impl CriClient {
         info!(image = %image, image_ref = %response.image_ref, "image pulled");
         Ok(response.image_ref)
     }
-
-    /// Get a reference to the image service client for image operations.
-    #[allow(dead_code)]
-    pub fn images(&mut self) -> &mut ImageServiceClient<Channel> {
-        &mut self.images
-    }
-
-    /// Get a reference to the runtime service client for advanced operations.
-    #[allow(dead_code)]
-    pub fn runtime(&mut self) -> &mut RuntimeServiceClient<Channel> {
-        &mut self.runtime
-    }
 }
 
 /// Create a pod sandbox config for CRI.
@@ -298,7 +290,7 @@ impl CriClient {
 ///
 /// `dns_servers` configures the pod's `/etc/resolv.conf`. Pass the host's
 /// nameservers for now; a cluster DNS server will be added in a later phase.
-pub fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandboxConfig {
+pub(crate) fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandboxConfig {
     let namespace = "skyr";
     PodSandboxConfig {
         metadata: Some(PodSandboxMetadata {
@@ -351,7 +343,7 @@ pub fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandboxConfi
 }
 
 /// Create a container config for CRI.
-pub fn container_config(name: &str, image: &str) -> ContainerConfig {
+pub(crate) fn container_config(name: &str, image: &str) -> ContainerConfig {
     ContainerConfig {
         metadata: Some(ContainerMetadata {
             name: name.to_string(),

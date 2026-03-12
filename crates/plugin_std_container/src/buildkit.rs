@@ -22,11 +22,9 @@ use crate::PluginError;
 
 /// Result of a successful image build.
 #[derive(Debug, Clone)]
-pub struct BuildResult {
-    /// Full image reference including registry and digest (e.g., "registry:5000/name@sha256:...")
-    pub fullname: String,
-    /// Image digest (e.g., "sha256:...")
-    pub digest: String,
+pub(crate) struct BuildResult {
+    pub(crate) fullname: String,
+    pub(crate) digest: String,
 }
 
 /// Build a container image and push it to the registry.
@@ -42,7 +40,7 @@ pub struct BuildResult {
 /// # Returns
 ///
 /// A `BuildResult` containing the full image reference and digest.
-pub async fn build_and_push(
+pub(crate) async fn build_and_push(
     buildkit_addr: &str,
     context_path: &Path,
     containerfile: &str,

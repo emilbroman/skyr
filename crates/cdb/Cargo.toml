@@ -9,7 +9,6 @@ futures = "0.3.31"
 futures-util = "0.3.31"
 gix-hash = "0.22.0"
 gix-object = "0.56.0"
-hex = "0.4.3"
 ids = { path = "../ids" }
 scylla = { version = "1.5.0", features = ["chrono-04"] }
 serde = { version = "1.0.228", features = ["derive"] }
