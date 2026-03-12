@@ -1,9 +1,11 @@
 use lsp_types::{
     CompletionOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
-    ServerCapabilities, ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
+    RenameOptions, ServerCapabilities, ServerInfo, SignatureHelpOptions,
+    TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 use sclc::SourceRepo;
 
+use crate::handlers::semantic_tokens::semantic_tokens_capability;
 use crate::{LanguageServer, convert::uri_to_path};
 
 #[allow(deprecated)] // Using root_uri for simplicity; workspace_folders support can be added later
@@ -27,6 +29,17 @@ pub fn handle_initialize<S: SourceRepo>(
                 trigger_characters: Some(vec![".".to_string()]),
                 ..Default::default()
             }),
+            rename_provider: Some(OneOf::Right(RenameOptions {
+                prepare_provider: Some(true),
+                work_done_progress_options: Default::default(),
+            })),
+            signature_help_provider: Some(SignatureHelpOptions {
+                trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                retrigger_characters: None,
+                work_done_progress_options: Default::default(),
+            }),
+            document_formatting_provider: Some(OneOf::Left(true)),
+            semantic_tokens_provider: Some(semantic_tokens_capability()),
             ..Default::default()
         },
         server_info: Some(ServerInfo {

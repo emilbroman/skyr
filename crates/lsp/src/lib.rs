@@ -155,6 +155,73 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
                 };
                 handlers::completion::handle_completion_resolve(self, id, item).await
             }
+            lsp_types::request::Rename::METHOD => {
+                let params: lsp_types::RenameParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::rename::handle_rename(self, id, params).await
+            }
+            lsp_types::request::PrepareRenameRequest::METHOD => {
+                let params: lsp_types::TextDocumentPositionParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return vec![OutgoingMessage::error(
+                                id,
+                                -32602,
+                                format!("Invalid params: {}", e),
+                            )];
+                        }
+                    };
+                handlers::rename::handle_prepare_rename(self, id, params).await
+            }
+            lsp_types::request::SignatureHelpRequest::METHOD => {
+                let params: lsp_types::SignatureHelpParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::signature_help::handle_signature_help(self, id, params).await
+            }
+            lsp_types::request::Formatting::METHOD => {
+                let params: lsp_types::DocumentFormattingParams =
+                    match serde_json::from_value(params) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            return vec![OutgoingMessage::error(
+                                id,
+                                -32602,
+                                format!("Invalid params: {}", e),
+                            )];
+                        }
+                    };
+                handlers::formatting::handle_formatting(self, id, params).await
+            }
+            lsp_types::request::SemanticTokensFullRequest::METHOD => {
+                let params: lsp_types::SemanticTokensParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::semantic_tokens::handle_semantic_tokens_full(self, id, params).await
+            }
             _ => vec![OutgoingMessage::error(
                 id,
                 -32601,
