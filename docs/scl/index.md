@@ -122,6 +122,17 @@ let positive = [for (x in items) if (x > 0) x]
 let status = if (enabled) "on" else "off"
 ```
 
+### Type Declarations
+
+Name and export types for reuse across modules:
+
+```scl
+export type Config { host: Str, port: Int }
+
+import MyLib
+let cfg: MyLib.Config = { host: "localhost", port: 8080 }
+```
+
 ### Modules
 
 Organize code with imports:

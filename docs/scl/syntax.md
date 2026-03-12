@@ -418,6 +418,41 @@ Container.Image(...)
 Encoding.toJson(...)
 ```
 
+### Type Declarations
+
+Declare a named type alias at module scope:
+
+```scl
+type Port Int
+type Config { host: Str, port: Int }
+```
+
+Type declarations can be exported:
+
+```scl
+export type Config { host: Str, port: Int }
+```
+
+Generic type declarations use type parameters:
+
+```scl
+export type Result<T> { ok: T?, error: Str? }
+```
+
+Type names can be accessed from imported modules using dot notation (type-level property access):
+
+```scl
+import MyLib
+let cfg: MyLib.Config = { host: "localhost", port: 8080 }
+```
+
+Type declarations and value bindings live in separate namespaces, so a name can refer to both a type and a value:
+
+```scl
+export type Config { host: Str, port: Int }
+export let Config = fn(host: Str, port: Int) { host: host, port: port }
+```
+
 ### Expression Statements
 
 Expressions can appear at module scope, typically for resources:
@@ -430,7 +465,7 @@ Artifact.File({ name: "test.txt", contents: "hello" })
 
 ## Type Annotations
 
-Type annotations appear after colons in function parameters and after `extern` declarations.
+Type annotations appear after colons in function parameters, after `extern` declarations, and in `type` declarations.
 
 ### Basic Types
 
@@ -490,6 +525,17 @@ fn<T>(T) T
 fn<T, U>(T, fn(T) U) [U]
 fn<T <: { name: Str }>(T) Str
 ```
+
+### Type-Level Property Access
+
+Access exported type declarations from imported modules using dot notation:
+
+```scl
+import MyLib
+fn(cfg: MyLib.Config) cfg.host
+```
+
+This works anywhere a type expression is expected.
 
 ## Extern Declarations
 
