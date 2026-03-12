@@ -29,6 +29,16 @@ impl FileMod {
 
         globals
     }
+
+    pub fn find_type_defs(&self) -> Vec<&TypeDef> {
+        self.statements
+            .iter()
+            .filter_map(|stmt| match stmt {
+                ModStmt::TypeDef(type_def) | ModStmt::ExportTypeDef(type_def) => Some(type_def),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 impl Expr {
@@ -129,7 +139,16 @@ pub enum ModStmt {
     Import(Loc<ImportStmt>),
     Let(LetBind),
     Export(LetBind),
+    TypeDef(TypeDef),
+    ExportTypeDef(TypeDef),
     Expr(Loc<Expr>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeDef {
+    pub var: Loc<Var>,
+    pub type_params: Vec<TypeParam>,
+    pub ty: Loc<TypeExpr>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -379,6 +398,13 @@ pub enum TypeExpr {
     Fn(FnTypeExpr),
     Record(RecordTypeExpr),
     Dict(DictTypeExpr),
+    PropertyAccess(TypePropertyAccessExpr),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypePropertyAccessExpr {
+    pub expr: Box<Loc<TypeExpr>>,
+    pub property: Loc<Var>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

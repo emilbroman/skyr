@@ -9,7 +9,7 @@ use crate::{
     ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
     ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
     RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
-    TypeExpr, TypeParam, UnaryExpr, UnaryOp, Var,
+    TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -136,7 +136,9 @@ peg::parser! {
 
         rule mod_stmt() -> ModStmt
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
+            / export_type_def:export_type_def() { ModStmt::ExportTypeDef(export_type_def) }
             / export_let_bind:export_let_bind() { ModStmt::Export(export_let_bind) }
+            / type_def:type_def() { ModStmt::TypeDef(type_def) }
             / expr:expr() { ModStmt::Expr(expr) }
             / let_bind:let_bind() { ModStmt::Let(let_bind) }
 
@@ -334,6 +336,20 @@ peg::parser! {
             }
 
         rule type_expr_base() -> Loc<TypeExpr>
+            = head:type_expr_atom() suffixes:(dot() property:var() { property })* {
+                let mut expr = head;
+                for property in suffixes {
+                    let start = expr.span().start();
+                    let end = property.span().end();
+                    expr = Loc::new(TypeExpr::PropertyAccess(TypePropertyAccessExpr {
+                        expr: Box::new(expr),
+                        property,
+                    }), Span::new(start, end));
+                }
+                expr
+            }
+
+        rule type_expr_atom() -> Loc<TypeExpr>
             = fn_type_expr:type_expr_fn() { fn_type_expr }
             / dict_type_expr:type_expr_dict() { dict_type_expr }
             / record_type_expr:type_expr_record() { record_type_expr }
@@ -631,6 +647,14 @@ peg::parser! {
         rule export_let_bind() -> LetBind
             = export_keyword() let_bind:let_bind() { let_bind }
 
+        rule type_def() -> TypeDef
+            = type_keyword() var:var() type_params:type_params()? ty:type_expr() {
+                TypeDef { var, type_params: type_params.unwrap_or_default(), ty }
+            }
+
+        rule export_type_def() -> TypeDef
+            = export_keyword() type_def:type_def() { type_def }
+
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {
                 let end = vars
@@ -725,6 +749,12 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::CatchKeyword)] { token.span() }
             }
             / expected!("catch keyword")
+
+        rule type_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::TypeKeyword)] { token.span() }
+            }
+            / expected!("type keyword")
 
         rule equals() -> Span
             = quiet!{

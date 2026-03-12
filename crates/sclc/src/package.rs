@@ -40,6 +40,8 @@ impl<S> Package<S> {
                     ModStmt::Import(import_stmt) => Some(import_stmt),
                     ModStmt::Let(_) => None,
                     ModStmt::Export(_) => None,
+                    ModStmt::TypeDef(_) => None,
+                    ModStmt::ExportTypeDef(_) => None,
                     ModStmt::Expr(_) => None,
                 })
         })

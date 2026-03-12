@@ -46,6 +46,7 @@ pub enum Token<'a> {
     RaiseKeyword,
     TryKeyword,
     CatchKeyword,
+    TypeKeyword,
     QuestionMark,
     Int(&'a str),
     Float(&'a str),
@@ -344,6 +345,8 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::TryKeyword
             } else if symbol == "catch" {
                 Token::CatchKeyword
+            } else if symbol == "type" {
+                Token::TypeKeyword
             } else {
                 Token::Symbol(symbol)
             }

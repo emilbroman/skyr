@@ -1271,7 +1271,10 @@ impl Eval {
         stmt: &ast::ModStmt,
     ) -> Result<Option<(String, TrackedValue)>, EvalError> {
         match stmt {
-            ast::ModStmt::Let(_) | ast::ModStmt::Import(_) => Ok(None),
+            ast::ModStmt::Let(_)
+            | ast::ModStmt::Import(_)
+            | ast::ModStmt::TypeDef(_)
+            | ast::ModStmt::ExportTypeDef(_) => Ok(None),
             ast::ModStmt::Export(let_bind) => {
                 let value = self.eval_expr(env, let_bind.expr.as_ref())?;
                 Ok(Some((let_bind.var.name.clone(), value)))
