@@ -117,6 +117,9 @@ impl OutgoingMessage {
 type SourceFactory =
     Box<dyn Fn(&sclc::ModuleId, DocumentCache, &PathBuf) -> OverlaySource<FsLike> + Send>;
 
+/// The concrete program type used in the LSP server.
+pub type LspProgram = sclc::Program<OverlaySource<FsLike>>;
+
 /// The main LSP server.
 pub struct LanguageServer {
     /// Factory for creating source repositories.
@@ -196,6 +199,12 @@ impl LanguageServer {
         }
     }
 
+    async fn load_program(&self) -> Option<LspProgram> {
+        let root = self.root.as_ref()?;
+        let source = (self.source_factory)(&self.package_id, self.documents.clone(), root);
+        Some(analysis::load_program(source).await)
+    }
+
     async fn handle_request(
         &mut self,
         id: RequestId,
@@ -216,18 +225,24 @@ impl LanguageServer {
                 self.shutdown_requested = true;
                 handlers::lifecycle::shutdown(id)
             }
-            "textDocument/hover" => handlers::hover::hover(id, params, &self.documents),
+            "textDocument/hover" => {
+                let program = self.load_program().await;
+                handlers::hover::hover(id, params, &self.documents, program.as_ref())
+            }
             "textDocument/definition" => {
-                handlers::navigation::goto_definition(id, params, &self.documents)
+                let program = self.load_program().await;
+                handlers::navigation::goto_definition(id, params, &self.documents, program.as_ref())
             }
             "textDocument/references" => {
-                handlers::navigation::references(id, params, &self.documents)
+                let program = self.load_program().await;
+                handlers::navigation::references(id, params, &self.documents, program.as_ref())
             }
             "textDocument/documentSymbol" => {
                 handlers::navigation::document_symbol(id, params, &self.documents)
             }
             "textDocument/completion" => {
-                handlers::completion::completion(id, params, &self.documents)
+                let program = self.load_program().await;
+                handlers::completion::completion(id, params, &self.documents, program.as_ref())
             }
             _ => vec![OutgoingMessage::error(
                 id,

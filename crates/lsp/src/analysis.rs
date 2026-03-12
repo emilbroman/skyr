@@ -85,11 +85,27 @@ pub async fn analyze<S: sclc::SourceRepo>(
     }
 }
 
+/// Load a program with resolved imports (best-effort).
+///
+/// Opens the entry file (`Main.scl`) and recursively resolves all imports.
+/// Errors during loading are silently ignored so the caller gets whatever
+/// context was successfully loaded.
+pub async fn load_program<S: sclc::SourceRepo>(source: S) -> sclc::Program<S> {
+    let mut program = sclc::Program::new();
+    let package = program.open_package(source).await;
+    let _ = package.open("Main.scl").await;
+    let _ = program.resolve_imports().await;
+    program
+}
+
 /// Query cursor information at a specific position in a file.
 ///
 /// This parses the file with a cursor at the given position, then type-checks
-/// to populate cursor info (type, declaration, references, completions).
-pub fn query_cursor(
+/// against the provided program to populate cursor info (type, declaration,
+/// references, completions). The program should have imports resolved so that
+/// cross-module lookups work.
+pub fn query_cursor<S: sclc::SourceRepo>(
+    program: &sclc::Program<S>,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
@@ -104,11 +120,10 @@ pub fn query_cursor(
     };
 
     // Type-check to populate cursor info (declaration, type, references, completions)
-    let program = sclc::Program::<super::server::FsLike>::new();
     let type_env = sclc::TypeEnv::new()
         .with_module_id(module_id)
         .with_cursor(cursor);
-    let checker = sclc::TypeChecker::new(&program);
+    let checker = sclc::TypeChecker::new(program);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info

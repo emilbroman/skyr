@@ -3,12 +3,13 @@ use lsp_types as lsp;
 use crate::analysis::{self, uri_to_path};
 use crate::convert;
 use crate::document::DocumentCache;
-use crate::server::{OutgoingMessage, RequestId};
+use crate::server::{LspProgram, OutgoingMessage, RequestId};
 
 pub fn completion(
     id: RequestId,
     params: serde_json::Value,
     documents: &DocumentCache,
+    program: Option<&LspProgram>,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::CompletionParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -27,7 +28,10 @@ pub fn completion(
 
     let module_id = module_id_from_path(&path);
     let position = convert::to_sclc_position(params.text_document_position.position);
-    let cursor_info = analysis::query_cursor(&source, &module_id, position);
+    let cursor_info = match program {
+        Some(program) => analysis::query_cursor(program, &source, &module_id, position),
+        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
+    };
 
     let info = cursor_info.lock().unwrap();
 
