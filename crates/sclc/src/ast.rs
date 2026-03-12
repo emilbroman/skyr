@@ -15,13 +15,16 @@ pub struct ReplLine {
 }
 
 impl FileMod {
-    pub fn find_globals(&self) -> HashMap<&str, &Loc<Expr>> {
+    pub fn find_globals(&self) -> HashMap<&str, (crate::Span, &Loc<Expr>)> {
         let mut globals = HashMap::new();
 
         for statement in &self.statements {
             match statement {
                 ModStmt::Let(let_bind) | ModStmt::Export(let_bind) => {
-                    globals.insert(let_bind.var.name.as_str(), let_bind.expr.as_ref());
+                    globals.insert(
+                        let_bind.var.name.as_str(),
+                        (let_bind.var.span(), let_bind.expr.as_ref()),
+                    );
                 }
                 _ => {}
             }

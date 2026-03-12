@@ -25,14 +25,16 @@ impl Variance {
 
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>>,
+    globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
-    locals: HashMap<&'a str, Type>,
+    locals: HashMap<&'a str, (crate::Span, Type)>,
     type_vars: HashMap<String, Type>,
     /// Upper bounds for type variable IDs (used during function body checking).
     type_var_bounds: HashMap<usize, Type>,
     /// Type-level bindings from `type` declarations and imports (separate namespace from values).
     type_level: HashMap<String, Type>,
+    /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
+    cursor: Option<crate::Cursor>,
 }
 
 impl<'a> Default for TypeEnv<'a> {
@@ -51,6 +53,7 @@ impl<'a> TypeEnv<'a> {
             type_vars: HashMap::new(),
             type_var_bounds: HashMap::new(),
             type_level: HashMap::new(),
+            cursor: None,
         }
     }
 
@@ -63,10 +66,14 @@ impl<'a> TypeEnv<'a> {
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
+            cursor: self.cursor.clone(),
         }
     }
 
-    pub fn with_globals(&self, globals: &'a HashMap<&'a str, &'a crate::Loc<ast::Expr>>) -> Self {
+    pub fn with_globals(
+        &self,
+        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>,
+    ) -> Self {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
@@ -75,6 +82,7 @@ impl<'a> TypeEnv<'a> {
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
+            cursor: self.cursor.clone(),
         }
     }
 
@@ -90,6 +98,7 @@ impl<'a> TypeEnv<'a> {
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
+            cursor: self.cursor.clone(),
         }
     }
 
@@ -102,12 +111,19 @@ impl<'a> TypeEnv<'a> {
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
+            cursor: self.cursor.clone(),
         }
     }
 
-    pub fn with_local(&self, name: &'a str, ty: Type) -> Self {
+    pub fn with_cursor(&self, cursor: crate::Cursor) -> Self {
         let mut env = self.inner();
-        env.locals.insert(name, ty);
+        env.cursor = Some(cursor);
+        env
+    }
+
+    pub fn with_local(&self, name: &'a str, span: crate::Span, ty: Type) -> Self {
+        let mut env = self.inner();
+        env.locals.insert(name, (span, ty));
         env
     }
 
@@ -149,6 +165,7 @@ impl<'a> TypeEnv<'a> {
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
+            cursor: self.cursor.clone(),
         }
     }
 
@@ -160,12 +177,14 @@ impl<'a> TypeEnv<'a> {
         self.type_level.get(name)
     }
 
-    pub fn lookup_local(&self, name: &str) -> Option<&Type> {
+    pub fn lookup_local(&self, name: &str) -> Option<&(crate::Span, Type)> {
         self.locals.get(name)
     }
 
-    pub fn lookup_global(&self, name: &str) -> Option<&crate::Loc<ast::Expr>> {
-        self.globals.and_then(|globals| globals.get(name).copied())
+    pub fn lookup_global(&self, name: &str) -> Option<(crate::Span, &crate::Loc<ast::Expr>)> {
+        self.globals
+            .and_then(|globals| globals.get(name))
+            .map(|(span, expr)| (*span, *expr))
     }
 
     pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, Option<&'a ast::FileMod>)> {
@@ -1170,7 +1189,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let bind_ty = self
                     .check_expr(env, let_expr.bind.expr.as_ref(), None)?
                     .unpack(&mut diags);
-                let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_ty);
+                let inner_env = env.with_local(
+                    let_expr.bind.var.name.as_str(),
+                    let_expr.bind.var.span(),
+                    bind_ty,
+                );
                 let body_ty = self
                     .check_expr(&inner_env, let_expr.expr.as_ref(), expected_type)?
                     .unpack(&mut diags);
@@ -1200,7 +1223,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     let param_ty = self
                         .resolve_type_expr(&fn_env, &param.ty)
                         .unpack(&mut diags);
-                    fn_env = fn_env.with_local(param.var.name.as_str(), param_ty.clone());
+                    fn_env = fn_env.with_local(
+                        param.var.name.as_str(),
+                        param.var.span(),
+                        param_ty.clone(),
+                    );
                     params.push(param_ty);
                 }
 
@@ -1541,26 +1568,32 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     }
                 }
-                let set_cursor_ty = |ty: &Type| {
+                let set_cursor = |decl: crate::Span, ty: &Type| {
                     if let Some((cursor, _)) = &var.cursor {
+                        cursor.set_declaration(decl);
                         cursor.set_type(ty.clone());
                     }
                 };
-                if let Some(local_ty) = env.lookup_local(var.name.as_str()) {
-                    set_cursor_ty(local_ty);
-                    return self.apply_expected_type(
-                        env,
-                        expr.span(),
-                        local_ty.clone(),
-                        expected_type,
-                    );
+                let track_ref = |decl: crate::Span| {
+                    if let Some(cursor) = &env.cursor {
+                        cursor.track_reference(decl, expr.span());
+                    }
+                };
+                if let Some((decl, local_ty)) = env.lookup_local(var.name.as_str()) {
+                    let decl = *decl;
+                    let local_ty = local_ty.clone();
+                    track_ref(decl);
+                    set_cursor(decl, &local_ty);
+                    return self.apply_expected_type(env, expr.span(), local_ty, expected_type);
                 }
-                if let Some(global_expr) = env.lookup_global(var.name.as_str()) {
+                if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
                     let mut diags = DiagList::new();
                     let type_id = next_type_id();
-                    let global_env = env
-                        .without_locals()
-                        .with_local(var.name.as_str(), Type::Var(type_id));
+                    let global_env = env.without_locals().with_local(
+                        var.name.as_str(),
+                        decl,
+                        Type::Var(type_id),
+                    );
                     let resolved_ty = self
                         .check_expr(&global_env, global_expr, expected_type)?
                         .unpack(&mut diags);
@@ -1572,7 +1605,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             expected_type,
                         )?
                         .unpack(&mut diags);
-                    set_cursor_ty(&ty);
+                    track_ref(decl);
+                    set_cursor(decl, &ty);
                     return Ok(Diagnosed::new(ty, diags));
                 }
                 if let Some((target_module_id, maybe_import_file_mod)) =
@@ -1583,13 +1617,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     };
                     let import_env = TypeEnv::new().with_module_id(&target_module_id);
                     let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
-                    set_cursor_ty(&imported_ty);
-                    return self.apply_expected_type(
-                        env,
-                        expr.span(),
-                        imported_ty.into_inner(),
-                        expected_type,
-                    );
+                    let imported_ty = imported_ty.into_inner();
+                    if let Some((cursor, _)) = &var.cursor {
+                        cursor.set_type(imported_ty.clone());
+                    }
+                    return self.apply_expected_type(env, expr.span(), imported_ty, expected_type);
                 }
                 let mut diags = DiagList::new();
                 diags.push(UndefinedVariable {
@@ -1856,7 +1888,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             }
                             if let Some(catch_arg) = &catch.catch_arg {
                                 let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never);
-                                let inner_env = env.with_local(catch_arg.name.as_str(), param_ty);
+                                let inner_env = env.with_local(
+                                    catch_arg.name.as_str(),
+                                    catch_arg.span(),
+                                    param_ty,
+                                );
                                 self.check_expr(&inner_env, &catch.body, Some(&try_ty))?
                                     .unpack(&mut diags);
                             } else {
@@ -1927,7 +1963,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         Type::Never
                     }
                 };
-                let inner_env = env.with_local(for_item.var.name.as_str(), element_ty);
+                let inner_env =
+                    env.with_local(for_item.var.name.as_str(), for_item.var.span(), element_ty);
                 let item_ty = self
                     .check_list_item(&inner_env, for_item.emit_item.as_ref(), expected_type)?
                     .unpack(&mut diags);
@@ -1943,7 +1980,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         let type_id = next_type_id();
-        let env = env.with_local(let_bind.var.name.as_str(), Type::Var(type_id));
+        let env = env.with_local(
+            let_bind.var.name.as_str(),
+            let_bind.var.span(),
+            Type::Var(type_id),
+        );
         let resolved_ty = self
             .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
