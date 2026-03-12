@@ -714,9 +714,9 @@ pub fn setup_services_chain() -> Result<()> {
     Ok(())
 }
 
-/// Tear down the services DNAT chain.
+/// Tear down the services DNAT chain and all per-service chains.
 pub fn teardown_services_chain() -> Result<()> {
-    info!("tearing down SKYR-SERVICES iptables chain");
+    info!("tearing down SKYR-SERVICES iptables chain and per-service chains");
     let _ = run_cmd(
         "iptables",
         &["-t", "nat", "-D", "PREROUTING", "-j", SERVICES_CHAIN],
@@ -727,10 +727,57 @@ pub fn teardown_services_chain() -> Result<()> {
     );
     let _ = run_cmd("iptables", &["-t", "nat", "-F", SERVICES_CHAIN]);
     let _ = run_cmd("iptables", &["-t", "nat", "-X", SERVICES_CHAIN]);
+
+    // Clean up any per-service chains (SKYR_SVC_*) that were created by
+    // add_service_route. Without this, chains leak across restarts.
+    if let Ok(output) = std::process::Command::new("iptables")
+        .args(["-t", "nat", "-L", "-n"])
+        .output()
+    {
+        let listing = String::from_utf8_lossy(&output.stdout);
+        let svc_chains: Vec<String> = listing
+            .lines()
+            .filter_map(|line| {
+                let name = line.strip_prefix("Chain ")?.split_whitespace().next()?;
+                if name.starts_with("SKYR_SVC_") {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for svc_chain in &svc_chains {
+            let _ = run_cmd("iptables", &["-t", "nat", "-F", svc_chain]);
+            let _ = run_cmd("iptables", &["-t", "nat", "-X", svc_chain]);
+        }
+    }
+
     Ok(())
 }
 
+/// Generate a per-service iptables chain name from VIP, port, and protocol.
+///
+/// The chain name encodes the service identity so that Host.Port chaining can
+/// reference backend chains by jumping to them. Chain names use underscores
+/// instead of dots/colons to satisfy iptables naming constraints.
+///
+/// Example: VIP `10.43.0.1`, port 80, protocol `tcp` → `SKYR_SVC_10_43_0_1_80_tcp`
+fn service_chain_name(vip: &str, port: i32, protocol: &str) -> String {
+    let vip_clean = vip.replace('.', "_");
+    format!("SKYR_SVC_{vip_clean}_{port}_{protocol}")
+}
+
 /// Add a DNAT service route: VIP:port → load-balanced backends.
+///
+/// Creates a per-service iptables chain for the given VIP:port and populates
+/// it with backend rules. A dispatch rule in `SKYR-SERVICES` jumps to the
+/// per-service chain when traffic matches the VIP and port.
+///
+/// Backends whose address is within the service CIDR (i.e., another Host VIP)
+/// are implemented as jumps to the corresponding per-service chain rather than
+/// direct DNAT rules. This enables **Host.Port chaining**: a Host.Port can
+/// list other Host.Ports as backends, and the iptables chains are traversed
+/// in sequence until a terminal DNAT to a pod backend is reached.
 ///
 /// For multiple backends, uses the iptables `statistic` module with
 /// `--probability` for round-robin load balancing.
@@ -739,6 +786,7 @@ pub fn add_service_route(
     port: i32,
     protocol: &str,
     backends: &[scop::ServiceBackend],
+    service_cidr: &str,
 ) -> Result<()> {
     if backends.is_empty() {
         warn!(vip = %vip, port = %port, "no backends for service route, skipping");
@@ -747,72 +795,92 @@ pub fn add_service_route(
 
     let port_str = port.to_string();
     let num_backends = backends.len();
+    let chain = service_chain_name(vip, port, protocol);
+
+    // Parse service CIDR once for VIP detection across all backends.
+    let svc_net: Option<Ipv4Net> = service_cidr.parse().ok();
 
     info!(
         vip = %vip,
         port = %port,
         protocol = %protocol,
         num_backends = %num_backends,
+        chain = %chain,
         "adding service route"
     );
 
+    // Create the per-service chain (ignore error if it already exists).
+    let _ = run_cmd("iptables", &["-t", "nat", "-N", &chain]);
+    // Flush any existing rules (idempotent recreation).
+    let _ = run_cmd("iptables", &["-t", "nat", "-F", &chain]);
+
+    // Populate the per-service chain with backend rules.
     for (i, backend) in backends.iter().enumerate() {
-        let dest = format!("{}:{}", backend.address, backend.port);
+        let is_vip = svc_net
+            .as_ref()
+            .and_then(|net| {
+                backend
+                    .address
+                    .parse::<Ipv4Addr>()
+                    .ok()
+                    .map(|ip| net.contains(&ip))
+            })
+            .unwrap_or(false);
+
+        // Build iptables args incrementally to avoid 4-way duplication.
+        let mut args: Vec<&str> = vec!["-t", "nat", "-A", &chain];
 
         // For load balancing: use statistic --probability for all but the last backend.
-        // Last backend catches everything remaining.
+        let probability;
         if i < num_backends - 1 {
             let remaining = num_backends - i;
-            let probability = format!("{:.10}", 1.0 / remaining as f64);
-            run_cmd(
-                "iptables",
-                &[
-                    "-t",
-                    "nat",
-                    "-A",
-                    SERVICES_CHAIN,
-                    "-d",
-                    vip,
-                    "-p",
-                    protocol,
-                    "--dport",
-                    &port_str,
-                    "-m",
-                    "statistic",
-                    "--mode",
-                    "random",
-                    "--probability",
-                    &probability,
-                    "-j",
-                    "DNAT",
-                    "--to-destination",
-                    &dest,
-                ],
-            )
-            .with_context(|| format!("failed to add service route {vip}:{port} → {dest}"))?;
-        } else {
-            // Last backend: no probability filter, catches all remaining traffic
-            run_cmd(
-                "iptables",
-                &[
-                    "-t",
-                    "nat",
-                    "-A",
-                    SERVICES_CHAIN,
-                    "-d",
-                    vip,
-                    "-p",
-                    protocol,
-                    "--dport",
-                    &port_str,
-                    "-j",
-                    "DNAT",
-                    "--to-destination",
-                    &dest,
-                ],
-            )
-            .with_context(|| format!("failed to add service route {vip}:{port} → {dest}"))?;
+            probability = format!("{:.10}", 1.0 / remaining as f64);
+            args.extend_from_slice(&[
+                "-m",
+                "statistic",
+                "--mode",
+                "random",
+                "--probability",
+                &probability,
+            ]);
         }
+
+        // Jump target: chain jump for VIP backends, DNAT for pod backends.
+        let backend_chain;
+        let dest;
+        if is_vip {
+            backend_chain = service_chain_name(&backend.address, backend.port, &backend.protocol);
+            args.extend_from_slice(&["-j", &backend_chain]);
+        } else {
+            dest = format!("{}:{}", backend.address, backend.port);
+            args.extend_from_slice(&["-j", "DNAT", "--to-destination", &dest]);
+        }
+
+        run_cmd("iptables", &args)
+            .with_context(|| format!("failed to add backend rule in chain {chain}"))?;
+    }
+
+    // Ensure we don't accumulate duplicate dispatch rules on repeated calls.
+    // Check-then-add: if the rule already exists (-C), skip the append.
+    let dispatch_args = [
+        "-t",
+        "nat",
+        "-A",
+        SERVICES_CHAIN,
+        "-d",
+        vip,
+        "-p",
+        protocol,
+        "--dport",
+        &port_str,
+        "-j",
+        &chain,
+    ];
+    let mut check_args = dispatch_args.to_vec();
+    check_args[2] = "-C"; // -C (check) instead of -A (append)
+    if run_cmd("iptables", &check_args).is_err() {
+        run_cmd("iptables", &dispatch_args)
+            .with_context(|| format!("failed to add dispatch rule for {vip}:{port}"))?;
     }
 
     info!(vip = %vip, port = %port, "service route added");
@@ -821,20 +889,21 @@ pub fn add_service_route(
 
 /// Remove a DNAT service route for a VIP:port.
 ///
-/// Removes all DNAT rules in the SKYR-SERVICES chain matching this VIP:port.
+/// Removes the dispatch rule from SKYR-SERVICES and flushes/deletes the
+/// per-service chain.
 pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> {
     let port_str = port.to_string();
+    let chain = service_chain_name(vip, port, protocol);
 
     info!(
         vip = %vip,
         port = %port,
         protocol = %protocol,
+        chain = %chain,
         "removing service route"
     );
 
-    // List all rules in the chain and delete matching ones.
-    // We loop because iptables -D only removes one rule at a time,
-    // and there may be multiple backends.
+    // Remove dispatch rules in SKYR-SERVICES that jump to our per-service chain.
     loop {
         let output = std::process::Command::new("iptables")
             .args(["-t", "nat", "-S", SERVICES_CHAIN])
@@ -846,11 +915,10 @@ pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> 
             line.contains(&format!("-d {}", vip))
                 && line.contains(&format!("--dport {}", port_str))
                 && line.contains(&format!("-p {}", protocol))
-                && line.contains("-j DNAT")
+                && line.contains(&format!("-j {}", chain))
         });
 
         if let Some(rule) = rule_to_delete {
-            // Convert -A to -D for deletion
             let delete_rule = rule.replace("-A ", "-D ");
             let args: Vec<&str> = std::iter::once("-t")
                 .chain(std::iter::once("nat"))
@@ -861,6 +929,10 @@ pub fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> 
             break;
         }
     }
+
+    // Flush and delete the per-service chain.
+    let _ = run_cmd("iptables", &["-t", "nat", "-F", &chain]);
+    let _ = run_cmd("iptables", &["-t", "nat", "-X", &chain]);
 
     info!(vip = %vip, port = %port, "service route removed");
     Ok(())

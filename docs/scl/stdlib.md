@@ -139,7 +139,7 @@ let apiHostPort = apiHost.Port({
 | Field | Type | Description |
 |-------|------|-------------|
 | `port` | `Int` | Port number to expose on the Host VIP |
-| `backends` | `[{ address: Str, port: Int, protocol: Str }]` | Backend pod ports to load-balance across |
+| `backends` | `[{ address: Str, port: Int, protocol: Str }]` | Backend ports to load-balance across (Pod.Port or Host.Port) |
 | `protocol` | `Str?` | Protocol: `"tcp"` (default) or `"udp"` |
 
 **Outputs:**
@@ -151,7 +151,18 @@ let apiHostPort = apiHost.Port({
 | `port` | `Int` | The exposed port number |
 | `protocol` | `Str` | The protocol |
 
-Host.Port resources can be passed to a pod's `allow` list just like Pod.Port resources. Traffic is load-balanced across backends using round-robin. Backends can be Pod.Port resources or other Host.Port resources, enabling complex routing topologies.
+Host.Port resources can be passed to a pod's `allow` list just like Pod.Port resources. Traffic is load-balanced across backends using round-robin. Backends can be Pod.Port or Host.Port resources, enabling complex routing topologies such as internal API gateways:
+
+```scl
+// Chain Host.Ports to build a gateway that routes through backend services
+let gateway = Container.Host({ name: "gateway" })
+let gatewayPort = gateway.Port({
+    port: 80,
+    backends: [userServicePort, orderServicePort],
+})
+```
+
+When a Host.Port is used as a backend, traffic is forwarded through its own load-balancing rules to the ultimate pod backends.
 
 ### Container
 
