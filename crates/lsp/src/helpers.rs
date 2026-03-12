@@ -24,24 +24,8 @@ pub fn find_module_by_path<'a, S>(
     None
 }
 
-/// Find a FileMod by matching its ModuleId.
-pub fn find_file_mod_in_program<'a, S>(
-    program: &'a Program<OverlaySource<S>>,
-    target_module_id: &ModuleId,
-) -> Option<&'a sclc::FileMod> {
-    for (package_id, package) in program.packages() {
-        for (module_path, file_mod) in package.modules() {
-            let mid = package_module_id(package_id, module_path);
-            if mid == *target_module_id {
-                return Some(file_mod);
-            }
-        }
-    }
-    None
-}
-
 /// Build a full ModuleId from package ID + module file path.
-pub fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
+fn package_module_id(package_id: &ModuleId, module_path: &std::path::Path) -> ModuleId {
     let mut segments: Vec<String> = package_id.as_slice().to_vec();
     if let Some(parent) = module_path.parent() {
         for component in parent.components() {

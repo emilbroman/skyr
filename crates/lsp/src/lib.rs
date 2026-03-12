@@ -1,7 +1,7 @@
 mod convert;
 mod document;
 mod handlers;
-pub mod helpers;
+mod helpers;
 mod overlay;
 mod query;
 mod transport;
@@ -143,32 +143,6 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
                     }
                 };
                 handlers::navigation::handle_references(self, id, params).await
-            }
-            lsp_types::request::Completion::METHOD => {
-                let params: lsp_types::CompletionParams = match serde_json::from_value(params) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return vec![OutgoingMessage::error(
-                            id,
-                            -32602,
-                            format!("Invalid params: {}", e),
-                        )];
-                    }
-                };
-                handlers::completion::handle_completion(self, id, params).await
-            }
-            lsp_types::request::ResolveCompletionItem::METHOD => {
-                let item: lsp_types::CompletionItem = match serde_json::from_value(params) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return vec![OutgoingMessage::error(
-                            id,
-                            -32602,
-                            format!("Invalid params: {}", e),
-                        )];
-                    }
-                };
-                handlers::completion::handle_completion_resolve(self, id, item).await
             }
             lsp_types::request::Rename::METHOD => {
                 let params: lsp_types::RenameParams = match serde_json::from_value(params) {

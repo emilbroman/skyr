@@ -1,7 +1,7 @@
 use lsp_types::{
-    CompletionOptions, HoverProviderCapability, InitializeParams, InitializeResult, OneOf,
-    RenameOptions, ServerCapabilities, ServerInfo, SignatureHelpOptions,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    HoverProviderCapability, InitializeParams, InitializeResult, OneOf, RenameOptions,
+    ServerCapabilities, ServerInfo, SignatureHelpOptions, TextDocumentSyncCapability,
+    TextDocumentSyncKind,
 };
 use sclc::SourceRepo;
 
@@ -24,11 +24,6 @@ pub fn handle_initialize<S: SourceRepo>(
             definition_provider: Some(OneOf::Left(true)),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             references_provider: Some(OneOf::Left(true)),
-            completion_provider: Some(CompletionOptions {
-                resolve_provider: Some(true),
-                trigger_characters: Some(vec![".".to_string()]),
-                ..Default::default()
-            }),
             rename_provider: Some(OneOf::Right(RenameOptions {
                 prepare_provider: Some(true),
                 work_done_progress_options: Default::default(),

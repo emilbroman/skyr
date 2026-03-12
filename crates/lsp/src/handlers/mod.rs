@@ -1,4 +1,3 @@
-pub mod completion;
 pub mod formatting;
 pub mod lifecycle;
 pub mod navigation;
