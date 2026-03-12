@@ -4,6 +4,7 @@ use std::path::PathBuf;
 mod auth;
 mod deployment;
 mod fs_source;
+mod lsp;
 mod output;
 mod repl;
 mod repo;
@@ -22,6 +23,7 @@ struct Program {
 
 #[derive(clap::Subcommand)]
 enum Command {
+    Lsp,
     Repl,
     Run {
         #[arg(long, default_value = ".")]
@@ -48,6 +50,9 @@ async fn main() -> anyhow::Result<()> {
     let program = Program::parse();
 
     match program.command {
+        Command::Lsp => {
+            lsp::run_lsp().await?;
+        }
         Command::Repl => {
             repl::run_repl().await?;
         }
