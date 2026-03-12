@@ -1,6 +1,6 @@
 use lsp_types::{
-    InitializeParams, InitializeResult, ServerCapabilities, ServerInfo, TextDocumentSyncCapability,
-    TextDocumentSyncKind,
+    HoverProviderCapability, InitializeParams, InitializeResult, OneOf, ServerCapabilities,
+    ServerInfo, TextDocumentSyncCapability, TextDocumentSyncKind,
 };
 use sclc::SourceRepo;
 
@@ -18,6 +18,9 @@ pub fn handle_initialize<S: SourceRepo>(
     InitializeResult {
         capabilities: ServerCapabilities {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            document_symbol_provider: Some(OneOf::Left(true)),
+            definition_provider: Some(OneOf::Left(true)),
+            hover_provider: Some(HoverProviderCapability::Simple(true)),
             ..Default::default()
         },
         server_info: Some(ServerInfo {

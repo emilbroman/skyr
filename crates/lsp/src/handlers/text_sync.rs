@@ -97,11 +97,25 @@ async fn compile_and_publish<S: SourceRepo + 'static>(
         }
     };
 
+    // Extract diagnostics before consuming the program
+    let diag_messages = collect_diagnostics(&diagnosed, &root_path, changed_path.as_deref());
+
+    // Store the compiled program for navigation queries
+    server.last_program = Some(diagnosed.into_inner());
+
+    diag_messages
+}
+
+fn collect_diagnostics(
+    diagnosed: &sclc::Diagnosed<sclc::Program<OverlaySource<impl sclc::SourceRepo>>>,
+    root_path: &std::path::Path,
+    changed_path: Option<&std::path::Path>,
+) -> Vec<OutgoingMessage> {
     let mut diagnostics_by_path: HashMap<PathBuf, Vec<lsp_types::Diagnostic>> = HashMap::new();
 
     for diag in diagnosed.diags().iter() {
         let (module_id, _span) = diag.locate();
-        let file_path = module_id_to_path(&root_path, &module_id);
+        let file_path = module_id_to_path(root_path, &module_id);
 
         diagnostics_by_path
             .entry(file_path)
@@ -112,10 +126,8 @@ async fn compile_and_publish<S: SourceRepo + 'static>(
     let mut messages = Vec::new();
 
     if let Some(changed_path) = changed_path {
-        let diagnostics = diagnostics_by_path
-            .remove(&changed_path)
-            .unwrap_or_default();
-        if let Some(uri) = path_to_uri(&changed_path) {
+        let diagnostics = diagnostics_by_path.remove(changed_path).unwrap_or_default();
+        if let Some(uri) = path_to_uri(changed_path) {
             messages.push(OutgoingMessage::notification(
                 "textDocument/publishDiagnostics",
                 PublishDiagnosticsParams {

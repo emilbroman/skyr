@@ -44,6 +44,11 @@ pub fn diag_to_lsp(diag: &dyn Diag) -> lsp_types::Diagnostic {
     }
 }
 
+/// Convert an LSP Position (0-based) to an sclc Position (1-based).
+pub fn lsp_to_position(pos: lsp_types::Position) -> Position {
+    Position::new(pos.line + 1, pos.character + 1)
+}
+
 /// Convert an LSP Uri to a PathBuf.
 pub fn uri_to_path(uri: &Uri) -> Option<PathBuf> {
     if uri.scheme()?.as_str() != "file" {

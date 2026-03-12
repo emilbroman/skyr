@@ -2,6 +2,7 @@ mod convert;
 mod document;
 mod handlers;
 mod overlay;
+mod query;
 mod transport;
 
 pub use transport::{IncomingMessage, OutgoingMessage, RequestId};
@@ -10,10 +11,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lsp_types::{notification::Notification, request::Request};
-use sclc::SourceRepo;
+use sclc::{Program, SourceRepo};
 use tokio::sync::Mutex;
 
 use document::DocumentCache;
+use overlay::OverlaySource;
 
 pub struct LanguageServer<S> {
     documents: Arc<Mutex<DocumentCache>>,
@@ -21,6 +23,7 @@ pub struct LanguageServer<S> {
     root_path: Option<PathBuf>,
     initialized: bool,
     shutdown_requested: bool,
+    last_program: Option<Program<OverlaySource<S>>>,
 }
 
 impl<S: SourceRepo + 'static> LanguageServer<S> {
@@ -34,6 +37,7 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
             root_path: None,
             initialized: false,
             shutdown_requested: false,
+            last_program: None,
         }
     }
 
@@ -72,6 +76,45 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
             lsp_types::request::Shutdown::METHOD => {
                 handlers::lifecycle::handle_shutdown(self);
                 vec![OutgoingMessage::response(id, serde_json::Value::Null)]
+            }
+            lsp_types::request::DocumentSymbolRequest::METHOD => {
+                let params: lsp_types::DocumentSymbolParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::navigation::handle_document_symbol(self, id, params).await
+            }
+            lsp_types::request::GotoDefinition::METHOD => {
+                let params: lsp_types::GotoDefinitionParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::navigation::handle_goto_definition(self, id, params).await
+            }
+            lsp_types::request::HoverRequest::METHOD => {
+                let params: lsp_types::HoverParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::navigation::handle_hover(self, id, params).await
             }
             _ => vec![OutgoingMessage::error(
                 id,
