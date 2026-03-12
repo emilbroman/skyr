@@ -285,21 +285,30 @@ impl<'a> Iterator for Lexer<'a> {
     type Item = Loc<Token<'a>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        // Case A: cursor is between tokens (at the current position before consuming)
+        // Case A: cursor is between tokens (at the current position before consuming).
+        // However, if the next character starts a symbol, defer to Case B so that the
+        // cursor token carries the symbol content (needed for hover/go-to-def on the
+        // first character of a variable).
         if self
             .cursor
             .as_ref()
             .is_some_and(|c| c.position == self.current_position)
         {
-            self.cursor.take();
-            let span = Span::new(self.current_position, self.current_position);
-            return Some(Loc::new(
-                Token::Cursor {
-                    content: "",
-                    offset: 0,
-                },
-                span,
-            ));
+            let next_is_symbol = self
+                .graphemes
+                .peek()
+                .is_some_and(|(_, g)| Self::is_letter_grapheme(g));
+            if !next_is_symbol {
+                self.cursor.take();
+                let span = Span::new(self.current_position, self.current_position);
+                return Some(Loc::new(
+                    Token::Cursor {
+                        content: "",
+                        offset: 0,
+                    },
+                    span,
+                ));
+            }
         }
 
         let (grapheme_index, grapheme, start) = self.next_grapheme()?;
@@ -382,7 +391,7 @@ impl<'a> Iterator for Lexer<'a> {
                 if let Some(cursor_pos) = self.cursor.as_ref().map(|c| c.position) {
                     let symbol_start_pos = start;
                     let symbol_end_pos = self.current_position;
-                    if cursor_pos > symbol_start_pos && cursor_pos <= symbol_end_pos {
+                    if cursor_pos >= symbol_start_pos && cursor_pos <= symbol_end_pos {
                         self.cursor.take();
                         // Compute byte offset: count characters from start to cursor
                         let char_offset = cursor_pos.character() - symbol_start_pos.character();
@@ -701,22 +710,24 @@ mod tests {
     }
 
     #[test]
-    fn cursor_at_start_of_symbol_is_between_tokens() {
-        // "foo" with cursor at 1:1 (start of foo)
+    fn cursor_at_start_of_symbol_is_inside_symbol() {
+        // "foo" with cursor at 1:1 (start of foo) — should be Case B so that
+        // the cursor token carries the symbol content for hover/go-to-def.
         let cursor = crate::Cursor::new(crate::Position::new(1, 1));
         let tokens: Vec<_> = Lexer::with_cursor("foo", cursor).collect();
+        assert_eq!(tokens.len(), 1);
         assert!(
             matches!(
                 tokens[0].as_ref(),
                 Token::Cursor {
-                    content: "",
+                    content: "foo",
                     offset: 0,
                     ..
                 }
             ),
-            "cursor at start of symbol should be Case A (between tokens)"
+            "cursor at start of symbol should be Case B (inside symbol), got {:?}",
+            tokens[0].as_ref()
         );
-        assert!(matches!(tokens[1].as_ref(), Token::Symbol("foo")));
     }
 
     #[test]
