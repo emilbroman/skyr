@@ -356,7 +356,7 @@ impl LanguageServer {
         };
 
         let source = (self.source_factory)(&self.package_id, self.documents.clone(), &root);
-        let result = analysis::analyze(source, &root).await;
+        let result = analysis::analyze(source, &root, &self.package_id).await;
 
         let mut messages = Vec::new();
 

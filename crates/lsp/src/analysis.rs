@@ -47,14 +47,18 @@ pub struct AnalysisResult {
 }
 
 /// Run compilation and collect diagnostics.
-pub async fn analyze<S: sclc::SourceRepo>(source: S, root: &Path) -> AnalysisResult {
+pub async fn analyze<S: sclc::SourceRepo>(
+    source: S,
+    root: &Path,
+    package_id: &sclc::ModuleId,
+) -> AnalysisResult {
     let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
 
     match sclc::compile(source).await {
         Ok(diagnosed) => {
             for diag in diagnosed.diags().iter() {
                 let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
-                let path = module_id_to_path(root, &module_id);
+                let path = module_id_to_path(root, &module_id, package_id);
                 let uri = path_to_uri_string(&path);
                 file_diagnostics.entry(uri).or_default().push(lsp_diag);
             }
@@ -186,8 +190,17 @@ fn symbol_kind_for_expr(expr: &sclc::Loc<sclc::Expr>) -> lsp::SymbolKind {
     }
 }
 
-fn module_id_to_path(root: &Path, module_id: &sclc::ModuleId) -> PathBuf {
-    let segments = module_id.as_slice();
+fn module_id_to_path(
+    root: &Path,
+    module_id: &sclc::ModuleId,
+    package_id: &sclc::ModuleId,
+) -> PathBuf {
+    // Strip the package_id prefix from the module_id, since root already
+    // corresponds to the package directory.
+    let segments = module_id
+        .suffix_after(package_id)
+        .unwrap_or(module_id.as_slice());
+
     if segments.is_empty() {
         return root.join("Main.scl");
     }
