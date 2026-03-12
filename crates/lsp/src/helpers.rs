@@ -107,3 +107,24 @@ pub fn get_var_type<S: SourceRepo>(
 
     None
 }
+
+/// Get the type of an arbitrary expression by running the type checker.
+pub fn get_expr_type<S: SourceRepo>(
+    program: &Program<OverlaySource<S>>,
+    module_id: &ModuleId,
+    file_mod: &sclc::FileMod,
+    expr: &sclc::Loc<sclc::Expr>,
+) -> Option<sclc::Type> {
+    let globals = file_mod.find_globals();
+    let checker = TypeChecker::new(program);
+    let imports = checker.find_imports(file_mod);
+    let env = TypeEnv::new()
+        .with_module_id(module_id)
+        .with_globals(&globals)
+        .with_imports(&imports);
+
+    checker
+        .check_expr(&env, expr, None)
+        .ok()
+        .map(|d| d.into_inner())
+}

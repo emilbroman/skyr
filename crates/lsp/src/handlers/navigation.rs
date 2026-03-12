@@ -5,12 +5,12 @@ use lsp_types::{
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, LanguageString, Location,
     MarkedString, ReferenceParams, SymbolKind,
 };
-use sclc::{ModuleId, Program, SourceRepo, TypeChecker, TypeEnv};
+use sclc::{ModuleId, Program, SourceRepo, TypeChecker};
 
 use crate::convert::{lsp_to_position, path_to_uri, span_to_range, uri_to_path};
-use crate::helpers::{find_module_by_path, get_var_type, module_id_to_path};
+use crate::helpers::{find_module_by_path, get_expr_type, get_var_type, module_id_to_path};
 use crate::overlay::OverlaySource;
-use crate::query::{self, NodeAtPosition};
+use crate::query::{self, NodeKind};
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
 pub async fn handle_document_symbol<S: SourceRepo + 'static>(
@@ -136,11 +136,11 @@ pub async fn handle_goto_definition<S: SourceRepo + 'static>(
         )];
     };
 
-    let result = match node {
-        NodeAtPosition::Var(var) => {
+    let result = match node.kind {
+        NodeKind::Var(var) => {
             resolve_var_definition(program, &server.root_path, &module_id, file_mod, &var.name)
         }
-        NodeAtPosition::LetBindVar(bind) => {
+        NodeKind::LetBindVar(bind) => {
             // Cursor is on a let binding's name — go to the binding itself (same location)
             let root = server
                 .root_path
@@ -152,7 +152,7 @@ pub async fn handle_goto_definition<S: SourceRepo + 'static>(
                 range: span_to_range(bind.var.span()),
             })
         }
-        _ => None,
+        NodeKind::Property { .. } => None,
     };
 
     vec![OutgoingMessage::response(
@@ -186,8 +186,8 @@ pub async fn handle_hover<S: SourceRepo + 'static>(
         return vec![OutgoingMessage::response(id, Option::<Hover>::None)];
     };
 
-    let hover = match node {
-        NodeAtPosition::Var(var) => {
+    let hover = match node.kind {
+        NodeKind::Var(var) => {
             get_var_type(program, &module_id, file_mod, &var.name).map(|ty| Hover {
                 contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
                     language: "scl".to_string(),
@@ -196,33 +196,29 @@ pub async fn handle_hover<S: SourceRepo + 'static>(
                 range: Some(span_to_range(var.span())),
             })
         }
-        NodeAtPosition::LetBindVar(bind) => {
-            get_var_type(program, &module_id, file_mod, &bind.var.name).map(|ty| Hover {
+        NodeKind::LetBindVar(bind) => get_var_type(program, &module_id, file_mod, &bind.var.name)
+            .map(|ty| Hover {
                 contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
                     language: "scl".to_string(),
                     value: format!("{}: {}", bind.var.name, ty),
                 })),
                 range: Some(span_to_range(bind.var.span())),
+            }),
+        NodeKind::Property { expr, property } => get_expr_type(program, &module_id, file_mod, expr)
+            .and_then(|ty| {
+                if let sclc::Type::Record(record) = ty.unfold() {
+                    record.get(&property.name).cloned()
+                } else {
+                    None
+                }
             })
-        }
-        NodeAtPosition::Property { expr, property } => {
-            get_expr_type(program, &module_id, file_mod, expr)
-                .and_then(|ty| {
-                    if let sclc::Type::Record(record) = ty.unfold() {
-                        record.get(&property.name).cloned()
-                    } else {
-                        None
-                    }
-                })
-                .map(|field_ty| Hover {
-                    contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
-                        language: "scl".to_string(),
-                        value: format!("{}: {}", property.name, field_ty),
-                    })),
-                    range: Some(span_to_range(property.span())),
-                })
-        }
-        NodeAtPosition::Expr(_) => None,
+            .map(|field_ty| Hover {
+                contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+                    language: "scl".to_string(),
+                    value: format!("{}: {}", property.name, field_ty),
+                })),
+                range: Some(span_to_range(property.span())),
+            }),
     };
 
     vec![OutgoingMessage::response(id, hover)]
@@ -254,10 +250,12 @@ pub async fn handle_references<S: SourceRepo + 'static>(
     };
 
     // Determine the variable name to search for.
-    let var_name = match node {
-        NodeAtPosition::Var(var) => &var.name,
-        NodeAtPosition::LetBindVar(bind) => &bind.var.name,
-        _ => return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)],
+    let var_name = match node.kind {
+        NodeKind::Var(var) => &var.name,
+        NodeKind::LetBindVar(bind) => &bind.var.name,
+        NodeKind::Property { .. } => {
+            return vec![OutgoingMessage::response(id, Option::<Vec<Location>>::None)];
+        }
     };
 
     let root = server
@@ -314,27 +312,6 @@ fn resolve_var_definition<S: SourceRepo>(
     }
 
     None
-}
-
-/// Get the type of an arbitrary expression by running the type checker.
-fn get_expr_type<S: SourceRepo>(
-    program: &Program<OverlaySource<S>>,
-    module_id: &ModuleId,
-    file_mod: &sclc::FileMod,
-    expr: &sclc::Loc<sclc::Expr>,
-) -> Option<sclc::Type> {
-    let globals = file_mod.find_globals();
-    let checker = TypeChecker::new(program);
-    let imports = checker.find_imports(file_mod);
-    let env = TypeEnv::new()
-        .with_module_id(module_id)
-        .with_globals(&globals)
-        .with_imports(&imports);
-
-    checker
-        .check_expr(&env, expr, None)
-        .ok()
-        .map(|d| d.into_inner())
 }
 
 fn expr_symbol_kind(expr: &sclc::Expr) -> SymbolKind {

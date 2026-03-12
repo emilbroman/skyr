@@ -7,7 +7,7 @@ use sclc::SourceRepo;
 
 use crate::convert::{lsp_to_position, path_to_uri, span_to_range, uri_to_path};
 use crate::helpers::{find_module_by_path, module_id_to_path};
-use crate::query::{self, NodeAtPosition};
+use crate::query::{self, NodeKind};
 use crate::{LanguageServer, OutgoingMessage, RequestId};
 
 pub async fn handle_rename<S: SourceRepo + 'static>(
@@ -36,10 +36,10 @@ pub async fn handle_rename<S: SourceRepo + 'static>(
         return vec![OutgoingMessage::response(id, Option::<WorkspaceEdit>::None)];
     };
 
-    let var_name = match node {
-        NodeAtPosition::Var(var) => &var.name,
-        NodeAtPosition::LetBindVar(bind) => &bind.var.name,
-        _ => {
+    let var_name = match node.kind {
+        NodeKind::Var(var) => &var.name,
+        NodeKind::LetBindVar(bind) => &bind.var.name,
+        NodeKind::Property { .. } => {
             return vec![OutgoingMessage::response(id, Option::<WorkspaceEdit>::None)];
         }
     };
@@ -116,16 +116,16 @@ pub async fn handle_prepare_rename<S: SourceRepo + 'static>(
         )];
     };
 
-    let result = match node {
-        NodeAtPosition::Var(var) => Some(PrepareRenameResponse::RangeWithPlaceholder {
+    let result = match node.kind {
+        NodeKind::Var(var) => Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: span_to_range(var.span()),
             placeholder: var.name.clone(),
         }),
-        NodeAtPosition::LetBindVar(bind) => Some(PrepareRenameResponse::RangeWithPlaceholder {
+        NodeKind::LetBindVar(bind) => Some(PrepareRenameResponse::RangeWithPlaceholder {
             range: span_to_range(bind.var.span()),
             placeholder: bind.var.name.clone(),
         }),
-        _ => None,
+        NodeKind::Property { .. } => None,
     };
 
     vec![OutgoingMessage::response(id, result)]

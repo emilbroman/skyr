@@ -6,7 +6,7 @@ use sclc::{ModuleId, Program, SourceRepo, TypeChecker};
 
 use crate::convert::{lsp_to_position, uri_to_path};
 use crate::helpers::{
-    find_file_mod_in_program, find_module_by_path, get_var_type, package_module_id,
+    find_file_mod_in_program, find_module_by_path, get_expr_type, get_var_type, package_module_id,
 };
 use crate::overlay::OverlaySource;
 use crate::{LanguageServer, OutgoingMessage, RequestId};
@@ -171,30 +171,15 @@ fn dot_completions<S: SourceRepo>(
     file_mod: &sclc::FileMod,
     lsp_pos: lsp_types::Position,
 ) -> Vec<CompletionItem> {
-    // The cursor is right after the `.`. Subtract 2 to position inside the
-    // expression before the dot (1 to reach the dot, 1 more to be before it).
-    let pos = lsp_to_position(lsp_types::Position {
-        line: lsp_pos.line,
-        character: lsp_pos.character.saturating_sub(2),
-    });
+    // The cursor is right after the `.`. Find the expression that ends
+    // just before the cursor position (i.e., the LHS of the dot).
+    let pos = lsp_to_position(lsp_pos);
 
-    // Find the node at the position before the dot.
-    let Some(node) = crate::query::node_at_position(file_mod, pos) else {
+    let Some(lhs_expr) = crate::query::expr_ending_before(file_mod, pos) else {
         return vec![];
     };
 
-    // We need the type of the expression before the dot.
-    let var_name = match node {
-        crate::query::NodeAtPosition::Var(var) => Some(var.name.as_str()),
-        crate::query::NodeAtPosition::LetBindVar(bind) => Some(bind.var.name.as_str()),
-        _ => None,
-    };
-
-    let Some(var_name) = var_name else {
-        return vec![];
-    };
-
-    let Some(ty) = get_var_type(program, module_id, file_mod, var_name) else {
+    let Some(ty) = get_expr_type(program, module_id, file_mod, lhs_expr) else {
         return vec![];
     };
 

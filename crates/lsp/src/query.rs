@@ -5,8 +5,8 @@ fn span_contains(span: Span, pos: Position) -> bool {
     span.start() <= pos && pos <= span.end()
 }
 
-/// The result of looking up what's at a cursor position.
-pub enum NodeAtPosition<'a> {
+/// Specific kind of node found at a cursor position.
+pub enum NodeKind<'a> {
     /// A variable reference in an expression.
     Var(&'a Loc<Var>),
     /// A top-level let/export binding's name.
@@ -16,10 +16,11 @@ pub enum NodeAtPosition<'a> {
         expr: &'a Loc<Expr>,
         property: &'a Loc<Var>,
     },
-    /// An expression (fallback when no more specific node matches).
-    #[allow(dead_code)]
-    // inner value reserved for future use (e.g. hover on arbitrary expressions)
-    Expr(&'a Loc<Expr>),
+}
+
+/// The result of looking up what's at a cursor position.
+pub struct NodeAtPosition<'a> {
+    pub kind: NodeKind<'a>,
 }
 
 /// Find the most specific AST node at the given position.
@@ -39,7 +40,9 @@ fn node_in_stmt<'a>(stmt: &'a ModStmt, pos: Position) -> Option<NodeAtPosition<'
                 // Return the last var segment (the alias) as the interesting one
                 for var in &import.vars {
                     if span_contains(var.span(), pos) {
-                        return Some(NodeAtPosition::Var(var));
+                        return Some(NodeAtPosition {
+                            kind: NodeKind::Var(var),
+                        });
                     }
                 }
             }
@@ -47,7 +50,9 @@ fn node_in_stmt<'a>(stmt: &'a ModStmt, pos: Position) -> Option<NodeAtPosition<'
         }
         ModStmt::Let(bind) | ModStmt::Export(bind) => {
             if span_contains(bind.var.span(), pos) {
-                return Some(NodeAtPosition::LetBindVar(bind));
+                return Some(NodeAtPosition {
+                    kind: NodeKind::LetBindVar(bind),
+                });
             }
             node_in_expr(&bind.expr, pos)
         }
@@ -61,21 +66,33 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
     }
 
     match expr.as_ref() {
-        Expr::Var(var) => Some(NodeAtPosition::Var(var)),
+        Expr::Var(var) => Some(NodeAtPosition {
+            kind: NodeKind::Var(var),
+        }),
 
         Expr::PropertyAccess(prop) => {
             if span_contains(prop.property.span(), pos) {
-                return Some(NodeAtPosition::Property {
-                    expr: &prop.expr,
-                    property: &prop.property,
+                return Some(NodeAtPosition {
+                    kind: NodeKind::Property {
+                        expr: &prop.expr,
+                        property: &prop.property,
+                    },
                 });
             }
-            node_in_expr(&prop.expr, pos)
+            if let Some(n) = node_in_expr(&prop.expr, pos) {
+                return Some(n);
+            }
+            // Position is inside the PropertyAccess span but not on any child
+            // (e.g. on the dot itself). Return as a Var-like node with the
+            // enclosing PropertyAccess so callers can type-check it.
+            None
         }
 
         Expr::Let(let_expr) => {
             if span_contains(let_expr.bind.var.span(), pos) {
-                return Some(NodeAtPosition::LetBindVar(&let_expr.bind));
+                return Some(NodeAtPosition {
+                    kind: NodeKind::LetBindVar(&let_expr.bind),
+                });
             }
             node_in_expr(&let_expr.bind.expr, pos).or_else(|| node_in_expr(&let_expr.expr, pos))
         }
@@ -83,7 +100,9 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
         Expr::Fn(fn_expr) => {
             for param in &fn_expr.params {
                 if span_contains(param.var.span(), pos) {
-                    return Some(NodeAtPosition::Var(&param.var));
+                    return Some(NodeAtPosition {
+                        kind: NodeKind::Var(&param.var),
+                    });
                 }
             }
             node_in_expr(&fn_expr.body, pos)
@@ -98,7 +117,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         Expr::If(if_expr) => node_in_expr(&if_expr.condition, pos)
@@ -120,7 +139,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         Expr::Dict(dict) => {
@@ -132,7 +151,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         Expr::List(list) => {
@@ -141,7 +160,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         Expr::Interp(interp) => {
@@ -150,7 +169,7 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         Expr::Raise(raise) => node_in_expr(&raise.expr, pos),
@@ -161,22 +180,151 @@ fn node_in_expr<'a>(expr: &'a Loc<Expr>, pos: Position) -> Option<NodeAtPosition
             }
             for catch in &try_expr.catches {
                 if span_contains(catch.exception_var.span(), pos) {
-                    return Some(NodeAtPosition::Var(&catch.exception_var));
+                    return Some(NodeAtPosition {
+                        kind: NodeKind::Var(&catch.exception_var),
+                    });
                 }
                 if let Some(catch_arg) = &catch.catch_arg
                     && span_contains(catch_arg.span(), pos)
                 {
-                    return Some(NodeAtPosition::Var(catch_arg));
+                    return Some(NodeAtPosition {
+                        kind: NodeKind::Var(catch_arg),
+                    });
                 }
                 if let Some(n) = node_in_expr(&catch.body, pos) {
                     return Some(n);
                 }
             }
-            Some(NodeAtPosition::Expr(expr))
+            None
         }
 
         // Leaf expressions: Int, Float, Bool, Nil, Str, Extern, Exception
-        _ => Some(NodeAtPosition::Expr(expr)),
+        _ => None,
+    }
+}
+
+/// Find the innermost expression whose span ends at or just before the given
+/// position. This is used for dot-completion: the cursor is after the `.`, so
+/// the expression that precedes the dot is the one whose span end is closest
+/// to (but not past) `pos`.
+pub fn expr_ending_before(file_mod: &FileMod, pos: Position) -> Option<&Loc<Expr>> {
+    let mut best: Option<&Loc<Expr>> = None;
+    for stmt in &file_mod.statements {
+        expr_ending_before_in_stmt(stmt, pos, &mut best);
+    }
+    best
+}
+
+fn expr_ending_before_in_stmt<'a>(
+    stmt: &'a ModStmt,
+    pos: Position,
+    best: &mut Option<&'a Loc<Expr>>,
+) {
+    match stmt {
+        ModStmt::Let(bind) | ModStmt::Export(bind) => {
+            expr_ending_before_in_expr(&bind.expr, pos, best);
+        }
+        ModStmt::Expr(expr) => {
+            expr_ending_before_in_expr(expr, pos, best);
+        }
+        ModStmt::Import(_) => {}
+    }
+}
+
+fn expr_ending_before_in_expr<'a>(
+    expr: &'a Loc<Expr>,
+    pos: Position,
+    best: &mut Option<&'a Loc<Expr>>,
+) {
+    let end = expr.span().end();
+    // The expression must end before (or at) the position, and be the closest.
+    if end < pos {
+        let dominated = best.is_none_or(|b| b.span().end() <= end);
+        if dominated {
+            *best = Some(expr);
+        }
+        // Still recurse into children: a child may end closer to `pos`.
+    }
+
+    // Recurse into children to find tighter matches.
+    match expr.as_ref() {
+        Expr::PropertyAccess(prop) => {
+            expr_ending_before_in_expr(&prop.expr, pos, best);
+        }
+        Expr::Let(let_expr) => {
+            expr_ending_before_in_expr(&let_expr.bind.expr, pos, best);
+            expr_ending_before_in_expr(&let_expr.expr, pos, best);
+        }
+        Expr::Fn(fn_expr) => {
+            expr_ending_before_in_expr(&fn_expr.body, pos, best);
+        }
+        Expr::Call(call) => {
+            expr_ending_before_in_expr(&call.callee, pos, best);
+            for arg in &call.args {
+                expr_ending_before_in_expr(arg, pos, best);
+            }
+        }
+        Expr::If(if_expr) => {
+            expr_ending_before_in_expr(&if_expr.condition, pos, best);
+            expr_ending_before_in_expr(&if_expr.then_expr, pos, best);
+            if let Some(e) = &if_expr.else_expr {
+                expr_ending_before_in_expr(e, pos, best);
+            }
+        }
+        Expr::Binary(bin) => {
+            expr_ending_before_in_expr(&bin.lhs, pos, best);
+            expr_ending_before_in_expr(&bin.rhs, pos, best);
+        }
+        Expr::Unary(unary) => {
+            expr_ending_before_in_expr(&unary.expr, pos, best);
+        }
+        Expr::Record(record) => {
+            for field in &record.fields {
+                expr_ending_before_in_expr(&field.expr, pos, best);
+            }
+        }
+        Expr::Dict(dict) => {
+            for entry in &dict.entries {
+                expr_ending_before_in_expr(&entry.key, pos, best);
+                expr_ending_before_in_expr(&entry.value, pos, best);
+            }
+        }
+        Expr::List(list) => {
+            for item in &list.items {
+                expr_ending_before_in_list_item(item, pos, best);
+            }
+        }
+        Expr::Interp(interp) => {
+            for part in &interp.parts {
+                expr_ending_before_in_expr(part, pos, best);
+            }
+        }
+        Expr::Raise(raise) => {
+            expr_ending_before_in_expr(&raise.expr, pos, best);
+        }
+        Expr::Try(try_expr) => {
+            expr_ending_before_in_expr(&try_expr.expr, pos, best);
+            for catch in &try_expr.catches {
+                expr_ending_before_in_expr(&catch.body, pos, best);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn expr_ending_before_in_list_item<'a>(
+    item: &'a sclc::ListItem,
+    pos: Position,
+    best: &mut Option<&'a Loc<Expr>>,
+) {
+    match item {
+        sclc::ListItem::Expr(expr) => expr_ending_before_in_expr(expr, pos, best),
+        sclc::ListItem::If(if_item) => {
+            expr_ending_before_in_expr(&if_item.condition, pos, best);
+        }
+        sclc::ListItem::For(for_item) => {
+            expr_ending_before_in_expr(&for_item.iterable, pos, best);
+        }
     }
 }
 
@@ -318,7 +466,9 @@ fn node_in_list_item<'a>(item: &'a sclc::ListItem, pos: Position) -> Option<Node
             .or_else(|| node_in_list_item(&if_item.then_item, pos)),
         sclc::ListItem::For(for_item) => {
             if span_contains(for_item.var.span(), pos) {
-                return Some(NodeAtPosition::Var(&for_item.var));
+                return Some(NodeAtPosition {
+                    kind: NodeKind::Var(&for_item.var),
+                });
             }
             node_in_expr(&for_item.iterable, pos)
                 .or_else(|| node_in_list_item(&for_item.emit_item, pos))
