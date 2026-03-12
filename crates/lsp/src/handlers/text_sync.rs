@@ -65,10 +65,12 @@ pub async fn handle_did_close<S: SourceRepo + 'static>(
 }
 
 pub async fn handle_did_save<S: SourceRepo + 'static>(
-    server: &mut LanguageServer<S>,
-    params: DidSaveTextDocumentParams,
+    _server: &mut LanguageServer<S>,
+    _params: DidSaveTextDocumentParams,
 ) -> Vec<OutgoingMessage> {
-    compile_and_publish(server, &params.text_document.uri).await
+    // With full text sync, didChange already has the latest content.
+    // No need to recompile on save.
+    vec![]
 }
 
 async fn compile_and_publish<S: SourceRepo + 'static>(

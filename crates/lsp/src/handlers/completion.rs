@@ -171,11 +171,11 @@ fn dot_completions<S: SourceRepo>(
     file_mod: &sclc::FileMod,
     lsp_pos: lsp_types::Position,
 ) -> Vec<CompletionItem> {
-    // The cursor is right after the `.`. Position one character before the dot
-    // to find the expression.
+    // The cursor is right after the `.`. Subtract 2 to position inside the
+    // expression before the dot (1 to reach the dot, 1 more to be before it).
     let pos = lsp_to_position(lsp_types::Position {
         line: lsp_pos.line,
-        character: lsp_pos.character.saturating_sub(1),
+        character: lsp_pos.character.saturating_sub(2),
     });
 
     // Find the node at the position before the dot.
