@@ -60,8 +60,8 @@ impl completion::Completer for ReplHelper {
 
         let module_id: sclc::ModuleId = ["ReplComplete"].into();
 
-        // Parse with cursor
-        let diagnosed = sclc::parse_repl_line_with_cursor(line, &module_id, Some(cursor));
+        // Parse with cursor (clone so we can also pass it to the type env)
+        let diagnosed = sclc::parse_repl_line_with_cursor(line, &module_id, Some(cursor.clone()));
         let Some(repl_line) = diagnosed.into_inner() else {
             return Ok((0, Vec::new()));
         };
@@ -73,7 +73,8 @@ impl completion::Completer for ReplHelper {
         // Type-check to populate cursor info
         let state = self.state.borrow();
         let program = sclc::Program::<FsSource>::new();
-        let type_env = Repl::type_env(&state.bindings, &state.type_defs, &module_id);
+        let type_env =
+            Repl::type_env(&state.bindings, &state.type_defs, &module_id).with_cursor(cursor);
         let checker = sclc::TypeChecker::new(&program);
         let _ = checker.check_stmt(&type_env, statement);
 
@@ -271,7 +272,7 @@ impl Repl {
     ) -> sclc::TypeEnv<'a> {
         let env = bindings.iter().fold(
             sclc::TypeEnv::new().with_module_id(module_id),
-            |env, (name, (ty, _))| env.with_local(name.as_str(), ty.clone()),
+            |env, (name, (ty, _))| env.with_local(name.as_str(), sclc::Span::default(), ty.clone()),
         );
         type_defs.iter().fold(env, |env, (name, ty)| {
             env.with_type_level(name.clone(), ty.clone())
