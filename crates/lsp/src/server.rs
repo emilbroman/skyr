@@ -194,6 +194,19 @@ impl LanguageServer {
                 self.shutdown_requested = true;
                 handlers::lifecycle::shutdown(id)
             }
+            "textDocument/hover" => handlers::hover::hover(id, params, &self.documents),
+            "textDocument/definition" => {
+                handlers::navigation::goto_definition(id, params, &self.documents)
+            }
+            "textDocument/references" => {
+                handlers::navigation::references(id, params, &self.documents)
+            }
+            "textDocument/documentSymbol" => {
+                handlers::navigation::document_symbol(id, params, &self.documents)
+            }
+            "textDocument/completion" => {
+                handlers::completion::completion(id, params, &self.documents)
+            }
             _ => vec![OutgoingMessage::error(
                 id,
                 -32601,

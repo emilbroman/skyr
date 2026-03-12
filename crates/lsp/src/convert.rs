@@ -16,6 +16,11 @@ pub fn to_lsp_range(span: sclc::Span) -> lsp::Range {
     }
 }
 
+/// Convert an LSP Position (0-based) to an sclc Position (1-based).
+pub fn to_sclc_position(pos: lsp::Position) -> sclc::Position {
+    sclc::Position::new(pos.line + 1, pos.character + 1)
+}
+
 /// Convert an sclc DiagLevel to an LSP DiagnosticSeverity.
 pub fn to_lsp_severity(level: sclc::DiagLevel) -> lsp::DiagnosticSeverity {
     match level {

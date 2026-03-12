@@ -27,6 +27,14 @@ pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessa
                 ..Default::default()
             },
         )),
+        hover_provider: Some(lsp::HoverProviderCapability::Simple(true)),
+        definition_provider: Some(lsp::OneOf::Left(true)),
+        references_provider: Some(lsp::OneOf::Left(true)),
+        document_symbol_provider: Some(lsp::OneOf::Left(true)),
+        completion_provider: Some(lsp::CompletionOptions {
+            trigger_characters: Some(vec![".".to_string()]),
+            ..Default::default()
+        }),
         ..Default::default()
     };
 
