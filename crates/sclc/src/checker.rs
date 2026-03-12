@@ -1094,7 +1094,23 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         stmt: &ast::ModStmt,
     ) -> Result<Diagnosed<Option<(String, Type)>>, TypeCheckError> {
         match stmt {
-            ast::ModStmt::Import(_) => Ok(Diagnosed::new(None, DiagList::new())),
+            ast::ModStmt::Import(import_stmt) => {
+                let alias = import_stmt
+                    .as_ref()
+                    .vars
+                    .last()
+                    .expect("import path contains at least one segment");
+                if let Some((cursor, _)) = &alias.cursor
+                    && let Some((target_module_id, Some(import_file_mod))) =
+                        env.lookup_import(alias.name.as_str())
+                {
+                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                    if let Ok(imported_ty) = self.check_file_mod(&import_env, import_file_mod) {
+                        cursor.set_type(imported_ty.into_inner());
+                    }
+                }
+                Ok(Diagnosed::new(None, DiagList::new()))
+            }
             ast::ModStmt::Expr(expr) => {
                 let mut diags = DiagList::new();
                 self.check_expr(env, expr, None)?.unpack(&mut diags);
@@ -1640,6 +1656,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 };
 
                 for field in &record_expr.fields {
+                    if let Some((cursor, offset)) = &field.var.cursor
+                        && let Some(expected_record) = expected_record
+                    {
+                        let prefix = &field.var.name[..*offset];
+                        for (name, _) in expected_record.iter() {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::Member(name.clone()),
+                                );
+                            }
+                        }
+                    }
                     let expected_field_ty = expected_record
                         .and_then(|record_ty| record_ty.get(field.var.name.as_str()));
                     let field_ty = self
@@ -1988,10 +2016,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let resolved_ty = self
             .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
-        Ok(Diagnosed::new(
-            Type::IsoRec(type_id, Box::new(resolved_ty)),
-            diags,
-        ))
+        let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
+        if let Some((cursor, _)) = &let_bind.var.cursor {
+            cursor.set_type(ty.clone());
+        }
+        Ok(Diagnosed::new(ty, diags))
     }
 
     fn resolve_type_expr(
