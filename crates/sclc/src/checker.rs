@@ -31,6 +31,8 @@ pub struct TypeEnv<'a> {
     type_vars: HashMap<String, Type>,
     /// Upper bounds for type variable IDs (used during function body checking).
     type_var_bounds: HashMap<usize, Type>,
+    /// Type-level bindings from `type` declarations and imports (separate namespace from values).
+    type_level: HashMap<String, Type>,
 }
 
 impl<'a> Default for TypeEnv<'a> {
@@ -48,6 +50,7 @@ impl<'a> TypeEnv<'a> {
             locals: HashMap::new(),
             type_vars: HashMap::new(),
             type_var_bounds: HashMap::new(),
+            type_level: HashMap::new(),
         }
     }
 
@@ -59,6 +62,7 @@ impl<'a> TypeEnv<'a> {
             locals: self.locals.clone(),
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
+            type_level: self.type_level.clone(),
         }
     }
 
@@ -70,6 +74,7 @@ impl<'a> TypeEnv<'a> {
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
+            type_level: self.type_level.clone(),
         }
     }
 
@@ -84,6 +89,7 @@ impl<'a> TypeEnv<'a> {
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
+            type_level: self.type_level.clone(),
         }
     }
 
@@ -95,6 +101,7 @@ impl<'a> TypeEnv<'a> {
             locals: self.locals.clone(),
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
+            type_level: self.type_level.clone(),
         }
     }
 
@@ -113,6 +120,12 @@ impl<'a> TypeEnv<'a> {
     pub fn with_type_var_bound(&self, id: usize, upper_bound: Type) -> Self {
         let mut env = self.inner();
         env.type_var_bounds.insert(id, upper_bound);
+        env
+    }
+
+    pub fn with_type_level(&self, name: String, ty: Type) -> Self {
+        let mut env = self.inner();
+        env.type_level.insert(name, ty);
         env
     }
 
@@ -135,11 +148,16 @@ impl<'a> TypeEnv<'a> {
             locals: HashMap::new(),
             type_vars: self.type_vars.clone(),
             type_var_bounds: self.type_var_bounds.clone(),
+            type_level: self.type_level.clone(),
         }
     }
 
     pub fn lookup_type_var(&self, name: &str) -> Option<&Type> {
         self.type_vars.get(name)
+    }
+
+    pub fn lookup_type_level(&self, name: &str) -> Option<&Type> {
+        self.type_level.get(name)
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&Type> {
@@ -960,9 +978,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let globals = file_mod.find_globals();
         let imports = self.find_imports(file_mod);
-        let env = env.with_globals(&globals).with_imports(&imports);
+        let mut env = env.with_globals(&globals).with_imports(&imports);
 
         let mut diags = DiagList::new();
+
+        self.build_module_type_env(&mut env, file_mod, &mut diags)?;
+
         let mut exports = RecordType::default();
 
         for statement in &file_mod.statements {
@@ -972,6 +993,70 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
 
         Ok(Diagnosed::new(Type::Record(exports), diags))
+    }
+
+    /// Compute the type-level exports of a module (from `export type` declarations).
+    fn type_level_exports(
+        &self,
+        env: &TypeEnv<'_>,
+        file_mod: &ast::FileMod,
+    ) -> Diagnosed<RecordType> {
+        let mut diags = DiagList::new();
+        let mut type_exports = RecordType::default();
+
+        let globals = file_mod.find_globals();
+        let imports = self.find_imports(file_mod);
+        let mut inner_env = env.with_globals(&globals).with_imports(&imports);
+
+        // Reuse the shared helper — this also populates import type-level,
+        // which is needed for transitive type re-exports (e.g., `export type Alias B.SomeType`).
+        if let Err(_err) = self.build_module_type_env(&mut inner_env, file_mod, &mut diags) {
+            return Diagnosed::new(type_exports, diags);
+        }
+
+        for statement in &file_mod.statements {
+            if let ast::ModStmt::ExportTypeDef(type_def) = statement
+                && let Some(ty) = inner_env.lookup_type_level(type_def.var.name.as_str())
+            {
+                type_exports.insert(type_def.var.name.clone(), ty.clone());
+            }
+        }
+
+        Diagnosed::new(type_exports, diags)
+    }
+
+    /// Build the type-level environment for a module:
+    /// 1. Populate import type-level bindings.
+    /// 2. Two-pass resolve of local type defs (first pass: collect names, second pass: resolve bodies).
+    fn build_module_type_env(
+        &self,
+        env: &mut TypeEnv<'_>,
+        file_mod: &ast::FileMod,
+        diags: &mut DiagList,
+    ) -> Result<(), TypeCheckError> {
+        // Populate type-level namespace from imports first, so type defs can reference imported types.
+        self.populate_import_type_level(env, file_mod, diags)?;
+
+        let type_defs = file_mod.find_type_defs();
+
+        // Pass 1: Register all type def names with placeholder types (Never).
+        // This allows forward references between type defs in the same module.
+        for type_def in &type_defs {
+            *env = env.with_type_level(type_def.var.name.clone(), Type::Never);
+        }
+
+        // Pass 2: Resolve the bodies. Run two iterations so that forward references
+        // (type B A / type A Int) resolve correctly — the first iteration resolves
+        // definitions whose dependencies are already resolved, and the second iteration
+        // picks up any that referenced not-yet-resolved definitions.
+        for _ in 0..2 {
+            for type_def in &type_defs {
+                let resolved_ty = self.resolve_type_def(env, type_def).unpack(diags);
+                *env = env.with_type_level(type_def.var.name.clone(), resolved_ty);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn check_stmt(
@@ -998,6 +1083,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .check_global_let_bind(env, let_bind)?
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(Some((let_bind.var.name.clone(), ty)), diags))
+            }
+            // Type defs are resolved during check_file_mod setup; nothing to do here.
+            ast::ModStmt::TypeDef(_) | ast::ModStmt::ExportTypeDef(_) => {
+                Ok(Diagnosed::new(None, DiagList::new()))
             }
         }
     }
@@ -1831,7 +1920,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::TypeExpr::Var(var) if var.name == "Bool" => Type::Bool,
             ast::TypeExpr::Var(var) if var.name == "Str" => Type::Str,
             ast::TypeExpr::Var(var) => {
+                // Type variables (from fn<A>) take priority, then type-level bindings (from type defs/imports)
                 if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
+                    ty.clone()
+                } else if let Some(ty) = env.lookup_type_level(var.name.as_str()) {
                     ty.clone()
                 } else {
                     if let Ok(module_id) = env.module_id() {
@@ -1902,8 +1994,191 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     value: Box::new(value),
                 })
             }
+            ast::TypeExpr::Application(app) => {
+                let base_ty = self
+                    .resolve_type_expr(env, app.base.as_ref())
+                    .unpack(&mut diags);
+                match &base_ty {
+                    Type::Fn(fn_ty) if fn_ty.params.is_empty() && !fn_ty.type_params.is_empty() => {
+                        if fn_ty.type_params.len() != app.args.len() {
+                            if let Ok(module_id) = env.module_id() {
+                                diags.push(WrongTypeArgCount {
+                                    module_id,
+                                    expected: fn_ty.type_params.len(),
+                                    got: app.args.len(),
+                                    span: type_expr.span(),
+                                });
+                            }
+                            Type::Never
+                        } else {
+                            let resolved_args: Vec<Type> = app
+                                .args
+                                .iter()
+                                .map(|arg| self.resolve_type_expr(env, arg).unpack(&mut diags))
+                                .collect();
+                            // Check that each arg satisfies its bound
+                            for ((id, bound), arg_ty) in
+                                fn_ty.type_params.iter().zip(resolved_args.iter())
+                            {
+                                let instantiated_bound = bound.substitute(
+                                    &fn_ty
+                                        .type_params
+                                        .iter()
+                                        .zip(resolved_args.iter())
+                                        .map(|((id, _), ty)| (*id, ty.clone()))
+                                        .collect::<Vec<_>>(),
+                                );
+                                if self.assign_type(&instantiated_bound, arg_ty).is_err()
+                                    && let Ok(module_id) = env.module_id()
+                                {
+                                    diags.push(TypeArgBoundViolation {
+                                        module_id,
+                                        actual: arg_ty.clone(),
+                                        bound: instantiated_bound,
+                                        span: type_expr.span(),
+                                    });
+                                }
+                                let _ = id;
+                            }
+                            // Substitute type params with the provided args
+                            let replacements: Vec<(usize, Type)> = fn_ty
+                                .type_params
+                                .iter()
+                                .zip(resolved_args)
+                                .map(|((id, _), ty)| (*id, ty))
+                                .collect();
+                            fn_ty.ret.substitute(&replacements)
+                        }
+                    }
+                    _ => {
+                        if let Ok(module_id) = env.module_id() {
+                            diags.push(UnexpectedTypeArgs {
+                                module_id,
+                                span: type_expr.span(),
+                            });
+                        }
+                        Type::Never
+                    }
+                }
+            }
+            ast::TypeExpr::PropertyAccess(prop_access) => {
+                let lhs_ty = self
+                    .resolve_type_expr(env, prop_access.expr.as_ref())
+                    .unpack(&mut diags);
+                match &lhs_ty {
+                    Type::Record(record_ty) => {
+                        if let Some(member_ty) = record_ty.get(prop_access.property.name.as_str()) {
+                            member_ty.clone()
+                        } else {
+                            if let Ok(module_id) = env.module_id() {
+                                diags.push(UndefinedMember {
+                                    module_id,
+                                    name: prop_access.property.name.clone(),
+                                    ty: lhs_ty,
+                                    property: prop_access.property.clone(),
+                                });
+                            }
+                            Type::Never
+                        }
+                    }
+                    Type::Never => Type::Never,
+                    _ => {
+                        if let Ok(module_id) = env.module_id() {
+                            diags.push(UndefinedMember {
+                                module_id,
+                                name: prop_access.property.name.clone(),
+                                ty: lhs_ty,
+                                property: prop_access.property.clone(),
+                            });
+                        }
+                        Type::Never
+                    }
+                }
+            }
         };
         Diagnosed::new(ty, diags)
+    }
+
+    /// Resolve a type definition to its underlying `Type`.
+    /// For generic type defs like `type Pair<A, B> { fst: A, snd: B }`,
+    /// this produces a function type `fn<A, B>() { fst: A, snd: B }` that
+    /// acts as a type-level constructor.
+    pub fn resolve_type_def(&self, env: &TypeEnv<'_>, type_def: &ast::TypeDef) -> Diagnosed<Type> {
+        let mut diags = DiagList::new();
+
+        if type_def.type_params.is_empty() {
+            // Simple type alias: `type Name Str`
+            let ty = self.resolve_type_expr(env, &type_def.ty).unpack(&mut diags);
+            return Diagnosed::new(ty, diags);
+        }
+
+        // Generic type def: `type Pair<A, B> { fst: A, snd: B }`
+        // Resolve type params and produce a Fn type that acts as a type-level constructor.
+        let mut fn_env = env.inner();
+        let mut type_param_entries = Vec::with_capacity(type_def.type_params.len());
+        for type_param in &type_def.type_params {
+            let type_id = next_type_id();
+            fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+            let upper_bound = if let Some(bound_expr) = &type_param.bound {
+                self.resolve_type_expr(&fn_env, bound_expr)
+                    .unpack(&mut diags)
+            } else {
+                Type::Any
+            };
+            fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
+            type_param_entries.push((type_id, upper_bound));
+        }
+
+        let body_ty = self
+            .resolve_type_expr(&fn_env, &type_def.ty)
+            .unpack(&mut diags);
+
+        // Represent as fn<A, B>() ReturnType — a zero-param generic function.
+        // When used as a type with type arguments (e.g., Pair<Int, Str>), the type checker
+        // will substitute the type params.
+        Diagnosed::new(
+            Type::Fn(FnType {
+                type_params: type_param_entries,
+                params: vec![],
+                ret: Box::new(body_ty),
+            }),
+            diags,
+        )
+    }
+
+    /// Populate the type-level namespace of `env` with type exports from imported modules.
+    fn populate_import_type_level(
+        &self,
+        env: &mut TypeEnv<'_>,
+        file_mod: &ast::FileMod,
+        diags: &mut DiagList,
+    ) -> Result<(), TypeCheckError> {
+        for statement in &file_mod.statements {
+            if let ast::ModStmt::Import(import_stmt) = statement {
+                let alias = import_stmt
+                    .as_ref()
+                    .vars
+                    .last()
+                    .expect("import path contains at least one segment");
+
+                if let Some(import_file_mod) = self.resolve_import(import_stmt) {
+                    let target_module_id = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.name.clone())
+                        .collect::<crate::ModuleId>();
+                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                    let type_exports = self
+                        .type_level_exports(&import_env, import_file_mod)
+                        .unpack(diags);
+                    if type_exports.iter().next().is_some() {
+                        *env = env.with_type_level(alias.name.clone(), Type::Record(type_exports));
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     fn find_imports<'a>(
@@ -2873,6 +3148,157 @@ mod tests {
             checker
                 .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
                 .is_ok()
+        );
+    }
+
+    // --- Type declaration tests ---
+
+    fn check_module(source: &str) -> crate::Diagnosed<Type> {
+        let module_id = ModuleId::default();
+        let file_mod = crate::parser::parse_file_mod(source, &module_id)
+            .into_inner()
+            .expect("source should parse");
+        let program = Box::new(Program::<StdSourceRepo>::new());
+        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let checker = TypeChecker::new(program);
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        checker
+            .check_file_mod(&env, &file_mod)
+            .expect("type check should not error")
+    }
+
+    /// Helper to extract an export's Fn type from a check_module result,
+    /// unfolding any iso-recursive wrapper.
+    fn get_export_fn(diagnosed: &crate::Diagnosed<Type>, name: &str) -> FnType {
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type, got: {}", diagnosed.as_ref());
+        };
+        let Some(ty) = exports.get(name) else {
+            panic!("expected export '{name}'");
+        };
+        let unfolded = ty.unfold();
+        let Type::Fn(fn_ty) = unfolded else {
+            panic!("expected fn type for '{name}', got: {}", ty);
+        };
+        fn_ty
+    }
+
+    #[test]
+    fn simple_type_alias_resolves() {
+        let diagnosed = check_module("type Port Int\nexport let p = fn(x: Port) x");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "p");
+        assert_eq!(fn_ty.params[0], Type::Int);
+        assert_eq!(*fn_ty.ret, Type::Int);
+    }
+
+    #[test]
+    fn generic_type_def_produces_fn_type() {
+        let diagnosed = check_module(
+            "type Pair<A, B> { fst: A, snd: B }\nexport let p = fn(x: Pair<Int, Str>) x.fst",
+        );
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "p");
+        // param should be { fst: Int, snd: Str }
+        let Type::Record(param_rec) = &fn_ty.params[0] else {
+            panic!("expected record param type, got: {}", fn_ty.params[0]);
+        };
+        assert_eq!(param_rec.get("fst"), Some(&Type::Int));
+        assert_eq!(param_rec.get("snd"), Some(&Type::Str));
+        // return should be Int
+        assert_eq!(*fn_ty.ret, Type::Int);
+    }
+
+    #[test]
+    fn forward_reference_between_type_defs() {
+        // B references A which is defined after B
+        let diagnosed = check_module("type B A\ntype A Int\nexport let f = fn(x: B) x");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let fn_ty = get_export_fn(&diagnosed, "f");
+        assert_eq!(fn_ty.params[0], Type::Int);
+    }
+
+    #[test]
+    fn type_def_and_value_coexist() {
+        // Same name as both a type and a value
+        let diagnosed = check_module(
+            "type Config { port: Int }\nexport let Config = fn(port: Int) { port: port }",
+        );
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type");
+        };
+        // The value export should exist
+        assert!(exports.get("Config").is_some());
+    }
+
+    #[test]
+    fn exported_type_appears_in_type_level_exports() {
+        let module_id = ModuleId::default();
+        let file_mod = crate::parser::parse_file_mod(
+            "export type Config { host: Str, port: Int }",
+            &module_id,
+        )
+        .into_inner()
+        .expect("source should parse");
+        let program = Box::new(Program::<StdSourceRepo>::new());
+        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let checker = TypeChecker::new(program);
+        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let diagnosed = checker.type_level_exports(&env, &file_mod);
+        assert!(!diagnosed.diags().has_errors());
+        let type_exports = diagnosed.into_inner();
+        let Some(config_ty) = type_exports.get("Config") else {
+            panic!("expected exported type 'Config'");
+        };
+        let Type::Record(config_rec) = config_ty else {
+            panic!("expected record type");
+        };
+        assert_eq!(config_rec.get("host"), Some(&Type::Str));
+        assert_eq!(config_rec.get("port"), Some(&Type::Int));
+    }
+
+    #[test]
+    fn unknown_type_in_type_def_reports_error() {
+        let diagnosed = check_module("type Foo Nonexistent\nexport let f = fn(x: Foo) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for unknown type"
+        );
+    }
+
+    #[test]
+    fn wrong_type_arg_count_reports_error() {
+        let diagnosed =
+            check_module("type Pair<A, B> { fst: A, snd: B }\nexport let f = fn(x: Pair<Int>) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for wrong arg count"
+        );
+    }
+
+    #[test]
+    fn type_application_to_non_generic_reports_error() {
+        let diagnosed = check_module("type Name Str\nexport let f = fn(x: Name<Int>) x");
+        assert!(
+            diagnosed.diags().has_errors(),
+            "expected error for applying args to non-generic"
         );
     }
 }

@@ -184,6 +184,35 @@ let ParseError = exception(Str)    // Carries a Str payload
 
 Exceptions are raised with `raise` and caught with `try`/`catch` (see [Syntax Reference](syntax.md#exceptions)).
 
+## Type Declarations
+
+Name a type for reuse with the `type` keyword:
+
+```scl
+type Port Int
+type Config { host: Str, port: Int }
+```
+
+Type declarations can be exported and accessed from other modules:
+
+```scl
+// In MyLib.scl
+export type Config { host: Str, port: Int }
+
+// In Main.scl
+import MyLib
+let cfg: MyLib.Config = { host: "localhost", port: 8080 }
+```
+
+Generic type declarations accept type parameters, applied at usage sites with angle brackets:
+
+```scl
+type Result<T> { ok: T?, error: Str? }
+let r: Result<Int> = { ok: 42, error: nil }
+```
+
+Type names and value names are in separate namespaces, so a module can export both `type Config` and `let Config` without conflict.
+
 ## Type Inference
 
 SCL infers types from values and context. You rarely need explicit annotations.
