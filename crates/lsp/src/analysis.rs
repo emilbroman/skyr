@@ -208,7 +208,24 @@ fn path_to_uri_string(path: &Path) -> String {
 }
 
 pub fn parse_uri(s: &str) -> lsp::Uri {
-    s.parse().unwrap()
+    s.parse().unwrap_or_else(|_| {
+        // Percent-encode the path portion for URIs with special characters
+        if let Some(path) = s.strip_prefix("file://") {
+            let encoded: String = path
+                .bytes()
+                .flat_map(|b| match b {
+                    b' ' => b"%20".to_vec(),
+                    _ => vec![b],
+                })
+                .map(|b| b as char)
+                .collect();
+            format!("file://{encoded}")
+                .parse()
+                .unwrap_or_else(|_| "file:///".parse().unwrap())
+        } else {
+            "file:///".parse().unwrap()
+        }
+    })
 }
 
 pub fn uri_to_path(uri: &lsp::Uri) -> Option<PathBuf> {

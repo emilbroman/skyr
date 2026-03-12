@@ -17,20 +17,42 @@ pub enum RequestId {
 }
 
 /// Incoming JSON-RPC message from the client.
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum IncomingMessage {
     Request {
         id: RequestId,
         method: String,
-        #[serde(default)]
         params: serde_json::Value,
     },
     Notification {
         method: String,
-        #[serde(default)]
         params: serde_json::Value,
     },
+}
+
+impl<'de> Deserialize<'de> for IncomingMessage {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let mut obj: serde_json::Map<String, serde_json::Value> =
+            serde_json::Map::deserialize(deserializer)?;
+
+        let method = obj
+            .remove("method")
+            .and_then(|v| v.as_str().map(String::from))
+            .ok_or_else(|| serde::de::Error::missing_field("method"))?;
+
+        let params = obj.remove("params").unwrap_or(serde_json::Value::Null);
+
+        if let Some(id_value) = obj.remove("id") {
+            let id: RequestId =
+                serde_json::from_value(id_value).map_err(serde::de::Error::custom)?;
+            Ok(IncomingMessage::Request { id, method, params })
+        } else {
+            Ok(IncomingMessage::Notification { method, params })
+        }
+    }
 }
 
 /// Outgoing JSON-RPC message to the client.
