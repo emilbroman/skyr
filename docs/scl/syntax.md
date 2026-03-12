@@ -439,6 +439,13 @@ Generic type declarations use type parameters:
 export type Result<T> { ok: T?, error: Str? }
 ```
 
+Generic types are applied with angle brackets at usage sites:
+
+```scl
+type Pair<A, B> { fst: A, snd: B }
+let p: Pair<Int, Str> = { fst: 1, snd: "hello" }
+```
+
 Type names can be accessed from imported modules using dot notation (type-level property access):
 
 ```scl

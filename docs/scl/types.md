@@ -204,10 +204,11 @@ import MyLib
 let cfg: MyLib.Config = { host: "localhost", port: 8080 }
 ```
 
-Generic type declarations accept type parameters:
+Generic type declarations accept type parameters, applied at usage sites with angle brackets:
 
 ```scl
 type Result<T> { ok: T?, error: Str? }
+let r: Result<Int> = { ok: 42, error: nil }
 ```
 
 Type names and value names are in separate namespaces, so a module can export both `type Config` and `let Config` without conflict.
