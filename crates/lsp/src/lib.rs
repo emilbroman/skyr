@@ -129,6 +129,32 @@ impl<S: SourceRepo + 'static> LanguageServer<S> {
                 };
                 handlers::navigation::handle_references(self, id, params).await
             }
+            lsp_types::request::Completion::METHOD => {
+                let params: lsp_types::CompletionParams = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::completion::handle_completion(self, id, params).await
+            }
+            lsp_types::request::ResolveCompletionItem::METHOD => {
+                let item: lsp_types::CompletionItem = match serde_json::from_value(params) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        return vec![OutgoingMessage::error(
+                            id,
+                            -32602,
+                            format!("Invalid params: {}", e),
+                        )];
+                    }
+                };
+                handlers::completion::handle_completion_resolve(self, id, item).await
+            }
             _ => vec![OutgoingMessage::error(
                 id,
                 -32601,
