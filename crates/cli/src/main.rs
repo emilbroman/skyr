@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 mod auth;
 mod deployment;
+mod fmt;
 mod fs_source;
 mod lsp;
 mod output;
@@ -36,6 +37,7 @@ enum Command {
     Whoami(whoami::WhoamiArgs),
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
+    Fmt(fmt::FmtArgs),
 }
 
 #[tokio::main]
@@ -73,6 +75,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Deployments(args) => {
             deployment::run_deployments(args, program.format).await?;
+        }
+        Command::Fmt(args) => {
+            fmt::run_fmt(args)?;
         }
     }
 
