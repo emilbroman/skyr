@@ -123,9 +123,7 @@ pub fn query_cursor<S: sclc::SourceRepo>(
 
     // Parse with cursor
     let diagnosed = sclc::parse_file_mod_with_cursor(source, module_id, Some(cursor.clone()));
-    let Some(file_mod) = diagnosed.into_inner() else {
-        return cursor_info;
-    };
+    let file_mod = diagnosed.into_inner();
 
     // Type-check to populate cursor info (declaration, type, references, completions)
     let type_env = sclc::TypeEnv::new()
@@ -140,9 +138,7 @@ pub fn query_cursor<S: sclc::SourceRepo>(
 /// Extract document symbols from a parsed file.
 pub fn document_symbols(source: &str, module_id: &sclc::ModuleId) -> Vec<lsp::DocumentSymbol> {
     let diagnosed = sclc::parse_file_mod(source, module_id);
-    let Some(file_mod) = diagnosed.into_inner() else {
-        return vec![];
-    };
+    let file_mod = diagnosed.into_inner();
 
     let mut symbols = Vec::new();
     for stmt in &file_mod.statements {
