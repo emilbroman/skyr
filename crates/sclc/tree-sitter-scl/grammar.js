@@ -212,7 +212,10 @@ module.exports = grammar({
       ),
 
     record_field: ($) =>
-      seq(field("name", $.identifier), ":", field("value", $._expression)),
+      choice(
+        seq(field("name", $.identifier), ":", field("value", $._expression)),
+        field("name", $.identifier),
+      ),
 
     dict: ($) =>
       choice(

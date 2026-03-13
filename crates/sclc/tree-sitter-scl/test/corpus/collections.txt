@@ -45,6 +45,22 @@ Record with trailing comma
       value: (integer))))
 
 ================
+Record with shorthand fields
+================
+
+{ a: 1, b }
+
+---
+
+(source_file
+  (record
+    (record_field
+      name: (identifier)
+      value: (integer))
+    (record_field
+      name: (identifier))))
+
+================
 Empty dict
 ================
 
