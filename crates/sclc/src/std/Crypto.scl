@@ -1,0 +1,22 @@
+export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
+    name: Str,
+}) {
+    pem: Str,
+    publicKeyPem: Str,
+}
+
+export let ECDSAPrivateKey = extern "Std/Crypto.ECDSAPrivateKey": fn({
+    name: Str,
+    curve: Str?,
+}) {
+    pem: Str,
+    publicKeyPem: Str,
+}
+
+export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
+    name: Str,
+    size: Int?,
+}) {
+    pem: Str,
+    publicKeyPem: Str,
+}
