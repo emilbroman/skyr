@@ -3327,9 +3327,7 @@ mod tests {
 
     fn check_module(source: &str) -> crate::Diagnosed<Type> {
         let module_id = ModuleId::default();
-        let file_mod = crate::parser::parse_file_mod(source, &module_id)
-            .into_inner()
-            .expect("source should parse");
+        let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
         let program = Box::new(Program::<StdSourceRepo>::new());
         let program: &'static Program<StdSourceRepo> = Box::leak(program);
         let checker = TypeChecker::new(program);
@@ -3427,8 +3425,7 @@ mod tests {
             "export type Config { host: Str, port: Int }",
             &module_id,
         )
-        .into_inner()
-        .expect("source should parse");
+        .into_inner();
         let program = Box::new(Program::<StdSourceRepo>::new());
         let program: &'static Program<StdSourceRepo> = Box::leak(program);
         let checker = TypeChecker::new(program);

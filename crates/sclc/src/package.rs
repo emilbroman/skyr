@@ -82,14 +82,9 @@ impl<S: SourceRepo> Package<S> {
         let module_id = module_id_for_path(&package_id, &path);
         let diagnosed = parse_file_mod(&source, &module_id);
         let mut diags = DiagList::new();
-        let parsed = diagnosed.unpack(&mut diags);
-        match parsed {
-            Some(file_mod) => {
-                let file_mod = self.files.entry(path.clone()).or_insert(file_mod);
-                Ok(Diagnosed::new(Some(file_mod), diags))
-            }
-            None => Ok(Diagnosed::new(None, diags)),
-        }
+        let file_mod = diagnosed.unpack(&mut diags);
+        let file_mod = self.files.entry(path.clone()).or_insert(file_mod);
+        Ok(Diagnosed::new(Some(file_mod), diags))
     }
 }
 
