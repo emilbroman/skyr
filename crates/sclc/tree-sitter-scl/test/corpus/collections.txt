@@ -1,0 +1,100 @@
+================
+Empty record
+================
+
+{}
+
+---
+
+(source_file
+  (record))
+
+================
+Record with fields
+================
+
+{ name: "hello", port: 8080 }
+
+---
+
+(source_file
+  (record
+    (record_field
+      name: (identifier)
+      value: (string
+        (string_content)))
+    (record_field
+      name: (identifier)
+      value: (integer))))
+
+================
+Record with trailing comma
+================
+
+{ x: 1, y: 2, }
+
+---
+
+(source_file
+  (record
+    (record_field
+      name: (identifier)
+      value: (integer))
+    (record_field
+      name: (identifier)
+      value: (integer))))
+
+================
+Empty dict
+================
+
+#{}
+
+---
+
+(source_file
+  (dict))
+
+================
+Dict with entries
+================
+
+#{ "a": 1, "b": 2 }
+
+---
+
+(source_file
+  (dict
+    (dict_entry
+      key: (string
+        (string_content))
+      value: (integer))
+    (dict_entry
+      key: (string
+        (string_content))
+      value: (integer))))
+
+================
+Empty list
+================
+
+[]
+
+---
+
+(source_file
+  (list))
+
+================
+List with elements
+================
+
+[1, 2, 3]
+
+---
+
+(source_file
+  (list
+    (integer)
+    (integer)
+    (integer)))

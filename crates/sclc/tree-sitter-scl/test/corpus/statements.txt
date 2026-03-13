@@ -1,0 +1,101 @@
+================
+Import statement
+================
+
+import Std/Container
+
+---
+
+(source_file
+  (import_statement
+    (import_path
+      (identifier)
+      (identifier))))
+
+================
+Let binding
+================
+
+let x = 42
+
+---
+
+(source_file
+  (let_binding
+    name: (identifier)
+    value: (integer)))
+
+================
+Export let binding
+================
+
+export let name = "hello"
+
+---
+
+(source_file
+  (export_statement
+    (let_binding
+      name: (identifier)
+      value: (string
+        (string_content)))))
+
+================
+Type declaration
+================
+
+type Config { host: Str, port: Int }
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    type: (record_type
+      (record_type_field
+        name: (identifier)
+        type: (type_identifier))
+      (record_type_field
+        name: (identifier)
+        type: (type_identifier)))))
+
+================
+Export type declaration
+================
+
+export type Config { host: Str }
+
+---
+
+(source_file
+  (export_type_declaration
+    (type_declaration
+      name: (identifier)
+      type: (record_type
+        (record_type_field
+          name: (identifier)
+          type: (type_identifier))))))
+
+================
+Type declaration with type parameters
+================
+
+type Pair<A, B> { first: A, second: B }
+
+---
+
+(source_file
+  (type_declaration
+    name: (identifier)
+    (type_parameters
+      (type_parameter
+        name: (identifier))
+      (type_parameter
+        name: (identifier)))
+    type: (record_type
+      (record_type_field
+        name: (identifier)
+        type: (type_identifier))
+      (record_type_field
+        name: (identifier)
+        type: (type_identifier)))))

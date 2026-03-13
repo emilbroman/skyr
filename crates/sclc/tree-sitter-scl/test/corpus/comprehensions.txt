@@ -1,0 +1,69 @@
+================
+List map comprehension
+================
+
+[for (x in list) x + 1]
+
+---
+
+(source_file
+  (list
+    (list_for_item
+      variable: (identifier)
+      iterable: (identifier)
+      body: (binary_expression
+        left: (identifier)
+        right: (integer)))))
+
+================
+List filter comprehension
+================
+
+[for (x in list) if (x > 0) x]
+
+---
+
+(source_file
+  (list
+    (list_for_item
+      variable: (identifier)
+      iterable: (identifier)
+      body: (list_if_item
+        condition: (binary_expression
+          left: (identifier)
+          right: (integer))
+        body: (identifier)))))
+
+================
+Nested comprehension
+================
+
+[for (a in as) for (b in bs) a + b]
+
+---
+
+(source_file
+  (list
+    (list_for_item
+      variable: (identifier)
+      iterable: (identifier)
+      body: (list_for_item
+        variable: (identifier)
+        iterable: (identifier)
+        body: (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+================
+Conditional list item
+================
+
+[if (flag) value]
+
+---
+
+(source_file
+  (list
+    (list_if_item
+      condition: (identifier)
+      body: (identifier))))

@@ -1,0 +1,104 @@
+================
+Integer literals
+================
+
+42
+0
+123
+
+---
+
+(source_file
+  (integer)
+  (integer)
+  (integer))
+
+================
+Float literals
+================
+
+3.14
+0.5
+123.456
+
+---
+
+(source_file
+  (float)
+  (float)
+  (float))
+
+================
+Boolean literals
+================
+
+true
+false
+
+---
+
+(source_file
+  (boolean)
+  (boolean))
+
+================
+Nil literal
+================
+
+nil
+
+---
+
+(source_file
+  (nil))
+
+================
+Simple string
+================
+
+"hello world"
+
+---
+
+(source_file
+  (string
+    (string_content)))
+
+================
+Empty string
+================
+
+""
+
+---
+
+(source_file
+  (string))
+
+================
+Identifiers
+================
+
+foo
+Bar
+my_var
+
+---
+
+(source_file
+  (identifier)
+  (identifier)
+  (identifier))
+
+================
+Comments
+================
+
+// this is a comment
+42
+
+---
+
+(source_file
+  (comment)
+  (integer))

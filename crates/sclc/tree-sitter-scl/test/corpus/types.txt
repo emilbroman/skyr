@@ -1,0 +1,109 @@
+================
+Optional type
+================
+
+fn(x: Int?) x
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (optional_type
+          (type_identifier))))
+    body: (identifier)))
+
+================
+List type
+================
+
+fn(xs: [Int]) xs
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (list_type
+          (type_identifier))))
+    body: (identifier)))
+
+================
+Record type
+================
+
+fn(cfg: { host: Str, port: Int }) cfg
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (record_type
+          (record_type_field
+            name: (identifier)
+            type: (type_identifier))
+          (record_type_field
+            name: (identifier)
+            type: (type_identifier)))))
+    body: (identifier)))
+
+================
+Dict type
+================
+
+fn(d: #{ Str: Int }) d
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (dict_type
+          key: (type_identifier)
+          value: (type_identifier))))
+    body: (identifier)))
+
+================
+Function type
+================
+
+fn(f: fn(Int) Str) f
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (fn_type
+          (type_identifier)
+          return_type: (type_identifier))))
+    body: (identifier)))
+
+================
+Type property access
+================
+
+fn(cfg: MyLib.Config) cfg
+
+---
+
+(source_file
+  (fn_expression
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (type_property_access
+          (type_identifier)
+          (type_identifier))))
+    body: (identifier)))

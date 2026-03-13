@@ -1,0 +1,75 @@
+================
+Exception without payload
+================
+
+let MyError = exception
+
+---
+
+(source_file
+  (let_binding
+    name: (identifier)
+    value: (exception_expression)))
+
+================
+Exception with payload
+================
+
+let ParseError = exception(Str)
+
+---
+
+(source_file
+  (let_binding
+    name: (identifier)
+    value: (exception_expression
+      (type_identifier))))
+
+================
+Raise expression
+================
+
+raise MyError
+
+---
+
+(source_file
+  (raise_expression
+    value: (identifier)))
+
+================
+Try-catch without binding
+================
+
+try riskyOp()
+    catch MyError: "fallback"
+
+---
+
+(source_file
+  (try_expression
+    body: (call_expression
+      function: (identifier))
+    (catch_clause
+      exception: (identifier)
+      body: (string
+        (string_content)))))
+
+================
+Try-catch with binding
+================
+
+try parse(input)
+    catch ParseError(msg): msg
+
+---
+
+(source_file
+  (try_expression
+    body: (call_expression
+      function: (identifier)
+      (identifier))
+    (catch_clause
+      exception: (identifier)
+      binding: (identifier)
+      body: (identifier))))
