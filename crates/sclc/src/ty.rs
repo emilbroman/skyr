@@ -128,6 +128,27 @@ impl Type {
         }
     }
 
+    /// Returns `true` if this type contains `Type::Var(var_id)` anywhere.
+    pub fn contains_var(&self, var_id: usize) -> bool {
+        match self {
+            Type::Var(id) => *id == var_id,
+            Type::Any | Type::Int | Type::Float | Type::Bool | Type::Str | Type::Never => false,
+            Type::Exception(_) => false,
+            Type::Optional(ty) | Type::List(ty) => ty.contains_var(var_id),
+            Type::Fn(fn_ty) => {
+                fn_ty
+                    .type_params
+                    .iter()
+                    .any(|(_, bound)| bound.contains_var(var_id))
+                    || fn_ty.params.iter().any(|p| p.contains_var(var_id))
+                    || fn_ty.ret.contains_var(var_id)
+            }
+            Type::Record(record) => record.fields.values().any(|ty| ty.contains_var(var_id)),
+            Type::Dict(dict) => dict.key.contains_var(var_id) || dict.value.contains_var(var_id),
+            Type::IsoRec(id, body) => *id != var_id && body.contains_var(var_id),
+        }
+    }
+
     pub fn unfold(&self) -> Self {
         match self {
             Type::IsoRec(id, body) => {
@@ -153,6 +174,10 @@ impl std::fmt::Display for Type {
             Type::Record(record) => write!(f, "{record}"),
             Type::Dict(dict) => write!(f, "{dict}"),
             Type::IsoRec(id, ty) => {
+                if !ty.contains_var(*id) {
+                    return write!(f, "{ty}");
+                }
+
                 let name = DISPLAY_TYPE_PARAMS.with(|stack| {
                     let mut stack = stack.borrow_mut();
                     let name = typevar_name(stack.len());
@@ -366,6 +391,36 @@ mod tests {
             ret: Box::new(inner),
         });
         assert_eq!(outer.to_string(), "fn<A>(A) fn<B>(B) A");
+    }
+
+    #[test]
+    fn display_isorec_recursive() {
+        // µA.[A] — the var is used, so we keep the µ binder
+        let ty = Type::IsoRec(1, Box::new(Type::List(Box::new(Type::Var(1)))));
+        assert_eq!(ty.to_string(), "µA.[A]");
+    }
+
+    #[test]
+    fn display_isorec_non_recursive() {
+        // IsoRec where the var is NOT used — should simplify to just the body
+        let ty = Type::IsoRec(1, Box::new(Type::List(Box::new(Type::Int))));
+        assert_eq!(ty.to_string(), "[Int]");
+    }
+
+    #[test]
+    fn contains_var_basic() {
+        assert!(Type::Var(5).contains_var(5));
+        assert!(!Type::Var(5).contains_var(6));
+        assert!(!Type::Int.contains_var(0));
+        assert!(Type::List(Box::new(Type::Var(3))).contains_var(3));
+        assert!(!Type::List(Box::new(Type::Var(3))).contains_var(4));
+    }
+
+    #[test]
+    fn contains_var_shadowed_by_isorec() {
+        // IsoRec(1, Var(1)) — the inner Var is bound by the IsoRec, not free
+        let ty = Type::IsoRec(1, Box::new(Type::Var(1)));
+        assert!(!ty.contains_var(1));
     }
 
     #[test]
