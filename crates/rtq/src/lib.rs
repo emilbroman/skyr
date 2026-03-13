@@ -25,6 +25,7 @@ pub enum Message {
     Restore(RestoreMessage),
     Adopt(AdoptMessage),
     Destroy(DestroyMessage),
+    Check(CheckMessage),
 }
 
 impl Message {
@@ -42,6 +43,7 @@ impl Message {
             Message::Restore(msg) => &msg.resource,
             Message::Adopt(msg) => &msg.resource,
             Message::Destroy(msg) => &msg.resource,
+            Message::Check(msg) => &msg.resource,
         }
     }
 }
@@ -89,6 +91,12 @@ pub struct AdoptMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DestroyMessage {
+    pub resource: ResourceRef,
+    pub deployment_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CheckMessage {
     pub resource: ResourceRef,
     pub deployment_id: String,
 }

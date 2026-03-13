@@ -492,6 +492,7 @@ impl Worker {
         let mut eval =
             sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
         let mut unowned_resource_owner_by_id = HashMap::new();
+        let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
             let resource_id = sclc::ResourceId {
@@ -502,6 +503,9 @@ impl Worker {
                 && let Some(owner) = resource.owner.clone()
             {
                 unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
+            }
+            if resource.markers.contains(&sclc::Marker::Volatile) {
+                volatile_resource_ids.insert(resource_id.clone());
             }
 
             eval.add_resource(
@@ -620,46 +624,72 @@ impl Worker {
                                 inputs,
                                 dependencies,
                             } => {
-                                let Some(from_owner_deployment_qid) =
+                                if let Some(from_owner_deployment_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
-                                else {
-                                    continue;
-                                };
-                                had_effect = true;
-                                let Some(desired_inputs) = serialize_inputs(&id, &inputs, "touch")
-                                else {
-                                    continue;
-                                };
-                                let message = rtq::Message::Adopt(rtq::AdoptMessage {
-                                    resource: resource_ref(&namespace_id, &id),
-                                    from_deployment_id: extract_deployment_id(
-                                        from_owner_deployment_qid,
-                                    ),
-                                    to_deployment_id: deployment_id.clone(),
-                                    desired_inputs,
-                                    dependencies: map_dependencies(&namespace_id, dependencies),
-                                });
-                                if let Err(error) = rtq_publisher.enqueue(&message).await {
-                                    tracing::error!(
-                                        error = %error,
-                                        "failed to publish touch adopt message",
+                                {
+                                    had_effect = true;
+                                    let Some(desired_inputs) =
+                                        serialize_inputs(&id, &inputs, "touch")
+                                    else {
+                                        continue;
+                                    };
+                                    let message = rtq::Message::Adopt(rtq::AdoptMessage {
+                                        resource: resource_ref(&namespace_id, &id),
+                                        from_deployment_id: extract_deployment_id(
+                                            from_owner_deployment_qid,
+                                        ),
+                                        to_deployment_id: deployment_id.clone(),
+                                        desired_inputs,
+                                        dependencies: map_dependencies(&namespace_id, dependencies),
+                                    });
+                                    if let Err(error) = rtq_publisher.enqueue(&message).await {
+                                        tracing::error!(
+                                            error = %error,
+                                            "failed to publish touch adopt message",
+                                        );
+
+                                        log_publisher
+                                            .error(format!(
+                                                "Failed to enqueue ADOPT {}.{}: {}",
+                                                id.ty, id.id, error
+                                            ))
+                                            .await;
+                                        continue;
+                                    }
+
+                                    tracing::info!(
+                                        resource_type = %id.ty,
+                                        resource_id = %id.id,
+                                        inputs = ?inputs,
+                                        "effect touch resource adopt",
                                     );
+                                } else if volatile_resource_ids.contains(&id) {
+                                    had_effect = true;
+                                    let message = rtq::Message::Check(rtq::CheckMessage {
+                                        resource: resource_ref(&namespace_id, &id),
+                                        deployment_id: deployment_id.clone(),
+                                    });
+                                    if let Err(error) = rtq_publisher.enqueue(&message).await {
+                                        tracing::error!(
+                                            error = %error,
+                                            "failed to publish touch check message",
+                                        );
 
-                                    log_publisher
-                                        .error(format!(
-                                            "Failed to enqueue ADOPT {}.{}: {}",
-                                            id.ty, id.id, error
-                                        ))
-                                        .await;
-                                    continue;
+                                        log_publisher
+                                            .error(format!(
+                                                "Failed to enqueue CHECK {}.{}: {}",
+                                                id.ty, id.id, error
+                                            ))
+                                            .await;
+                                        continue;
+                                    }
+
+                                    tracing::info!(
+                                        resource_type = %id.ty,
+                                        resource_id = %id.id,
+                                        "effect touch resource check",
+                                    );
                                 }
-
-                                tracing::info!(
-                                    resource_type = %id.ty,
-                                    resource_id = %id.id,
-                                    inputs = ?inputs,
-                                    "effect touch resource adopt",
-                                );
                             }
                         }
                     }

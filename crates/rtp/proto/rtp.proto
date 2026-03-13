@@ -9,7 +9,7 @@ service ResourceTransitionPlugin {
   rpc CreateResource(CreateResourceRequest) returns (CreateResourceResponse);
   rpc UpdateResource(UpdateResourceRequest) returns (UpdateResourceResponse);
   rpc DeleteResource(DeleteResourceRequest) returns (google.protobuf.Empty);
-  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc Check(CheckRequest) returns (CheckResponse);
 }
 
 message CapabilityRequest {
@@ -66,12 +66,12 @@ message DeleteResourceRequest {
   string deployment_id = 3;
 }
 
-message HealthRequest {
+message CheckRequest {
   Resource resource = 1;
   string environment_qid = 2;
   string deployment_id = 3;
 }
 
-message HealthResponse {
+message CheckResponse {
   Resource resource = 1;
 }

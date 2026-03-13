@@ -14,8 +14,8 @@ pub mod proto {
 }
 
 use proto::{
-    CapabilityRequest, CapabilityResponse, CreateResourceRequest, CreateResourceResponse,
-    DeleteResourceRequest, HealthRequest, HealthResponse, Resource, UpdateResourceRequest,
+    CapabilityRequest, CapabilityResponse, CheckRequest, CheckResponse, CreateResourceRequest,
+    CreateResourceResponse, DeleteResourceRequest, Resource, UpdateResourceRequest,
     UpdateResourceResponse,
 };
 
@@ -54,7 +54,7 @@ pub trait Plugin: Send + Sync + 'static {
         Ok(())
     }
 
-    async fn health(
+    async fn check(
         &self,
         environment_qid: &str,
         deployment_id: &str,
@@ -443,16 +443,16 @@ where
         Ok(tonic::Response::new(()))
     }
 
-    async fn health(
+    async fn check(
         &self,
-        request: tonic::Request<HealthRequest>,
-    ) -> Result<tonic::Response<HealthResponse>, tonic::Status> {
+        request: tonic::Request<CheckRequest>,
+    ) -> Result<tonic::Response<CheckResponse>, tonic::Status> {
         self.ensure_peer_capabilities().await?;
 
         let request = request.into_inner();
         let resource = request
             .resource
-            .ok_or_else(|| tonic::Status::invalid_argument("missing health resource"))?;
+            .ok_or_else(|| tonic::Status::invalid_argument("missing check resource"))?;
         let id = sclc::ResourceId {
             ty: resource.r#type.clone(),
             id: resource.id.clone(),
@@ -460,8 +460,8 @@ where
         let parsed = decode_resource(resource)?;
 
         let plugin = self.plugin.read().await;
-        let healthy = plugin
-            .health(
+        let checked = plugin
+            .check(
                 &request.environment_qid,
                 &request.deployment_id,
                 id.clone(),
@@ -473,13 +473,13 @@ where
                     resource_type = id.ty.as_str(),
                     resource_id = id.id.as_str(),
                     err = %error,
-                    "plugin health failed"
+                    "plugin check failed"
                 );
                 tonic::Status::internal(error.to_string())
             })?;
 
-        Ok(tonic::Response::new(HealthResponse {
-            resource: Some(encode_resource(id, healthy)?),
+        Ok(tonic::Response::new(CheckResponse {
+            resource: Some(encode_resource(id, checked)?),
         }))
     }
 }
@@ -623,7 +623,7 @@ impl PluginClient {
         Ok(())
     }
 
-    pub async fn health(
+    pub async fn check(
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
@@ -632,7 +632,7 @@ impl PluginClient {
     ) -> anyhow::Result<sclc::Resource> {
         let response = self
             .inner
-            .health(HealthRequest {
+            .check(CheckRequest {
                 resource: Some(encode_resource(id, resource)?),
                 environment_qid: environment_qid.to_string(),
                 deployment_id: deployment_id.to_string(),
@@ -641,7 +641,7 @@ impl PluginClient {
             .into_inner();
         let resource = response
             .resource
-            .context("missing resource in health response")?;
+            .context("missing resource in check response")?;
         decode_resource(resource).map_err(Into::into)
     }
 }

@@ -195,6 +195,9 @@ async fn worker_loop_iteration(
         rtq::Message::Restore(message) => {
             handle_restore(message, &delivery, ctx).await?;
         }
+        rtq::Message::Check(message) => {
+            handle_check(message, &delivery, ctx).await?;
+        }
     }
 
     // Placeholder behavior until transition execution is implemented.
@@ -887,12 +890,183 @@ async fn handle_restore(
     Ok(())
 }
 
+async fn handle_check(
+    message: &rtq::CheckMessage,
+    delivery: &rtq::Delivery,
+    ctx: &WorkerContext,
+) -> anyhow::Result<()> {
+    let resource_client = ctx
+        .rdb_client
+        .namespace(message.resource.environment_qid.clone())
+        .resource(
+            message.resource.resource_type.clone(),
+            message.resource.resource_id.clone(),
+        );
+    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+
+    let current = match resource_client.get().await {
+        Ok(Some(resource)) => {
+            if resource.owner.as_deref() != Some(dep_qid.as_str()) {
+                tracing::info!(
+                    environment_qid = %message.resource.environment_qid,
+                    resource_type = %message.resource.resource_type,
+                    resource_id = %message.resource.resource_id,
+                    message_owner = %dep_qid,
+                    current_owner = ?resource.owner,
+                    "dropping check for non-matching owner",
+                );
+                delivery.ack().await?;
+                return Ok(());
+            }
+            resource
+        }
+        Ok(None) => {
+            tracing::info!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "dropping check for missing resource",
+            );
+            delivery.ack().await?;
+            return Ok(());
+        }
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "failed to read resource state before check",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let inputs = match current.inputs {
+        Some(inputs) => inputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "missing current inputs for check",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+    let outputs = match current.outputs {
+        Some(outputs) => outputs,
+        None => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                "missing current outputs for check",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    let Some((plugin_name, mut plugin)) =
+        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+    else {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            "no plugin available for resource type on check",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    };
+
+    let id = resource_id_from_ref(&message.resource);
+    let resource = sclc::Resource {
+        inputs,
+        outputs,
+        dependencies: current
+            .dependencies
+            .iter()
+            .map(|d| sclc::ResourceId {
+                ty: d.ty.clone(),
+                id: d.id.clone(),
+            })
+            .collect(),
+        markers: current.markers,
+    };
+
+    tracing::info!(
+        plugin = plugin_name,
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "calling plugin check",
+    );
+    let checked = match plugin
+        .check(
+            &message.resource.environment_qid,
+            &message.deployment_id,
+            id.clone(),
+            resource,
+        )
+        .await
+    {
+        Ok(resource) => resource,
+        Err(error) => {
+            tracing::warn!(
+                environment_qid = %message.resource.environment_qid,
+                resource_type = %message.resource.resource_type,
+                resource_id = %message.resource.resource_id,
+                error = %error,
+                "check plugin call failed",
+            );
+            delivery.nack(false).await?;
+            return Ok(());
+        }
+    };
+
+    if let Err(error) = resource_client.set_output(checked.outputs).await {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to persist checked resource outputs",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    tracing::info!(
+        environment_qid = %message.resource.environment_qid,
+        resource_type = %message.resource.resource_type,
+        resource_id = %message.resource.resource_id,
+        "checked resource",
+    );
+    log_deployment_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        Severity::Info,
+        format!(
+            "Checked {}.{} for {}",
+            message.resource.resource_type,
+            message.resource.resource_id,
+            &message.deployment_id[..8]
+        ),
+    )
+    .await;
+    Ok(())
+}
+
 fn message_meta(message: &rtq::Message) -> (&'static str, &rtq::ResourceRef) {
     match message {
         rtq::Message::Create(msg) => ("CREATE", &msg.resource),
         rtq::Message::Destroy(msg) => ("DESTROY", &msg.resource),
         rtq::Message::Adopt(msg) => ("ADOPT", &msg.resource),
         rtq::Message::Restore(msg) => ("RESTORE", &msg.resource),
+        rtq::Message::Check(msg) => ("CHECK", &msg.resource),
     }
 }
 
