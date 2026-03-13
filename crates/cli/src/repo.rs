@@ -9,7 +9,7 @@ use crate::{auth, output::OutputFormat};
 pub struct RepoArgs {
     #[command(subcommand)]
     command: RepoCommand,
-    #[arg(long, default_value = "localhost:8080")]
+    #[arg(long, default_value = "https://skyr.cloud")]
     api_url: String,
 }
 

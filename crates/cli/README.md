@@ -31,7 +31,7 @@ The CLI is the primary user-facing tool for interacting with Skyr. It uses [SCLC
 
 **`run`** accepts `--root` (default: `.`) to set the project root and `--package` (default: `Local`) to set the package name.
 
-**`signup`** and **`signin`** accept `--key` (default: `~/.ssh/id_ed25519`) for the SSH key path and `--api_url` (default: `localhost:8080`) for the API endpoint. `signup` additionally requires `--username` and `--email`.
+**`signup`** and **`signin`** accept `--key` (default: `~/.ssh/id_ed25519`) for the SSH key path and `--api_url` (default: `https://skyr.cloud`) for the API endpoint. `signup` additionally requires `--username` and `--email`.
 
 **`deployments logs`** streams logs in real time via WebSocket.
 

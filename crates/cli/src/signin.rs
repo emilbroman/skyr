@@ -9,7 +9,7 @@ pub struct SigninArgs {
     username: String,
     #[arg(long, default_value = "~/.ssh/id_ed25519")]
     key: String,
-    #[arg(long, default_value = "localhost:8080")]
+    #[arg(long, default_value = "https://skyr.cloud")]
     api_url: String,
 }
 

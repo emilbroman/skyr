@@ -16,7 +16,7 @@ type JSON = serde_json::Value;
 pub struct DeploymentsArgs {
     #[command(subcommand)]
     command: DeploymentsCommand,
-    #[arg(long, default_value = "localhost:8080")]
+    #[arg(long, default_value = "https://skyr.cloud")]
     api_url: String,
 }
 
