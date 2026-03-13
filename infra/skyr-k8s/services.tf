@@ -267,6 +267,12 @@ resource "kubernetes_deployment" "rte" {
       }
 
       spec {
+        volume {
+          name = "plugin-sockets"
+          empty_dir {}
+        }
+
+        # --- RTE main container ---
         container {
           name              = "rte"
           image             = "ghcr.io/emilbroman/skyr-rte:latest"
@@ -278,14 +284,90 @@ resource "kubernetes_deployment" "rte" {
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
             "--ldb-hostname", local.redpanda_hostname,
-            "--plugin", "Std/Random@tcp://plugin-std-random.${local.namespace}.svc.cluster.local:50051",
-            "--plugin", "Std/Artifact@tcp://plugin-std-artifact.${local.namespace}.svc.cluster.local:50052",
-            "--plugin", "Std/Crypto@tcp://plugin-std-crypto.${local.namespace}.svc.cluster.local:50055",
+            "--plugin", "Std/Random@unix://_/var/run/plugins/random.sock",
+            "--plugin", "Std/Artifact@unix://_/var/run/plugins/artifact.sock",
+            "--plugin", "Std/Crypto@unix://_/var/run/plugins/crypto.sock",
             "--plugin", "Std/Container@tcp://plugin-std-container.${local.namespace}.svc.cluster.local:50054",
             "--worker-index", tostring(count.index),
             "--worker-count", tostring(var.rte_worker_count),
             "--local-workers", tostring(var.rte_local_workers),
           ]
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
+        }
+
+        # --- Sidecar: plugin-std-random ---
+        container {
+          name              = "plugin-std-random"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_random:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_random"]
+          args    = ["--bind", "unix://_/var/run/plugins/random.sock"]
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
+        }
+
+        # --- Sidecar: plugin-std-artifact ---
+        container {
+          name              = "plugin-std-artifact"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_artifact:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_artifact"]
+          args = [
+            "--bind", "unix://_/var/run/plugins/artifact.sock",
+            "--adb-endpoint-url", local.minio_endpoint,
+            "--adb-bucket", var.minio_bucket,
+            "--adb-access-key-id", "$(MINIO_ACCESS_KEY)",
+            "--adb-secret-access-key", "$(MINIO_SECRET_KEY)",
+          ]
+
+          env {
+            name = "MINIO_ACCESS_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.skyr.metadata[0].name
+                key  = "minio-access-key-id"
+              }
+            }
+          }
+
+          env {
+            name = "MINIO_SECRET_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.skyr.metadata[0].name
+                key  = "minio-secret-key"
+              }
+            }
+          }
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
+        }
+
+        # --- Sidecar: plugin-std-crypto ---
+        container {
+          name              = "plugin-std-crypto"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_crypto:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_crypto"]
+          args    = ["--bind", "unix://_/var/run/plugins/crypto.sock"]
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
         }
       }
     }
