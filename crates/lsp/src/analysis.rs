@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -56,11 +56,19 @@ pub async fn analyze<S: sclc::SourceRepo>(
 
     match sclc::compile(source).await {
         Ok(diagnosed) => {
+            // Track seen diagnostics per URI to avoid duplicates.
+            // Duplicates can arise from the type checker processing the same
+            // module multiple times (e.g. two-pass type def resolution and
+            // type_level_exports re-checking imported modules).
+            let mut seen: HashMap<String, HashSet<(lsp::Range, String)>> = HashMap::new();
             for diag in diagnosed.diags().iter() {
                 let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
                 let path = module_id_to_path(root, &module_id, package_id);
                 let uri = path_to_uri_string(&path);
-                file_diagnostics.entry(uri).or_default().push(lsp_diag);
+                let key = (lsp_diag.range, lsp_diag.message.clone());
+                if seen.entry(uri.clone()).or_default().insert(key) {
+                    file_diagnostics.entry(uri).or_default().push(lsp_diag);
+                }
             }
         }
         Err(err) => {
