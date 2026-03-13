@@ -1611,7 +1611,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         Type::Var(type_id),
                     );
                     let resolved_ty = self
-                        .check_expr(&global_env, global_expr, expected_type)?
+                        .check_expr(&global_env, global_expr, None)?
                         .unpack(&mut diags);
                     let ty = self
                         .apply_expected_type(
