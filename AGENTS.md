@@ -50,5 +50,5 @@ For manual testing:
 ## Environment Notes
 
 - `cargo` is not available in the current shell session by default.
-- `flake.nix` defines a dev shell including `rustup`, `cargo`, `qemu`, `cdrtools`, and `curl`; use that shell before Rust builds/checks if needed.
+- `flake.nix` defines a dev shell including `rustup`, `cargo`, `gnumake`, and `protobuf`; use that shell before Rust builds/checks if needed.
 - Running tests/builds typically uses `nix develop -c cargo ...`.
