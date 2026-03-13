@@ -53,5 +53,6 @@ Follow the pattern in [plugin_std_random](../plugin_std_random/) or [plugin_std_
 
 - [RTE](../rte/) — dials plugins using this protocol
 - [plugin_std_random](../plugin_std_random/) — example simple plugin
+- [plugin_std_time](../plugin_std_time/) — example volatile resource plugin
 - [plugin_std_artifact](../plugin_std_artifact/) — example plugin with external storage
 - [plugin_std_container](../plugin_std_container/) — example complex plugin with SCOP integration

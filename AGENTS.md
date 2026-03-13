@@ -33,6 +33,38 @@ Fix any warnings or errors before pushing.
   - `docs/scl/stdlib.md` — for new or changed standard library modules and functions
   - `docs/scl/index.md` — if the feature deserves a mention in the "Language Features at a Glance" section
 
+### Adding a New RTP Plugin
+
+When adding a new standard library RTP plugin (e.g., `plugin_std_foo` for `Std/Foo`), update the following locations:
+
+1. **Create the crate** — `crates/plugin_std_foo/` with `Cargo.toml` and `src/main.rs`. Follow the pattern in `plugin_std_random` (simple) or `plugin_std_artifact` (with external deps). Implement `rtp::Plugin` for create/update and optionally delete/check.
+2. **SCL type definition** — add the resource function signature to the corresponding `.scl` file in `crates/sclc/src/std/` (e.g., `Foo.scl` for a new module, or an existing file like `Time.scl` for additions).
+3. **Extern function registration** — add `register_extern` in the corresponding Rust module under `crates/sclc/src/std/`. Wire it into the `std_modules!` macro in `crates/sclc/src/std/mod.rs` if adding a new module.
+4. **Workspace** — add the crate to `members` in the root `Cargo.toml`.
+5. **Containerfile** — in `dev/Containerfile.skyr`:
+   - `COPY` the new crate's `Cargo.toml` (planner stage)
+   - Add to the `mkdir -p` command
+   - Add a stub `printf 'fn main() {}\n'` line
+   - Add to the `cargo build --release -p ...` command
+   - Add to the `for bin in ...` artifact copy loop
+   - Add a `COPY --from=build` line in the final image stage
+6. **Compose** — in `dev/podman-compose.yml`:
+   - Add a service definition with a unique port (check existing ports to avoid collisions)
+   - Add `--plugin "Std/Foo@tcp://plugin-std-foo:<port>"` to every `rte-*` worker
+7. **Makefile** — add the service name to the `up` target's `podman compose up` command.
+8. **Terraform** — in `infra/skyr-k8s/services.tf`:
+   - Add `--plugin "Std/Foo@unix://_/var/run/plugins/foo.sock"` to the RTE args (or `tcp://` for plugins that need their own Deployment, like Container)
+   - Add a sidecar container definition (or a separate Deployment + Service in `plugins.tf` for complex plugins)
+9. **CI workflow** — in `.github/workflows/ci.yml`:
+   - Add to the `service-images` matrix `binary` list
+   - Add the image reference to the release body
+10. **Documentation**:
+    - **Plugin README** — create `crates/plugin_std_foo/README.md` following the pattern in `plugin_std_random`
+    - **Root README** — add a row to the Plugins table and to the Running Locally service table
+    - **RTE README** — add the plugin to the example `--plugin` flags in `crates/rte/README.md`
+    - **RTP README** — add the plugin to the Related Crates list in `crates/rtp/README.md`
+    - **External docs** — add user-facing documentation in `docs/scl/stdlib.md` for the new resource types
+
 ## Running Locally
 
 See the [README](README.md#running-locally) for full service and port listings.
