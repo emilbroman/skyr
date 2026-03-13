@@ -610,6 +610,11 @@ peg::parser! {
 
         rule record_field() -> RecordField
             = var:var() colon() expr:expr() { RecordField { var, expr } }
+            / var:var() {
+                let span = var.span();
+                let expr = Loc::new(Expr::Var(var.clone()), span);
+                RecordField { var, expr }
+            }
 
         rule dict_expr() -> Loc<Expr>
             = hash_span:hash() _open_curly_span:open_curly() close_curly_span:close_curly() {
@@ -1127,6 +1132,26 @@ mod tests {
         assert_eq!(record.fields.len(), 2);
         assert_eq!(record.fields[0].var.name, "a");
         assert_eq!(record.fields[1].var.name, "b");
+    }
+
+    #[test]
+    fn parses_record_shorthand_field() {
+        let line = parse_repl_line("{ a: 1, b }", &ModuleId::default())
+            .into_inner()
+            .expect("record should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Record(record) = expr.into_inner() else {
+            panic!("expected record expression");
+        };
+        assert_eq!(record.fields.len(), 2);
+        assert_eq!(record.fields[0].var.name, "a");
+        assert_eq!(record.fields[1].var.name, "b");
+        let crate::Expr::Var(var) = record.fields[1].expr.as_ref() else {
+            panic!("expected var expression for shorthand field");
+        };
+        assert_eq!(var.name, "b");
     }
 
     #[test]
