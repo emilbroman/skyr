@@ -50,11 +50,11 @@ impl ArtifactPlugin {
         let name = inputs.get("name").assert_str_ref()?;
         let namespace = inputs.get("namespace").assert_str_ref()?;
         let contents = inputs.get("contents").assert_str_ref()?;
-        let media_type = match inputs.get("type") {
+        let media_type = match inputs.get("mediaType") {
             Value::Str(value) => Some(value.as_str()),
             Value::Nil => None,
             other => {
-                anyhow::bail!("invalid input for type: expected Str? but got {other}");
+                anyhow::bail!("invalid input for mediaType: expected Str? but got {other}");
             }
         };
 

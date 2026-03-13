@@ -13,7 +13,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let config = config_arg.value.assert_record()?;
 
         let name = config.get("name").assert_str_ref()?;
-        let media_type = match config.get("type") {
+        let media_type = match config.get("mediaType") {
             crate::Value::Nil => None,
             other => Some(other.assert_str_ref()?),
         };
@@ -28,7 +28,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let mut inputs = crate::Record::default();
         inputs.insert(String::from("name"), crate::Value::Str(name.to_owned()));
         inputs.insert(
-            String::from("type"),
+            String::from("mediaType"),
             media_type
                 .map(|value| crate::Value::Str(value.to_owned()))
                 .unwrap_or(crate::Value::Nil),

@@ -96,7 +96,7 @@ let container = pod.Container({
 // Expose deployment info as an artifact
 Artifact.File({
     name: "deployment-info.json",
-    type: "application/json",
+    mediaType: "application/json",
     contents: Encoding.toJson({
         pod: pod.name,
         container: container.name,

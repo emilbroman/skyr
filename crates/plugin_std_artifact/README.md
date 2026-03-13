@@ -12,7 +12,7 @@ Stores a file as a named artifact.
 
 | | Fields |
 |---|--------|
-| **Inputs** | `namespace`, `name`, `contents`, optional `type` (media type) |
+| **Inputs** | `namespace`, `name`, `contents`, optional `mediaType` (media type) |
 | **Outputs** | `namespace`, `name`, `media_type`, `url` (private URL) |
 
 Creates are idempotent — if an artifact with the same name already exists, it is treated as success. Deletes are a no-op (artifacts are retained indefinitely).

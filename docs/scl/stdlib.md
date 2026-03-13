@@ -277,7 +277,7 @@ import Std/Artifact
 let readme = Artifact.File({
     name: "readme.txt",
     contents: "Hello, world!",
-    type: "text/plain",
+    mediaType: "text/plain",
 })
 ```
 
@@ -287,7 +287,7 @@ let readme = Artifact.File({
 |-------|------|-------------|
 | `name` | `Str` | Artifact name (unique within deployment) |
 | `contents` | `Str` | File contents |
-| `type` | `Str?` | Media type (optional, defaults to `application/octet-stream`) |
+| `mediaType` | `Str?` | Media type (optional, defaults to `application/octet-stream`) |
 
 **Outputs:**
 
@@ -310,7 +310,7 @@ let config = {
 
 Artifact.File({
     name: "config.json",
-    type: "application/json",
+    mediaType: "application/json",
     contents: Encoding.toJson(config),
 })
 ```
@@ -667,7 +667,7 @@ let container = pod.Container({
 // Export deployment information
 Artifact.File({
     name: "deployment.json",
-    type: "application/json",
+    mediaType: "application/json",
     contents: Encoding.toJson({
         image: image.fullname,
         pod: pod.name,
