@@ -659,6 +659,51 @@ let t: Time.Instant = { epochMillis: 1700000000000 }
 |-------|------|-------------|
 | `epochMillis` | `Int` | Milliseconds since 1970-01-01T00:00:00Z |
 
+### Duration
+
+A time span with optional month and millisecond components:
+
+```scl
+let oneHour: Time.Duration = { milliseconds: 3600000 }
+let quarterly: Time.Duration = { months: 3 }
+let mixed: Time.Duration = { months: 1, milliseconds: 1 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `milliseconds` | `Int?` | Millisecond component (optional) |
+| `months` | `Int?` | Calendar month component (optional) |
+
+Both fields are optional. The month component uses calendar-month arithmetic (adding 1 month to Jan 31 gives Feb 28/29), while the millisecond component is exact.
+
+### Clock
+
+Create a volatile clock resource that produces a time-window `Instant`. The clock truncates the current time to the closest past boundary of the given duration, aligned with the Unix epoch:
+
+```scl
+import Std/Time
+
+let hourly = Time.Clock({ milliseconds: 3600000 })
+let monthly = Time.Clock({ months: 1 })
+let custom = Time.Clock({ months: 1, milliseconds: 1 })
+```
+
+**Input:** `Duration` — the window size.
+
+**Output:** `Instant` — the start of the current window.
+
+The resource is volatile: the deployment engine periodically re-checks it. When the clock crosses a window boundary the output changes, triggering dependent resources to update.
+
+**Boundary calculation:**
+
+1. Find the largest epoch-aligned month boundary at or before the current time.
+2. From that month boundary, find the largest millisecond-aligned boundary at or before the current time.
+
+For example, with `{ months: 1, milliseconds: 1 }`:
+- Window 1 starts at `1970-01-01T00:00:00.000Z`
+- Window 2 starts at `1970-02-01T00:00:00.001Z`
+- Window 3 starts at `1970-03-01T00:00:00.002Z`
+
 ### toISO
 
 Format an `Instant` as a UTC ISO 8601 string with second precision:
