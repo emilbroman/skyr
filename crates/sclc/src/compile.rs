@@ -60,11 +60,25 @@ mod tests {
     /// Compiling a program that imports every stdlib module should produce zero diagnostics.
     #[tokio::test]
     async fn stdlib_compiles_without_diagnostics() {
+        let stdlib_modules = [
+            "Artifact",
+            "Container",
+            "Crypto",
+            "Encoding",
+            "List",
+            "Num",
+            "Option",
+            "Random",
+        ];
+
+        let main_scl = stdlib_modules
+            .iter()
+            .map(|m| format!("import Std/{m}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let mut files = HashMap::new();
-        files.insert(
-            "Main.scl".to_string(),
-            b"import Std/Option\nimport Std/List\nimport Std/Num\nimport Std/Artifact\nimport Std/Container\nimport Std/Crypto\nimport Std/Encoding\nimport Std/Random\n".to_vec(),
-        );
+        files.insert("Main.scl".to_string(), main_scl.into_bytes());
 
         let source = MemSourceRepo {
             package_id: [String::from("Test")].into_iter().collect(),
