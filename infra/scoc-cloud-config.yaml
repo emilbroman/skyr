@@ -1,0 +1,147 @@
+#cloud-config
+
+packages:
+  - containerd
+  - containerd-ctr
+  - crun
+  - iptables
+  - cni-plugins
+  - iproute2
+  - util-linux
+  - curl
+
+write_files:
+  # Containerd configuration
+  - path: /etc/containerd/config.toml
+    content: |
+      version = 3
+
+      [plugins."io.containerd.cri.v1.images"]
+        snapshotter = "native"
+
+        [plugins."io.containerd.cri.v1.images".registry]
+          config_path = "/etc/containerd/certs.d"
+
+      [plugins."io.containerd.cri.v1.runtime"]
+        [plugins."io.containerd.cri.v1.runtime".containerd]
+          default_runtime_name = "crun"
+
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.crun]
+            runtime_type = "io.containerd.runc.v2"
+            [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.crun.options]
+              BinaryName = "/usr/bin/crun"
+              SystemdCgroup = false
+
+        [plugins."io.containerd.cri.v1.runtime".cni]
+          bin_dir = "/usr/libexec/cni"
+          conf_dir = "/etc/cni/net.d"
+
+  # OCI registry host configuration
+  - path: /etc/containerd/certs.d/${SCOC_OCI_REGISTRY}/hosts.toml
+    content: |
+      server = "https://${SCOC_OCI_REGISTRY}"
+
+      [host."https://${SCOC_OCI_REGISTRY}"]
+        capabilities = ["pull", "resolve"]
+
+  # Minimal CNI config (loopback only — SCOC handles real networking)
+  - path: /etc/cni/net.d/10-dummy.conflist
+    content: |
+      {
+        "cniVersion": "1.0.0",
+        "name": "dummy-net",
+        "plugins": [
+          {
+            "type": "dummy",
+            "ipam": {
+              "type": "static",
+              "addresses": [
+                {"address": "169.254.1.1/32"}
+              ]
+            }
+          },
+          {
+            "type": "loopback"
+          }
+        ]
+      }
+
+  # OpenRC init script for SCOC
+  - path: /etc/init.d/scoc
+    permissions: "0755"
+    content: |
+      #!/sbin/openrc-run
+
+      description="Skyr Container Orchestrator Conduit"
+      command="/usr/local/bin/scoc"
+      command_args="daemon \
+        --node-name ${SCOC_NODE_NAME} \
+        --bind ${SCOC_BIND:-0.0.0.0:50054} \
+        --conduit-address ${SCOC_CONDUIT_ADDRESS} \
+        --orchestrator-address ${SCOC_ORCHESTRATOR_ADDRESS} \
+        --containerd-socket /run/containerd/containerd.sock \
+        --cpu-millis ${SCOC_CPU_MILLIS:-4000} \
+        --memory-bytes ${SCOC_MEMORY_BYTES:-8589934592} \
+        --max-pods ${SCOC_MAX_PODS:-100} \
+        --ldb-brokers ${SCOC_LDB_BROKERS:-127.0.0.1:9092}"
+      command_background=true
+      pidfile="/run/${RC_SVCNAME}.pid"
+
+      depend() {
+        need containerd
+        after net
+      }
+
+      start_pre() {
+        # Setup cgroup delegation for cgroupv2
+        if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+          mkdir -p /sys/fs/cgroup/init.scope
+          echo $$ > /sys/fs/cgroup/init.scope/cgroup.procs 2>/dev/null || true
+
+          for controller in $(cat /sys/fs/cgroup/cgroup.controllers); do
+            echo "+${controller}" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+          done
+
+          mkdir -p /sys/fs/cgroup/k8s.io
+          for controller in $(cat /sys/fs/cgroup/k8s.io/cgroup.controllers); do
+            echo "+${controller}" > /sys/fs/cgroup/k8s.io/cgroup.subtree_control 2>/dev/null || true
+          done
+        fi
+
+        # Wait for containerd socket
+        local i=0
+        while [ ! -S /run/containerd/containerd.sock ] && [ $i -lt 50 ]; do
+          sleep 0.1
+          i=$((i + 1))
+        done
+
+        # Wait for containerd to accept connections
+        until ctr version > /dev/null 2>&1; do
+          sleep 0.2
+        done
+      }
+
+  # SCOC environment variables
+  - path: /etc/conf.d/scoc
+    content: |
+      SCOC_NODE_NAME="${SCOC_NODE_NAME}"
+      SCOC_BIND="${SCOC_BIND}"
+      SCOC_CONDUIT_ADDRESS="${SCOC_CONDUIT_ADDRESS}"
+      SCOC_ORCHESTRATOR_ADDRESS="${SCOC_ORCHESTRATOR_ADDRESS}"
+      SCOC_CPU_MILLIS="${SCOC_CPU_MILLIS}"
+      SCOC_MEMORY_BYTES="${SCOC_MEMORY_BYTES}"
+      SCOC_MAX_PODS="${SCOC_MAX_PODS}"
+      SCOC_LDB_BROKERS="${SCOC_LDB_BROKERS}"
+
+runcmd:
+  # Download SCOC binary from latest GitHub release
+  - curl -fsSL -o /usr/local/bin/scoc https://github.com/emilbroman/skyr/releases/latest/download/scoc
+  - chmod +x /usr/local/bin/scoc
+  # Create pod log directory
+  - mkdir -p /var/log/pods
+  # Enable and start containerd
+  - rc-update add containerd default
+  - rc-service containerd start
+  # Enable and start SCOC
+  - rc-update add scoc default
+  - rc-service scoc start
