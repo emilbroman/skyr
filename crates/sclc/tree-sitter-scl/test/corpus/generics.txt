@@ -1,0 +1,81 @@
+================
+Generic function with bound
+================
+
+fn<T <: { name: Str }>(item: T) item.name
+
+---
+
+(source_file
+  (fn_expression
+    (type_parameters
+      (type_parameter
+        name: (identifier)
+        bound: (record_type
+          (record_type_field
+            name: (identifier)
+            type: (type_identifier)))))
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (type_identifier)))
+    body: (property_access
+      object: (identifier)
+      property: (identifier))))
+
+================
+Multiple type parameters
+================
+
+fn<T, U>(x: T, f: fn(T) U) f(x)
+
+---
+
+(source_file
+  (fn_expression
+    (type_parameters
+      (type_parameter
+        name: (identifier))
+      (type_parameter
+        name: (identifier)))
+    (fn_parameters
+      (fn_parameter
+        name: (identifier)
+        type: (type_identifier))
+      (fn_parameter
+        name: (identifier)
+        type: (fn_type
+          (type_identifier)
+          return_type: (type_identifier))))
+    body: (call_expression
+      function: (identifier)
+      (identifier))))
+
+================
+Generic function type
+================
+
+export let map = extern "Std/List.map": fn<T, U>([T], fn(T) U) [U]
+
+---
+
+(source_file
+  (export_statement
+    (let_binding
+      name: (identifier)
+      value: (extern_expression
+        name: (string
+          (string_content))
+        type: (fn_type
+          (type_parameters
+            (type_parameter
+              name: (identifier))
+            (type_parameter
+              name: (identifier)))
+          (list_type
+            (type_identifier))
+          (fn_type
+            (type_identifier)
+            return_type: (type_identifier))
+          return_type: (list_type
+            (type_identifier)))))))

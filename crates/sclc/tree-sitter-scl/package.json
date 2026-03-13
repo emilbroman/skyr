@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-scl",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for SCL (Skyr Configuration Language)",
+  "main": "bindings/node",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.scl",
+      "file-types": ["scl"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm"
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  }
+}

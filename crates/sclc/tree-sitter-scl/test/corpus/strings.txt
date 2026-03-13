@@ -1,0 +1,58 @@
+================
+String with escape sequences
+================
+
+"hello\nworld\t\\\{"
+
+---
+
+(source_file
+  (string
+    (string_content)))
+
+================
+Interpolated string
+================
+
+"hello {name}!"
+
+---
+
+(source_file
+  (string
+    (string_content)
+    (interpolation
+      (identifier))
+    (string_content)))
+
+================
+Interpolated string with expression
+================
+
+"sum is {x + y}"
+
+---
+
+(source_file
+  (string
+    (string_content)
+    (interpolation
+      (binary_expression
+        left: (identifier)
+        right: (identifier)))))
+
+================
+Multiple interpolations
+================
+
+"{a} and {b}"
+
+---
+
+(source_file
+  (string
+    (interpolation
+      (identifier))
+    (string_content)
+    (interpolation
+      (identifier))))
