@@ -1,4 +1,4 @@
-.PHONY: image scoc-image deps compose up down
+.PHONY: image scoc-image deps compose up down build-cli install-cli uninstall-cli cloud-config
 
 image:
 	podman build -f dev/Containerfile.skyr -t skyr:latest -t localhost/skyr:latest .
@@ -27,3 +27,6 @@ install-cli: build-cli
 
 uninstall-cli:
 	sudo rm /usr/local/bin/skyr
+
+cloud-config:
+	envsubst < infra/scoc-cloud-config.yaml

@@ -20,6 +20,7 @@
             protobuf
             opentofu
             terragrunt
+            gettext
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
