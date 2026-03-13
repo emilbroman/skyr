@@ -28,3 +28,5 @@ export let toISO = extern "Std/Time.toISO": fn(Instant) Str
 export let utc = extern "Std/Time.utc": fn(Instant) DateTime
 export let add = extern "Std/Time.add": fn(Instant, Duration) Instant
 export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
+
+export let Clock = extern "Std/Time.Clock": fn(Duration) Instant
