@@ -192,6 +192,14 @@ The built-in resource types have the following volatility:
 | `Std/Container.Host` | No |
 | `Std/Container.Host.Port` | No |
 
+## Sticky Resources
+
+Resources can be marked as **sticky** by their plugin. A sticky resource is not destroyed when its owning deployment becomes Undesired — it persists as a tombstone even after the deployment transitions to Down.
+
+When a deployment is torn down, Skyr destroys all non-sticky owned resources as usual, but leaves sticky resources in place. The deployment transitions to Down once all its non-sticky resources have been cleaned up. The sticky resources remain in the resource database with their last owner, but since that deployment is Down, they are no longer actively reconciled or health-checked.
+
+A resource can be both sticky and volatile. While its deployment is active (Desired), a sticky+volatile resource is reconciled normally. Once the deployment becomes Undesired and transitions to Down, the resource persists but is no longer repaired if it disappears externally.
+
 ## Viewing Deployment Status
 
 Use the CLI to check on your deployments:

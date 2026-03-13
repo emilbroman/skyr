@@ -705,12 +705,15 @@ impl From<cdb::DeploymentState> for DeploymentState {
 enum ResourceMarker {
     #[graphql(name = "VOLATILE")]
     Volatile,
+    #[graphql(name = "STICKY")]
+    Sticky,
 }
 
 impl From<sclc::Marker> for ResourceMarker {
     fn from(marker: sclc::Marker) -> Self {
         match marker {
             sclc::Marker::Volatile => ResourceMarker::Volatile,
+            sclc::Marker::Sticky => ResourceMarker::Sticky,
         }
     }
 }

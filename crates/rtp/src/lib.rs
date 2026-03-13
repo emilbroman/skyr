@@ -649,12 +649,14 @@ impl PluginClient {
 fn encode_marker(marker: &sclc::Marker) -> i32 {
     match marker {
         sclc::Marker::Volatile => proto::Marker::Volatile as i32,
+        sclc::Marker::Sticky => proto::Marker::Sticky as i32,
     }
 }
 
 fn decode_marker(value: i32) -> Option<sclc::Marker> {
     match proto::Marker::try_from(value) {
         Ok(proto::Marker::Volatile) => Some(sclc::Marker::Volatile),
+        Ok(proto::Marker::Sticky) => Some(sclc::Marker::Sticky),
         Err(_) => None,
     }
 }
