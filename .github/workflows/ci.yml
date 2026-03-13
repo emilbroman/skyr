@@ -84,6 +84,7 @@ jobs:
           - api
           - plugin_std_random
           - plugin_std_artifact
+          - plugin_std_crypto
           - plugin_std_container
     steps:
       - uses: actions/checkout@v4
@@ -244,6 +245,7 @@ jobs:
             ghcr.io/emilbroman/skyr-api:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_random:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_artifact:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-plugin_std_crypto:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_container:${{ github.sha }}
             ```
           files: artifacts/*

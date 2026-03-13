@@ -182,6 +182,12 @@ services:
       ]
     restart: always
 
+  plugin-std-crypto:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_crypto"]
+    command: ["--bind", "tcp://0.0.0.0:50055"]
+    restart: always
+
   plugin-std-container:
     image: skyr:latest
     entrypoint: ["/plugin_std_container"]
@@ -223,6 +229,8 @@ services:
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--plugin",
+        "Std/Crypto@tcp://plugin-std-crypto:50055",
+        "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",
         "0",
@@ -248,6 +256,8 @@ services:
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
         "--plugin",
+        "Std/Crypto@tcp://plugin-std-crypto:50055",
+        "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",
         "1",
@@ -272,6 +282,8 @@ services:
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
         "Std/Artifact@tcp://plugin-std-artifact:50052",
+        "--plugin",
+        "Std/Crypto@tcp://plugin-std-crypto:50055",
         "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
         "--worker-index",

@@ -315,6 +315,85 @@ Artifact.File({
 })
 ```
 
+## Std/Crypto
+
+Generate and manage cryptographic key pairs. Keys persist across deployments.
+
+All three key types share the same output shape `{ pem: Str, publicKeyPem: Str }`, so they are interchangeable via structural subtyping.
+
+### ED25519PrivateKey
+
+Generate an Ed25519 key pair:
+
+```scl
+import Std/Crypto
+
+let key = Crypto.ED25519PrivateKey({ name: "deploy-key" })
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `Str` | Key identifier (unique within environment) |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pem` | `Str` | Private key in PKCS#8 PEM format |
+| `publicKeyPem` | `Str` | Public key in SPKI PEM format |
+
+### ECDSAPrivateKey
+
+Generate an ECDSA key pair on a specified curve:
+
+```scl
+let key = Crypto.ECDSAPrivateKey({
+    name: "signing-key",
+    curve: "P-384",
+})
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `Str` | Key identifier (unique within environment) |
+| `curve` | `Str?` | Elliptic curve: `"P-256"` (default), `"P-384"`, or `"P-521"` |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pem` | `Str` | Private key in PKCS#8 PEM format |
+| `publicKeyPem` | `Str` | Public key in SPKI PEM format |
+
+### RSAPrivateKey
+
+Generate an RSA key pair:
+
+```scl
+let key = Crypto.RSAPrivateKey({
+    name: "tls-key",
+    size: 4096,
+})
+```
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `Str` | Key identifier (unique within environment) |
+| `size` | `Int?` | Key size in bits (default `2048`, minimum `2048`) |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pem` | `Str` | Private key in PKCS#8 PEM format |
+| `publicKeyPem` | `Str` | Public key in SPKI PEM format |
+
 ## Std/Encoding
 
 Serialize and deserialize data.
