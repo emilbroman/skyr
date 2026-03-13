@@ -41,7 +41,17 @@ When you push a new commit, the deployment starts in the **Desired** state. Skyr
 3. Adopts existing resources that match your configuration
 4. Updates resources whose inputs have changed
 
-The deployment stays in this state as long as you want it running.
+The deployment stays in this state until it either converges (transitions to Up) or is superseded by a new push.
+
+### Up
+
+Once a Desired deployment has fully converged — meaning its configuration has been evaluated with no new resource changes — Skyr checks whether any of its resources are **volatile**. If none are, the deployment transitions to the **Up** state.
+
+An Up deployment is still the active deployment for its environment, but Skyr no longer re-evaluates it on each reconciliation cycle. This avoids unnecessary work for deployments that consist entirely of stable resources like random numbers, crypto keys, or artifacts.
+
+If any resource is volatile (e.g., pods or containers), the deployment remains Desired and continues to be reconciled, since volatile resources may change or disappear externally.
+
+When you push a new commit, an Up deployment is superseded just like a Desired one — it transitions to Lingering and follows the normal rollout process.
 
 ### Lingering
 
@@ -70,7 +80,7 @@ When you push a new commit to an environment that already has an active deployme
 
 ```
 Before push:
-  main → commit A (Desired)
+  main → commit A (Desired or Up)
 
 After push:
   main → commit A (Lingering) ──superseded by──→ commit B (Desired)
@@ -156,6 +166,31 @@ The container depends on both the pod and the image. During teardown:
 3. Then the image
 
 A resource won't be destroyed until all resources that depend on it are gone.
+
+## Volatile Resources
+
+Resources in Skyr can be marked as **volatile** by their plugin. A volatile resource represents external state that may change or disappear independently of Skyr — for example, a running container or pod that could be restarted, evicted, or destroyed by an external system.
+
+Non-volatile resources are stable data that, once created, won't change unless Skyr explicitly updates them. Examples include random numbers, cryptographic keys, and build artifacts.
+
+The distinction affects how Skyr manages deployments:
+
+- A deployment with **only non-volatile resources** transitions to the Up state once converged, and is not re-evaluated until a new push.
+- A deployment with **at least one volatile resource** remains in the Desired state and continues to be reconciled periodically, ensuring that volatile resources are kept in sync with the desired configuration.
+
+The built-in resource types have the following volatility:
+
+| Resource Type | Volatile |
+|---------------|----------|
+| `Std/Random.Int` | No |
+| `Std/Crypto.*` | No |
+| `Std/Artifact.File` | No |
+| `Std/Container.Image` | No |
+| `Std/Container.Pod` | Yes |
+| `Std/Container.Pod.Container` | Yes |
+| `Std/Container.Pod.Port` | No |
+| `Std/Container.Host` | No |
+| `Std/Container.Host.Port` | No |
 
 ## Viewing Deployment Status
 

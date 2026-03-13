@@ -54,6 +54,7 @@ impl CryptoPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: Default::default(),
         })
     }
 }

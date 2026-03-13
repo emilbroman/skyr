@@ -263,6 +263,32 @@ impl Worker {
                                 superseded.set(DeploymentState::Undesired).await?;
                             }
                         }
+
+                        // Check if all owned resources are non-volatile.
+                        // If so, transition to Up (no further reconciliation needed).
+                        let owner_deployment_qid = deployment.deployment_qid().to_string();
+                        let mut has_volatile = false;
+                        let mut resources = self
+                            .namespace
+                            .list_resources_by_owner(&owner_deployment_qid)
+                            .await?;
+                        while let Some(resource) = resources.try_next().await? {
+                            if resource.markers.contains(&sclc::Marker::Volatile) {
+                                has_volatile = true;
+                                break;
+                            }
+                        }
+                        drop(resources);
+
+                        if !has_volatile {
+                            tracing::info!(
+                                "{short_id} all resources non-volatile; transitioning to UP"
+                            );
+                            self.client.set(DeploymentState::Up).await?;
+                            self.log_publisher
+                                .info(format!("{short_id} is up (all resources non-volatile)"))
+                                .await;
+                        }
                     }
                     EvalCompleteness::Partial => {
                         tracing::info!(
@@ -271,6 +297,11 @@ impl Worker {
                     }
                 }
 
+                Ok(())
+            }
+
+            DeploymentState::Up => {
+                tracing::debug!("{short_id} up; no reconciliation needed");
                 Ok(())
             }
 
@@ -370,7 +401,10 @@ impl Worker {
                         break;
                     }
 
-                    if superseding_deployment.state == DeploymentState::Desired {
+                    if matches!(
+                        superseding_deployment.state,
+                        DeploymentState::Desired | DeploymentState::Up
+                    ) {
                         self.client
                             .mark_superseded_by(&superseding_deployment.deployment)
                             .await?;
@@ -446,6 +480,7 @@ impl Worker {
                     inputs: resource.inputs.unwrap_or_default(),
                     outputs: resource.outputs.unwrap_or_default(),
                     dependencies: resource.dependencies,
+                    markers: resource.markers,
                 },
             );
         }

@@ -43,6 +43,7 @@ impl RandomPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: Default::default(),
         })
     }
 }

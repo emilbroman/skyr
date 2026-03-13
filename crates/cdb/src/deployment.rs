@@ -40,6 +40,7 @@ pub enum DeploymentState {
     Undesired,
     Lingering,
     Desired,
+    Up,
 }
 
 impl fmt::Display for DeploymentState {
@@ -49,6 +50,7 @@ impl fmt::Display for DeploymentState {
             Self::Undesired => write!(f, "UNDESIRED"),
             Self::Lingering => write!(f, "LINGERING"),
             Self::Desired => write!(f, "DESIRED"),
+            Self::Up => write!(f, "UP"),
         }
     }
 }
@@ -66,6 +68,7 @@ impl FromStr for DeploymentState {
             "UNDESIRED" => Ok(DeploymentState::Undesired),
             "LINGERING" => Ok(DeploymentState::Lingering),
             "DESIRED" => Ok(DeploymentState::Desired),
+            "UP" => Ok(DeploymentState::Up),
             v => Err(InvalidDeploymentState(v.to_string())),
         }
     }

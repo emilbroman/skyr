@@ -366,6 +366,18 @@ async fn handle_create(
         return Ok(());
     }
 
+    if let Err(error) = resource_client.set_markers(&resource.markers).await {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_id = %message.resource.resource_id,
+            error = %error,
+            "failed to persist created resource markers",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type,
@@ -646,6 +658,7 @@ async fn handle_update_inputs(
 
     let mut inputs_to_persist = prev_inputs.clone();
     let mut outputs_to_persist = current.outputs.clone();
+    let mut markers_to_persist = None;
 
     if prev_inputs != desired_inputs {
         let Some((plugin_name, mut plugin)) = resolve_plugin(&resource.resource_type, &ctx.plugins)
@@ -693,6 +706,7 @@ async fn handle_update_inputs(
         };
         inputs_to_persist = updated.inputs;
         outputs_to_persist = Some(updated.outputs);
+        markers_to_persist = Some(updated.markers);
     } else {
         tracing::info!(
             environment_qid = %resource.environment_qid,
@@ -749,6 +763,19 @@ async fn handle_update_inputs(
             resource_id = %resource.resource_id,
             "{operation} resource has no outputs to persist",
         );
+    }
+    if let Some(markers) = markers_to_persist
+        && let Err(error) = resource_client.set_markers(&markers).await
+    {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_id = %resource.resource_id,
+            error = %error,
+            "failed to persist {operation} resource markers",
+        );
+        delivery.nack(false).await?;
+        return Ok(None);
     }
 
     Ok(Some(target_dep_qid))

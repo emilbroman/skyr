@@ -24,6 +24,7 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 ids = { path = "../ids" }
 cdb = { path = "../cdb" }
 rdb = { path = "../rdb" }
+sclc = { path = "../sclc" }
 udb = { path = "../udb" }
 ldb = { path = "../ldb" }
 adb = { path = "../adb" }

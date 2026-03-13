@@ -19,6 +19,7 @@ mod node_registry;
 mod subnet_allocator;
 mod vip_allocator;
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -294,6 +295,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -330,6 +332,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -454,6 +457,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::from([sclc::Marker::Volatile]),
         })
     }
 
@@ -509,6 +513,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::from([sclc::Marker::Volatile]),
         })
     }
 
@@ -683,6 +688,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::from([sclc::Marker::Volatile]),
         })
     }
 
@@ -720,6 +726,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::from([sclc::Marker::Volatile]),
         })
     }
 
@@ -857,6 +864,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -892,6 +900,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -1007,6 +1016,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -1042,6 +1052,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -1150,6 +1161,7 @@ impl ContainerPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 
@@ -1185,6 +1197,7 @@ impl ContainerPlugin {
             inputs,
             outputs: prev_outputs,
             dependencies: vec![],
+            markers: BTreeSet::new(),
         })
     }
 

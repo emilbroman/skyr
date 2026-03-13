@@ -32,11 +32,16 @@ message CreateResourceRequest {
   string deployment_id = 5;
 }
 
+enum Marker {
+  VOLATILE = 0;
+}
+
 message Resource {
   string type = 1;
   string id = 2;
   string inputs_json = 3;
   string outputs_json = 4;
+  repeated Marker markers = 5;
 }
 
 message CreateResourceResponse {

@@ -114,6 +114,7 @@ impl ArtifactPlugin {
             inputs,
             outputs,
             dependencies: vec![],
+            markers: Default::default(),
         })
     }
 

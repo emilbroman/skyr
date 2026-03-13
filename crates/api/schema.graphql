@@ -9,6 +9,11 @@ enum DeploymentState {
   UNDESIRED
   LINGERING
   DESIRED
+  UP
+}
+
+enum ResourceMarker {
+  VOLATILE
 }
 
 enum Severity {
@@ -81,6 +86,7 @@ type Resource {
   outputs: JSON
   owner: Deployment
   dependencies: [Resource!]!
+  markers: [ResourceMarker!]!
 }
 
 type Subscription {
