@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -7,7 +8,7 @@ use rustyline::highlight;
 use rustyline::hint;
 use rustyline::validate;
 use rustyline::{Context, Editor, Helper};
-use sclc::Diag;
+use sclc::{Diag, Lexer, Token};
 
 use crate::fs_source::FsSource;
 use crate::output::{report_diagnostics, spawn_effect_printer};
@@ -107,7 +108,133 @@ impl hint::Hinter for ReplHelper {
     type Hint = String;
 }
 
-impl highlight::Highlighter for ReplHelper {}
+impl highlight::Highlighter for ReplHelper {
+    fn highlight<'l>(&self, line: &'l str, _pos: usize) -> Cow<'l, str> {
+        let mut result = String::with_capacity(line.len() + 64);
+        let mut source_bytes_covered: usize = 0;
+
+        macro_rules! emit {
+            ($text:expr) => {{
+                let t = $text;
+                source_bytes_covered += t.len();
+                result.push_str(t);
+            }};
+            ($text:expr, $color:expr) => {{
+                let t = $text;
+                source_bytes_covered += t.len();
+                result.push_str($color);
+                result.push_str(t);
+                result.push_str("\x1b[0m");
+            }};
+        }
+
+        for token in Lexer::new(line) {
+            match *token.as_ref() {
+                // Keywords
+                Token::ImportKeyword => emit!("import", "\x1b[35m"),
+                Token::LetKeyword => emit!("let", "\x1b[35m"),
+                Token::FnKeyword => emit!("fn", "\x1b[35m"),
+                Token::ExportKeyword => emit!("export", "\x1b[35m"),
+                Token::ExternKeyword => emit!("extern", "\x1b[35m"),
+                Token::IfKeyword => emit!("if", "\x1b[35m"),
+                Token::ElseKeyword => emit!("else", "\x1b[35m"),
+                Token::ForKeyword => emit!("for", "\x1b[35m"),
+                Token::InKeyword => emit!("in", "\x1b[35m"),
+                Token::TypeKeyword => emit!("type", "\x1b[35m"),
+                Token::ExceptionKeyword => emit!("exception", "\x1b[35m"),
+                Token::RaiseKeyword => emit!("raise", "\x1b[35m"),
+                Token::TryKeyword => emit!("try", "\x1b[35m"),
+                Token::CatchKeyword => emit!("catch", "\x1b[35m"),
+
+                // Literal keywords
+                Token::NilKeyword => emit!("nil", "\x1b[33m"),
+                Token::TrueKeyword => emit!("true", "\x1b[33m"),
+                Token::FalseKeyword => emit!("false", "\x1b[33m"),
+
+                // Numbers
+                Token::Int(s) | Token::Float(s) => emit!(s, "\x1b[33m"),
+
+                // Strings
+                Token::StrSimple(s) => {
+                    source_bytes_covered += 1 + s.len() + 1; // opening + content + closing quote
+                    result.push_str("\x1b[32m\"");
+                    result.push_str(s);
+                    result.push_str("\"\x1b[0m");
+                }
+                Token::StrBegin(s) => {
+                    source_bytes_covered += 1 + s.len() + 1; // opening quote + content + {
+                    result.push_str("\x1b[32m\"");
+                    result.push_str(s);
+                    result.push_str("\x1b[0m{");
+                }
+                Token::StrCont(s) => {
+                    source_bytes_covered += 1 + s.len() + 1; // } + content + {
+                    result.push_str("}\x1b[32m");
+                    result.push_str(s);
+                    result.push_str("\x1b[0m{");
+                }
+                Token::StrEnd(s) => {
+                    source_bytes_covered += 1 + s.len() + 1; // } + content + closing quote
+                    result.push_str("}\x1b[32m");
+                    result.push_str(s);
+                    result.push_str("\"\x1b[0m");
+                }
+
+                // Comments
+                Token::Comment(s) => emit!(s, "\x1b[90m"),
+
+                // Punctuation and operators (no color)
+                Token::OpenCurly => emit!("{"),
+                Token::CloseCurly => emit!("}"),
+                Token::OpenParen => emit!("("),
+                Token::CloseParen => emit!(")"),
+                Token::OpenSquare => emit!("["),
+                Token::CloseSquare => emit!("]"),
+                Token::Hash => emit!("#"),
+                Token::Colon => emit!(":"),
+                Token::Comma => emit!(","),
+                Token::Dot => emit!("."),
+                Token::Equals => emit!("="),
+                Token::EqEq => emit!("=="),
+                Token::Semicolon => emit!(";"),
+                Token::Slash => emit!("/"),
+                Token::Plus => emit!("+"),
+                Token::Minus => emit!("-"),
+                Token::Star => emit!("*"),
+                Token::BangEq => emit!("!="),
+                Token::Less => emit!("<"),
+                Token::LessColon => emit!("<:"),
+                Token::LessEq => emit!("<="),
+                Token::Greater => emit!(">"),
+                Token::GreaterEq => emit!(">="),
+                Token::AndAnd => emit!("&&"),
+                Token::OrOr => emit!("||"),
+                Token::QuestionMark => emit!("?"),
+
+                // Identifiers, whitespace, unknown
+                Token::Symbol(s)
+                | Token::Whitepace(s)
+                | Token::Unknown(s)
+                | Token::Cursor { content: s, .. } => emit!(s),
+            }
+        }
+
+        // The lexer consumes characters inside unterminated strings/comments
+        // without emitting them as token content. Recover the missing tail.
+        if source_bytes_covered < line.len() {
+            let tail = &line[source_bytes_covered..];
+            result.push_str("\x1b[32m");
+            result.push_str(tail);
+            result.push_str("\x1b[0m");
+        }
+
+        Cow::Owned(result)
+    }
+
+    fn highlight_char(&self, _line: &str, _pos: usize, _forced: bool) -> bool {
+        true
+    }
+}
 impl validate::Validator for ReplHelper {}
 impl Helper for ReplHelper {}
 
