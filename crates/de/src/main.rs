@@ -323,8 +323,14 @@ impl Worker {
                     .collect::<Vec<_>>();
                 let mut emitted = 0usize;
                 let mut blocked = 0usize;
+                // Exclude dependencies from sticky resources owned by this
+                // deployment so they don't block teardown of their own deps.
                 let living_dependency_targets = all_resources
                     .iter()
+                    .filter(|resource| {
+                        !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
+                            && resource.markers.contains(&sclc::Marker::Sticky))
+                    })
                     .flat_map(|resource| resource.dependencies.iter().cloned())
                     .collect::<HashSet<_>>();
 
@@ -333,6 +339,16 @@ impl Worker {
                         ty: resource.resource_type.clone(),
                         id: resource.id.clone(),
                     };
+
+                    if resource.markers.contains(&sclc::Marker::Sticky) {
+                        tracing::info!(
+                            resource_type = %resource.resource_type,
+                            resource_id = %resource.id,
+                            "sticky resource; skipping destroy",
+                        );
+                        continue;
+                    }
+
                     if living_dependency_targets.contains(&resource_id) {
                         blocked += 1;
                         tracing::info!(
@@ -364,8 +380,22 @@ impl Worker {
                     return Ok(());
                 }
 
-                if owned_resources.is_empty() {
-                    tracing::info!("{short_id} no more resources, setting state to DOWN");
+                let has_non_sticky = owned_resources
+                    .iter()
+                    .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
+
+                if !has_non_sticky {
+                    for resource in &owned_resources {
+                        self.log_publisher
+                            .info(format!(
+                                "{}.{} will stick around",
+                                resource.resource_type, resource.id
+                            ))
+                            .await;
+                    }
+                    tracing::info!(
+                        "{short_id} no more non-sticky resources, setting state to DOWN"
+                    );
                     self.client.set(DeploymentState::Down).await?;
                     self.log_publisher
                         .info(format!("Undesired {short_id} is fully torn down"))

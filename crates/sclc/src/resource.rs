@@ -15,6 +15,7 @@ pub struct ResourceId {
 )]
 pub enum Marker {
     Volatile,
+    Sticky,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -28,5 +29,9 @@ pub struct Resource {
 impl Resource {
     pub fn is_volatile(&self) -> bool {
         self.markers.contains(&Marker::Volatile)
+    }
+
+    pub fn is_sticky(&self) -> bool {
+        self.markers.contains(&Marker::Sticky)
     }
 }
