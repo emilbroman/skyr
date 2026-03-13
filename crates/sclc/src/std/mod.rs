@@ -33,6 +33,7 @@ std_modules! {
     num => "Num.scl",
     option => "Option.scl",
     random => "Random.scl",
+    time => "Time.scl",
 }
 
 #[derive(Clone)]

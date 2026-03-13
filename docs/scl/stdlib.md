@@ -641,6 +641,37 @@ let big = Num.toHex(65535) // "ffff"
 
 Returns lowercase hexadecimal without prefix.
 
+## Std/Time
+
+Time utilities.
+
+### Instant
+
+A point in time, represented as milliseconds since the Unix epoch:
+
+```scl
+import Std/Time
+
+let t: Time.Instant = { epochMillis: 1700000000000 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `epochMillis` | `Int` | Milliseconds since 1970-01-01T00:00:00Z |
+
+### toISO
+
+Format an `Instant` as a UTC ISO 8601 string with second precision:
+
+```scl
+let iso = Time.toISO({ epochMillis: 1700000000000 })
+// "2023-11-14T22:13:20Z"
+```
+
+**Type:** `fn(Instant) Str`
+
+Returns a string in the format `YYYY-MM-DDTHH:MM:SSZ`.
+
 ## Using Multiple Modules
 
 Combine modules for more complex configurations:

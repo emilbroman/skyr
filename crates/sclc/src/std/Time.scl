@@ -1,0 +1,30 @@
+export type Instant {
+    epochMillis: Int,
+}
+
+export type CalendarDate {
+    year: Int,
+    month: Int,
+    day: Int,
+}
+
+export type ClockTime {
+    hour: Int,
+    minute: Int,
+    second: Int,
+}
+
+export type DateTime {
+    date: CalendarDate,
+    time: ClockTime,
+}
+
+export type Duration {
+    milliseconds: Int?,
+    months: Int?,
+}
+
+export let toISO = extern "Std/Time.toISO": fn(Instant) Str
+export let utc = extern "Std/Time.utc": fn(Instant) DateTime
+export let add = extern "Std/Time.add": fn(Instant, Duration) Instant
+export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant

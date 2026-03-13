@@ -5290,6 +5290,7 @@ name = "sclc"
 version = "0.1.0"
 dependencies = [
  "cdb",
+ "chrono",
  "ordered-float",
  "peg",
  "serde",
