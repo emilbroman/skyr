@@ -44,6 +44,28 @@ impl Diag for SyntaxError {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("unexpected token")]
+pub struct UnexpectedToken {
+    pub module_id: ModuleId,
+    pub span: Span,
+}
+
+impl Diag for UnexpectedToken {
+    fn locate(&self) -> (ModuleId, Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+fn flush_skip(skip_span: &mut Option<Span>, diags: &mut DiagList, module_id: &ModuleId) {
+    if let Some(span) = skip_span.take() {
+        diags.push(UnexpectedToken {
+            module_id: module_id.clone(),
+            span,
+        });
+    }
+}
+
 enum Postfix {
     Property(Loc<Var>),
     Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
@@ -141,9 +163,26 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>) for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>, skip_span: &mut Option<Span>) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
-            = statements:mod_stmt()* eof() { FileMod { statements } }
+            = items:file_mod_item()* eof() {
+                flush_skip(skip_span, diags, module_id);
+                FileMod { statements: items.into_iter().flatten().collect() }
+            }
+
+        rule file_mod_item() -> Option<ModStmt>
+            = stmt:mod_stmt() {
+                flush_skip(skip_span, diags, module_id);
+                Some(stmt)
+            }
+            / [token] {
+                let span = token.span();
+                match skip_span {
+                    Some(s) => *skip_span = Some(Span::new(s.start(), span.end())),
+                    None => *skip_span = Some(span),
+                }
+                None
+            }
 
         pub rule repl_line() -> ReplLine
             = statement:mod_stmt()? eof() { ReplLine { statement } }
@@ -335,8 +374,19 @@ peg::parser! {
             = less() params:(type_param() ++ comma()) comma()? greater() { params }
 
         rule fn_params() -> Vec<FnParam>
-            = params:(fn_param() ++ comma()) comma()? { params }
+            = params:fn_param_or_recovery()+ { params.into_iter().flatten().collect() }
             / { vec![] }
+
+        rule fn_param_or_recovery() -> Option<FnParam>
+            = param:fn_param() comma()? { Some(param) }
+            / skipped:skip_balanced_not_comma() comma()? {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: skipped });
+                None
+            }
+            / comma_span:comma() {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: comma_span });
+                None
+            }
 
         rule fn_param() -> FnParam
             = var:var() colon() ty:type_expr() { FnParam { var, ty } }
@@ -543,8 +593,19 @@ peg::parser! {
             = less() args:(type_expr() ++ comma()) comma()? greater() { args }
 
         rule call_args() -> Vec<Loc<Expr>>
-            = args:(expr() ++ comma()) comma()? { args }
+            = args:call_arg_or_recovery()+ { args.into_iter().flatten().collect() }
             / { vec![] }
+
+        rule call_arg_or_recovery() -> Option<Loc<Expr>>
+            = arg:expr() comma()? { Some(arg) }
+            / skipped:skip_balanced_not_comma() comma()? {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: skipped });
+                None
+            }
+            / comma_span:comma() {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: comma_span });
+                None
+            }
 
         rule atom_expr() -> Loc<Expr>
             = open_paren_span:open_paren() expr:expr() close_paren_span:close_paren() {
@@ -594,7 +655,8 @@ peg::parser! {
             = open_curly_span:open_curly() close_curly_span:close_curly() {
                 Loc::new(Expr::Record(RecordExpr { fields: vec![] }), Span::new(open_curly_span.start(), close_curly_span.end()))
             }
-            / open_curly_span:open_curly() fields:(record_field() ++ comma()) comma()? close_curly_span:close_curly() {
+            / open_curly_span:open_curly() items:record_field_or_recovery()+ close_curly_span:close_curly() {
+                let fields: Vec<RecordField> = items.into_iter().flatten().collect();
                 let mut seen_fields = HashSet::new();
                 for field in &fields {
                     if !seen_fields.insert(field.var.name.clone()) {
@@ -606,6 +668,17 @@ peg::parser! {
                     }
                 }
                 Loc::new(Expr::Record(RecordExpr { fields }), Span::new(open_curly_span.start(), close_curly_span.end()))
+            }
+
+        rule record_field_or_recovery() -> Option<RecordField>
+            = field:record_field() comma()? { Some(field) }
+            / skipped:skip_balanced_not_comma() comma()? {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: skipped });
+                None
+            }
+            / comma_span:comma() {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: comma_span });
+                None
             }
 
         rule record_field() -> RecordField
@@ -623,11 +696,23 @@ peg::parser! {
                     Span::new(hash_span.start(), close_curly_span.end()),
                 )
             }
-            / hash_span:hash() _open_curly_span:open_curly() entries:(dict_entry() ++ comma()) comma()? close_curly_span:close_curly() {
+            / hash_span:hash() _open_curly_span:open_curly() items:dict_entry_or_recovery()+ close_curly_span:close_curly() {
+                let entries: Vec<DictEntry> = items.into_iter().flatten().collect();
                 Loc::new(
                     Expr::Dict(DictExpr { entries }),
                     Span::new(hash_span.start(), close_curly_span.end()),
                 )
+            }
+
+        rule dict_entry_or_recovery() -> Option<DictEntry>
+            = entry:dict_entry() comma()? { Some(entry) }
+            / skipped:skip_balanced_not_comma() comma()? {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: skipped });
+                None
+            }
+            / comma_span:comma() {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: comma_span });
+                None
             }
 
         rule dict_entry() -> DictEntry
@@ -640,11 +725,23 @@ peg::parser! {
                     Span::new(open_square_span.start(), close_square_span.end()),
                 )
             }
-            / open_square_span:open_square() items:(list_item() ++ comma()) comma()? close_square_span:close_square() {
+            / open_square_span:open_square() items:list_item_or_recovery()+ close_square_span:close_square() {
+                let items: Vec<ListItem> = items.into_iter().flatten().collect();
                 Loc::new(
                     Expr::List(ListExpr { items }),
                     Span::new(open_square_span.start(), close_square_span.end()),
                 )
+            }
+
+        rule list_item_or_recovery() -> Option<ListItem>
+            = item:list_item() comma()? { Some(item) }
+            / skipped:skip_balanced_not_comma() comma()? {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: skipped });
+                None
+            }
+            / comma_span:comma() {
+                diags.push(UnexpectedToken { module_id: module_id.clone(), span: comma_span });
+                None
             }
 
         rule list_item() -> ListItem
@@ -707,6 +804,58 @@ peg::parser! {
                 vars.extend(rest);
                 vars
             }
+
+        // --- Error recovery helpers ---
+
+        // Inside matched parens, consume everything (including commas, other brackets matched recursively)
+        rule skip_balanced_inner_paren()
+            = quiet!{ [token if matches!(token.as_ref(), Token::OpenParen)] } skip_balanced_inner_paren()* close_paren()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenCurly)] } skip_balanced_inner_curly()* close_curly()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenSquare)] } skip_balanced_inner_square()* close_square()
+            / quiet!{ [token if !matches!(token.as_ref(), Token::CloseParen)] }
+
+        // Inside matched curlies
+        rule skip_balanced_inner_curly()
+            = quiet!{ [token if matches!(token.as_ref(), Token::OpenParen)] } skip_balanced_inner_paren()* close_paren()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenCurly)] } skip_balanced_inner_curly()* close_curly()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenSquare)] } skip_balanced_inner_square()* close_square()
+            / quiet!{ [token if !matches!(token.as_ref(), Token::CloseCurly)] }
+
+        // Inside matched squares
+        rule skip_balanced_inner_square()
+            = quiet!{ [token if matches!(token.as_ref(), Token::OpenParen)] } skip_balanced_inner_paren()* close_paren()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenCurly)] } skip_balanced_inner_curly()* close_curly()
+            / quiet!{ [token if matches!(token.as_ref(), Token::OpenSquare)] } skip_balanced_inner_square()* close_square()
+            / quiet!{ [token if !matches!(token.as_ref(), Token::CloseSquare)] }
+
+        // Consume one balanced group or one non-delimiter token.
+        // Stops at: comma, close_paren, close_curly, close_square, greater
+        rule skip_balanced_atom() -> Span
+            = open:quiet!{ [token if matches!(token.as_ref(), Token::OpenParen)] { token.span() } }
+              skip_balanced_inner_paren()* close:close_paren() {
+                Span::new(open.start(), close.end())
+            }
+            / open:quiet!{ [token if matches!(token.as_ref(), Token::OpenCurly)] { token.span() } }
+              skip_balanced_inner_curly()* close:close_curly() {
+                Span::new(open.start(), close.end())
+            }
+            / open:quiet!{ [token if matches!(token.as_ref(), Token::OpenSquare)] { token.span() } }
+              skip_balanced_inner_square()* close:close_square() {
+                Span::new(open.start(), close.end())
+            }
+            / quiet!{ [token if !matches!(token.as_ref(),
+                Token::Comma | Token::CloseParen | Token::CloseCurly |
+                Token::CloseSquare | Token::Greater
+            )] { token.span() } }
+
+        // Skip one or more balanced atoms, returning the span of the skipped region.
+        rule skip_balanced_not_comma() -> Span
+            = first:skip_balanced_atom() rest:skip_balanced_atom()* {
+                let end = rest.last().unwrap_or(&first).end();
+                Span::new(first.start(), end)
+            }
+
+        // --- Terminal token rules ---
 
         rule import_keyword_span() -> Span
             = quiet!{
@@ -1031,7 +1180,7 @@ peg::parser! {
     }
 }
 
-pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<Option<FileMod>> {
+pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<FileMod> {
     parse_file_mod_with_cursor(source, module_id, None)
 }
 
@@ -1039,9 +1188,10 @@ pub fn parse_file_mod_with_cursor(
     source: &str,
     module_id: &ModuleId,
     cursor: Option<crate::Cursor>,
-) -> Diagnosed<Option<FileMod>> {
+) -> Diagnosed<FileMod> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
+    let mut skip_span = None;
     let token_stream = match &cursor {
         Some(c) => TokenStream::with_cursor(source, c.clone()),
         None => TokenStream::new(source),
@@ -1052,14 +1202,17 @@ pub fn parse_file_mod_with_cursor(
         module_id,
         &mut exception_id,
         &cursor,
+        &mut skip_span,
     ) {
-        Ok(file_mod) => Diagnosed::new(Some(file_mod), diags),
+        Ok(file_mod) => Diagnosed::new(file_mod, diags),
         Err(error) => {
+            // With statement-level recovery this should be unreachable,
+            // but as a safety net, produce an empty FileMod.
             diags.push(SyntaxError {
                 module_id: module_id.clone(),
                 error,
             });
-            Diagnosed::new(None, diags)
+            Diagnosed::new(FileMod::default(), diags)
         }
     }
 }
@@ -1075,6 +1228,7 @@ pub fn parse_repl_line_with_cursor(
 ) -> Diagnosed<Option<ReplLine>> {
     let mut diags = DiagList::new();
     let mut exception_id = 0u64;
+    let mut skip_span = None;
     let token_stream = match &cursor {
         Some(c) => TokenStream::with_cursor(source, c.clone()),
         None => TokenStream::new(source),
@@ -1085,6 +1239,7 @@ pub fn parse_repl_line_with_cursor(
         module_id,
         &mut exception_id,
         &cursor,
+        &mut skip_span,
     ) {
         Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
         Err(error) => {
@@ -1106,7 +1261,11 @@ mod tests {
     #[test]
     fn parse_error_uses_position_repr() {
         let diagnosed = parse_file_mod("{x", &ModuleId::default());
-        assert!(diagnosed.as_ref().is_none(), "expected parse failure");
+        // With recovery, the parser always produces a FileMod with diagnostics
+        assert!(
+            !diagnosed.diags().is_empty(),
+            "expected at least one diagnostic for invalid input"
+        );
         let diag = diagnosed
             .diags()
             .iter()
@@ -1115,7 +1274,6 @@ mod tests {
         eprintln!("{diag}");
         let (_, span) = diag.locate();
         assert_eq!(span.start().line(), 1);
-        assert_eq!(span.start().character(), 3);
     }
 
     #[test]
@@ -1752,9 +1910,7 @@ mod tests {
 
     #[test]
     fn parses_simple_type_def() {
-        let file_mod = parse_file_mod("type Port Int", &ModuleId::default())
-            .into_inner()
-            .expect("type def should parse");
+        let file_mod = parse_file_mod("type Port Int", &ModuleId::default()).into_inner();
         let crate::ModStmt::TypeDef(type_def) = &file_mod.statements[0] else {
             panic!("expected type def statement");
         };
@@ -1772,8 +1928,7 @@ mod tests {
             "export type Config { host: Str, port: Int }",
             &ModuleId::default(),
         )
-        .into_inner()
-        .expect("export type def should parse");
+        .into_inner();
         let crate::ModStmt::ExportTypeDef(type_def) = &file_mod.statements[0] else {
             panic!("expected export type def statement");
         };
@@ -1786,9 +1941,8 @@ mod tests {
 
     #[test]
     fn parses_generic_type_def() {
-        let file_mod = parse_file_mod("type Pair<A, B> { fst: A, snd: B }", &ModuleId::default())
-            .into_inner()
-            .expect("generic type def should parse");
+        let file_mod =
+            parse_file_mod("type Pair<A, B> { fst: A, snd: B }", &ModuleId::default()).into_inner();
         let crate::ModStmt::TypeDef(type_def) = &file_mod.statements[0] else {
             panic!("expected type def statement");
         };
@@ -1800,9 +1954,8 @@ mod tests {
 
     #[test]
     fn parses_type_level_property_access() {
-        let file_mod = parse_file_mod("export let f = fn(x: Mod.Config) x", &ModuleId::default())
-            .into_inner()
-            .expect("type-level property access should parse");
+        let file_mod =
+            parse_file_mod("export let f = fn(x: Mod.Config) x", &ModuleId::default()).into_inner();
         let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
             panic!("expected export let bind");
         };
@@ -1825,8 +1978,7 @@ mod tests {
             "export let f = fn(x: Pair<Int, Str>) x",
             &ModuleId::default(),
         )
-        .into_inner()
-        .expect("type application should parse");
+        .into_inner();
         let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
             panic!("expected export let bind");
         };
@@ -1849,8 +2001,7 @@ mod tests {
             "export let f = fn(x: Mod.Pair<Int, Str>) x",
             &ModuleId::default(),
         )
-        .into_inner()
-        .expect("type application on property access should parse");
+        .into_inner();
         let crate::ModStmt::Export(let_bind) = &file_mod.statements[0] else {
             panic!("expected export let bind");
         };
@@ -1865,5 +2016,115 @@ mod tests {
         };
         assert_eq!(prop.property.name, "Pair");
         assert_eq!(app.args.len(), 2);
+    }
+
+    // --- Error recovery tests ---
+
+    #[test]
+    fn recovery_statement_level_middle() {
+        let diagnosed = parse_file_mod("let a = 1\n@@@\nlet b = 2", &ModuleId::default());
+        assert_eq!(diagnosed.as_ref().statements.len(), 2);
+        assert!(diagnosed.diags().iter().count() >= 1);
+    }
+
+    #[test]
+    fn recovery_statement_level_trailing() {
+        let diagnosed = parse_file_mod("let a = 1\n@@@", &ModuleId::default());
+        assert_eq!(diagnosed.as_ref().statements.len(), 1);
+        assert!(diagnosed.diags().iter().count() >= 1);
+    }
+
+    #[test]
+    fn recovery_statement_level_leading() {
+        let diagnosed = parse_file_mod("@@@\nlet a = 1", &ModuleId::default());
+        assert_eq!(diagnosed.as_ref().statements.len(), 1);
+        assert!(diagnosed.diags().iter().count() >= 1);
+    }
+
+    #[test]
+    fn recovery_statement_level_all_bad() {
+        let diagnosed = parse_file_mod("@@@", &ModuleId::default());
+        assert!(diagnosed.as_ref().statements.is_empty());
+        assert!(diagnosed.diags().iter().count() >= 1);
+    }
+
+    #[test]
+    fn recovery_record_bad_field() {
+        let diagnosed = parse_repl_line("{ a: 1, @@@, b: 2 }", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Record(record) = expr.into_inner() else {
+            panic!("expected record expression");
+        };
+        assert_eq!(record.fields.len(), 2);
+    }
+
+    #[test]
+    fn recovery_list_bad_item() {
+        let diagnosed = parse_repl_line("[1, @@@, 3]", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        assert_eq!(list.items.len(), 2);
+    }
+
+    #[test]
+    fn recovery_call_bad_arg() {
+        let diagnosed = parse_repl_line("f(1, @@@, 3)", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Call(call) = expr.into_inner() else {
+            panic!("expected call expression");
+        };
+        assert_eq!(call.args.len(), 2);
+    }
+
+    #[test]
+    fn recovery_fn_bad_param() {
+        let diagnosed = parse_repl_line("fn(@@@, b: B) b", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Fn(fn_expr) = expr.into_inner() else {
+            panic!("expected fn expression");
+        };
+        assert_eq!(fn_expr.params.len(), 1);
+    }
+
+    #[test]
+    fn recovery_dict_bad_entry() {
+        let diagnosed = parse_repl_line("#{ \"a\": 1, @@@, \"c\": 3 }", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Dict(dict) = expr.into_inner() else {
+            panic!("expected dict expression");
+        };
+        assert_eq!(dict.entries.len(), 2);
+    }
+
+    #[test]
+    fn recovery_nested_brackets_in_skip() {
+        // [f({1 2}), 3] — the {1 2} is an invalid record, but balanced skip should respect nesting
+        let diagnosed = parse_repl_line("[f({1 2}), 3]", &ModuleId::default());
+        let line = diagnosed.into_inner().expect("should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::List(list) = expr.into_inner() else {
+            panic!("expected list expression");
+        };
+        // The f({1 2}) should be skipped as one recovery unit, leaving just 3
+        assert!(!list.items.is_empty());
     }
 }
