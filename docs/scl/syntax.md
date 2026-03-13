@@ -130,6 +130,15 @@ Records are comma-separated key-value pairs enclosed in braces:
 
 Field names are identifiers; values can be any expression.
 
+When a field value is a variable with the same name as the field, you can use the shorthand syntax:
+
+```scl
+let name = "app"
+let port = 8080
+{ name, port }                // Same as { name: name, port: port }
+{ name, port: 3000 }         // Shorthand and regular fields can be mixed
+```
+
 ### Dicts
 
 Dicts (dictionaries) are like records but with computed keys. They use `#{...}` syntax:
