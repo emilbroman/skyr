@@ -9,6 +9,7 @@ Always run formatting and linting before committing:
 ```sh
 cargo fmt
 cargo clippy --all-targets
+cargo test
 ```
 
 Fix any warnings or errors before pushing.
@@ -25,6 +26,7 @@ Fix any warnings or errors before pushing.
 - For LDB logging, use `NamespacePublisher` with deployment QID as namespace.
 - The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Use its typed IDs and QIDs rather than raw strings when working with identifiers. Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces.
 - Note: spelling is consistently `supersede/supersession` in schema/API names.
+- READMEs and crate-level docs are **internal documentation** aimed at developers working on the codebase. The `docs/` directory contains **external documentation** aimed at end users. When making changes, update the relevant docs to reflect them — but internal-only changes (refactors, internal API changes, implementation details) should **not** be added to external docs.
 - When adding new SCL language features (syntax, types, standard library modules/functions, etc.), update the corresponding end-user documentation in `docs/scl/`:
   - `docs/scl/syntax.md` — for new syntax constructs (operators, expressions, statements, keywords)
   - `docs/scl/types.md` — for type system changes (new types, subtyping rules, inference behavior)
@@ -48,13 +50,5 @@ For manual testing:
 ## Environment Notes
 
 - `cargo` is not available in the current shell session by default.
-- `flake.nix` defines a dev shell including `rustup`, `cargo`, `qemu`, `cdrtools`, and `curl`; use that shell before Rust builds/checks if needed.
+- `flake.nix` defines a dev shell including `rustup`, `cargo`, `gnumake`, and `protobuf`; use that shell before Rust builds/checks if needed.
 - Running tests/builds typically uses `nix develop -c cargo ...`.
-
-# GitHub
-
-The repository is private and is called `emilbroman/skyr`. Use MCP to access it.
-
-Use conventional branch names to associate GH issues. The format is `<issue-number>-<kebab-cased-title>`. This convention can also be used to find the issue of the current branch.
-
-Use MCP to figure out if there is an open PR for the current branch. If I mention "PR" without specifying which one, assume the one attached to the current branch, if any.
