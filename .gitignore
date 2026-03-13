@@ -1,3 +1,8 @@
 target/
 test-repo/
 .claude/
+.terraform/
+.terragrunt-cache/
+*.tfstate
+*.tfstate.backup
+infra/cloud/provider.tf
