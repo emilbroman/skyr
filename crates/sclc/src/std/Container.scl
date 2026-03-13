@@ -17,6 +17,13 @@
 //
 //   let http = pod.Port({ port: 8080, protocol: "tcp" })
 
+export type Image {
+    // Full image reference including registry and digest (e.g., "registry:5000/my-app@sha256:...")
+    fullname: Str,
+    // Image digest (e.g., "sha256:...")
+    digest: Str,
+}
+
 // Image resource - builds a container image using BuildKit
 //
 // The image is built from a context directory in the deployment's Git tree
@@ -30,11 +37,42 @@ export let Image = extern "Std/Container.Image": fn({
     context: Str,
     // Path to the Containerfile/Dockerfile relative to context (e.g., "Dockerfile")
     containerfile: Str,
-}) {
-    // Full image reference including registry and digest (e.g., "registry:5000/my-app@sha256:...")
-    fullname: Str,
-    // Image digest (e.g., "sha256:...")
-    digest: Str,
+}) Image
+
+export type PodPort {
+    // The pod's IP address
+    address: Str,
+    // The opened port number
+    port: Int,
+    // The protocol
+    protocol: Str,
+}
+
+export type Container {
+    containerId: Str,
+    name: Str,
+    image: Str,
+}
+
+export type Pod {
+    podId: Str,
+    node: Str,
+    name: Str,
+    namespace: Str,
+    // The pod's IP address within the cluster network
+    address: Str,
+    Container: fn({
+        name: Str,
+        image: Str,
+    }) Container,
+    // Open a port on the pod's firewall, returning an access token
+    // that can be passed to other pods to grant ingress.
+    Port: fn({
+        // Port number to open
+        port: Int,
+        // Protocol: "tcp" (default) or "udp"
+        protocol: Str?,
+    }) PodPort,
 }
 
 // Pod resource - creates a pod sandbox on a worker node
@@ -50,36 +88,17 @@ export let Pod = extern "Std/Container.Pod": fn({
     // Pods can always reach the internet; this controls access to cluster-internal
     // destinations only.
     allow: [{ address: Str, port: Int, protocol: Str }]?,
-}) {
-    podId: Str,
-    node: Str,
-    name: Str,
-    namespace: Str,
-    // The pod's IP address within the cluster network
+}) Pod
+
+export type HostPort {
+    // The DNS hostname for this host
+    hostname: Str,
+    // The host's virtual IP address
     address: Str,
-    Container: fn({
-        name: Str,
-        image: Str,
-    }) {
-        containerId: Str,
-        name: Str,
-        image: Str,
-    },
-    // Open a port on the pod's firewall, returning an access token
-    // that can be passed to other pods to grant ingress.
-    Port: fn({
-        // Port number to open
-        port: Int,
-        // Protocol: "tcp" (default) or "udp"
-        protocol: Str?,
-    }) {
-        // The pod's IP address
-        address: Str,
-        // The opened port number
-        port: Int,
-        // The protocol
-        protocol: Str,
-    },
+    // The exposed port number
+    port: Int,
+    // The protocol
+    protocol: Str,
 }
 
 // Host resource - creates a virtual load balancer with DNS name
@@ -107,14 +126,5 @@ export let Host = extern "Std/Container.Host": fn({
         // When a Host.Port is used as a backend, traffic is forwarded through
         // its load-balancing rules to the ultimate pod backends.
         backends: [{ address: Str, port: Int, protocol: Str }],
-    }) {
-        // The DNS hostname for this host
-        hostname: Str,
-        // The host's virtual IP address
-        address: Str,
-        // The exposed port number
-        port: Int,
-        // The protocol
-        protocol: Str,
-    },
+    }) HostPort,
 }
