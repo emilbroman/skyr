@@ -18,3 +18,12 @@ up: image scoc-image deps
 
 down:
 	podman compose -f dev/podman-compose.yml down
+
+build-cli:
+	cargo build --release -p cli
+
+install-cli: build-cli
+	sudo install target/release/skyr /usr/local/bin
+
+uninstall-cli:
+	sudo rm /usr/local/bin/skyr
