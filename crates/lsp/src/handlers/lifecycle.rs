@@ -35,6 +35,7 @@ pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessa
             trigger_characters: Some(vec![".".to_string()]),
             ..Default::default()
         }),
+        document_formatting_provider: Some(lsp::OneOf::Left(true)),
         ..Default::default()
     };
 

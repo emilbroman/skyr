@@ -244,6 +244,9 @@ impl LanguageServer {
                 let program = self.load_program().await;
                 handlers::completion::completion(id, params, &self.documents, program.as_ref())
             }
+            "textDocument/formatting" => {
+                handlers::formatting::formatting(id, params, &self.documents)
+            }
             _ => vec![OutgoingMessage::error(
                 id,
                 -32601,
