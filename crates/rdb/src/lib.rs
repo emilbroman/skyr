@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use futures::{Stream, StreamExt, TryStreamExt};
@@ -64,6 +65,7 @@ prepared_statements! {
                 inputs_json TEXT,
                 outputs_json TEXT,
                 dependencies_json TEXT,
+                markers_json TEXT,
                 owner TEXT,
                 PRIMARY KEY ((namespace), resource_type, id)
             )
@@ -72,19 +74,19 @@ prepared_statements! {
 
     PreparedStatements {
         get_resource = r#"
-            SELECT inputs_json, outputs_json, dependencies_json, owner
+            SELECT inputs_json, outputs_json, dependencies_json, markers_json, owner
             FROM rdb.resources
             WHERE namespace = ?
             AND resource_type = ?
             AND id = ?
         "#,
         list_resources = r#"
-            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, owner
+            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner
             FROM rdb.resources
             WHERE namespace = ?
         "#,
         list_resources_by_owner = r#"
-            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, owner
+            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner
             FROM rdb.resources
             WHERE namespace = ?
             AND owner = ?
@@ -112,6 +114,13 @@ prepared_statements! {
             AND resource_type = ?
             AND id = ?
         "#,
+        set_resource_markers = r#"
+            UPDATE rdb.resources
+            SET markers_json = ?
+            WHERE namespace = ?
+            AND resource_type = ?
+            AND id = ?
+        "#,
         delete_resource = r#"
             DELETE FROM rdb.resources
             WHERE namespace = ?
@@ -128,10 +137,12 @@ type ResourceRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, ResourceError> {
-    let (resource_type, id, inputs_json, outputs_json, dependencies_json, owner) = row;
+    let (resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner) =
+        row;
     Ok(Resource {
         namespace: namespace.to_owned(),
         resource_type,
@@ -139,6 +150,7 @@ fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, Resou
         inputs: decode_record(inputs_json)?,
         outputs: decode_record(outputs_json)?,
         dependencies: decode_dependencies(dependencies_json)?,
+        markers: decode_markers(markers_json)?,
         owner,
     })
 }
@@ -284,8 +296,9 @@ impl ResourceClient {
             .execute_iter(self.statements().get_resource.clone(), self.key())
             .await?;
 
-        let (inputs_json, outputs_json, dependencies_json, owner) = match pager
+        let (inputs_json, outputs_json, dependencies_json, markers_json, owner) = match pager
             .rows_stream::<(
+                Option<String>,
                 Option<String>,
                 Option<String>,
                 Option<String>,
@@ -305,6 +318,7 @@ impl ResourceClient {
             inputs: decode_record(inputs_json)?,
             outputs: decode_record(outputs_json)?,
             dependencies: decode_dependencies(dependencies_json)?,
+            markers: decode_markers(markers_json)?,
             owner,
         }))
     }
@@ -358,6 +372,23 @@ impl ResourceClient {
         self.get().await?.ok_or(ResourceError::MissingAfterWrite)
     }
 
+    pub async fn set_markers(
+        &self,
+        markers: &BTreeSet<sclc::Marker>,
+    ) -> Result<Resource, ResourceError> {
+        let markers_json = encode_markers(markers)?;
+        let (namespace, resource_type, id) = self.key();
+
+        self.session()
+            .execute_unpaged(
+                &self.statements().set_resource_markers,
+                (markers_json, namespace, resource_type, id),
+            )
+            .await?;
+
+        self.get().await?.ok_or(ResourceError::MissingAfterWrite)
+    }
+
     pub async fn delete(&self) -> Result<(), ResourceError> {
         self.session()
             .execute_unpaged(&self.statements().delete_resource, self.key())
@@ -375,6 +406,7 @@ pub struct Resource {
     pub inputs: Option<Record>,
     pub outputs: Option<Record>,
     pub dependencies: Vec<sclc::ResourceId>,
+    pub markers: BTreeSet<sclc::Marker>,
     pub owner: Option<String>,
 }
 
@@ -415,10 +447,22 @@ fn decode_dependencies(value: Option<String>) -> Result<Vec<sclc::ResourceId>, R
     }
 }
 
+fn decode_markers(value: Option<String>) -> Result<BTreeSet<sclc::Marker>, ResourceError> {
+    match value {
+        None => Ok(BTreeSet::new()),
+        Some(text) if text.is_empty() => Ok(BTreeSet::new()),
+        Some(text) => Ok(serde_json::from_str(&text)?),
+    }
+}
+
 fn encode_record(value: &Record) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }
 
 fn encode_dependencies(value: &[sclc::ResourceId]) -> Result<String, ResourceError> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn encode_markers(value: &BTreeSet<sclc::Marker>) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }

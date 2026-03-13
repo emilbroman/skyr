@@ -1506,6 +1506,7 @@ mod tests {
                 inputs: inputs.clone(),
                 outputs: crate::Record::default(),
                 dependencies: vec![],
+                markers: Default::default(),
             },
         );
         let dependency = ResourceId {
@@ -1556,6 +1557,7 @@ mod tests {
                 inputs: inputs.clone(),
                 outputs: crate::Record::default(),
                 dependencies: vec![dependency.clone()],
+                markers: Default::default(),
             },
         );
         let mut dependencies = std::collections::BTreeSet::new();

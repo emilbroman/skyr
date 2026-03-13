@@ -664,6 +664,15 @@ impl Resource {
 
         Ok(dependencies)
     }
+
+    fn markers(&self) -> Vec<ResourceMarker> {
+        self.resource
+            .markers
+            .iter()
+            .copied()
+            .map(ResourceMarker::from)
+            .collect()
+    }
 }
 
 #[derive(Clone, Copy, juniper::GraphQLEnum)]
@@ -676,6 +685,8 @@ enum DeploymentState {
     Lingering,
     #[graphql(name = "DESIRED")]
     Desired,
+    #[graphql(name = "UP")]
+    Up,
 }
 
 impl From<cdb::DeploymentState> for DeploymentState {
@@ -685,6 +696,21 @@ impl From<cdb::DeploymentState> for DeploymentState {
             cdb::DeploymentState::Undesired => DeploymentState::Undesired,
             cdb::DeploymentState::Lingering => DeploymentState::Lingering,
             cdb::DeploymentState::Desired => DeploymentState::Desired,
+            cdb::DeploymentState::Up => DeploymentState::Up,
+        }
+    }
+}
+
+#[derive(Clone, Copy, juniper::GraphQLEnum)]
+enum ResourceMarker {
+    #[graphql(name = "VOLATILE")]
+    Volatile,
+}
+
+impl From<sclc::Marker> for ResourceMarker {
+    fn from(marker: sclc::Marker) -> Self {
+        match marker {
+            sclc::Marker::Volatile => ResourceMarker::Volatile,
         }
     }
 }

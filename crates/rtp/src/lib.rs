@@ -569,6 +569,7 @@ impl PluginClient {
                     id: id.id,
                     inputs_json: current_inputs_json,
                     outputs_json: current_outputs_json,
+                    markers: vec![],
                 }),
                 inputs_json,
                 environment_qid: environment_qid.to_string(),
@@ -609,6 +610,7 @@ impl PluginClient {
                     id: id.id,
                     inputs_json,
                     outputs_json,
+                    markers: vec![],
                 }),
                 environment_qid: environment_qid.to_string(),
                 deployment_id: deployment_id.to_string(),
@@ -644,6 +646,19 @@ impl PluginClient {
     }
 }
 
+fn encode_marker(marker: &sclc::Marker) -> i32 {
+    match marker {
+        sclc::Marker::Volatile => proto::Marker::Volatile as i32,
+    }
+}
+
+fn decode_marker(value: i32) -> Option<sclc::Marker> {
+    match proto::Marker::try_from(value) {
+        Ok(proto::Marker::Volatile) => Some(sclc::Marker::Volatile),
+        Err(_) => None,
+    }
+}
+
 fn encode_resource(
     id: sclc::ResourceId,
     resource: sclc::Resource,
@@ -652,11 +667,13 @@ fn encode_resource(
         .map_err(|error| tonic::Status::internal(error.to_string()))?;
     let outputs_json = serde_json::to_string(&resource.outputs)
         .map_err(|error| tonic::Status::internal(error.to_string()))?;
+    let markers = resource.markers.iter().map(encode_marker).collect();
     Ok(Resource {
         r#type: id.ty,
         id: id.id,
         inputs_json,
         outputs_json,
+        markers,
     })
 }
 
@@ -665,10 +682,16 @@ fn decode_resource(resource: Resource) -> Result<sclc::Resource, tonic::Status> 
         .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
     let outputs: sclc::Record = serde_json::from_str(&resource.outputs_json)
         .map_err(|error| tonic::Status::invalid_argument(error.to_string()))?;
+    let markers = resource
+        .markers
+        .iter()
+        .filter_map(|&v| decode_marker(v))
+        .collect();
     Ok(sclc::Resource {
         inputs,
         outputs,
         dependencies: vec![],
+        markers,
     })
 }
 
