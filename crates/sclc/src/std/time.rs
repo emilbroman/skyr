@@ -2,6 +2,8 @@ use chrono::{DateTime, Datelike, Months, Timelike};
 
 use crate::{EvalErrorKind, Record, Value, ValueAssertions};
 
+const CLOCK_RESOURCE_TYPE: &str = "Std/Time.Clock";
+
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn("Std/Time.toISO", |args, _ctx| {
         let mut args = args.into_iter();
@@ -71,6 +73,53 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let mut result = Record::default();
         result.insert("epochMillis".into(), Value::Int(dt.timestamp_millis()));
         Ok(crate::TrackedValue::new(Value::Record(result)).with_dependencies(deps))
+    });
+
+    eval.add_extern_fn(CLOCK_RESOURCE_TYPE, |args, eval_ctx| {
+        let mut args = args.into_iter();
+        let duration_arg = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+        let mut argument_dependencies = duration_arg.dependencies.clone();
+
+        let duration = duration_arg.value.assert_record()?;
+
+        let months = match duration.get("months") {
+            Value::Nil => 0,
+            other => *other.assert_int_ref()?,
+        };
+        let milliseconds = match duration.get("milliseconds") {
+            Value::Nil => 0,
+            other => *other.assert_int_ref()?,
+        };
+
+        let id_str = format!("{months}/{milliseconds}");
+        let resource_id = crate::ResourceId {
+            ty: CLOCK_RESOURCE_TYPE.to_string(),
+            id: id_str.clone(),
+        };
+
+        let mut inputs = Record::default();
+        inputs.insert(String::from("months"), Value::Int(months));
+        inputs.insert(String::from("milliseconds"), Value::Int(milliseconds));
+
+        let Some(outputs) = eval_ctx.resource(
+            CLOCK_RESOURCE_TYPE,
+            &id_str,
+            &inputs,
+            argument_dependencies.clone(),
+        )?
+        else {
+            argument_dependencies.insert(resource_id);
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        };
+
+        let epoch_millis = outputs.get("epochMillis").assert_int_ref()?;
+        let mut result = Record::default();
+        result.insert("epochMillis".into(), Value::Int(*epoch_millis));
+        argument_dependencies.insert(resource_id);
+        Ok(crate::TrackedValue::new(Value::Record(result))
+            .with_dependencies(argument_dependencies))
     });
 
     eval.add_extern_fn("Std/Time.subtract", |args, _ctx| {
