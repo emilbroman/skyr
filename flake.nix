@@ -18,6 +18,8 @@
             cargo
             gnumake
             protobuf
+            opentofu
+            terragrunt
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
