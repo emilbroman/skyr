@@ -708,7 +708,7 @@ mod tests {
                 .map(|d| d.to_string())
                 .collect::<Vec<_>>()
         );
-        let file_mod = diagnosed.into_inner().unwrap();
+        let file_mod = diagnosed.into_inner();
         Formatter::format(source, &file_mod)
     }
 

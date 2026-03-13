@@ -33,9 +33,7 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
         anyhow::bail!("cannot format file with syntax errors");
     }
 
-    let file_mod = diagnosed
-        .into_inner()
-        .expect("no errors means successful parse");
+    let file_mod = diagnosed.into_inner();
 
     let formatted = sclc::Formatter::format(&source, &file_mod);
     print!("{formatted}");

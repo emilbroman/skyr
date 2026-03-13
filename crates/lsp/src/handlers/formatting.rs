@@ -33,9 +33,7 @@ pub fn formatting(
         return vec![OutgoingMessage::response(id, serde_json::Value::Null)];
     }
 
-    let Some(file_mod) = diagnosed.into_inner() else {
-        return vec![OutgoingMessage::response(id, serde_json::Value::Null)];
-    };
+    let file_mod = diagnosed.into_inner();
 
     let formatted = sclc::Formatter::format(&source, &file_mod);
 
