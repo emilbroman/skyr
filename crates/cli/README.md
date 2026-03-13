@@ -25,6 +25,7 @@ The CLI is the primary user-facing tool for interacting with Skyr. It uses [SCLC
 | `repo create <org/repo>` | Create a new repository |
 | `deployments list <org/repo>` | List deployments for a repository |
 | `deployments logs <org/repo>` | Stream deployment logs for a repository |
+| `lsp` | Start the SCL language server (LSP over stdin/stdout) |
 
 ### Command Details
 
