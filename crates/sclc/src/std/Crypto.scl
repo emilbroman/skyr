@@ -1,3 +1,5 @@
+import Std/Time
+
 export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
     name: Str,
 }) {
@@ -37,8 +39,6 @@ export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
 }) {
     pem: Str,
 }
-
-import Std/Time
 
 export let CertificateSignature = extern "Std/Crypto.CertificateSignature": fn({
     csrPem: Str,
