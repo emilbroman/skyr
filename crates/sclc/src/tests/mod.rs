@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::Path;
 
-use crate::{Effect, Eval, EvalEnv, ModuleId, SourceRepo, TrackedValue};
+use crate::{
+    Effect, Eval, EvalEnv, ModuleId, Record, Resource, ResourceId, SourceRepo, TrackedValue, Value,
+};
 
 /// An in-memory source repository for testing.
 struct MemSourceRepo {
@@ -83,15 +85,104 @@ fn format_effect(effect: &Effect) -> String {
     }
 }
 
+/// Convert a serde_json::Value into an SCL Value.
+fn json_to_value(json: &serde_json::Value) -> Value {
+    match json {
+        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                Value::Float(ordered_float::NotNan::new(f).expect("NaN in fixture"))
+            } else {
+                panic!("unsupported number in rdb.json: {n}")
+            }
+        }
+        serde_json::Value::String(s) => Value::Str(s.clone()),
+        serde_json::Value::Object(map) => {
+            let mut record = Record::default();
+            for (key, val) in map {
+                record.insert(key.clone(), json_to_value(val));
+            }
+            Value::Record(record)
+        }
+        serde_json::Value::Array(arr) => Value::List(arr.iter().map(json_to_value).collect()),
+    }
+}
+
+/// Convert a serde_json::Value (object) into an SCL Record.
+fn json_to_record(json: &serde_json::Value) -> Record {
+    match json_to_value(json) {
+        Value::Record(r) => r,
+        _ => panic!("expected JSON object for record, got: {json}"),
+    }
+}
+
+/// Parse rdb.json into a list of (ResourceId, Resource) entries.
+fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
+    let root: serde_json::Value =
+        serde_json::from_str(json_str).expect("rdb.json must be valid JSON");
+    let resources_obj = root
+        .get("resources")
+        .and_then(|v| v.as_object())
+        .expect("rdb.json must have a \"resources\" object");
+
+    let mut entries = Vec::new();
+    for (resource_type, ids_obj) in resources_obj {
+        let ids = ids_obj
+            .as_object()
+            .unwrap_or_else(|| panic!("resource type {resource_type} must map to an object"));
+        for (resource_id, resource_obj) in ids {
+            let inputs = resource_obj
+                .get("inputs")
+                .map(json_to_record)
+                .unwrap_or_default();
+            let outputs = resource_obj
+                .get("outputs")
+                .map(json_to_record)
+                .unwrap_or_default();
+            let markers = resource_obj
+                .get("markers")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|m| match m.as_str().expect("marker must be a string") {
+                            "Volatile" => crate::Marker::Volatile,
+                            "Sticky" => crate::Marker::Sticky,
+                            other => panic!("unknown marker: {other}"),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            entries.push((
+                ResourceId {
+                    ty: resource_type.clone(),
+                    id: resource_id.clone(),
+                },
+                Resource {
+                    inputs,
+                    outputs,
+                    dependencies: Vec::new(),
+                    markers,
+                },
+            ));
+        }
+    }
+    entries
+}
+
+struct Fixture {
+    source: MemSourceRepo,
+    rdb: Vec<(ResourceId, Resource)>,
+    diag_log: Option<String>,
+    exports_txt: Option<String>,
+    effects_log: Option<String>,
+}
+
 /// Load fixture files and build a MemSourceRepo for a test case directory.
-fn load_fixture(
-    dir_name: &str,
-) -> (
-    MemSourceRepo,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+fn load_fixture(dir_name: &str) -> Fixture {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixture_dir = format!("{manifest_dir}/src/tests/{dir_name}");
     let fixture_path = std::path::Path::new(&fixture_dir);
@@ -128,12 +219,29 @@ fn load_fixture(
     let exports_txt = std::fs::read_to_string(fixture_path.join("exports.txt")).ok();
     let effects_log = std::fs::read_to_string(fixture_path.join("effects.log")).ok();
 
-    (source, diag_log, exports_txt, effects_log)
+    // Load optional rdb.json
+    let rdb = std::fs::read_to_string(fixture_path.join("rdb.json"))
+        .map(|s| parse_rdb(&s))
+        .unwrap_or_default();
+
+    Fixture {
+        source,
+        rdb,
+        diag_log,
+        exports_txt,
+        effects_log,
+    }
 }
 
 /// Run a single test case by directory name.
 async fn run_test_case(dir_name: &str) {
-    let (source, diag_log, exports_txt, effects_log) = load_fixture(dir_name);
+    let Fixture {
+        source,
+        rdb,
+        diag_log,
+        exports_txt,
+        effects_log,
+    } = load_fixture(dir_name);
 
     // Compile
     let result = crate::compile(source)
@@ -173,7 +281,12 @@ async fn run_test_case(dir_name: &str) {
 
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let eval = Eval::new::<MemSourceRepo>(tx, "test");
+    let mut eval = Eval::new::<MemSourceRepo>(tx, "test");
+
+    // Load existing resources from rdb.json
+    for (id, resource) in rdb {
+        eval.add_resource(id, resource);
+    }
 
     // Find the user package and Main module
     let package_id: ModuleId = [dir_name.to_string()].into_iter().collect();
@@ -300,3 +413,4 @@ test_case!(ImportModule);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
 test_case!(RandomInt);
+test_case!(RandomIntUpdate);
