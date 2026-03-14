@@ -443,6 +443,87 @@ The resource is identified by a hash of its inputs rather than an explicit name,
 
 > **Note:** P-521 keys are not currently supported for certification requests.
 
+### CertificateSignature
+
+Sign a certificate from a CSR. Supports both CA-signed and self-signed certificates.
+
+**CA-signed example:**
+
+```scl
+import Std/Crypto
+import Std/Time
+
+let caKey = Crypto.ECDSAPrivateKey({ name: "ca-key", curve: "P-256" })
+let caCsr = Crypto.CertificationRequest({
+    privateKeyPem: caKey.pem,
+    subject: { commonName: "My CA" },
+    keyUsage: ["keyCertSign", "cRLSign"],
+})
+let caCert = Crypto.CertificateSignature({
+    csrPem: caCsr.pem,
+    privateKeyPem: caKey.pem,
+    validity: {
+        before: Time.add(Time.Clock(Time.hours(1)), Time.days(3650)),
+    },
+})
+
+let serverKey = Crypto.ECDSAPrivateKey({ name: "server-key", curve: "P-256" })
+let serverCsr = Crypto.CertificationRequest({
+    privateKeyPem: serverKey.pem,
+    subject: { commonName: "example.com" },
+    subjectAlternativeNames: ["example.com", "*.example.com"],
+    keyUsage: ["digitalSignature", "keyEncipherment"],
+    extendedKeyUsage: ["serverAuth"],
+})
+let serverCert = Crypto.CertificateSignature({
+    csrPem: serverCsr.pem,
+    privateKeyPem: caKey.pem,
+    caCertPem: caCert.pem,
+    validity: {
+        before: Time.add(Time.Clock(Time.hours(1)), Time.days(365)),
+    },
+})
+```
+
+**Self-signed example** (omit `caCertPem`):
+
+```scl
+let key = Crypto.ECDSAPrivateKey({ name: "self-signed-key", curve: "P-256" })
+let csr = Crypto.CertificationRequest({
+    privateKeyPem: key.pem,
+    subject: { commonName: "localhost" },
+})
+let cert = Crypto.CertificateSignature({
+    csrPem: csr.pem,
+    privateKeyPem: key.pem,
+    validity: {
+        before: Time.add(Time.Clock(Time.hours(1)), Time.days(365)),
+    },
+})
+```
+
+When `caCertPem` is omitted, the certificate is self-signed. The plugin verifies that the CSR was signed by the same private key provided — if they don't match, the operation fails.
+
+The resource is identified by a hash of its inputs rather than an explicit name, so changing any input produces a new certificate.
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `csrPem` | `Str` | CSR in PEM format (from a `CertificationRequest` resource) |
+| `privateKeyPem` | `Str` | Signing key PEM — the CA key (CA-signed) or the same key as the CSR (self-signed) |
+| `caCertPem` | `Str?` | CA certificate PEM. Omit for self-signed certificates |
+| `validity.before` | `Time.Instant` | Certificate expiry (Not After) |
+| `validity.after` | `Time.Instant?` | Certificate start (Not Before). Defaults to current time |
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pem` | `Str` | Signed X.509 certificate in PEM format |
+
+> **Note:** P-521 keys are not currently supported for certificate signing.
+
 ## Std/Encoding
 
 Serialize and deserialize data.

@@ -6,6 +6,7 @@ const ED25519_RESOURCE_TYPE: &str = "Std/Crypto.ED25519PrivateKey";
 const ECDSA_RESOURCE_TYPE: &str = "Std/Crypto.ECDSAPrivateKey";
 const RSA_RESOURCE_TYPE: &str = "Std/Crypto.RSAPrivateKey";
 const CSR_RESOURCE_TYPE: &str = "Std/Crypto.CertificationRequest";
+const CERT_SIG_RESOURCE_TYPE: &str = "Std/Crypto.CertificateSignature";
 
 #[derive(Parser)]
 struct Args {
@@ -27,6 +28,10 @@ impl CryptoPlugin {
     ) -> anyhow::Result<sclc::Resource> {
         if id.ty == CSR_RESOURCE_TYPE {
             return self.dispatch_csr(id, inputs).await;
+        }
+
+        if id.ty == CERT_SIG_RESOURCE_TYPE {
+            return self.dispatch_cert_sig(id, inputs).await;
         }
 
         let (private_pem, public_pem) = match id.ty.as_str() {
@@ -79,6 +84,32 @@ impl CryptoPlugin {
 
         let mut outputs = sclc::Record::default();
         outputs.insert(String::from("pem"), sclc::Value::Str(csr_pem));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+            markers: Default::default(),
+        })
+    }
+
+    async fn dispatch_cert_sig(
+        &self,
+        id: &sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let inputs_clone = inputs.clone();
+        let cert_pem =
+            tokio::task::spawn_blocking(move || sign_certificate(&inputs_clone)).await??;
+
+        info!(
+            resource_type = id.ty.as_str(),
+            resource_id = id.id.as_str(),
+            "signed certificate"
+        );
+
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("pem"), sclc::Value::Str(cert_pem));
 
         Ok(sclc::Resource {
             inputs,
@@ -226,6 +257,243 @@ fn generate_csr(inputs: &sclc::Record) -> anyhow::Result<String> {
     }
 
     anyhow::bail!("unsupported private key type in PEM")
+}
+
+fn epoch_millis_to_x509_time(epoch_millis: i64) -> anyhow::Result<x509_cert::time::Time> {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let duration = Duration::from_millis(epoch_millis as u64);
+    let system_time = UNIX_EPOCH + duration;
+
+    // x509_cert::time::Time implements From<SystemTime> (via the "std" feature
+    // on the der crate, which x509-cert enables through its "builder" feature).
+    // Under the hood this picks UtcTime for years ≤ 2049, GeneralizedTime otherwise.
+    x509_cert::time::Time::try_from(system_time)
+        .map_err(|e| anyhow::anyhow!("invalid time: {e}"))
+}
+
+fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
+    use der::{DecodePem, Encode};
+    use pkcs8::DecodePrivateKey;
+    use rand_core::RngCore;
+    use spki::EncodePublicKey;
+
+    let csr_pem = inputs.get("csrPem").assert_str_ref()?;
+    let private_key_pem = inputs.get("privateKeyPem").assert_str_ref()?;
+
+    let ca_cert_pem: Option<&str> = match inputs.get("caCertPem") {
+        sclc::Value::Nil => None,
+        other => Some(other.assert_str_ref()?),
+    };
+
+    let validity_record = inputs.get("validity").assert_record_ref()?;
+    let before_record = validity_record.get("before").assert_record_ref()?;
+    let not_after_millis = *before_record.get("epochMillis").assert_int_ref()?;
+    let not_after = epoch_millis_to_x509_time(not_after_millis)?;
+
+    let not_before = match validity_record.get("after") {
+        sclc::Value::Nil => x509_cert::time::Time::try_from(std::time::SystemTime::now())
+            .map_err(|e| anyhow::anyhow!("failed to get current time: {e}"))?,
+        other => {
+            let after_record = other.assert_record_ref()?;
+            let millis = *after_record.get("epochMillis").assert_int_ref()?;
+            epoch_millis_to_x509_time(millis)?
+        }
+    };
+
+    let validity = x509_cert::time::Validity {
+        not_before,
+        not_after,
+    };
+
+    // Generate random serial number (20 bytes, positive)
+    let mut serial_bytes = [0u8; 20];
+    rand_core::OsRng.fill_bytes(&mut serial_bytes);
+    serial_bytes[0] &= 0x7F; // Ensure positive (clear sign bit)
+    let serial_number = x509_cert::serial_number::SerialNumber::new(&serial_bytes)
+        .map_err(|e| anyhow::anyhow!("failed to create serial number: {e}"))?;
+
+    // Parse the CSR
+    let csr = x509_cert::request::CertReq::from_pem(csr_pem)?;
+    let subject = csr.info.subject.clone();
+    let subject_pub_key_info = csr.info.public_key.clone();
+
+    // Parse the CA certificate if provided
+    let ca_cert = match ca_cert_pem {
+        Some(pem) => Some(x509_cert::Certificate::from_pem(pem)?),
+        None => None,
+    };
+
+    // Determine profile and issuer
+    let (profile, _issuer_name) = match &ca_cert {
+        Some(cert) => {
+            let issuer = cert.tbs_certificate.subject.clone();
+            (
+                x509_cert::builder::Profile::Leaf {
+                    issuer: issuer.clone(),
+                    enable_key_agreement: false,
+                    enable_key_encipherment: false,
+                },
+                issuer,
+            )
+        }
+        None => {
+            // Self-signed: issuer = subject
+            (x509_cert::builder::Profile::Root, subject.clone())
+        }
+    };
+
+    let csr_spki_der = subject_pub_key_info.to_der()?;
+
+    // Try Ed25519
+    if let Ok(signing_key) = ed25519_dalek::SigningKey::from_pkcs8_pem(private_key_pem) {
+        if ca_cert.is_none() {
+            let pub_key_der = signing_key.verifying_key().to_public_key_der()?;
+            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
+                anyhow::bail!(
+                    "self-signed certificate requested but CSR public key does not match the provided private key"
+                );
+            }
+        }
+        return build_and_sign_cert_ed25519(
+            &signing_key,
+            profile,
+            serial_number,
+            validity,
+            subject,
+            subject_pub_key_info,
+        );
+    }
+
+    // Try ECDSA P-256
+    if let Ok(secret_key) = p256::SecretKey::from_pkcs8_pem(private_key_pem) {
+        if ca_cert.is_none() {
+            let pub_key_der = secret_key.public_key().to_public_key_der()?;
+            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
+                anyhow::bail!(
+                    "self-signed certificate requested but CSR public key does not match the provided private key"
+                );
+            }
+        }
+        let signing_key = p256::ecdsa::SigningKey::from(secret_key);
+        return build_and_sign_cert::<_, p256::ecdsa::DerSignature>(
+            &signing_key,
+            profile,
+            serial_number,
+            validity,
+            subject,
+            subject_pub_key_info,
+        );
+    }
+
+    // Try ECDSA P-384
+    if let Ok(secret_key) = p384::SecretKey::from_pkcs8_pem(private_key_pem) {
+        if ca_cert.is_none() {
+            let pub_key_der = secret_key.public_key().to_public_key_der()?;
+            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
+                anyhow::bail!(
+                    "self-signed certificate requested but CSR public key does not match the provided private key"
+                );
+            }
+        }
+        let signing_key = p384::ecdsa::SigningKey::from(secret_key);
+        return build_and_sign_cert::<_, p384::ecdsa::DerSignature>(
+            &signing_key,
+            profile,
+            serial_number,
+            validity,
+            subject,
+            subject_pub_key_info,
+        );
+    }
+
+    // P-521 detection
+    if p521::SecretKey::from_pkcs8_pem(private_key_pem).is_ok() {
+        anyhow::bail!("P-521 keys are not yet supported for certificate signing");
+    }
+
+    // Try RSA
+    if let Ok(private_key) = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem) {
+        if ca_cert.is_none() {
+            let pub_key_der = private_key.to_public_key().to_public_key_der()?;
+            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
+                anyhow::bail!(
+                    "self-signed certificate requested but CSR public key does not match the provided private key"
+                );
+            }
+        }
+        let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(private_key);
+        return build_and_sign_cert::<_, rsa::pkcs1v15::Signature>(
+            &signing_key,
+            profile,
+            serial_number,
+            validity,
+            subject,
+            subject_pub_key_info,
+        );
+    }
+
+    anyhow::bail!("unsupported private key type in PEM")
+}
+
+/// Build and sign a certificate using a signer whose signature type implements
+/// `SignatureBitStringEncoding` (ECDSA, RSA).
+fn build_and_sign_cert<S, Sig>(
+    signer: &S,
+    profile: x509_cert::builder::Profile,
+    serial_number: x509_cert::serial_number::SerialNumber,
+    validity: x509_cert::time::Validity,
+    subject: x509_cert::name::Name,
+    subject_pub_key_info: spki::SubjectPublicKeyInfoOwned,
+) -> anyhow::Result<String>
+where
+    S: signature::Keypair + spki::DynSignatureAlgorithmIdentifier + signature::Signer<Sig>,
+    S::VerifyingKey: spki::EncodePublicKey,
+    Sig: spki::SignatureBitStringEncoding,
+{
+    use der::EncodePem;
+    use x509_cert::builder::{Builder, CertificateBuilder};
+
+    let builder = CertificateBuilder::new(
+        profile,
+        serial_number,
+        validity,
+        subject,
+        subject_pub_key_info,
+        signer,
+    )?;
+    let cert = builder.build::<Sig>()?;
+    Ok(cert.to_pem(der::pem::LineEnding::LF)?)
+}
+
+/// Build and sign a certificate using an Ed25519 signer (which doesn't implement
+/// `SignatureBitStringEncoding`), using the lower-level finalize/assemble API.
+fn build_and_sign_cert_ed25519(
+    signer: &ed25519_dalek::SigningKey,
+    profile: x509_cert::builder::Profile,
+    serial_number: x509_cert::serial_number::SerialNumber,
+    validity: x509_cert::time::Validity,
+    subject: x509_cert::name::Name,
+    subject_pub_key_info: spki::SubjectPublicKeyInfoOwned,
+) -> anyhow::Result<String> {
+    use der::EncodePem;
+    use signature::Signer;
+    use x509_cert::builder::{Builder, CertificateBuilder};
+
+    let mut builder = CertificateBuilder::new(
+        profile,
+        serial_number,
+        validity,
+        subject,
+        subject_pub_key_info,
+        signer,
+    )?;
+
+    let blob = builder.finalize()?;
+    let sig: ed25519_dalek::Signature = signer.sign(&blob);
+    let bit_string = der::asn1::BitString::from_bytes(&sig.to_bytes())?;
+    let cert = builder.assemble(bit_string)?;
+    Ok(cert.to_pem(der::pem::LineEnding::LF)?)
 }
 
 fn build_subject_name(subject: &sclc::Record) -> anyhow::Result<x509_cert::name::Name> {

@@ -37,3 +37,17 @@ export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
 }) {
     pem: Str,
 }
+
+import Std/Time
+
+export let CertificateSignature = extern "Std/Crypto.CertificateSignature": fn({
+    csrPem: Str,
+    privateKeyPem: Str,
+    caCertPem: Str?,
+    validity: {
+        before: Time.Instant,
+        after: Time.Instant?,
+    },
+}) {
+    pem: Str,
+}
