@@ -11,19 +11,24 @@ path = "src/main.rs"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 clap = { version = "4.5.48", features = ["derive"] }
+const-oid = { version = "0.9", features = ["db"] }
+der = { version = "0.7", features = ["pem", "flagset"] }
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem", "rand_core"] }
-p256 = { version = "0.13", features = ["pkcs8", "pem"] }
-p384 = { version = "0.13", features = ["pkcs8", "pem"] }
-p521 = { version = "0.13", features = ["pkcs8", "pem"] }
+p256 = { version = "0.13", features = ["pkcs8", "pem", "ecdsa"] }
+p384 = { version = "0.13", features = ["pkcs8", "pem", "ecdsa"] }
+p521 = { version = "0.13", features = ["pkcs8", "pem", "ecdsa"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
-rsa = { version = "0.9", features = ["pem"] }
+rsa = { version = "0.9", features = ["pem", "sha2"] }
 rtp = { path = "../rtp" }
 sclc = { path = "../sclc" }
+sha2 = "0.10"
+signature = "2"
 spki = { version = "0.7", features = ["pem"] }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
+x509-cert = { version = "0.2", features = ["builder", "pem"] }
 
 [lints]
 workspace = true

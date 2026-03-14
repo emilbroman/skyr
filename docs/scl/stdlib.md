@@ -394,6 +394,55 @@ let key = Crypto.RSAPrivateKey({
 | `pem` | `Str` | Private key in PKCS#8 PEM format |
 | `publicKeyPem` | `Str` | Public key in SPKI PEM format |
 
+### CertificationRequest
+
+Generate a PKCS#10 Certificate Signing Request (CSR) from an existing private key:
+
+```scl
+let key = Crypto.ECDSAPrivateKey({ name: "tls-key", curve: "P-256" })
+
+let csr = Crypto.CertificationRequest({
+    privateKeyPem: key.pem,
+    subject: {
+        commonName: "example.com",
+        organization: "My Corp",
+        country: "US",
+    },
+    subjectAlternativeNames: ["example.com", "*.example.com", "192.168.1.1"],
+    keyUsage: ["digitalSignature", "keyEncipherment"],
+    extendedKeyUsage: ["serverAuth", "clientAuth"],
+})
+```
+
+The resource is identified by a hash of its inputs rather than an explicit name, so changing any input produces a new CSR.
+
+**Inputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `privateKeyPem` | `Str` | Private key PEM (from any `*PrivateKey` resource) |
+| `subject.commonName` | `Str` | Common Name (CN) |
+| `subject.organization` | `Str?` | Organization (O) |
+| `subject.organizationalUnit` | `Str?` | Organizational Unit (OU) |
+| `subject.country` | `Str?` | Country (C) |
+| `subject.state` | `Str?` | State or Province (ST) |
+| `subject.locality` | `Str?` | Locality (L) |
+| `subjectAlternativeNames` | `[Str]?` | SANs — auto-detected as DNS, IP, or email |
+| `keyUsage` | `[Str]?` | Key usage flags (e.g. `"digitalSignature"`, `"keyEncipherment"`) |
+| `extendedKeyUsage` | `[Str]?` | Extended key usage OIDs (e.g. `"serverAuth"`, `"clientAuth"`) |
+
+**Supported `keyUsage` values:** `digitalSignature`, `nonRepudiation`, `contentCommitment`, `keyEncipherment`, `dataEncipherment`, `keyAgreement`, `keyCertSign`, `cRLSign`, `encipherOnly`, `decipherOnly`
+
+**Supported `extendedKeyUsage` values:** `serverAuth`, `clientAuth`, `codeSigning`, `emailProtection`, `timeStamping`, `ocspSigning`
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pem` | `Str` | Signed CSR in PEM format |
+
+> **Note:** P-521 keys are not currently supported for certification requests.
+
 ## Std/Encoding
 
 Serialize and deserialize data.

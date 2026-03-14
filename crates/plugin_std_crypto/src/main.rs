@@ -5,6 +5,7 @@ use tracing::info;
 const ED25519_RESOURCE_TYPE: &str = "Std/Crypto.ED25519PrivateKey";
 const ECDSA_RESOURCE_TYPE: &str = "Std/Crypto.ECDSAPrivateKey";
 const RSA_RESOURCE_TYPE: &str = "Std/Crypto.RSAPrivateKey";
+const CSR_RESOURCE_TYPE: &str = "Std/Crypto.CertificationRequest";
 
 #[derive(Parser)]
 struct Args {
@@ -24,6 +25,10 @@ impl CryptoPlugin {
         id: &sclc::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        if id.ty == CSR_RESOURCE_TYPE {
+            return self.dispatch_csr(id, inputs).await;
+        }
+
         let (private_pem, public_pem) = match id.ty.as_str() {
             ED25519_RESOURCE_TYPE => generate_ed25519()?,
             ECDSA_RESOURCE_TYPE => {
@@ -49,6 +54,31 @@ impl CryptoPlugin {
         let mut outputs = sclc::Record::default();
         outputs.insert(String::from("pem"), sclc::Value::Str(private_pem));
         outputs.insert(String::from("publicKeyPem"), sclc::Value::Str(public_pem));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+            markers: Default::default(),
+        })
+    }
+
+    async fn dispatch_csr(
+        &self,
+        id: &sclc::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let inputs_clone = inputs.clone();
+        let csr_pem = tokio::task::spawn_blocking(move || generate_csr(&inputs_clone)).await??;
+
+        info!(
+            resource_type = id.ty.as_str(),
+            resource_id = id.id.as_str(),
+            "generated certification request"
+        );
+
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("pem"), sclc::Value::Str(csr_pem));
 
         Ok(sclc::Resource {
             inputs,
@@ -111,6 +141,238 @@ fn generate_rsa(size: usize) -> anyhow::Result<(String, String)> {
         .to_public_key_pem(pkcs8::LineEnding::LF)?;
 
     Ok((private_pem, public_pem))
+}
+
+/// Build a CSR using the given signer, subject name, and inputs (for extensions).
+///
+/// Uses the higher-level `build` API for signers whose signature type implements
+/// `SignatureBitStringEncoding` (ECDSA, RSA).
+fn build_and_sign_csr<S, Sig>(
+    signer: &S,
+    name: x509_cert::name::Name,
+    inputs: &sclc::Record,
+) -> anyhow::Result<String>
+where
+    S: signature::Keypair + spki::DynSignatureAlgorithmIdentifier + signature::Signer<Sig>,
+    S::VerifyingKey: spki::EncodePublicKey,
+    Sig: spki::SignatureBitStringEncoding,
+{
+    use der::EncodePem;
+    use x509_cert::builder::{Builder, RequestBuilder};
+
+    let mut builder = RequestBuilder::new(name, signer)?;
+    add_csr_extensions(&mut builder, inputs)?;
+    let csr = builder.build::<Sig>()?;
+    Ok(csr.to_pem(der::pem::LineEnding::LF)?)
+}
+
+/// Build a CSR using an Ed25519 signer.
+///
+/// Ed25519 signatures don't implement `SignatureBitStringEncoding`, so we use
+/// the lower-level `finalize`/`assemble` API from the `Builder` trait.
+fn build_and_sign_csr_ed25519(
+    signer: &ed25519_dalek::SigningKey,
+    name: x509_cert::name::Name,
+    inputs: &sclc::Record,
+) -> anyhow::Result<String> {
+    use der::EncodePem;
+    use signature::Signer;
+    use x509_cert::builder::{Builder, RequestBuilder};
+
+    let mut builder = RequestBuilder::new(name, signer)?;
+    add_csr_extensions(&mut builder, inputs)?;
+
+    let blob = builder.finalize()?;
+    let sig: ed25519_dalek::Signature = signer.sign(&blob);
+    let bit_string = der::asn1::BitString::from_bytes(&sig.to_bytes())?;
+    let csr = builder.assemble(bit_string)?;
+    Ok(csr.to_pem(der::pem::LineEnding::LF)?)
+}
+
+fn generate_csr(inputs: &sclc::Record) -> anyhow::Result<String> {
+    use pkcs8::DecodePrivateKey;
+
+    let private_key_pem = inputs.get("privateKeyPem").assert_str_ref()?;
+    let subject = inputs.get("subject").assert_record_ref()?;
+    let name = build_subject_name(subject)?;
+
+    // Try Ed25519
+    if let Ok(signing_key) = ed25519_dalek::SigningKey::from_pkcs8_pem(private_key_pem) {
+        return build_and_sign_csr_ed25519(&signing_key, name, inputs);
+    }
+
+    // Try ECDSA P-256
+    if let Ok(secret_key) = p256::SecretKey::from_pkcs8_pem(private_key_pem) {
+        let signing_key = p256::ecdsa::SigningKey::from(secret_key);
+        return build_and_sign_csr::<_, p256::ecdsa::DerSignature>(&signing_key, name, inputs);
+    }
+
+    // Try ECDSA P-384
+    if let Ok(secret_key) = p384::SecretKey::from_pkcs8_pem(private_key_pem) {
+        let signing_key = p384::ecdsa::SigningKey::from(secret_key);
+        return build_and_sign_csr::<_, p384::ecdsa::DerSignature>(&signing_key, name, inputs);
+    }
+
+    // P-521 key detection: fail with a clear message since the p521 crate doesn't
+    // yet support the traits required by the x509-cert builder.
+    if p521::SecretKey::from_pkcs8_pem(private_key_pem).is_ok() {
+        anyhow::bail!("P-521 keys are not yet supported for certification requests");
+    }
+
+    // Try RSA
+    if let Ok(private_key) = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem) {
+        let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(private_key);
+        return build_and_sign_csr::<_, rsa::pkcs1v15::Signature>(&signing_key, name, inputs);
+    }
+
+    anyhow::bail!("unsupported private key type in PEM")
+}
+
+fn build_subject_name(subject: &sclc::Record) -> anyhow::Result<x509_cert::name::Name> {
+    let cn = subject.get("commonName").assert_str_ref()?;
+
+    // Build RFC 4514 distinguished name string, most-specific-first
+    let mut parts = vec![format!("CN={}", rfc4514_escape(cn))];
+
+    if let Ok(ou) = subject.get("organizationalUnit").assert_str_ref() {
+        parts.push(format!("OU={}", rfc4514_escape(ou)));
+    }
+    if let Ok(o) = subject.get("organization").assert_str_ref() {
+        parts.push(format!("O={}", rfc4514_escape(o)));
+    }
+    if let Ok(l) = subject.get("locality").assert_str_ref() {
+        parts.push(format!("L={}", rfc4514_escape(l)));
+    }
+    if let Ok(st) = subject.get("state").assert_str_ref() {
+        parts.push(format!("ST={}", rfc4514_escape(st)));
+    }
+    if let Ok(c) = subject.get("country").assert_str_ref() {
+        parts.push(format!("C={}", rfc4514_escape(c)));
+    }
+
+    let dn_string = parts.join(",");
+    dn_string
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid distinguished name: {e}"))
+}
+
+fn rfc4514_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for (i, c) in s.chars().enumerate() {
+        match c {
+            '"' | '+' | ',' | ';' | '<' | '>' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '#' if i == 0 => {
+                out.push('\\');
+                out.push(c);
+            }
+            ' ' if i == 0 || i == s.len() - 1 => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+fn add_csr_extensions<S>(
+    builder: &mut x509_cert::builder::RequestBuilder<'_, S>,
+    inputs: &sclc::Record,
+) -> anyhow::Result<()>
+where
+    S: signature::Keypair + spki::DynSignatureAlgorithmIdentifier,
+    S::VerifyingKey: spki::EncodePublicKey,
+{
+    use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+
+    // Subject Alternative Names
+    if let sclc::Value::List(sans) = inputs.get("subjectAlternativeNames") {
+        let mut general_names = vec![];
+        for san_value in sans {
+            let san = san_value.assert_str_ref()?;
+            let general_name = parse_san(san)?;
+            general_names.push(general_name);
+        }
+        if !general_names.is_empty() {
+            let san_ext = x509_cert::ext::pkix::SubjectAltName(general_names);
+            builder
+                .add_extension(&san_ext)
+                .map_err(|e| anyhow::anyhow!("failed to add SAN extension: {e}"))?;
+        }
+    }
+
+    // Key Usage
+    if let sclc::Value::List(usages) = inputs.get("keyUsage") {
+        let mut ku: der::flagset::FlagSet<KeyUsages> = None.into();
+        for usage_value in usages {
+            let usage = usage_value.assert_str_ref()?;
+            ku |= match usage {
+                "digitalSignature" => KeyUsages::DigitalSignature,
+                "nonRepudiation" | "contentCommitment" => KeyUsages::NonRepudiation,
+                "keyEncipherment" => KeyUsages::KeyEncipherment,
+                "dataEncipherment" => KeyUsages::DataEncipherment,
+                "keyAgreement" => KeyUsages::KeyAgreement,
+                "keyCertSign" => KeyUsages::KeyCertSign,
+                "cRLSign" => KeyUsages::CRLSign,
+                "encipherOnly" => KeyUsages::EncipherOnly,
+                "decipherOnly" => KeyUsages::DecipherOnly,
+                _ => anyhow::bail!("unsupported key usage: {usage}"),
+            };
+        }
+        builder
+            .add_extension(&KeyUsage(ku))
+            .map_err(|e| anyhow::anyhow!("failed to add KeyUsage extension: {e}"))?;
+    }
+
+    // Extended Key Usage
+    if let sclc::Value::List(usages) = inputs.get("extendedKeyUsage") {
+        let mut eku_oids = vec![];
+        for usage_value in usages {
+            let usage = usage_value.assert_str_ref()?;
+            let oid = match usage {
+                "serverAuth" => const_oid::db::rfc5280::ID_KP_SERVER_AUTH,
+                "clientAuth" => const_oid::db::rfc5280::ID_KP_CLIENT_AUTH,
+                "codeSigning" => const_oid::db::rfc5280::ID_KP_CODE_SIGNING,
+                "emailProtection" => const_oid::db::rfc5280::ID_KP_EMAIL_PROTECTION,
+                "timeStamping" => const_oid::db::rfc5280::ID_KP_TIME_STAMPING,
+                "ocspSigning" => const_oid::db::rfc5280::ID_KP_OCSP_SIGNING,
+                _ => anyhow::bail!("unsupported extended key usage: {usage}"),
+            };
+            eku_oids.push(oid);
+        }
+        if !eku_oids.is_empty() {
+            let eku = x509_cert::ext::pkix::ExtendedKeyUsage(eku_oids);
+            builder
+                .add_extension(&eku)
+                .map_err(|e| anyhow::anyhow!("failed to add ExtendedKeyUsage extension: {e}"))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn parse_san(san: &str) -> anyhow::Result<x509_cert::ext::pkix::name::GeneralName> {
+    use x509_cert::ext::pkix::name::GeneralName;
+
+    // Try parsing as IP address
+    if let Ok(ip) = san.parse::<std::net::IpAddr>() {
+        let bytes = match ip {
+            std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+            std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+        };
+        return Ok(GeneralName::IpAddress(der::asn1::OctetString::new(bytes)?));
+    }
+
+    // Check for email (contains @)
+    if san.contains('@') {
+        return Ok(GeneralName::Rfc822Name(der::asn1::Ia5String::new(san)?));
+    }
+
+    // Default: DNS name
+    Ok(GeneralName::DnsName(der::asn1::Ia5String::new(san)?))
 }
 
 #[async_trait::async_trait]
