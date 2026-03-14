@@ -2,6 +2,7 @@ const ED25519_RESOURCE_TYPE: &str = "Std/Crypto.ED25519PrivateKey";
 const ECDSA_RESOURCE_TYPE: &str = "Std/Crypto.ECDSAPrivateKey";
 const RSA_RESOURCE_TYPE: &str = "Std/Crypto.RSAPrivateKey";
 const CSR_RESOURCE_TYPE: &str = "Std/Crypto.CertificationRequest";
+const CERT_SIG_RESOURCE_TYPE: &str = "Std/Crypto.CertificateSignature";
 
 fn extract_key_outputs(
     outputs: &crate::Record,
@@ -216,6 +217,63 @@ pub fn register_extern(eval: &mut crate::Eval) {
         };
 
         let out = extract_key_outputs(&outputs)?;
+        argument_dependencies.insert(resource_id);
+        Ok(crate::TrackedValue::new(crate::Value::Record(out))
+            .with_dependencies(argument_dependencies))
+    });
+
+    eval.add_extern_fn(CERT_SIG_RESOURCE_TYPE, |args, eval_ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let config_arg = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        let mut argument_dependencies = config_arg.dependencies.clone();
+
+        let config = config_arg.value.assert_record()?;
+
+        let mut inputs = crate::Record::default();
+        inputs.insert(
+            String::from("csrPem"),
+            crate::Value::Str(config.get("csrPem").assert_str_ref()?.to_owned()),
+        );
+        inputs.insert(
+            String::from("privateKeyPem"),
+            crate::Value::Str(config.get("privateKeyPem").assert_str_ref()?.to_owned()),
+        );
+        inputs.insert(
+            String::from("caCertPem"),
+            config.get("caCertPem").clone(),
+        );
+        inputs.insert(
+            String::from("validity"),
+            config.get("validity").clone(),
+        );
+
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
+        let id = format!("{:x}", std::hash::Hasher::finish(&hasher));
+
+        let resource_id = crate::ResourceId {
+            ty: CERT_SIG_RESOURCE_TYPE.to_owned(),
+            id: id.clone(),
+        };
+
+        let Some(outputs) = eval_ctx.resource(
+            CERT_SIG_RESOURCE_TYPE,
+            &id,
+            &inputs,
+            argument_dependencies.clone(),
+        )?
+        else {
+            argument_dependencies.insert(resource_id);
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        };
+
+        let pem = outputs.get("pem").assert_str_ref()?;
+        let mut out = crate::Record::default();
+        out.insert(String::from("pem"), crate::Value::Str(pem.to_owned()));
+
         argument_dependencies.insert(resource_id);
         Ok(crate::TrackedValue::new(crate::Value::Record(out))
             .with_dependencies(argument_dependencies))
