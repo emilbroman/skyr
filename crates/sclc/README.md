@@ -39,6 +39,73 @@ Parse functions return `Diagnosed<Option<_>>` and report syntax errors as diagno
 - **`SourceRepo`** — trait for providing source files to the compiler. CDB implements this for deployment compilation; the CLI implements it for local file access.
 - **`Effect`** — emitted during evaluation when the program creates or modifies resources (`CreateResource`, `UpdateResource`, `TouchResource`).
 
+## Test Harness
+
+SCLC includes a fixture-based integration test harness that compiles and evaluates SCL programs end-to-end. Each test case is a directory under `src/tests/`:
+
+```
+src/tests/
+├── mod.rs                       # Harness logic and test_case! macro invocations
+├── BasicExport/
+│   ├── Main.scl                 # Required: entry point
+│   └── exports.txt              # Optional: expected exported value
+├── ImportModule/
+│   ├── Main.scl
+│   ├── Other.scl                # Additional modules for import testing
+│   └── exports.txt
+├── DiagUndefinedVar/
+│   ├── Main.scl
+│   └── diag.log                 # Optional: expected diagnostics
+└── RandomIntUpdate/
+    ├── Main.scl
+    ├── rdb.json                 # Optional: pre-existing resources
+    ├── exports.txt
+    └── effects.log              # Optional: expected effects
+```
+
+### Fixture Files
+
+| File | Required | Description |
+|------|----------|-------------|
+| `Main.scl` | Yes | Entry point for the test case. |
+| `*.scl` | No | Additional modules. Files can import each other via the directory name (e.g., `import ImportModule/Other`). |
+| `diag.log` | No | Expected diagnostics, one per line in the format `ModuleId Span: message` (e.g., `DiagUndefinedVar/Main 1:16,1:17: undefined variable: y`). Missing file expects zero diagnostics. |
+| `exports.txt` | No | Expected `Value::to_string()` of the record exported from `Main.scl` (e.g., `{x: 42}`). Missing file expects `{}` (empty record). |
+| `effects.log` | No | Expected effects, one per line in compact format (e.g., `CreateResource ty=Std/Random.Int id=seed inputs={max: 100, min: 0}`). Missing file expects zero effects. |
+| `rdb.json` | No | Pre-existing resources to load into the runtime before evaluation. Used to test update/touch effects. |
+
+### rdb.json Schema
+
+```json
+{
+  "resources": {
+    "<resource-type>": {
+      "<resource-id>": {
+        "inputs": { ... },
+        "outputs": { ... },
+        "markers": ["Volatile", "Sticky"]
+      }
+    }
+  }
+}
+```
+
+### Adding a Test Case
+
+1. Create a directory under `src/tests/` with an UpperCamelCase name.
+2. Add `Main.scl` and any expectation files.
+3. Add `test_case!(YourTestName);` to `src/tests/mod.rs`.
+4. Run `cargo test -p sclc -- tests::YourTestName` to verify.
+
+### How It Works
+
+The `test_case!` macro generates a `#[tokio::test]` function per fixture. The harness:
+
+1. Loads `.scl` files into an in-memory `SourceRepo` with the directory name as the package ID, so cross-file imports resolve naturally (e.g., `import TestCase/Other`).
+2. Compiles with `compile()` and checks diagnostics against `diag.log`.
+3. If there are no errors, evaluates `Main.scl` and checks exported values against `exports.txt`.
+4. Collects emitted effects and checks them against `effects.log`.
+
 ## Related Crates
 
 - [DE](../de/) — compiles deployment configs using SCLC
