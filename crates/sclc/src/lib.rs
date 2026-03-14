@@ -35,3 +35,6 @@ pub use source_repo::*;
 pub use std::*;
 pub use ty::*;
 pub use value::*;
+
+#[cfg(test)]
+mod tests;
