@@ -514,7 +514,7 @@ The resource is identified by a hash of its inputs rather than an explicit name,
 | `privateKeyPem` | `Str` | Signing key PEM — the CA key (CA-signed) or the same key as the CSR (self-signed) |
 | `caCertPem` | `Str?` | CA certificate PEM. Omit for self-signed certificates |
 | `validity.before` | `Time.Instant` | Certificate expiry (Not After) |
-| `validity.after` | `Time.Instant?` | Certificate start (Not Before). Defaults to current time |
+| `validity.after` | `Time.Instant?` | Certificate start (Not Before). Defaults to resource creation time |
 
 **Outputs:**
 
