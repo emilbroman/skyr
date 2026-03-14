@@ -1,0 +1,1 @@
+CreateResource ty=Std/Random.Int id=seed inputs={max: 100, min: 0}

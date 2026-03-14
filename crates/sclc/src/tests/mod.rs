@@ -299,3 +299,4 @@ test_case!(EmptyModule);
 test_case!(ImportModule);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
+test_case!(RandomInt);
