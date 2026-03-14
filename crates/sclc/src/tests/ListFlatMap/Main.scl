@@ -1,0 +1,2 @@
+import Std/List
+export let r = List.flatMap<Int, Int>([1, 2, 3], fn(x: Int) [x, x * 10])

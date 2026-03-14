@@ -1,0 +1,2 @@
+import Std/Encoding
+export let r = Encoding.toJson({ name: "test", value: 42 })

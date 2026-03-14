@@ -1,0 +1,10 @@
+{
+  "resources": {
+    "Std/Artifact.File": {
+      "readme": {
+        "inputs": { "contents": "hello world", "mediaType": null, "name": "readme", "namespace": "test" },
+        "outputs": { "url": "https://example.com/readme" }
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+import Std/List
+export let r = List.map<Int, Int>([], fn(x: Int) x * 2)

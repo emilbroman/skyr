@@ -414,3 +414,59 @@ test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
 test_case!(RandomInt);
 test_case!(RandomIntUpdate);
+test_case!(RandomIntTouch);
+
+// Std/List
+test_case!(ListRange);
+test_case!(ListRangeEmpty);
+test_case!(ListMap);
+test_case!(ListAppend);
+test_case!(ListConcat);
+test_case!(ListFilter);
+test_case!(ListFlatMap);
+test_case!(ListMapEmpty);
+
+// Std/Num
+test_case!(NumToHex);
+
+// Std/Option
+test_case!(OptionIsNoneIsSome);
+test_case!(OptionDefault);
+test_case!(OptionUnwrapSome);
+
+// Std/Encoding
+test_case!(EncodingToJson);
+test_case!(EncodingToJsonRecord);
+test_case!(EncodingFromJson);
+
+// Std/Time
+test_case!(TimeToISO);
+test_case!(TimeUtc);
+test_case!(TimeAdd);
+test_case!(TimeSubtract);
+test_case!(TimeClock);
+test_case!(TimeClockWithRdb);
+test_case!(TimeAddMonths);
+
+// Std/Artifact
+test_case!(ArtifactFile);
+test_case!(ArtifactFileWithMediaType);
+test_case!(ArtifactFileWithRdb);
+
+// Std/Container
+test_case!(ContainerImage);
+test_case!(ContainerPod);
+test_case!(ContainerHost);
+
+// Std/Crypto
+test_case!(CryptoED25519);
+test_case!(CryptoECDSA);
+test_case!(CryptoECDSAWithCurve);
+test_case!(CryptoRSA);
+test_case!(CryptoRSAWithSize);
+test_case!(CryptoCertReq);
+test_case!(CryptoCertSign);
+
+// Diagnostic tests
+test_case!(DiagNumToHexWrongType);
+test_case!(DiagListMapWrongType);

@@ -1,0 +1,2 @@
+import Std/Crypto
+export let key = Crypto.RSAPrivateKey({ name: "rsakey" })

@@ -1,0 +1,1 @@
+{noneIsNone: true, noneIsSome: false, someIsNone: false, someIsSome: true}

@@ -1,0 +1,2 @@
+import Std/Encoding
+export let r = Encoding.fromJson("[1, true, null]")

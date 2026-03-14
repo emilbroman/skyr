@@ -1,0 +1,2 @@
+import Std/Time
+export let now = Time.Clock({ milliseconds: 60000 })

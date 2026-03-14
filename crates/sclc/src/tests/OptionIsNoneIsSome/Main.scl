@@ -1,0 +1,5 @@
+import Std/Option
+export let noneIsNone = Option.isNone<Int>(nil)
+export let noneIsSome = Option.isSome<Int>(nil)
+export let someIsNone = Option.isNone<Int>(42)
+export let someIsSome = Option.isSome<Int>(42)

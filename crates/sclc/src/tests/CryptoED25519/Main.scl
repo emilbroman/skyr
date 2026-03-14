@@ -1,0 +1,2 @@
+import Std/Crypto
+export let key = Crypto.ED25519PrivateKey({ name: "mykey" })

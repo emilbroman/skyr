@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.toHex(255)
+export let b = Num.toHex(0)
+export let c = Num.toHex(16)

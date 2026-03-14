@@ -1,0 +1,2 @@
+import Std/List
+let r = List.map<Int, Int>([1, 2], fn(x: Str) x)

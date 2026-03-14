@@ -1,0 +1,11 @@
+{
+  "resources": {
+    "Std/Time.Clock": {
+      "0/60000": {
+        "inputs": { "milliseconds": 60000, "months": 0 },
+        "outputs": { "epochMillis": 1700000000000 },
+        "markers": ["Volatile"]
+      }
+    }
+  }
+}

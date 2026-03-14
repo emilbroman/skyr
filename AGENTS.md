@@ -65,6 +65,34 @@ When adding a new standard library RTP plugin (e.g., `plugin_std_foo` for `Std/F
     - **RTP README** — add the plugin to the Related Crates list in `crates/rtp/README.md`
     - **External docs** — add user-facing documentation in `docs/scl/stdlib.md` for the new resource types
 
+### Adding Standard Library Tests
+
+When adding or modifying standard library functions/modules in `sclc`, add fixture-based integration tests under `crates/sclc/src/tests/`:
+
+1. **Create a fixture directory** — `crates/sclc/src/tests/TestName/` containing:
+   - `Main.scl` (required) — the SCL source code to compile and evaluate
+   - `exports.txt` (optional) — expected exported value, defaults to `{}`
+   - `effects.log` (optional) — expected resource effects (`CreateResource`, `UpdateResource`, `TouchResource`), one per line
+   - `rdb.json` (optional) — pre-existing resource state to simulate already-deployed resources
+   - `diag.log` (optional) — expected diagnostic messages (type errors, undefined variables, etc.)
+
+2. **Register the test** — add `test_case!(TestName);` in `crates/sclc/src/tests/mod.rs`.
+
+3. **Test resource lifecycles** — for resource functions, write three tests:
+   - **Create** (no `rdb.json`) — expects `CreateResource` effect and `<pending>` export
+   - **Touch** (`rdb.json` with matching inputs) — expects `TouchResource` effect and concrete outputs
+   - **Update** (`rdb.json` with different inputs) — expects `UpdateResource` effect and `<pending>` export
+
+4. **Test pure/extern functions** — verify concrete computed values in `exports.txt`.
+
+5. **Test type errors** — verify expected diagnostic messages in `diag.log`.
+
+**Important notes:**
+- Record fields in `exports.txt` are BTreeMap-ordered (alphabetical)
+- SCL strings use `{` for interpolation — escape with `\{` when literal braces are needed
+- SCL does not support type annotations on `let` bindings (e.g., `let x: Int? = nil` won't parse) — pass values directly to functions instead
+- Resource IDs for Crypto CSR/CertificateSignature are hash-based — run the test once with a placeholder to capture the actual hash
+
 ## Running Locally
 
 See the [README](README.md#running-locally) for full service and port listings.

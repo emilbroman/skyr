@@ -1,0 +1,1 @@
+CreateResource ty=Std/Container.Image id=myapp inputs={containerfile: Dockerfile, context: ., name: myapp, namespace: test}

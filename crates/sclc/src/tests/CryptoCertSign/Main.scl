@@ -1,0 +1,7 @@
+import Std/Crypto
+import Std/Time
+export let cert = Crypto.CertificateSignature({
+    csrPem: "fake-csr",
+    privateKeyPem: "fake-key",
+    validity: { before: { epochMillis: 0 } },
+})

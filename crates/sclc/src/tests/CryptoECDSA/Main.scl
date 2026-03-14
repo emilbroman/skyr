@@ -1,0 +1,2 @@
+import Std/Crypto
+export let key = Crypto.ECDSAPrivateKey({ name: "eckey" })
