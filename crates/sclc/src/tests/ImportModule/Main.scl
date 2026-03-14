@@ -1,0 +1,2 @@
+import ImportModule/Other
+export let val = Other.x
