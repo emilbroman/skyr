@@ -1,0 +1,2 @@
+import Std/Random
+export let roll = Random.Int({ name: "seed", min: 0, max: 100 })
