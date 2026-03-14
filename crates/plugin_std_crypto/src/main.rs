@@ -268,8 +268,7 @@ fn epoch_millis_to_x509_time(epoch_millis: i64) -> anyhow::Result<x509_cert::tim
     // x509_cert::time::Time implements From<SystemTime> (via the "std" feature
     // on the der crate, which x509-cert enables through its "builder" feature).
     // Under the hood this picks UtcTime for years ≤ 2049, GeneralizedTime otherwise.
-    x509_cert::time::Time::try_from(system_time)
-        .map_err(|e| anyhow::anyhow!("invalid time: {e}"))
+    x509_cert::time::Time::try_from(system_time).map_err(|e| anyhow::anyhow!("invalid time: {e}"))
 }
 
 fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
