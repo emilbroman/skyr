@@ -4193,6 +4193,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "clap",
+ "const-oid 0.9.6",
+ "der 0.7.10",
  "ed25519-dalek",
  "p256 0.13.2",
  "p384",
@@ -4202,10 +4204,13 @@ dependencies = [
  "rsa 0.9.10",
  "rtp",
  "sclc",
+ "sha2 0.10.9",
+ "signature 2.2.0",
  "spki 0.7.3",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "x509-cert",
 ]
 
 [[package]]
@@ -4922,6 +4927,7 @@ dependencies = [
  "pkcs1 0.7.5",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
+ "sha2 0.10.9",
  "signature 2.2.0",
  "spki 0.7.3",
  "subtle",
@@ -7179,7 +7185,10 @@ checksum = "1301e935010a701ae5f8655edc0ad17c44bad3ac5ce8c39185f75453b720ae94"
 dependencies = [
  "const-oid 0.9.6",
  "der 0.7.10",
+ "sha1 0.10.6",
+ "signature 2.2.0",
  "spki 0.7.3",
+ "tls_codec",
 ]
 
 [[package]]

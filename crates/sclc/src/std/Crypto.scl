@@ -20,3 +20,20 @@ export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
     pem: Str,
     publicKeyPem: Str,
 }
+
+export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
+    privateKeyPem: Str,
+    subject: {
+        commonName: Str,
+        organization: Str?,
+        organizationalUnit: Str?,
+        country: Str?,
+        state: Str?,
+        locality: Str?,
+    },
+    subjectAlternativeNames: [Str]?,
+    keyUsage: [Str]?,
+    extendedKeyUsage: [Str]?,
+}) {
+    pem: Str,
+}

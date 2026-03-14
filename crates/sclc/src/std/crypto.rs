@@ -1,6 +1,7 @@
 const ED25519_RESOURCE_TYPE: &str = "Std/Crypto.ED25519PrivateKey";
 const ECDSA_RESOURCE_TYPE: &str = "Std/Crypto.ECDSAPrivateKey";
 const RSA_RESOURCE_TYPE: &str = "Std/Crypto.RSAPrivateKey";
+const CSR_RESOURCE_TYPE: &str = "Std/Crypto.CertificationRequest";
 
 fn extract_key_outputs(
     outputs: &crate::Record,
@@ -93,6 +94,86 @@ pub fn register_extern(eval: &mut crate::Eval) {
         };
 
         let out = extract_key_outputs(&outputs)?;
+        argument_dependencies.insert(resource_id);
+        Ok(crate::TrackedValue::new(crate::Value::Record(out))
+            .with_dependencies(argument_dependencies))
+    });
+
+    eval.add_extern_fn(CSR_RESOURCE_TYPE, |args, eval_ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let config_arg = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        let mut argument_dependencies = config_arg.dependencies.clone();
+
+        let config = config_arg.value.assert_record()?;
+        let private_key_pem = config.get("privateKeyPem").assert_str_ref()?;
+        let subject = config.get("subject").assert_record_ref()?;
+
+        let common_name = subject.get("commonName").assert_str_ref()?;
+
+        let mut subject_record = crate::Record::default();
+        subject_record.insert(
+            String::from("commonName"),
+            crate::Value::Str(common_name.to_owned()),
+        );
+        for field in [
+            "organization",
+            "organizationalUnit",
+            "country",
+            "state",
+            "locality",
+        ] {
+            subject_record.insert(String::from(field), subject.get(field).clone());
+        }
+
+        let mut inputs = crate::Record::default();
+        inputs.insert(
+            String::from("privateKeyPem"),
+            crate::Value::Str(private_key_pem.to_owned()),
+        );
+        inputs.insert(
+            String::from("subject"),
+            crate::Value::Record(subject_record),
+        );
+        inputs.insert(
+            String::from("subjectAlternativeNames"),
+            config.get("subjectAlternativeNames").clone(),
+        );
+        inputs.insert(
+            String::from("keyUsage"),
+            config.get("keyUsage").clone(),
+        );
+        inputs.insert(
+            String::from("extendedKeyUsage"),
+            config.get("extendedKeyUsage").clone(),
+        );
+
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
+        let id = format!("{:x}", std::hash::Hasher::finish(&hasher));
+
+        let resource_id = crate::ResourceId {
+            ty: CSR_RESOURCE_TYPE.to_owned(),
+            id: id.clone(),
+        };
+
+        let Some(outputs) = eval_ctx.resource(
+            CSR_RESOURCE_TYPE,
+            &id,
+            &inputs,
+            argument_dependencies.clone(),
+        )?
+        else {
+            argument_dependencies.insert(resource_id);
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        };
+
+        let pem = outputs.get("pem").assert_str_ref()?;
+        let mut out = crate::Record::default();
+        out.insert(String::from("pem"), crate::Value::Str(pem.to_owned()));
+
         argument_dependencies.insert(resource_id);
         Ok(crate::TrackedValue::new(crate::Value::Record(out))
             .with_dependencies(argument_dependencies))
