@@ -1,0 +1,2 @@
+import Std/Container
+export let img = Container.Image({ name: "myapp", context: ".", containerfile: "Dockerfile" })

@@ -1,0 +1,2 @@
+import Std/List
+export let r = List.filter<Int>([1, 2, 3, 4], fn(x: Int) x > 2)

@@ -1,0 +1,1 @@
+CreateResource ty=Std/Crypto.CertificateSignature id=c560d1eef7489d8b inputs={caCertPem: nil, csrPem: fake-csr, privateKeyPem: fake-key, validity: {before: {epochMillis: 0}}}

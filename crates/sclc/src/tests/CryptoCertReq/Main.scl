@@ -1,0 +1,5 @@
+import Std/Crypto
+export let csr = Crypto.CertificationRequest({
+    privateKeyPem: "fake-pem",
+    subject: { commonName: "example.com" },
+})

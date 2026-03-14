@@ -1,0 +1,4 @@
+import Std/Time
+let instant = { epochMillis: 0 }
+let dur = { months: 1 }
+export let r = Time.add(instant, dur)

@@ -1,0 +1,4 @@
+import Std/Time
+let instant = { epochMillis: 86400000 }
+let dur = { milliseconds: 86400000 }
+export let r = Time.subtract(instant, dur)

@@ -1,0 +1,2 @@
+import Std/Num
+let r = Num.toHex("abc")

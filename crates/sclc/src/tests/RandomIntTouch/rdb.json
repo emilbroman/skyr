@@ -1,0 +1,10 @@
+{
+  "resources": {
+    "Std/Random.Int": {
+      "seed": {
+        "inputs": { "min": 0, "max": 100 },
+        "outputs": { "min": 0, "max": 100, "result": 42 }
+      }
+    }
+  }
+}

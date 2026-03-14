@@ -1,0 +1,2 @@
+import Std/Option
+export let r = Option.unwrap<Int>(42)

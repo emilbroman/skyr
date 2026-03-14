@@ -1,0 +1,2 @@
+import Std/Artifact
+export let f = Artifact.File({ name: "readme", contents: "hello world" })

@@ -1,0 +1,2 @@
+import Std/List
+export let r = List.concat<Int>([[1, 2], [3, 4]])

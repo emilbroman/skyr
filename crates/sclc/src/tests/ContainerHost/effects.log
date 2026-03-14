@@ -1,0 +1,1 @@
+CreateResource ty=Std/Container.Host id=api inputs={name: api}

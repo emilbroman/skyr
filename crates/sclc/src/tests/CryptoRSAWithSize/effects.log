@@ -1,0 +1,1 @@
+CreateResource ty=Std/Crypto.RSAPrivateKey id=rsakey inputs={size: 4096}

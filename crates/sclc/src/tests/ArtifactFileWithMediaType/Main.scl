@@ -1,0 +1,2 @@
+import Std/Artifact
+export let f = Artifact.File({ name: "data", mediaType: "application/json", contents: "test data" })

@@ -1,0 +1,6 @@
+import Std/Encoding
+export let a = Encoding.toJson(42)
+export let b = Encoding.toJson("hello")
+export let c = Encoding.toJson(true)
+export let d = Encoding.toJson([1, 2, 3])
+export let e = Encoding.toJson(nil)

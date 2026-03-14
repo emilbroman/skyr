@@ -1,0 +1,3 @@
+import Std/Option
+export let a = Option.default<Int>(nil, 99)
+export let b = Option.default<Int>(42, 99)
