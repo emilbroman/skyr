@@ -145,6 +145,7 @@ impl highlight::Highlighter for ReplHelper {
                 Token::RaiseKeyword => emit!("raise", "\x1b[35m"),
                 Token::TryKeyword => emit!("try", "\x1b[35m"),
                 Token::CatchKeyword => emit!("catch", "\x1b[35m"),
+                Token::AsKeyword => emit!("as", "\x1b[35m"),
 
                 // Literal keywords
                 Token::NilKeyword => emit!("nil", "\x1b[33m"),
