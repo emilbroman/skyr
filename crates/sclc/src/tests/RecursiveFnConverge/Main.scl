@@ -1,0 +1,2 @@
+let f2 = fn(b: Bool) if (b) f2(false) else 123
+export let result = 42

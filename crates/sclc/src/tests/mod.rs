@@ -471,6 +471,10 @@ test_case!(CryptoCertSign);
 test_case!(TypeCast);
 test_case!(TypeCastError);
 
+// Recursive type tests
+test_case!(RecursiveFnConverge);
+test_case!(RecursiveFnList);
+
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);

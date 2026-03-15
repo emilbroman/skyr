@@ -1,12 +1,30 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Component;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
     AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type, ast,
 };
 use thiserror::Error;
+
+/// A subtype constraint: `sub <: sup`.
+#[derive(Clone, Debug)]
+struct SubtypeConstraint {
+    sub: Type,
+    sup: Type,
+}
+
+/// Shared constraint store for collecting constraints on unbound recursive type variables
+/// during global body checking.
+#[derive(Clone, Debug, Default)]
+struct ConstraintStore {
+    constraints: Vec<SubtypeConstraint>,
+    /// Type variable IDs allocated for recursive self-references and their derived return-type vars.
+    recursive_vars: HashSet<usize>,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Variance {
@@ -35,6 +53,8 @@ pub struct TypeEnv<'a> {
     type_level: HashMap<String, Type>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
     cursor: Option<crate::Cursor>,
+    /// Shared constraint store for recursive type inference on globals.
+    constraint_store: Option<Rc<RefCell<ConstraintStore>>>,
 }
 
 impl<'a> Default for TypeEnv<'a> {
@@ -54,6 +74,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: HashMap::new(),
             type_level: HashMap::new(),
             cursor: None,
+            constraint_store: None,
         }
     }
 
@@ -67,6 +88,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            constraint_store: self.constraint_store.clone(),
         }
     }
 
@@ -83,6 +105,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            constraint_store: self.constraint_store.clone(),
         }
     }
 
@@ -99,6 +122,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            constraint_store: self.constraint_store.clone(),
         }
     }
 
@@ -112,6 +136,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            constraint_store: self.constraint_store.clone(),
         }
     }
 
@@ -166,7 +191,14 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            constraint_store: self.constraint_store.clone(),
         }
+    }
+
+    fn with_constraint_store(&self, store: Rc<RefCell<ConstraintStore>>) -> Self {
+        let mut env = self.inner();
+        env.constraint_store = Some(store);
+        env
     }
 
     pub fn lookup_type_var(&self, name: &str) -> Option<&Type> {
@@ -946,6 +978,40 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         Ok(())
     }
 
+    /// Solve collected constraints to resolve recursive type variables.
+    /// For each non-root recursive var, finds its lower bound from constraints
+    /// and substitutes it into the resolved type.
+    fn solve_recursive_constraints(
+        &self,
+        root_var: usize,
+        resolved_ty: Type,
+        store: &ConstraintStore,
+    ) -> Type {
+        if store.constraints.is_empty() {
+            return resolved_ty;
+        }
+        // Collect lower bounds for each non-root recursive var.
+        let mut lower_bounds: HashMap<usize, Type> = HashMap::new();
+        for constraint in &store.constraints {
+            // constraint.sub <: constraint.sup
+            // If sup is Var(id) and id is a recursive var (not root), sub is a lower bound.
+            if let Type::Var(id) = &constraint.sup
+                && store.recursive_vars.contains(id)
+                && *id != root_var
+            {
+                let entry = lower_bounds.entry(*id).or_insert(Type::Never);
+                // Tighten: if new bound is wider (supertype of current), use it.
+                if self.assign_type(entry, &constraint.sub).is_ok() {
+                    *entry = constraint.sub.clone();
+                }
+                // Otherwise current is already tighter — keep it.
+            }
+        }
+        // Substitute solved vars into the resolved type.
+        let replacements: Vec<(usize, Type)> = lower_bounds.into_iter().collect();
+        resolved_ty.substitute(&replacements)
+    }
+
     fn apply_expected_type(
         &self,
         env: &TypeEnv<'_>,
@@ -954,15 +1020,27 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         expected_type: Option<&Type>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
-        if let Some(expected_type) = expected_type
-            && let Err(error) =
+        if let Some(expected_type) = expected_type {
+            // If the expected type involves recursive inference variables,
+            // record a constraint instead of checking assignability now.
+            if let Some(store) = &env.constraint_store
+                && expected_type.contains_any_var(&store.borrow().recursive_vars)
+            {
+                store.borrow_mut().constraints.push(SubtypeConstraint {
+                    sub: ty.clone(),
+                    sup: expected_type.clone(),
+                });
+                return Ok(Diagnosed::new(ty, diags));
+            }
+            if let Err(error) =
                 self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
-        {
-            diags.push(InvalidType {
-                module_id: env.module_id()?,
-                error,
-                span,
-            });
+            {
+                diags.push(InvalidType {
+                    module_id: env.module_id()?,
+                    error,
+                    span,
+                });
+            }
         }
 
         Ok(Diagnosed::new(ty, diags))
@@ -1274,6 +1352,38 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if matches!(callee_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
+
+                // Handle unbound recursive type variable used as callee:
+                // generate fresh return-type var and record constraints.
+                if let Type::Var(var_id) = &callee_ty
+                    && let Some(store) = &env.constraint_store
+                    && store.borrow().recursive_vars.contains(var_id)
+                {
+                    let mut arg_types = Vec::new();
+                    for arg in &call_expr.args {
+                        let arg_ty = self.check_expr(env, arg, None)?.unpack(&mut diags);
+                        arg_types.push(arg_ty);
+                    }
+                    let ret_var_id = next_type_id();
+                    let ret_ty = Type::Var(ret_var_id);
+                    {
+                        let mut s = store.borrow_mut();
+                        s.constraints.push(SubtypeConstraint {
+                            sub: callee_ty.clone(),
+                            sup: Type::Fn(FnType {
+                                type_params: vec![],
+                                params: arg_types,
+                                ret: Box::new(ret_ty.clone()),
+                            }),
+                        });
+                        s.recursive_vars.insert(ret_var_id);
+                    }
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), ret_ty, expected_type)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
+                }
+
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
@@ -1605,19 +1715,22 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
                     let mut diags = DiagList::new();
                     let type_id = next_type_id();
-                    let global_env = env.without_locals().with_local(
-                        var.name.as_str(),
-                        decl,
-                        Type::Var(type_id),
-                    );
+                    let store = Rc::new(RefCell::new(ConstraintStore::default()));
+                    store.borrow_mut().recursive_vars.insert(type_id);
+                    let global_env = env
+                        .without_locals()
+                        .with_local(var.name.as_str(), decl, Type::Var(type_id))
+                        .with_constraint_store(store.clone());
                     let resolved_ty = self
                         .check_expr(&global_env, global_expr, None)?
                         .unpack(&mut diags);
+                    let solved_ty =
+                        self.solve_recursive_constraints(type_id, resolved_ty, &store.borrow());
                     let ty = self
                         .apply_expected_type(
                             env,
                             expr.span(),
-                            Type::IsoRec(type_id, Box::new(resolved_ty)),
+                            Type::IsoRec(type_id, Box::new(solved_ty)),
                             expected_type,
                         )?
                         .unpack(&mut diags);
@@ -2015,15 +2128,20 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         let type_id = next_type_id();
-        let env = env.with_local(
-            let_bind.var.name.as_str(),
-            let_bind.var.span(),
-            Type::Var(type_id),
-        );
+        let store = Rc::new(RefCell::new(ConstraintStore::default()));
+        store.borrow_mut().recursive_vars.insert(type_id);
+        let env = env
+            .with_local(
+                let_bind.var.name.as_str(),
+                let_bind.var.span(),
+                Type::Var(type_id),
+            )
+            .with_constraint_store(store.clone());
         let resolved_ty = self
             .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
-        let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
+        let solved_ty = self.solve_recursive_constraints(type_id, resolved_ty, &store.borrow());
+        let ty = Type::IsoRec(type_id, Box::new(solved_ty));
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());
         }

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 thread_local! {
     /// Stack of type parameter IDs currently being displayed. When a generic
@@ -146,6 +146,37 @@ impl Type {
             Type::Record(record) => record.fields.values().any(|ty| ty.contains_var(var_id)),
             Type::Dict(dict) => dict.key.contains_var(var_id) || dict.value.contains_var(var_id),
             Type::IsoRec(id, body) => *id != var_id && body.contains_var(var_id),
+        }
+    }
+
+    /// Returns `true` if this type contains any `Type::Var(id)` where `id` is in `var_ids`.
+    pub fn contains_any_var(&self, var_ids: &HashSet<usize>) -> bool {
+        match self {
+            Type::Var(id) => var_ids.contains(id),
+            Type::Any | Type::Int | Type::Float | Type::Bool | Type::Str | Type::Never => false,
+            Type::Exception(_) => false,
+            Type::Optional(ty) | Type::List(ty) => ty.contains_any_var(var_ids),
+            Type::Fn(fn_ty) => {
+                fn_ty
+                    .type_params
+                    .iter()
+                    .any(|(_, bound)| bound.contains_any_var(var_ids))
+                    || fn_ty.params.iter().any(|p| p.contains_any_var(var_ids))
+                    || fn_ty.ret.contains_any_var(var_ids)
+            }
+            Type::Record(record) => record
+                .fields
+                .values()
+                .any(|ty| ty.contains_any_var(var_ids)),
+            Type::Dict(dict) => {
+                dict.key.contains_any_var(var_ids) || dict.value.contains_any_var(var_ids)
+            }
+            Type::IsoRec(id, body) => {
+                // If the IsoRec binds one of our target vars, it's shadowed
+                let mut filtered = var_ids.clone();
+                filtered.remove(id);
+                body.contains_any_var(&filtered)
+            }
         }
     }
 
