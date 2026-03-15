@@ -387,6 +387,11 @@ impl Formatter {
                 self.write(".");
                 self.write(&access.property.name);
             }
+            Expr::TypeCast(cast) => {
+                self.emit_expr(&cast.expr);
+                self.write(" as ");
+                self.emit_type_expr(&cast.ty);
+            }
             Expr::Extern(ext) => self.emit_extern(ext),
             Expr::Exception(exc) => self.emit_exception(exc),
             Expr::Raise(raise) => {

@@ -47,6 +47,7 @@ pub enum Token<'a> {
     TryKeyword,
     CatchKeyword,
     TypeKeyword,
+    AsKeyword,
     QuestionMark,
     Int(&'a str),
     Float(&'a str),
@@ -386,6 +387,8 @@ impl<'a> Iterator for Lexer<'a> {
                 Token::CatchKeyword
             } else if symbol == "type" {
                 Token::TypeKeyword
+            } else if symbol == "as" {
+                Token::AsKeyword
             } else {
                 // Case B: cursor inside a symbol (not a keyword)
                 if let Some(cursor_pos) = self.cursor.as_ref().map(|c| c.position) {

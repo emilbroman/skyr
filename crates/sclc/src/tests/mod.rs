@@ -467,6 +467,10 @@ test_case!(CryptoRSAWithSize);
 test_case!(CryptoCertReq);
 test_case!(CryptoCertSign);
 
+// Type cast tests
+test_case!(TypeCast);
+test_case!(TypeCastError);
+
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);

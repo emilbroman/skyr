@@ -1,0 +1,1 @@
+TypeCastError/Main 1:9,1:16: invalid type: Str is not assignable to Int

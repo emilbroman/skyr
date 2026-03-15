@@ -1789,6 +1789,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
+            ast::Expr::TypeCast(cast) => {
+                let mut diags = DiagList::new();
+                let target_ty = self.resolve_type_expr(env, &cast.ty).unpack(&mut diags);
+                self.check_expr(env, &cast.expr, Some(&target_ty))?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(target_ty, diags))
+            }
             ast::Expr::PropertyAccess(property_access) => {
                 let mut diags = DiagList::new();
                 let raw_lhs_ty = self
