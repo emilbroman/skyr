@@ -979,37 +979,214 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     /// Solve collected constraints to resolve recursive type variables.
-    /// For each non-root recursive var, finds its lower bound from constraints
-    /// and substitutes it into the resolved type.
+    /// Structurally decomposes constraints to extract bounds on individual vars,
+    /// validates structural compatibility, and substitutes solved types.
     fn solve_recursive_constraints(
         &self,
         root_var: usize,
         resolved_ty: Type,
         store: &ConstraintStore,
+        diags: &mut DiagList,
+        module_id: &crate::ModuleId,
+        span: crate::Span,
     ) -> Type {
         if store.constraints.is_empty() {
             return resolved_ty;
         }
-        // Collect lower bounds for each non-root recursive var.
+        // Pass 1: Collect lower bounds for each non-root recursive var.
         let mut lower_bounds: HashMap<usize, Type> = HashMap::new();
         for constraint in &store.constraints {
-            // constraint.sub <: constraint.sup
-            // If sup is Var(id) and id is a recursive var (not root), sub is a lower bound.
-            if let Type::Var(id) = &constraint.sup
-                && store.recursive_vars.contains(id)
-                && *id != root_var
-            {
-                let entry = lower_bounds.entry(*id).or_insert(Type::Never);
-                // Tighten: if new bound is wider (supertype of current), use it.
-                if self.assign_type(entry, &constraint.sub).is_ok() {
-                    *entry = constraint.sub.clone();
+            self.collect_recursive_bounds(
+                &constraint.sub,
+                &constraint.sup,
+                root_var,
+                &store.recursive_vars,
+                &mut lower_bounds,
+            );
+        }
+        let replacements: Vec<(usize, Type)> = lower_bounds.into_iter().collect();
+
+        // Pass 2: Validate constraints with substituted types.
+        for constraint in &store.constraints {
+            self.validate_recursive_constraint(
+                &constraint.sub,
+                &constraint.sup,
+                root_var,
+                &store.recursive_vars,
+                &replacements,
+                diags,
+                module_id,
+                span,
+            );
+        }
+
+        // Substitute solved vars into the resolved type.
+        resolved_ty.substitute(&replacements)
+    }
+
+    /// Structurally walk a constraint `sub <: sup` to extract bounds on recursive vars.
+    /// When `sup` is a bare recursive var, records `sub` as a lower bound.
+    /// When `sup` is a compound type containing recursive vars, decomposes structurally.
+    fn collect_recursive_bounds(
+        &self,
+        sub: &Type,
+        sup: &Type,
+        root_var: usize,
+        recursive_vars: &HashSet<usize>,
+        lower_bounds: &mut HashMap<usize, Type>,
+    ) {
+        // Skip constraints involving the root var on either side.
+        if let Type::Var(id) = sub
+            && *id == root_var
+        {
+            return;
+        }
+        if let Type::Var(id) = sup
+            && *id == root_var
+        {
+            return;
+        }
+
+        // If sup is a bare recursive var, record the lower bound.
+        if let Type::Var(id) = sup
+            && recursive_vars.contains(id)
+        {
+            let entry = lower_bounds.entry(*id).or_insert(Type::Never);
+            if self.assign_type(entry, sub).is_ok() {
+                *entry = sub.clone();
+            }
+            return;
+        }
+
+        // Structurally decompose matching type constructors.
+        match (sub, sup) {
+            (Type::List(sub_inner), Type::List(sup_inner)) => {
+                self.collect_recursive_bounds(
+                    sub_inner,
+                    sup_inner,
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+            }
+            (Type::Optional(sub_inner), Type::Optional(sup_inner)) => {
+                self.collect_recursive_bounds(
+                    sub_inner,
+                    sup_inner,
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+            }
+            (_, Type::Optional(sup_inner)) => {
+                self.collect_recursive_bounds(
+                    sub,
+                    sup_inner,
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+            }
+            (Type::Fn(sub_fn), Type::Fn(sup_fn)) if sub_fn.params.len() == sup_fn.params.len() => {
+                for (sub_p, sup_p) in sub_fn.params.iter().zip(sup_fn.params.iter()) {
+                    self.collect_recursive_bounds(
+                        sup_p,
+                        sub_p,
+                        root_var,
+                        recursive_vars,
+                        lower_bounds,
+                    );
                 }
-                // Otherwise current is already tighter — keep it.
+                self.collect_recursive_bounds(
+                    sub_fn.ret.as_ref(),
+                    sup_fn.ret.as_ref(),
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+            }
+            (Type::Record(sub_rec), Type::Record(sup_rec)) => {
+                for (name, sup_field) in sup_rec.iter() {
+                    if let Some(sub_field) = sub_rec.get(name) {
+                        self.collect_recursive_bounds(
+                            sub_field,
+                            sup_field,
+                            root_var,
+                            recursive_vars,
+                            lower_bounds,
+                        );
+                    }
+                }
+            }
+            (Type::Dict(sub_dict), Type::Dict(sup_dict)) => {
+                self.collect_recursive_bounds(
+                    sub_dict.key.as_ref(),
+                    sup_dict.key.as_ref(),
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+                self.collect_recursive_bounds(
+                    sub_dict.value.as_ref(),
+                    sup_dict.value.as_ref(),
+                    root_var,
+                    recursive_vars,
+                    lower_bounds,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Validate a constraint after bounds have been solved by substituting known
+    /// solutions into both sides and checking compatibility.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_recursive_constraint(
+        &self,
+        sub: &Type,
+        sup: &Type,
+        root_var: usize,
+        recursive_vars: &HashSet<usize>,
+        replacements: &[(usize, Type)],
+        diags: &mut DiagList,
+        module_id: &crate::ModuleId,
+        span: crate::Span,
+    ) {
+        // Skip constraints involving the root var.
+        if let Type::Var(id) = sub
+            && *id == root_var
+        {
+            return;
+        }
+        // Skip bare recursive var as sup — these are bound-collection constraints.
+        if let Type::Var(id) = sup
+            && (*id == root_var || recursive_vars.contains(id))
+        {
+            return;
+        }
+
+        // If sup doesn't contain any recursive vars, it's a concrete constraint.
+        if !sup.contains_any_var(recursive_vars) {
+            // No recursive vars — should have been checked normally.
+            return;
+        }
+
+        // Substitute solved bounds and replace unsolved recursive vars with Any.
+        let mut full_replacements: Vec<(usize, Type)> = replacements.to_vec();
+        for &var_id in recursive_vars {
+            if var_id != root_var && !replacements.iter().any(|(id, _)| *id == var_id) {
+                full_replacements.push((var_id, Type::Any));
             }
         }
-        // Substitute solved vars into the resolved type.
-        let replacements: Vec<(usize, Type)> = lower_bounds.into_iter().collect();
-        resolved_ty.substitute(&replacements)
+        let sub_solved = sub.substitute(&full_replacements);
+        let sup_solved = sup.substitute(&full_replacements);
+        if self.assign_type(&sup_solved, &sub_solved).is_err() {
+            diags.push(InvalidType {
+                module_id: module_id.clone(),
+                error: TypeError::new(TypeIssue::Mismatch(sup_solved, sub_solved)),
+                span,
+            });
+        }
     }
 
     fn apply_expected_type(
@@ -1023,6 +1200,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         if let Some(expected_type) = expected_type {
             // If the expected type involves recursive inference variables,
             // record a constraint instead of checking assignability now.
+            // The constraint solver will validate structural compatibility later.
             if let Some(store) = &env.constraint_store
                 && expected_type.contains_any_var(&store.borrow().recursive_vars)
             {
@@ -1724,8 +1902,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     let resolved_ty = self
                         .check_expr(&global_env, global_expr, None)?
                         .unpack(&mut diags);
-                    let solved_ty =
-                        self.solve_recursive_constraints(type_id, resolved_ty, &store.borrow());
+                    let solved_ty = self.solve_recursive_constraints(
+                        type_id,
+                        resolved_ty,
+                        &store.borrow(),
+                        &mut diags,
+                        &env.module_id()?,
+                        expr.span(),
+                    );
                     let ty = self
                         .apply_expected_type(
                             env,
@@ -2140,7 +2324,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let resolved_ty = self
             .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
-        let solved_ty = self.solve_recursive_constraints(type_id, resolved_ty, &store.borrow());
+        let solved_ty = self.solve_recursive_constraints(
+            type_id,
+            resolved_ty,
+            &store.borrow(),
+            &mut diags,
+            &env.module_id()?,
+            let_bind.var.span(),
+        );
         let ty = Type::IsoRec(type_id, Box::new(solved_ty));
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());

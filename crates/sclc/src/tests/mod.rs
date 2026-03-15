@@ -478,3 +478,4 @@ test_case!(RecursiveFnList);
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);
+test_case!(DiagRecursiveFnMismatch);
