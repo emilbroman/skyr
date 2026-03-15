@@ -839,6 +839,7 @@ impl Eval {
                 }
                 Ok(Self::with_dependencies(Value::Str(out), dependencies))
             }
+            ast::Expr::TypeCast(cast) => self.eval_expr(env, &cast.expr),
             ast::Expr::PropertyAccess(property_access) => {
                 let value = self.eval_expr(env, property_access.expr.as_ref())?;
                 match value.value {

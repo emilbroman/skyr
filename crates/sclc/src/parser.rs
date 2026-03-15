@@ -11,8 +11,8 @@ use crate::{
     ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
     ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
     RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
-    TypeApplicationExpr, TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp,
-    Var,
+    TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr,
+    UnaryExpr, UnaryOp, Var,
 };
 
 #[derive(Error, Debug)]
@@ -69,6 +69,7 @@ fn flush_skip(skip_span: &mut Option<Span>, diags: &mut DiagList, module_id: &Mo
 enum Postfix {
     Property(Loc<Var>),
     Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
+    TypeCast(Loc<TypeExpr>),
 }
 
 enum TypeExprSuffix {
@@ -579,6 +580,14 @@ peg::parser! {
                                 args,
                             }), Span::new(start, end))
                         }
+                        Postfix::TypeCast(ty) => {
+                            let start = expr.span().start();
+                            let end = ty.span().end();
+                            Loc::new(Expr::TypeCast(TypeCastExpr {
+                                expr: Box::new(expr),
+                                ty,
+                            }), Span::new(start, end))
+                        }
                     };
                 }
                 expr
@@ -588,6 +597,7 @@ peg::parser! {
             = dot() property:var() { Postfix::Property(property) }
             / type_args:type_args() open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(type_args, args, close_paren_span) }
             / open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(vec![], args, close_paren_span) }
+            / as_keyword() ty:type_expr() { Postfix::TypeCast(ty) }
 
         rule type_args() -> Vec<Loc<TypeExpr>>
             = less() args:(type_expr() ++ comma()) comma()? greater() { args }
@@ -940,6 +950,12 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::TypeKeyword)] { token.span() }
             }
             / expected!("type keyword")
+
+        rule as_keyword() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::AsKeyword)] { token.span() }
+            }
+            / expected!("as keyword")
 
         rule equals() -> Span
             = quiet!{

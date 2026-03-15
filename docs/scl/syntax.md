@@ -210,17 +210,29 @@ true && false   // false
 true || false   // true
 ```
 
+### Type Cast Operator
+
+The `as` operator casts an expression to a target type:
+
+```scl
+nil as Int?
+value as Str
+```
+
+The `as` operator has the highest precedence, binding tighter than any binary operator. This means `1 + x as Int` casts only `x`, not `1 + x`. Use parentheses to cast a compound expression: `(1 + x) as Int`.
+
 ### Operator Precedence
 
 From highest to lowest:
 
-1. Unary: `-x`
-2. Multiplicative: `*`, `/`
-3. Additive: `+`, `-`
-4. Comparison: `<`, `<=`, `>`, `>=`
-5. Equality: `==`, `!=`
-6. Logical AND: `&&`
-7. Logical OR: `||`
+1. Postfix: `.property`, `(args)`, `as Type`
+2. Unary: `-x`
+3. Multiplicative: `*`, `/`
+4. Additive: `+`, `-`
+5. Comparison: `<`, `<=`, `>`, `>=`
+6. Equality: `==`, `!=`
+7. Logical AND: `&&`
+8. Logical OR: `||`
 
 All binary operators are left-associative.
 
