@@ -471,6 +471,9 @@ test_case!(CryptoCertSign);
 test_case!(TypeCast);
 test_case!(TypeCastError);
 
+// Recursive globals
+test_case!(RecursiveGlobalFn);
+
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);

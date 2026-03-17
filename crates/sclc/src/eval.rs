@@ -189,11 +189,15 @@ pub struct FnEnv {
     pub module_id: crate::ModuleId,
     pub captures: HashMap<String, TrackedValue>,
     pub parameters: Vec<String>,
+    /// When set, the function is recursive and should be bound under this name
+    /// in its own call environment so that recursive calls resolve correctly.
+    pub self_name: Option<String>,
 }
 
 impl FnEnv {
     pub fn as_eval_env<'a>(
         &'a self,
+        fn_value: &crate::FnValue,
         args: &[TrackedValue],
         stack: Option<&'a StackFrame<'a>>,
     ) -> EvalEnv<'a> {
@@ -202,6 +206,13 @@ impl FnEnv {
 
         for (name, value) in &self.captures {
             env = env.with_local(name.as_str(), value.clone());
+        }
+        // Bind the function itself as a local for recursive calls
+        if let Some(self_name) = &self.self_name {
+            env = env.with_local(
+                self_name.as_str(),
+                Eval::tracked(crate::Value::Fn(fn_value.clone())),
+            );
         }
         for (name, value) in self.parameters.iter().zip(args.iter()) {
             env = env.with_local(name.as_str(), value.clone());
@@ -618,6 +629,7 @@ impl Eval {
                             .iter()
                             .map(|param| param.var.name.clone())
                             .collect(),
+                        self_name: None,
                     },
                     body: *fn_expr.body.clone(),
                 })))
@@ -640,7 +652,7 @@ impl Eval {
                 };
 
                 match callee.value {
-                    Value::Fn(function) => {
+                    Value::Fn(ref function) => {
                         let call_module_id = env.module_id.cloned().unwrap_or_default();
                         let frame = StackFrame {
                             module_id: call_module_id,
@@ -648,7 +660,7 @@ impl Eval {
                             name: frame_name,
                             parent: env.stack,
                         };
-                        let call_env = function.env.as_eval_env(&args, Some(&frame));
+                        let call_env = function.env.as_eval_env(function, &args, Some(&frame));
                         self.eval_expr(&call_env, &function.body)
                             .map(|value| value.with_dependencies(callee_dependencies))
                     }
@@ -966,8 +978,11 @@ impl Eval {
                                         name: "[fn]".to_string(),
                                         parent: env.stack,
                                     };
-                                    let call_env =
-                                        function.env.as_eval_env(&[arg_value], Some(&frame));
+                                    let call_env = function.env.as_eval_env(
+                                        &function,
+                                        &[arg_value],
+                                        Some(&frame),
+                                    );
                                     let call_result = self.eval_expr(&call_env, &function.body)?;
                                     match call_result.value {
                                         Value::Exception(exc) => {
@@ -1262,6 +1277,44 @@ impl Eval {
                 parent: env.stack,
             };
             let global_env = env.without_locals().with_stack_frame(&frame)?;
+            // For recursive globals whose body is a function expression,
+            // build the closure without capturing the self-reference. Instead,
+            // set `self_name` so that the function binds itself as a local at
+            // each call site, enabling recursion to arbitrary depth.
+            if let crate::ast::Expr::Fn(fn_expr) = global_expr.as_ref() {
+                let free_vars = global_expr.as_ref().free_vars();
+                if free_vars.contains(name) {
+                    let fn_module_id = global_env.module_id()?;
+                    let parameters: Vec<String> = fn_expr
+                        .params
+                        .iter()
+                        .map(|param| param.var.name.clone())
+                        .collect();
+                    let body = *fn_expr.body.clone();
+
+                    // Evaluate all captures except the self-reference
+                    let mut captures = HashMap::new();
+                    for free_var in &free_vars {
+                        if *free_var != name {
+                            captures.insert(
+                                free_var.to_string(),
+                                self.eval_var_name(&global_env, free_var)?,
+                            );
+                        }
+                    }
+
+                    let fn_val = crate::FnValue {
+                        env: FnEnv {
+                            module_id: fn_module_id,
+                            captures,
+                            parameters,
+                            self_name: Some(name.to_string()),
+                        },
+                        body,
+                    };
+                    return Ok(Self::tracked(crate::Value::Fn(fn_val)));
+                }
+            }
             return self.eval_expr(&global_env, global_expr);
         }
         if let Some((target_module_id, import_file_mod)) = env.lookup_import(name) {
@@ -1467,6 +1520,7 @@ mod tests {
                 module_id: module_id.clone(),
                 captures: std::collections::HashMap::new(),
                 parameters: vec!["x".to_string()],
+                self_name: None,
             },
             body: parse_expr("123", &module_id),
         });

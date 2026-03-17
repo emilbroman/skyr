@@ -1,0 +1,7 @@
+let test = fn(b: Bool)
+    if (b)
+        "hello"
+    else
+        test(true)
+
+export let x = test(false)
