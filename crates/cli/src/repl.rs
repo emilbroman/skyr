@@ -372,11 +372,18 @@ impl Repl {
         let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
         let value = self.eval.eval_file_mod(&eval_env, &file_mod)?;
 
-        helper
-            .state
-            .borrow_mut()
-            .bindings
-            .insert(alias, (ty, value));
+        // Extract type-level exports so that imported types are available in subsequent lines.
+        let type_exports = checker
+            .type_level_exports(&type_env, &file_mod)
+            .into_inner();
+
+        let mut state = helper.state.borrow_mut();
+        state.bindings.insert(alias.clone(), (ty, value));
+        if type_exports.iter().next().is_some() {
+            state
+                .type_defs
+                .insert(alias, sclc::Type::Record(type_exports));
+        }
 
         Ok(())
     }

@@ -1192,7 +1192,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     /// Compute the type-level exports of a module (from `export type` declarations).
-    fn type_level_exports(
+    pub fn type_level_exports(
         &self,
         env: &TypeEnv<'_>,
         file_mod: &ast::FileMod,
