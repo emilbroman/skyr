@@ -1110,15 +1110,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         expected_type: Option<&Type>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
-        if let Some(expected_type) = expected_type
-            && let Err(error) =
+        if let Some(expected_type) = expected_type {
+            // If the actual type is a free variable, constrain it to the
+            // expected type rather than reporting an error. This allows
+            // expressions like `if (b) 123 else test(false)` to propagate
+            // the concrete branch type into the free-variable branch.
+            if let Type::Var(id) = &ty
+                && env.is_free_var(*id)
+            {
+                if let Some(fv) = &env.free_vars {
+                    fv.borrow_mut().constrain(*id, expected_type.clone());
+                }
+            } else if let Err(error) =
                 self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
-        {
-            diags.push(InvalidType {
-                module_id: env.module_id()?,
-                error,
-                span,
-            });
+            {
+                diags.push(InvalidType {
+                    module_id: env.module_id()?,
+                    error,
+                    span,
+                });
+            }
         }
 
         Ok(Diagnosed::new(ty, diags))
@@ -3815,6 +3826,20 @@ mod tests {
             ret_solution.map(|(_, ty)| ty),
             Some(&Type::Str),
             "return type var should resolve to Str via unification"
+        );
+    }
+
+    #[test]
+    fn recursive_global_fn_if_branches_constrain_return() {
+        // A recursive function whose return type is inferred from the non-recursive
+        // branch should not produce type errors on the recursive call branch.
+        let diagnosed = check_module(
+            "let test = fn(b: Bool) if (b) 123 else test(false)\nexport let v = test(true)",
+        );
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
         );
     }
 }
