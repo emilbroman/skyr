@@ -5,10 +5,11 @@ use std::{
 
 use thiserror::Error;
 
-use crate::std::StdSourceRepo;
 use crate::{
-    AnySource, Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package, SourceRepo,
+    AnySource, Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package,
+    SourceRepo, Value,
 };
+use crate::{TrackedValue, std::StdSourceRepo};
 
 #[derive(Clone, Default)]
 pub struct Program<S> {
@@ -179,7 +180,7 @@ impl<S: SourceRepo> Program<S> {
         &mut self,
         module_id: &ModuleId,
         eval: &crate::Eval,
-    ) -> Result<Diagnosed<()>, EvaluateError> {
+    ) -> Result<Diagnosed<TrackedValue>, EvaluateError> {
         let mut diags = DiagList::new();
 
         let Some(package_name) = self.package_name_for_import(module_id) else {
@@ -210,7 +211,7 @@ impl<S: SourceRepo> Program<S> {
                 .unpack(&mut diags);
             match open_result {
                 Some(file_mod) => file_mod.clone(),
-                None => return Ok(Diagnosed::new((), diags)),
+                None => return Ok(Diagnosed::new(TrackedValue::new(Value::Nil), diags)),
             }
         };
         let imports = self.find_imports(&file_mod);
@@ -218,9 +219,10 @@ impl<S: SourceRepo> Program<S> {
         let env = crate::EvalEnv::new()
             .with_module_id(module_id)
             .with_imports(&imports);
-        eval.eval_file_mod(&env, &file_mod)
+        let result = eval
+            .eval_file_mod(&env, &file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
-        Ok(Diagnosed::new((), diags))
+        Ok(Diagnosed::new(result, diags))
     }
 
     fn find_imports<'a>(
