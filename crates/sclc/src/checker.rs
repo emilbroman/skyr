@@ -1,6 +1,8 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Component;
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
@@ -23,6 +25,127 @@ impl Variance {
     }
 }
 
+/// Accumulates lower-bound constraints for free type variables during recursive
+/// global checking. Shared (via `Rc<RefCell<…>>`) across all derived environments
+/// while checking a single global's body.
+#[derive(Default)]
+struct FreeVarConstraints {
+    /// Maps free var ID → accumulated lower bound.
+    /// Starts as `Type::Never` and is tightened upward as constraints arrive.
+    lower_bounds: HashMap<usize, Type>,
+}
+
+impl FreeVarConstraints {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a new free variable with initial lower bound `Never`.
+    fn register(&mut self, id: usize) {
+        self.lower_bounds.insert(id, Type::Never);
+    }
+
+    /// Returns true if `id` is a tracked free variable.
+    fn contains(&self, id: usize) -> bool {
+        self.lower_bounds.contains_key(&id)
+    }
+
+    /// Tighten the lower bound for a free variable by replacing `Never` with
+    /// the first concrete constraint. Subsequent constraints are merged
+    /// structurally when possible (e.g. record types are merged field-by-field).
+    fn constrain(&mut self, id: usize, new_lower: Type) {
+        let entry = self
+            .lower_bounds
+            .get_mut(&id)
+            .expect("free var must be registered");
+        if matches!(entry, Type::Never) {
+            *entry = new_lower;
+        } else if !matches!(new_lower, Type::Never) {
+            // Attempt a structural merge for records: union the fields.
+            match (entry, &new_lower) {
+                (Type::Record(existing), Type::Record(new_rec)) => {
+                    for (name, ty) in new_rec.iter() {
+                        if existing.get(name).is_none() {
+                            existing.insert(name.clone(), ty.clone());
+                        }
+                    }
+                }
+                _ => {
+                    // For non-record types, keep the first constraint.
+                    // A more sophisticated system would compute a join.
+                }
+            }
+        }
+    }
+
+    /// Solve constraints given that `primary_id` equals `body_type`.
+    ///
+    /// For each secondary free variable that appears in a constraint, try to
+    /// find its concrete type by matching the constraint against the body type.
+    /// Then produce substitution pairs. For the primary variable, if its lower
+    /// bound references itself, wrap in IsoRec.
+    fn solve(&self, primary_id: usize, body_type: &Type) -> Vec<(usize, Type)> {
+        let mut solutions: HashMap<usize, Type> = HashMap::new();
+
+        // The primary free variable equals the body type.
+        // Walk the constraints for the primary and unify secondary vars.
+        if let Some(constraint) = self.lower_bounds.get(&primary_id) {
+            Self::unify_constraint(constraint, body_type, &mut solutions);
+        }
+
+        // Build the substitution list
+        self.lower_bounds
+            .iter()
+            .map(|(id, bound)| {
+                if *id == primary_id {
+                    // Primary: use Never (it will be wrapped in IsoRec by the caller)
+                    (*id, Type::Never)
+                } else if let Some(solved) = solutions.get(id) {
+                    (*id, solved.clone())
+                } else if matches!(bound, Type::Never) {
+                    (*id, Type::Never)
+                } else {
+                    (*id, bound.clone())
+                }
+            })
+            .collect()
+    }
+
+    /// Walk a constraint type and a concrete type in parallel, recording
+    /// solutions for free variables found in the constraint.
+    fn unify_constraint(constraint: &Type, concrete: &Type, solutions: &mut HashMap<usize, Type>) {
+        match (constraint, concrete) {
+            (Type::Var(id), _) => {
+                solutions.entry(*id).or_insert_with(|| concrete.clone());
+            }
+            (Type::Record(c_rec), Type::Record(b_rec)) => {
+                for (name, c_field) in c_rec.iter() {
+                    if let Some(b_field) = b_rec.get(name) {
+                        Self::unify_constraint(c_field, b_field, solutions);
+                    }
+                }
+            }
+            (Type::Fn(c_fn), Type::Fn(b_fn)) if c_fn.params.len() == b_fn.params.len() => {
+                for (cp, bp) in c_fn.params.iter().zip(b_fn.params.iter()) {
+                    Self::unify_constraint(cp, bp, solutions);
+                }
+                Self::unify_constraint(c_fn.ret.as_ref(), b_fn.ret.as_ref(), solutions);
+            }
+            (Type::List(c_inner), Type::List(b_inner)) => {
+                Self::unify_constraint(c_inner, b_inner, solutions);
+            }
+            (Type::Optional(c_inner), Type::Optional(b_inner)) => {
+                Self::unify_constraint(c_inner, b_inner, solutions);
+            }
+            (Type::Dict(c_dict), Type::Dict(b_dict)) => {
+                Self::unify_constraint(c_dict.key.as_ref(), b_dict.key.as_ref(), solutions);
+                Self::unify_constraint(c_dict.value.as_ref(), b_dict.value.as_ref(), solutions);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
@@ -35,6 +158,9 @@ pub struct TypeEnv<'a> {
     type_level: HashMap<String, Type>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
     cursor: Option<crate::Cursor>,
+    /// Free variable constraints for recursive global checking.
+    /// When set, free variables encountered during checking accumulate constraints here.
+    free_vars: Option<Rc<RefCell<FreeVarConstraints>>>,
 }
 
 impl<'a> Default for TypeEnv<'a> {
@@ -54,6 +180,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: HashMap::new(),
             type_level: HashMap::new(),
             cursor: None,
+            free_vars: None,
         }
     }
 
@@ -67,6 +194,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
         }
     }
 
@@ -83,6 +211,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
         }
     }
 
@@ -99,6 +228,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
         }
     }
 
@@ -112,6 +242,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
         }
     }
 
@@ -145,6 +276,23 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    /// Create a derived environment with a free variable for recursive global
+    /// checking. The free variable is added to the shared constraint set and
+    /// bound as a local so that name resolution finds it.
+    fn with_free_var(
+        &self,
+        name: &'a str,
+        span: crate::Span,
+        type_id: usize,
+        constraints: Rc<RefCell<FreeVarConstraints>>,
+    ) -> Self {
+        constraints.borrow_mut().register(type_id);
+        let mut env = self.inner();
+        env.locals.insert(name, (span, Type::Var(type_id)));
+        env.free_vars = Some(constraints);
+        env
+    }
+
     /// If `ty` is a type variable with a known upper bound, return a reference
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
@@ -154,6 +302,13 @@ impl<'a> TypeEnv<'a> {
             return bound;
         }
         ty
+    }
+
+    /// Check if a type variable ID is a free variable in the current constraint set.
+    fn is_free_var(&self, id: usize) -> bool {
+        self.free_vars
+            .as_ref()
+            .is_some_and(|fv| fv.borrow().contains(id))
     }
 
     pub fn without_locals(&self) -> Self {
@@ -166,6 +321,7 @@ impl<'a> TypeEnv<'a> {
             type_var_bounds: self.type_var_bounds.clone(),
             type_level: self.type_level.clone(),
             cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
         }
     }
 
@@ -1274,6 +1430,34 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if matches!(callee_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
+
+                // If the callee is a free type variable, constrain it to be a
+                // function type derived from the arguments.
+                if let Type::Var(callee_var_id) = &raw_callee_ty
+                    && env.is_free_var(*callee_var_id)
+                {
+                    let mut arg_types = Vec::new();
+                    for arg in &call_expr.args {
+                        let arg_ty = self.check_expr(env, arg, None)?.unpack(&mut diags);
+                        arg_types.push(arg_ty);
+                    }
+                    let ret_id = next_type_id();
+                    let ret_var = Type::Var(ret_id);
+                    if let Some(fv) = &env.free_vars {
+                        fv.borrow_mut().register(ret_id);
+                        let fn_constraint = Type::Fn(FnType {
+                            type_params: vec![],
+                            params: arg_types,
+                            ret: Box::new(ret_var.clone()),
+                        });
+                        fv.borrow_mut().constrain(*callee_var_id, fn_constraint);
+                    }
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), ret_var, expected_type)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
+                }
+
                 let Type::Fn(fn_ty) = callee_ty else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
@@ -1605,14 +1789,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
                     let mut diags = DiagList::new();
                     let type_id = next_type_id();
-                    let global_env = env.without_locals().with_local(
+                    let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
+                    let global_env = env.without_locals().with_free_var(
                         var.name.as_str(),
                         decl,
-                        Type::Var(type_id),
+                        type_id,
+                        constraints.clone(),
                     );
                     let resolved_ty = self
                         .check_expr(&global_env, global_expr, None)?
                         .unpack(&mut diags);
+                    // Solve free variable constraints and substitute into the body type
+                    let solved = constraints.borrow().solve(type_id, &resolved_ty);
+                    let resolved_ty = resolved_ty.substitute(&solved);
                     let ty = self
                         .apply_expected_type(
                             env,
@@ -1806,6 +1995,29 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if matches!(lhs_ty, Type::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
+
+                // If the LHS is a free type variable, constrain it to be a
+                // record containing the accessed member.
+                if let Type::Var(lhs_var_id) = &raw_lhs_ty
+                    && env.is_free_var(*lhs_var_id)
+                {
+                    let member_id = next_type_id();
+                    let member_var = Type::Var(member_id);
+                    if let Some(fv) = &env.free_vars {
+                        fv.borrow_mut().register(member_id);
+                        let mut record = RecordType::default();
+                        record.insert(property_access.property.name.clone(), member_var.clone());
+                        fv.borrow_mut().constrain(*lhs_var_id, Type::Record(record));
+                    }
+                    if let Some((cursor, _)) = &property_access.property.cursor {
+                        cursor.set_type(member_var.clone());
+                    }
+                    let ty = self
+                        .apply_expected_type(env, expr.span(), member_var, expected_type)?
+                        .unpack(&mut diags);
+                    return Ok(Diagnosed::new(ty, diags));
+                }
+
                 if let Some((cursor, offset)) = &property_access.property.cursor {
                     let prefix = &property_access.property.name[..*offset];
                     if let Type::Record(record_ty) = &lhs_ty {
@@ -2015,14 +2227,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         let type_id = next_type_id();
-        let env = env.with_local(
+        let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
+        let env = env.with_free_var(
             let_bind.var.name.as_str(),
             let_bind.var.span(),
-            Type::Var(type_id),
+            type_id,
+            constraints.clone(),
         );
         let resolved_ty = self
             .check_expr(&env, let_bind.expr.as_ref(), None)?
             .unpack(&mut diags);
+        // Solve free variable constraints and substitute into the body type
+        let solved = constraints.borrow().solve(type_id, &resolved_ty);
+        let resolved_ty = resolved_ty.substitute(&solved);
         let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());
@@ -3475,6 +3692,129 @@ mod tests {
         assert!(
             diagnosed.diags().has_errors(),
             "expected error for applying args to non-generic"
+        );
+    }
+
+    // --- Recursive globals with free variable constraints ---
+
+    #[test]
+    fn recursive_global_record_member_access_no_error() {
+        // Accessing a member of a recursive global within its own body should
+        // not produce "undefined member" errors.
+        let diagnosed =
+            check_module("let node = { value: 1, child: node }\nexport let v = node.value");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type");
+        };
+        // The exported `v` should be Int (possibly wrapped in IsoRec)
+        let v_ty = exports.get("v").expect("expected 'v' export").unfold();
+        assert_eq!(v_ty, Type::Int);
+    }
+
+    #[test]
+    fn recursive_global_self_reference_produces_isorec() {
+        // A recursive global that references itself should produce an IsoRec type.
+        let diagnosed = check_module("export let node = { value: 1, child: node }");
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "unexpected errors: {:?}",
+            diagnosed.diags()
+        );
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type");
+        };
+        let node_ty = exports.get("node").expect("expected 'node' export");
+        // Should be IsoRec since `node` references itself
+        assert!(
+            matches!(node_ty, Type::IsoRec(_, _)),
+            "expected IsoRec type, got: {node_ty}"
+        );
+    }
+
+    #[test]
+    fn recursive_global_non_recursive_body_simplifies() {
+        // A global that doesn't reference itself should not have a meaningful IsoRec.
+        let diagnosed = check_module("export let x = 42");
+        assert!(!diagnosed.diags().has_errors());
+        let Type::Record(exports) = diagnosed.as_ref() else {
+            panic!("expected record type");
+        };
+        let x_ty = exports.get("x").expect("expected 'x' export");
+        // Should simplify to Int (IsoRec with unused var displays as just the body)
+        let unfolded = x_ty.unfold();
+        assert_eq!(unfolded, Type::Int);
+    }
+
+    #[test]
+    fn free_var_constraints_solve_basic() {
+        // Direct unit test for the constraint solving mechanism.
+        let mut constraints = super::FreeVarConstraints::new();
+        let primary_id = 100;
+        let member_id = 101;
+        constraints.register(primary_id);
+        constraints.register(member_id);
+
+        // Constrain primary to have a field "value" of type Var(member_id)
+        let mut record = RecordType::default();
+        record.insert("value".into(), Type::Var(member_id));
+        constraints.constrain(primary_id, Type::Record(record));
+
+        // Body type: { value: Int, child: Var(primary_id) }
+        let mut body_record = RecordType::default();
+        body_record.insert("value".into(), Type::Int);
+        body_record.insert("child".into(), Type::Var(primary_id));
+        let body_type = Type::Record(body_record);
+
+        let solved = constraints.solve(primary_id, &body_type);
+
+        // member_id should resolve to Int
+        let member_solution = solved.iter().find(|(id, _)| *id == member_id);
+        assert_eq!(
+            member_solution.map(|(_, ty)| ty),
+            Some(&Type::Int),
+            "member_id should resolve to Int via unification"
+        );
+    }
+
+    #[test]
+    fn free_var_constraints_solve_fn_return() {
+        // Test that calling a free var as a function produces solvable constraints.
+        let mut constraints = super::FreeVarConstraints::new();
+        let primary_id = 200;
+        let ret_id = 201;
+        constraints.register(primary_id);
+        constraints.register(ret_id);
+
+        // Constrain primary to be fn(Int) Var(ret_id)
+        constraints.constrain(
+            primary_id,
+            Type::Fn(FnType {
+                type_params: vec![],
+                params: vec![Type::Int],
+                ret: Box::new(Type::Var(ret_id)),
+            }),
+        );
+
+        // Body type: fn(x: Int) Str (a function from Int to Str)
+        let body_type = Type::Fn(FnType {
+            type_params: vec![],
+            params: vec![Type::Int],
+            ret: Box::new(Type::Str),
+        });
+
+        let solved = constraints.solve(primary_id, &body_type);
+
+        // ret_id should resolve to Str
+        let ret_solution = solved.iter().find(|(id, _)| *id == ret_id);
+        assert_eq!(
+            ret_solution.map(|(_, ty)| ty),
+            Some(&Type::Str),
+            "return type var should resolve to Str via unification"
         );
     }
 }
