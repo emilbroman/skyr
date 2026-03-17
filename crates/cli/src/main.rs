@@ -9,6 +9,7 @@ mod lsp;
 mod output;
 mod repl;
 mod repo;
+mod resource;
 mod run;
 mod signin;
 mod signup;
@@ -37,6 +38,7 @@ enum Command {
     Whoami(whoami::WhoamiArgs),
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
+    Resources(resource::ResourcesArgs),
     Fmt(fmt::FmtArgs),
 }
 
@@ -75,6 +77,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Deployments(args) => {
             deployment::run_deployments(args, program.format).await?;
+        }
+        Command::Resources(args) => {
+            resource::run_resources(args, program.format).await?;
         }
         Command::Fmt(args) => {
             fmt::run_fmt(args)?;

@@ -1,0 +1,17 @@
+query ListRepositoryResources {
+  repositories {
+    name
+    environments {
+      name
+      resources {
+        type
+        id
+        inputs
+        outputs
+        owner {
+          id
+        }
+      }
+    }
+  }
+}
