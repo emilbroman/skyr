@@ -7,9 +7,9 @@ This file contains guidance for AI agents working on the Skyr codebase. For arch
 Always run formatting and linting before committing:
 
 ```sh
-cargo fmt
 cargo clippy --all-targets
 cargo test
+cargo fmt
 ```
 
 Fix any warnings or errors before pushing.
