@@ -388,8 +388,8 @@ impl Worker {
                     for resource in &owned_resources {
                         self.log_publisher
                             .info(format!(
-                                "{}.{} will stick around",
-                                resource.resource_type, resource.name
+                                "{} will stick around",
+                                ids::ResourceId::new(&resource.resource_type, &resource.name)
                             ))
                             .await;
                     }
@@ -553,8 +553,9 @@ impl Worker {
 
                                     log_publisher
                                         .error(format!(
-                                            "Failed to enqueue CREATE {}.{}: {}",
-                                            id.ty, id.name, error
+                                            "Failed to enqueue CREATE {}: {}",
+                                            ids::ResourceId::new(&id.ty, &id.name),
+                                            error
                                         ))
                                         .await;
 
@@ -605,8 +606,9 @@ impl Worker {
 
                                     log_publisher
                                         .error(format!(
-                                            "Failed to enqueue UPDATE {}.{}: {}",
-                                            id.ty, id.name, error
+                                            "Failed to enqueue UPDATE {}: {}",
+                                            ids::ResourceId::new(&id.ty, &id.name),
+                                            error
                                         ))
                                         .await;
                                     continue;
@@ -650,8 +652,9 @@ impl Worker {
 
                                         log_publisher
                                             .error(format!(
-                                                "Failed to enqueue ADOPT {}.{}: {}",
-                                                id.ty, id.name, error
+                                                "Failed to enqueue ADOPT {}: {}",
+                                                ids::ResourceId::new(&id.ty, &id.name),
+                                                error
                                             ))
                                             .await;
                                         continue;
@@ -677,8 +680,9 @@ impl Worker {
 
                                         log_publisher
                                             .error(format!(
-                                                "Failed to enqueue CHECK {}.{}: {}",
-                                                id.ty, id.name, error
+                                                "Failed to enqueue CHECK {}: {}",
+                                                ids::ResourceId::new(&id.ty, &id.name),
+                                                error
                                             ))
                                             .await;
                                         continue;

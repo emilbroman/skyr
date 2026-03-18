@@ -392,9 +392,11 @@ async fn handle_create(
         &dep_qid,
         Severity::Info,
         format!(
-            "Created {}.{} for {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Created {} for {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.deployment_id[..8]
         ),
     )
@@ -546,9 +548,11 @@ async fn handle_destroy(
         &dep_qid,
         Severity::Info,
         format!(
-            "Destroyed {}.{} for {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Destroyed {} for {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.deployment_id[..8]
         ),
     )
@@ -826,9 +830,11 @@ async fn handle_adopt(
         &from_dep_qid,
         Severity::Info,
         format!(
-            "Relinquished {}.{} to {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Relinquished {} to {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.to_deployment_id[..8]
         ),
     )
@@ -838,9 +844,11 @@ async fn handle_adopt(
         &to_dep_qid,
         Severity::Info,
         format!(
-            "Adopted {}.{} from {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Adopted {} from {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.from_deployment_id[..8]
         ),
     )
@@ -883,9 +891,11 @@ async fn handle_restore(
         &dep_qid,
         Severity::Info,
         format!(
-            "Restored {}.{} for {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Restored {} for {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.deployment_id[..8]
         ),
     )
@@ -1053,9 +1063,11 @@ async fn handle_check(
         &dep_qid,
         Severity::Info,
         format!(
-            "Checked {}.{} for {}",
-            message.resource.resource_type,
-            message.resource.resource_name,
+            "Checked {} for {}",
+            ids::ResourceId::new(
+                &message.resource.resource_type,
+                &message.resource.resource_name
+            ),
             &message.deployment_id[..8]
         ),
     )

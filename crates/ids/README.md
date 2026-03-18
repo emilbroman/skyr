@@ -20,6 +20,7 @@ Skyr organizes infrastructure into four levels:
 | **Repository** | `RepoId` | SCL symbol | `MyRepo` |
 | **Environment** | `EnvironmentId` | Git ref (stripped) | `main`, `tag:v1.0` |
 | **Deployment** | `DeploymentId` | 40-char hex SHA-1 | `a10fb43f...` |
+| **Resource** | `ResourceId` | `Type.Name` | `Std/Random.Int.seed` |
 
 SCL symbol validation requires: non-empty, first character alphabetic or `_`, remaining characters alphanumeric or `_`.
 
@@ -32,12 +33,15 @@ Each level also has a qualified form that includes all parent scopes:
 | `RepoQid` | `org/repo` | `MyOrg/MyRepo` |
 | `EnvironmentQid` | `org/repo::env` | `MyOrg/MyRepo::main` |
 | `DeploymentQid` | `org/repo::env@deploy` | `MyOrg/MyRepo::main@a10fb43f...` |
+| `ResourceQid` | `org/repo::env::Type.Name` | `MyOrg/MyRepo::main::Std/Random.Int.seed` |
 
 ### Separators
 
 - `/` between organization and repository
 - `::` between repository QID and environment
 - `@` between environment QID and deployment
+- `.` between resource type and resource name (within a resource ID)
+- `::` between environment QID and resource ID (within a resource QID)
 
 ## Environment IDs and Git Refs
 
@@ -75,7 +79,9 @@ QID types provide builder methods for constructing child QIDs:
 - `RepoQid::environment(EnvironmentId)` → `EnvironmentQid`
 - `EnvironmentQid::new(RepoQid, EnvironmentId)` — construct an environment QID
 - `EnvironmentQid::deployment(DeploymentId)` → `DeploymentQid`
+- `EnvironmentQid::resource(ResourceId)` → `ResourceQid`
 - `DeploymentQid::new(EnvironmentQid, DeploymentId)` — construct a deployment QID
+- `ResourceQid::new(EnvironmentQid, ResourceId)` — construct a resource QID
 
 ### Parent Accessors
 
@@ -84,6 +90,8 @@ QID types provide accessors for parent scopes:
 - `EnvironmentQid::repo_qid()` → `&RepoQid`
 - `DeploymentQid::environment_qid()` → `&EnvironmentQid`
 - `DeploymentQid::repo_qid()` → `&RepoQid`
+- `ResourceQid::environment_qid()` → `&EnvironmentQid`
+- `ResourceQid::resource()` → `&ResourceId`
 
 ### Binary Encoding
 
