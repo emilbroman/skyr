@@ -22,8 +22,19 @@ pub struct DeploymentsArgs {
 
 #[derive(Subcommand, Debug)]
 enum DeploymentsCommand {
-    List { repository: String },
-    Logs { repository: String },
+    List {
+        repository: String,
+    },
+    /// Show or stream deployment logs
+    Logs {
+        repository: String,
+        /// Stream logs continuously
+        #[arg(short, long)]
+        follow: bool,
+        /// Number of log entries to show (or initial entries when following)
+        #[arg(short = 'n', long, default_value = "200")]
+        latest: i64,
+    },
 }
 
 #[derive(GraphQLQuery)]
@@ -34,6 +45,14 @@ enum DeploymentsCommand {
 )]
 struct ListRepositoryDeployments;
 
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/deployment_last_logs.graphql",
+    response_derives = "Debug"
+)]
+struct DeploymentLastLogs;
+
 pub async fn run_deployments(args: DeploymentsArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, &args.api_url).await?;
@@ -43,8 +62,17 @@ pub async fn run_deployments(args: DeploymentsArgs, format: OutputFormat) -> any
         DeploymentsCommand::List { repository } => {
             list_deployments(&client, &endpoint, &token, &repository, format).await?;
         }
-        DeploymentsCommand::Logs { repository } => {
-            stream_deployment_logs(&client, &endpoint, &token, &repository).await?;
+        DeploymentsCommand::Logs {
+            repository,
+            follow,
+            latest,
+        } => {
+            if follow {
+                stream_deployment_logs(&client, &endpoint, &token, &repository, latest).await?;
+            } else {
+                print_deployment_last_logs(&client, &endpoint, &token, &repository, latest, format)
+                    .await?;
+            }
         }
     }
 
@@ -153,11 +181,106 @@ async fn list_deployments(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct DeploymentLogOutput {
+    deployment_id: String,
+    logs: Vec<LogOutput>,
+}
+
+#[derive(Serialize)]
+struct LogOutput {
+    severity: String,
+    timestamp: String,
+    message: String,
+}
+
+async fn print_deployment_last_logs(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    repository: &str,
+    amount: i64,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (_, repository_name) = repo::parse_repository_path(repository)?;
+
+    let body = DeploymentLastLogs::build_query(deployment_last_logs::Variables {
+        amount: Some(amount),
+    });
+    let response = client
+        .post(endpoint)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .context("failed to send deployment logs query")?;
+    let response: graphql_client::Response<deployment_last_logs::ResponseData> = response
+        .json()
+        .await
+        .context("failed to decode deployment logs response")?;
+    let data = auth::graphql_response_data(response, "deployment logs")?;
+    let repo = data
+        .repositories
+        .into_iter()
+        .find(|r| r.name == repository_name)
+        .ok_or_else(|| anyhow!("repository '{repository_name}' not found"))?;
+
+    let deployments: Vec<_> = repo
+        .environments
+        .into_iter()
+        .flat_map(|env| {
+            env.deployments
+                .into_iter()
+                .filter(|d| {
+                    !matches!(d.state, deployment_last_logs::DeploymentState::DOWN)
+                        && !d.last_logs.is_empty()
+                })
+                .map(|d| DeploymentLogOutput {
+                    deployment_id: d.id,
+                    logs: d
+                        .last_logs
+                        .into_iter()
+                        .map(|l| LogOutput {
+                            severity: format!("{:?}", l.severity),
+                            timestamp: l.timestamp,
+                            message: l.message,
+                        })
+                        .collect(),
+                })
+        })
+        .collect();
+
+    if deployments.is_empty() {
+        return Err(anyhow!(
+            "repository '{}' has no active deployments with logs",
+            repository
+        ));
+    }
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&deployments)?,
+        OutputFormat::Text => {
+            for (i, deployment) in deployments.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("==> {} <==", deployment.deployment_id);
+                for log in &deployment.logs {
+                    println!("[{}] [{}] {}", log.timestamp, log.severity, log.message);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 async fn stream_deployment_logs(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
     repository: &str,
+    initial_amount: i64,
 ) -> anyhow::Result<()> {
     let (_, repository_name) = repo::parse_repository_path(repository)?;
     let ws_endpoint = graphql_ws_endpoint(endpoint)?;
@@ -194,9 +317,13 @@ async fn stream_deployment_logs(
                 let token = token.to_owned();
                 let task_events_tx = task_events_tx.clone();
                 tokio::spawn(async move {
-                    let result =
-                        stream_single_environment(&ws_endpoint, &token, environment_qid.clone())
-                            .await;
+                    let result = stream_single_environment(
+                        &ws_endpoint,
+                        &token,
+                        environment_qid.clone(),
+                        initial_amount,
+                    )
+                    .await;
                     let _ = task_events_tx.send((environment_qid, result));
                 });
             }
@@ -226,6 +353,7 @@ async fn stream_single_environment(
     ws_endpoint: &str,
     token: &str,
     environment_qid: String,
+    initial_amount: i64,
 ) -> anyhow::Result<()> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -273,7 +401,7 @@ async fn stream_single_environment(
                     "query": include_str!("graphql/deployment_logs_subscription.graphql"),
                     "variables": {
                         "environmentQid": environment_qid,
-                        "initialAmount": 200
+                        "initialAmount": initial_amount
                     },
                     "operationName": "EnvironmentLogs"
                 }

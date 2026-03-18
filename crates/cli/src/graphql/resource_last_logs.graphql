@@ -1,0 +1,18 @@
+query ResourceLastLogs($amount: Int) {
+  repositories {
+    name
+    environments {
+      name
+      qid
+      resources {
+        type
+        name
+        lastLogs(amount: $amount) {
+          severity
+          timestamp
+          message
+        }
+      }
+    }
+  }
+}

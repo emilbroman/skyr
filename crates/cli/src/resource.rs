@@ -28,14 +28,17 @@ enum ResourcesCommand {
         #[arg(long)]
         environment: Option<String>,
     },
-    /// Stream logs for one or more resources (interlaced)
+    /// Show or stream logs for one or more resources (interlaced)
     Logs {
         /// Resource QIDs (e.g. org/repo::env::Type:name), at least one required
         #[arg(required = true, num_args = 1..)]
         resource_qids: Vec<String>,
-        /// Number of initial log entries to fetch per resource
-        #[arg(long, default_value = "200")]
-        initial: i64,
+        /// Stream logs continuously
+        #[arg(short, long)]
+        follow: bool,
+        /// Number of log entries to show (or initial entries when following)
+        #[arg(short = 'n', long, default_value = "200")]
+        latest: i64,
     },
 }
 
@@ -46,6 +49,14 @@ enum ResourcesCommand {
     response_derives = "Debug"
 )]
 struct ListRepositoryResources;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/resource_last_logs.graphql",
+    response_derives = "Debug"
+)]
+struct ResourceLastLogs;
 
 pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
@@ -69,9 +80,22 @@ pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow:
         }
         ResourcesCommand::Logs {
             resource_qids,
-            initial,
+            follow,
+            latest,
         } => {
-            stream_resource_logs(&endpoint, &token, &resource_qids, initial).await?;
+            if follow {
+                stream_resource_logs(&endpoint, &token, &resource_qids, latest).await?;
+            } else {
+                print_resource_last_logs(
+                    &client,
+                    &endpoint,
+                    &token,
+                    &resource_qids,
+                    latest,
+                    format,
+                )
+                .await?;
+            }
         }
     }
 
@@ -181,6 +205,102 @@ async fn list_resources(
                 ]));
             }
             print!("{table}");
+        }
+    }
+
+    Ok(())
+}
+
+/// Build a resource QID string from environment QID, resource type, and resource name.
+fn build_resource_qid(env_qid: &str, resource_type: &str, resource_name: &str) -> String {
+    format!("{env_qid}::{resource_type}:{resource_name}")
+}
+
+#[derive(Serialize)]
+struct ResourceLogOutput {
+    resource_qid: String,
+    logs: Vec<LogOutput>,
+}
+
+#[derive(Serialize)]
+struct LogOutput {
+    severity: String,
+    timestamp: String,
+    message: String,
+}
+
+async fn print_resource_last_logs(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    resource_qids: &[String],
+    amount: i64,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let body = ResourceLastLogs::build_query(resource_last_logs::Variables {
+        amount: Some(amount),
+    });
+    let response = client
+        .post(endpoint)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&body)
+        .send()
+        .await
+        .context("failed to send resource logs query")?;
+    let response: graphql_client::Response<resource_last_logs::ResponseData> = response
+        .json()
+        .await
+        .context("failed to decode resource logs response")?;
+    let data = auth::graphql_response_data(response, "resource logs")?;
+
+    let mut results: Vec<ResourceLogOutput> = Vec::new();
+    let mut missing: Vec<&str> = Vec::new();
+
+    for qid in resource_qids {
+        let mut found = false;
+        for repo in &data.repositories {
+            for env in &repo.environments {
+                for resource in &env.resources {
+                    let candidate = build_resource_qid(&env.qid, &resource.type_, &resource.name);
+                    if candidate == *qid {
+                        found = true;
+                        results.push(ResourceLogOutput {
+                            resource_qid: qid.clone(),
+                            logs: resource
+                                .last_logs
+                                .iter()
+                                .map(|l| LogOutput {
+                                    severity: format!("{:?}", l.severity),
+                                    timestamp: l.timestamp.clone(),
+                                    message: l.message.clone(),
+                                })
+                                .collect(),
+                        });
+                    }
+                }
+            }
+        }
+        if !found {
+            missing.push(qid);
+        }
+    }
+
+    if !missing.is_empty() {
+        return Err(anyhow!("resource(s) not found: {}", missing.join(", ")));
+    }
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&results)?,
+        OutputFormat::Text => {
+            for (i, result) in results.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                println!("==> {} <==", result.resource_qid);
+                for log in &result.logs {
+                    println!("[{}] [{}] {}", log.timestamp, log.severity, log.message);
+                }
+            }
         }
     }
 
