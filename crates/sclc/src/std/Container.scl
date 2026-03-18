@@ -3,19 +3,17 @@
 // Usage:
 //   import Std/Container
 //
-//   let img = Container.Image({
-//     name: "my-image",
-//     context: ".",
-//     containerfile: "Dockerfile",
+//   let pod = Container.Pod({
+//     name: "my-pod",
+//     containers: [{ image: "nginx:latest" }],
 //   })
 //
-//   let pod = Container.Pod({ name: "my-pod" })
-//   let container = pod.Container({
-//     name: "my-container",
-//     image: img.fullname,
-//   })
-//
-//   let http = pod.Port({ port: 8080, protocol: "tcp" })
+//   let http = pod.Port({ port: 8080 })
+//   let attachment = pod.Attachment(http)
+
+export type Container {
+    image: Str,
+}
 
 export type Image {
     // Full image reference including registry and digest (e.g., "registry:5000/my-app@sha256:...")
@@ -39,7 +37,7 @@ export let Image = extern "Std/Container.Image": fn({
     containerfile: Str,
 }) Image
 
-export type PodPort {
+export type Port {
     // The pod's IP address
     address: Str,
     // The opened port number
@@ -48,46 +46,38 @@ export type PodPort {
     protocol: Str,
 }
 
-export type Container {
-    containerId: Str,
-    name: Str,
-    image: Str,
+export type Attachment {
+    // The port that was attached to
+    port: Port,
+    // The source pod's IP address
+    clientAddress: Str,
 }
 
 export type Pod {
-    podId: Str,
-    node: Str,
     name: Str,
-    namespace: Str,
+    node: Str,
     // The pod's IP address within the cluster network
     address: Str,
-    Container: fn({
-        name: Str,
-        image: Str,
-    }) Container,
-    // Open a port on the pod's firewall, returning an access token
-    // that can be passed to other pods to grant ingress.
+    // Open a port on the pod's firewall
     Port: fn({
         // Port number to open
         port: Int,
         // Protocol: "tcp" (default) or "udp"
         protocol: Str?,
-    }) PodPort,
+    }) Port,
+    // Attach to a port, granting this pod egress access to the destination
+    Attachment: fn(Port) Attachment,
 }
 
-// Pod resource - creates a pod sandbox on a worker node
+// Pod resource - creates a pod with containers on a worker node
 //
 // Each pod runs in its own network namespace with a unique IP address.
 // By default, all ingress traffic is denied and egress to other pods is
-// blocked. Use Pod.Port to open ingress ports and the `allow` list to
+// blocked. Use Pod.Port to open ingress ports and Pod.Attachment to
 // grant egress access to specific port resources.
 export let Pod = extern "Std/Container.Pod": fn({
     name: Str,
-    // List of port resources this pod is allowed to reach.
-    // Each entry is a Pod.Port output: { address: Str, port: Int, protocol: Str }.
-    // Pods can always reach the internet; this controls access to cluster-internal
-    // destinations only.
-    allow: [{ address: Str, port: Int, protocol: Str }]?,
+    containers: [Container],
 }) Pod
 
 export type HostPort {
