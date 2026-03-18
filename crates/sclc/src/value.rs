@@ -21,7 +21,7 @@ pub enum Value {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TrackedValue {
     pub value: Value,
-    pub dependencies: BTreeSet<crate::ResourceId>,
+    pub dependencies: BTreeSet<ids::ResourceId>,
 }
 
 impl TrackedValue {
@@ -36,12 +36,12 @@ impl TrackedValue {
         Self::new(Value::Pending(PendingValue))
     }
 
-    pub fn with_dependencies(mut self, dependencies: BTreeSet<crate::ResourceId>) -> Self {
+    pub fn with_dependencies(mut self, dependencies: BTreeSet<ids::ResourceId>) -> Self {
         self.dependencies.extend(dependencies);
         self
     }
 
-    pub fn with_dependency(mut self, dependency: crate::ResourceId) -> Self {
+    pub fn with_dependency(mut self, dependency: ids::ResourceId) -> Self {
         self.dependencies.insert(dependency);
         self
     }
@@ -358,11 +358,11 @@ impl std::fmt::Display for Dict {
 #[cfg(test)]
 mod tests {
     use super::{TrackedValue, Value};
-    use crate::ResourceId;
+    use ids::ResourceId;
 
     fn dep(name: &str) -> ResourceId {
         ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: name.to_string(),
         }
     }

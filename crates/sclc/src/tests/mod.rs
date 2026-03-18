@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::Path;
 
+use ids::ResourceId;
+
 use crate::{
-    Effect, Eval, EvalEnv, ModuleId, Record, Resource, ResourceId, SourceRepo, TrackedValue, Value,
+    Effect, Eval, EvalEnv, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value,
 };
 
 /// An in-memory source repository for testing.
@@ -35,7 +37,7 @@ fn format_effect(effect: &Effect) -> String {
         } => {
             let mut s = format!(
                 "CreateResource ty={} name={} inputs={}",
-                id.ty, id.name, inputs
+                id.typ, id.name, inputs
             );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
@@ -43,7 +45,7 @@ fn format_effect(effect: &Effect) -> String {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
+                    s.push_str(&format!("{dep}"));
                 }
                 s.push(']');
             }
@@ -56,7 +58,7 @@ fn format_effect(effect: &Effect) -> String {
         } => {
             let mut s = format!(
                 "UpdateResource ty={} name={} inputs={}",
-                id.ty, id.name, inputs
+                id.typ, id.name, inputs
             );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
@@ -64,7 +66,7 @@ fn format_effect(effect: &Effect) -> String {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
+                    s.push_str(&format!("{dep}"));
                 }
                 s.push(']');
             }
@@ -77,7 +79,7 @@ fn format_effect(effect: &Effect) -> String {
         } => {
             let mut s = format!(
                 "TouchResource ty={} name={} inputs={}",
-                id.ty, id.name, inputs
+                id.typ, id.name, inputs
             );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
@@ -85,7 +87,7 @@ fn format_effect(effect: &Effect) -> String {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
+                    s.push_str(&format!("{dep}"));
                 }
                 s.push(']');
             }
@@ -167,7 +169,7 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
 
             entries.push((
                 ResourceId {
-                    ty: resource_type.clone(),
+                    typ: resource_type.clone(),
                     name: resource_id.clone(),
                 },
                 Resource {

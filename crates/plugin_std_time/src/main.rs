@@ -106,12 +106,12 @@ impl rtp::Plugin for TimePlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        match id.typ.as_str() {
             CLOCK_RESOURCE_TYPE => self.clock_resource(inputs),
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
+            _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
 
@@ -119,14 +119,14 @@ impl rtp::Plugin for TimePlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        match id.typ.as_str() {
             CLOCK_RESOURCE_TYPE => self.clock_resource(inputs),
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
+            _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
 
@@ -134,10 +134,10 @@ impl rtp::Plugin for TimePlugin {
         &self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        match id.typ.as_str() {
             CLOCK_RESOURCE_TYPE => self.clock_resource(resource.inputs),
             _ => Ok(resource),
         }

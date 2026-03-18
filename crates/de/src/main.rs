@@ -15,26 +15,26 @@ use tokio::{
 };
 use tracing::Instrument;
 
-fn map_dependencies(namespace: &str, deps: Vec<sclc::ResourceId>) -> Vec<rtq::ResourceRef> {
+fn map_dependencies(namespace: &str, deps: Vec<ids::ResourceId>) -> Vec<rtq::ResourceRef> {
     deps.into_iter()
         .map(|dep| rtq::ResourceRef {
             environment_qid: namespace.to_owned(),
-            resource_type: dep.ty,
+            resource_type: dep.typ,
             resource_name: dep.name,
         })
         .collect()
 }
 
-fn resource_ref(namespace: &str, id: &sclc::ResourceId) -> rtq::ResourceRef {
+fn resource_ref(namespace: &str, id: &ids::ResourceId) -> rtq::ResourceRef {
     rtq::ResourceRef {
         environment_qid: namespace.to_owned(),
-        resource_type: id.ty.clone(),
+        resource_type: id.typ.clone(),
         resource_name: id.name.clone(),
     }
 }
 
 fn serialize_inputs(
-    id: &sclc::ResourceId,
+    id: &ids::ResourceId,
     inputs: &sclc::Record,
     context: &str,
 ) -> Option<serde_json::Value> {
@@ -42,7 +42,7 @@ fn serialize_inputs(
         Ok(value) => Some(value),
         Err(error) => {
             tracing::error!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 error = %error,
                 "failed to encode {context} inputs",
@@ -335,8 +335,8 @@ impl Worker {
                     .collect::<HashSet<_>>();
 
                 for resource in &owned_resources {
-                    let resource_id = sclc::ResourceId {
-                        ty: resource.resource_type.clone(),
+                    let resource_id = ids::ResourceId {
+                        typ: resource.resource_type.clone(),
                         name: resource.name.clone(),
                     };
 
@@ -495,8 +495,8 @@ impl Worker {
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
-            let resource_id = sclc::ResourceId {
-                ty: resource.resource_type.clone(),
+            let resource_id = ids::ResourceId {
+                typ: resource.resource_type.clone(),
                 name: resource.name.clone(),
             };
             if resource.owner.as_deref() != Some(owner_deployment_qid.as_str())
@@ -553,9 +553,7 @@ impl Worker {
 
                                     log_publisher
                                         .error(format!(
-                                            "Failed to enqueue CREATE {}: {}",
-                                            ids::ResourceId::new(&id.ty, &id.name),
-                                            error
+                                            "Failed to enqueue CREATE {id}: {error}",
                                         ))
                                         .await;
 
@@ -563,7 +561,7 @@ impl Worker {
                                 }
 
                                 tracing::info!(
-                                    resource_type = %id.ty,
+                                    resource_type = %id.typ,
                                     resource_name = %id.name,
                                     inputs = ?inputs,
                                     "effect create resource",
@@ -606,16 +604,14 @@ impl Worker {
 
                                     log_publisher
                                         .error(format!(
-                                            "Failed to enqueue UPDATE {}: {}",
-                                            ids::ResourceId::new(&id.ty, &id.name),
-                                            error
+                                            "Failed to enqueue UPDATE {id}: {error}",
                                         ))
                                         .await;
                                     continue;
                                 }
 
                                 tracing::info!(
-                                    resource_type = %id.ty,
+                                    resource_type = %id.typ,
                                     resource_name = %id.name,
                                     inputs = ?inputs,
                                     "effect update resource",
@@ -652,16 +648,14 @@ impl Worker {
 
                                         log_publisher
                                             .error(format!(
-                                                "Failed to enqueue ADOPT {}: {}",
-                                                ids::ResourceId::new(&id.ty, &id.name),
-                                                error
+                                                "Failed to enqueue ADOPT {id}: {error}",
                                             ))
                                             .await;
                                         continue;
                                     }
 
                                     tracing::info!(
-                                        resource_type = %id.ty,
+                                        resource_type = %id.typ,
                                         resource_name = %id.name,
                                         inputs = ?inputs,
                                         "effect touch resource adopt",
@@ -680,16 +674,14 @@ impl Worker {
 
                                         log_publisher
                                             .error(format!(
-                                                "Failed to enqueue CHECK {}: {}",
-                                                ids::ResourceId::new(&id.ty, &id.name),
-                                                error
+                                                "Failed to enqueue CHECK {id}: {error}",
                                             ))
                                             .await;
                                         continue;
                                     }
 
                                     tracing::info!(
-                                        resource_type = %id.ty,
+                                        resource_type = %id.typ,
                                         resource_name = %id.name,
                                         "effect touch resource check",
                                     );

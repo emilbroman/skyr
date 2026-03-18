@@ -225,9 +225,9 @@ fn resolve_plugin<'a>(
     Some((plugin_name, client.clone()))
 }
 
-fn resource_id_from_ref(resource: &rtq::ResourceRef) -> sclc::ResourceId {
-    sclc::ResourceId {
-        ty: resource.resource_type.clone(),
+fn resource_id_from_ref(resource: &rtq::ResourceRef) -> ids::ResourceId {
+    ids::ResourceId {
+        typ: resource.resource_type.clone(),
         name: resource.resource_name.clone(),
     }
 }
@@ -1002,8 +1002,8 @@ async fn handle_check(
         dependencies: current
             .dependencies
             .iter()
-            .map(|d| sclc::ResourceId {
-                ty: d.ty.clone(),
+            .map(|d| ids::ResourceId {
+                typ: d.typ.clone(),
                 name: d.name.clone(),
             })
             .collect(),
@@ -1105,11 +1105,11 @@ fn plugin_name_for_resource_type(resource_type: &str) -> Option<&str> {
     resource_type.split_once('.').map(|(prefix, _)| prefix)
 }
 
-fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<sclc::ResourceId> {
+fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<ids::ResourceId> {
     dependencies
         .iter()
-        .map(|dependency| sclc::ResourceId {
-            ty: dependency.resource_type.clone(),
+        .map(|dependency| ids::ResourceId {
+            typ: dependency.resource_type.clone(),
             name: dependency.resource_name.clone(),
         })
         .collect()

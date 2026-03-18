@@ -158,6 +158,9 @@ struct PodInfo {
 struct ContainerInfo {
     pod_id: String,
     name: String,
+    /// Resource ID in "ResourceType:ResourceName" format, used to construct
+    /// a ResourceQid for LDB log namespacing.
+    resource_id: String,
 }
 
 /// SCOP Conduit implementation backed by CRI, with per-pod networking.
@@ -246,7 +249,7 @@ impl CriConduit {
             None => return,
         };
 
-        let (pod_name, environment_qid, container_name) = {
+        let (pod_name, container_name, ldb_namespace) = {
             let containers = self.containers.lock().await;
             let Some(container_info) = containers.get(container_id) else {
                 tracing::warn!(
@@ -264,15 +267,46 @@ impl CriConduit {
                 );
                 return;
             };
+
+            // Build the LDB namespace from the resource QID. The plugin sends the
+            // resource ID in "ResourceType:ResourceName" format; combined with the
+            // environment QID this forms a full ResourceQid.
+            let namespace = if container_info.resource_id.is_empty() {
+                // Fallback for older plugins that don't send the resource ID yet.
+                format!(
+                    "{}::{}",
+                    pod_info.environment_qid, container_info.name,
+                )
+            } else {
+                match (
+                    pod_info.environment_qid.parse::<ids::EnvironmentQid>(),
+                    container_info.resource_id.parse::<ids::ResourceId>(),
+                ) {
+                    (Ok(env_qid), Ok(resource_id)) => {
+                        ids::ResourceQid::new(env_qid, resource_id).to_string()
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        tracing::warn!(
+                            container_id = %container_id,
+                            environment_qid = %pod_info.environment_qid,
+                            resource_id = %container_info.resource_id,
+                            error = %e,
+                            "invalid environment QID or resource ID for log namespace, using raw string"
+                        );
+                        format!(
+                            "{}::{}",
+                            pod_info.environment_qid, container_info.resource_id,
+                        )
+                    }
+                }
+            };
+
             (
                 pod_info.name.clone(),
-                pod_info.environment_qid.clone(),
                 container_info.name.clone(),
+                namespace,
             )
         };
-
-        // LDB namespace: {environment_qid}::{pod_name}/{container_name}
-        let ldb_namespace = format!("{environment_qid}::{pod_name}/{container_name}");
 
         let namespace_publisher = match publisher.namespace(ldb_namespace.clone()).await {
             Ok(p) => p,
@@ -474,6 +508,7 @@ impl scop::Conduit for CriConduit {
                 ContainerInfo {
                     pod_id: request.pod_id,
                     name: config.name,
+                    resource_id: request.resource_id,
                 },
             );
         }

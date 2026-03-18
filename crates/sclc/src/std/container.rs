@@ -11,7 +11,9 @@
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
 //! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
 
-use crate::{EvalCtx, ExternFnValue, Record, ResourceId, TrackedValue, Value, ValueAssertions};
+use ids::ResourceId;
+
+use crate::{EvalCtx, ExternFnValue, Record, TrackedValue, Value, ValueAssertions};
 
 const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
@@ -50,7 +52,7 @@ fn image_extern_fn(
     // The resource ID is based on the image name
     // (the plugin will compute a content-based ID from the Git tree hash)
     let resource_id = ResourceId {
-        ty: IMAGE_RESOURCE_TYPE.to_string(),
+        typ: IMAGE_RESOURCE_TYPE.to_string(),
         name: name.clone(),
     };
 
@@ -118,7 +120,7 @@ fn pod_extern_fn(
     let name = config.get("name").assert_str_ref()?.to_owned();
 
     let resource_id = ResourceId {
-        ty: POD_RESOURCE_TYPE.to_string(),
+        typ: POD_RESOURCE_TYPE.to_string(),
         name: name.clone(),
     };
 
@@ -241,7 +243,7 @@ fn create_container_fn(
         // Use pod_name:container_name as the unique ID
         let resource_id_str = format!("{}:{}", pod_name, container_name);
         let resource_id = ResourceId {
-            ty: CONTAINER_RESOURCE_TYPE.to_string(),
+            typ: CONTAINER_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
 
@@ -329,7 +331,7 @@ fn create_port_fn(
         // Build the resource ID: "{pod_name}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", pod_name, port, protocol);
         let resource_id = ResourceId {
-            ty: PORT_RESOURCE_TYPE.to_string(),
+            typ: PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
 
@@ -406,7 +408,7 @@ fn host_extern_fn(
     let name = config.get("name").assert_str_ref()?.to_owned();
 
     let resource_id = ResourceId {
-        ty: HOST_RESOURCE_TYPE.to_string(),
+        typ: HOST_RESOURCE_TYPE.to_string(),
         name: name.clone(),
     };
 
@@ -485,7 +487,7 @@ fn create_host_port_fn(
         // Build the resource ID: "{hostname}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", host_hostname, port, protocol);
         let resource_id = ResourceId {
-            ty: HOST_PORT_RESOURCE_TYPE.to_string(),
+            typ: HOST_PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
 

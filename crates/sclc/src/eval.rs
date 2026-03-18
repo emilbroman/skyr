@@ -3,6 +3,8 @@ use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use ids::ResourceId;
+
 use crate::{Dict, ExceptionValue, ExternFnValue, FnValue, Record, TrackedValue, Value, ast};
 
 #[derive(Debug)]
@@ -230,33 +232,33 @@ pub struct Eval {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     CreateResource {
-        id: crate::ResourceId,
+        id: ResourceId,
         inputs: crate::Record,
-        dependencies: Vec<crate::ResourceId>,
+        dependencies: Vec<ResourceId>,
     },
     UpdateResource {
-        id: crate::ResourceId,
+        id: ResourceId,
         inputs: crate::Record,
-        dependencies: Vec<crate::ResourceId>,
+        dependencies: Vec<ResourceId>,
     },
     TouchResource {
-        id: crate::ResourceId,
+        id: ResourceId,
         inputs: crate::Record,
-        dependencies: Vec<crate::ResourceId>,
+        dependencies: Vec<ResourceId>,
     },
 }
 
 #[derive(Clone, Debug)]
 pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
-    resources: HashMap<crate::ResourceId, crate::Resource>,
+    resources: HashMap<ResourceId, crate::Resource>,
     namespace: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ListItemOutcome {
     Complete,
-    Pending(BTreeSet<crate::ResourceId>),
+    Pending(BTreeSet<ResourceId>),
 }
 
 impl EvalCtx {
@@ -271,8 +273,8 @@ impl EvalCtx {
         ty: impl Into<String>,
         name: impl Into<String>,
     ) -> Option<&crate::Resource> {
-        let resource_id = crate::ResourceId {
-            ty: ty.into(),
+        let resource_id = ResourceId {
+            typ: ty.into(),
             name: name.into(),
         };
         self.resources.get(&resource_id)
@@ -287,12 +289,12 @@ impl EvalCtx {
         ty: impl Into<String>,
         name: impl Into<String>,
         inputs: &crate::Record,
-        dependencies: BTreeSet<crate::ResourceId>,
+        dependencies: BTreeSet<ResourceId>,
     ) -> Result<Option<crate::Record>, EvalError> {
         let ty = ty.into();
         let name = name.into();
-        let resource_id = crate::ResourceId {
-            ty: ty.clone(),
+        let resource_id = ResourceId {
+            typ: ty.clone(),
             name: name.clone(),
         };
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
@@ -531,7 +533,7 @@ impl Eval {
         self.externs.insert(name.into(), value);
     }
 
-    pub fn add_resource(&mut self, id: crate::ResourceId, resource: crate::Resource) {
+    pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {
         self.ctx.resources.insert(id, resource);
     }
 
@@ -551,11 +553,11 @@ impl Eval {
         TrackedValue::new(value)
     }
 
-    fn pending_with(dependencies: BTreeSet<crate::ResourceId>) -> TrackedValue {
+    fn pending_with(dependencies: BTreeSet<ResourceId>) -> TrackedValue {
         TrackedValue::pending().with_dependencies(dependencies)
     }
 
-    fn with_dependencies(value: Value, dependencies: BTreeSet<crate::ResourceId>) -> TrackedValue {
+    fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>) -> TrackedValue {
         TrackedValue::new(value).with_dependencies(dependencies)
     }
 
@@ -1374,7 +1376,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{Effect, Eval, EvalEnv};
-    use crate::{ExternFnValue, ModuleId, Resource, ResourceId, TrackedValue, Value};
+    use ids::ResourceId;
+
+    use crate::{ExternFnValue, ModuleId, Resource, TrackedValue, Value};
 
     fn parse_expr(source: &str, module_id: &ModuleId) -> crate::Loc<crate::ast::Expr> {
         let diagnosed = crate::parse_repl_line(source, module_id);
@@ -1395,7 +1399,7 @@ mod tests {
         let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
         let env = EvalEnv::new().with_module_id(&module_id).with_local(
@@ -1417,11 +1421,11 @@ mod tests {
         let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
         let env = EvalEnv::new()
@@ -1462,11 +1466,11 @@ mod tests {
         let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
         let env = EvalEnv::new()
@@ -1508,11 +1512,11 @@ mod tests {
         let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
         let fn_value = Value::Fn(crate::FnValue {
@@ -1549,7 +1553,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
         };
         let mut inputs = crate::Record::default();
@@ -1565,7 +1569,7 @@ mod tests {
             },
         );
         let dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
         let mut dependencies = std::collections::BTreeSet::new();
@@ -1573,7 +1577,7 @@ mod tests {
 
         let outputs = eval
             .ctx
-            .resource(id.ty.clone(), id.name.clone(), &inputs, dependencies)
+            .resource(id.typ.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert!(outputs.is_none());
 
@@ -1596,14 +1600,14 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
         };
         let mut inputs = crate::Record::default();
         inputs.insert("min".to_string(), Value::Int(1));
         inputs.insert("max".to_string(), Value::Int(2));
         let dependency = ResourceId {
-            ty: "Std/Random.Int".to_string(),
+            typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
         eval.add_resource(
@@ -1620,7 +1624,7 @@ mod tests {
 
         let outputs = eval
             .ctx
-            .resource(id.ty.clone(), id.name.clone(), &inputs, dependencies)
+            .resource(id.typ.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert_eq!(outputs, Some(crate::Record::default()));
 

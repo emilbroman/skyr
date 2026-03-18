@@ -2,13 +2,7 @@ use std::collections::BTreeSet;
 
 use crate::Record;
 
-#[derive(
-    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct ResourceId {
-    pub ty: String,
-    pub name: String,
-}
+use ids::ResourceId;
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,

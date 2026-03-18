@@ -23,18 +23,18 @@ impl CryptoPlugin {
 
     async fn dispatch(
         &self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        if id.ty == CSR_RESOURCE_TYPE {
+        if id.typ == CSR_RESOURCE_TYPE {
             return self.dispatch_csr(id, inputs).await;
         }
 
-        if id.ty == CERT_SIG_RESOURCE_TYPE {
+        if id.typ == CERT_SIG_RESOURCE_TYPE {
             return self.dispatch_cert_sig(id, inputs).await;
         }
 
-        let (private_pem, public_pem) = match id.ty.as_str() {
+        let (private_pem, public_pem) = match id.typ.as_str() {
             ED25519_RESOURCE_TYPE => generate_ed25519()?,
             ECDSA_RESOURCE_TYPE => {
                 let curve = inputs.get("curve").assert_str_ref()?;
@@ -47,11 +47,11 @@ impl CryptoPlugin {
                 }
                 tokio::task::spawn_blocking(move || generate_rsa(size)).await??
             }
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
+            _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         };
 
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             "generated key pair"
         );
@@ -70,14 +70,14 @@ impl CryptoPlugin {
 
     async fn dispatch_csr(
         &self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let inputs_clone = inputs.clone();
         let csr_pem = tokio::task::spawn_blocking(move || generate_csr(&inputs_clone)).await??;
 
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             "generated certification request"
         );
@@ -95,7 +95,7 @@ impl CryptoPlugin {
 
     async fn dispatch_cert_sig(
         &self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let inputs_clone = inputs.clone();
@@ -103,7 +103,7 @@ impl CryptoPlugin {
             tokio::task::spawn_blocking(move || sign_certificate(&inputs_clone)).await??;
 
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             "signed certificate"
         );
@@ -648,7 +648,7 @@ impl rtp::Plugin for CryptoPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         self.dispatch(&id, inputs).await
@@ -658,7 +658,7 @@ impl rtp::Plugin for CryptoPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,

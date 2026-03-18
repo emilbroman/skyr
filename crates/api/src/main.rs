@@ -643,16 +643,13 @@ impl Resource {
             let resource = context
                 .rdb_client
                 .namespace(self.resource.namespace.clone())
-                .resource(dependency.ty.clone(), dependency.name.clone())
+                .resource(dependency.typ.clone(), dependency.name.clone())
                 .get()
                 .await
                 .map_err(|error| {
                     tracing::error!(
-                        "Failed to load dependency {}/{} in namespace {}: {}",
-                        dependency.ty,
-                        dependency.name,
+                        "Failed to load dependency {dependency} in namespace {}: {error}",
                         self.resource.namespace,
-                        error
                     );
                     internal_error()
                 })?;

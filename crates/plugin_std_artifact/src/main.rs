@@ -40,11 +40,11 @@ impl ArtifactPlugin {
 
     async fn materialize_artifact(
         &self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        if id.ty != ARTIFACT_RESOURCE_TYPE {
-            anyhow::bail!("unsupported resource type: {}", id.ty);
+        if id.typ != ARTIFACT_RESOURCE_TYPE {
+            anyhow::bail!("unsupported resource type: {}", id.typ);
         }
 
         let name = inputs.get("name").assert_str_ref()?;
@@ -61,7 +61,7 @@ impl ArtifactPlugin {
         let body = adb::ArtifactBody::from(contents.as_bytes().to_vec());
 
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             namespace = namespace,
             name = name,
@@ -72,7 +72,7 @@ impl ArtifactPlugin {
             Ok(header) => header,
             Err(adb::WriteError::AlreadyExists { .. }) => {
                 warn!(
-                    resource_type = id.ty.as_str(),
+                    resource_type = id.typ.as_str(),
                     resource_name = id.name.as_str(),
                     namespace = namespace,
                     name = name,
@@ -89,7 +89,7 @@ impl ArtifactPlugin {
         };
 
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             namespace = header.namespace.as_str(),
             name = header.name.as_str(),
@@ -120,14 +120,14 @@ impl ArtifactPlugin {
 
     async fn materialize_with_error_log(
         &self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
         operation: &str,
     ) -> anyhow::Result<sclc::Resource> {
         let result = self.materialize_artifact(id, inputs).await;
         if let Err(err) = &result {
             error!(
-                resource_type = id.ty.as_str(),
+                resource_type = id.typ.as_str(),
                 resource_name = id.name.as_str(),
                 err = %err,
                 "artifact {operation} failed"
@@ -143,7 +143,7 @@ impl rtp::Plugin for ArtifactPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         self.materialize_with_error_log(&id, inputs, "create_resource")
@@ -154,7 +154,7 @@ impl rtp::Plugin for ArtifactPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
@@ -167,17 +167,17 @@ impl rtp::Plugin for ArtifactPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        if id.ty != ARTIFACT_RESOURCE_TYPE {
-            anyhow::bail!("unsupported resource type: {}", id.ty);
+        if id.typ != ARTIFACT_RESOURCE_TYPE {
+            anyhow::bail!("unsupported resource type: {}", id.typ);
         }
 
         // Artifacts are retained even when the owning deployment is torn down.
         info!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             "artifact delete is a no-op"
         );

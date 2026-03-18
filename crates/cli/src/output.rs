@@ -34,13 +34,13 @@ pub(crate) fn spawn_effect_printer(
         while let Some(effect) = effects_rx.recv().await {
             match effect {
                 sclc::Effect::CreateResource { id, inputs, .. } => {
-                    println!("CREATE {}:{} {:?}", id.ty, id.name, inputs);
+                    println!("CREATE {id} {inputs:?}");
                 }
                 sclc::Effect::UpdateResource { id, inputs, .. } => {
-                    println!("UPDATE {}:{} {:?}", id.ty, id.name, inputs);
+                    println!("UPDATE {id} {inputs:?}");
                 }
                 sclc::Effect::TouchResource { id, inputs, .. } => {
-                    println!("TOUCH {}:{} {:?}", id.ty, id.name, inputs);
+                    println!("TOUCH {id} {inputs:?}");
                 }
             }
         }

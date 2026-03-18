@@ -28,7 +28,7 @@ pub trait Plugin: Send + Sync + 'static {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource>;
 
@@ -36,7 +36,7 @@ pub trait Plugin: Send + Sync + 'static {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
@@ -46,7 +46,7 @@ pub trait Plugin: Send + Sync + 'static {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -58,7 +58,7 @@ pub trait Plugin: Send + Sync + 'static {
         &self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
         let _ = (environment_qid, deployment_id, id);
@@ -263,8 +263,8 @@ where
                 );
                 tonic::Status::invalid_argument(format!("invalid resource_inputs_json: {error}"))
             })?;
-        let resource_id = sclc::ResourceId {
-            ty: request.resource_type.clone(),
+        let resource_id = ids::ResourceId {
+            typ: request.resource_type.clone(),
             name: request.resource_name.clone(),
         };
 
@@ -308,12 +308,12 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = sclc::ResourceId {
-            ty: current.r#type.clone(),
+        let resource_id = ids::ResourceId {
+            typ: current.r#type.clone(),
             name: current.name.clone(),
         };
         info!(
-            resource_type = resource_id.ty.as_str(),
+            resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
             environment_qid = request.environment_qid.as_str(),
             deployment_id = request.deployment_id.as_str(),
@@ -322,7 +322,7 @@ where
         let prev_inputs: sclc::Record =
             serde_json::from_str(&current.inputs_json).map_err(|error| {
                 warn!(
-                    resource_type = resource_id.ty.as_str(),
+                    resource_type = resource_id.typ.as_str(),
                     resource_name = resource_id.name.as_str(),
                     err = %error,
                     "invalid update_resource prev input payload"
@@ -332,7 +332,7 @@ where
         let prev_outputs: sclc::Record =
             serde_json::from_str(&current.outputs_json).map_err(|error| {
                 warn!(
-                    resource_type = resource_id.ty.as_str(),
+                    resource_type = resource_id.typ.as_str(),
                     resource_name = resource_id.name.as_str(),
                     err = %error,
                     "invalid update_resource prev output payload"
@@ -341,7 +341,7 @@ where
             })?;
         let inputs: sclc::Record = serde_json::from_str(&request.inputs_json).map_err(|error| {
             warn!(
-                resource_type = resource_id.ty.as_str(),
+                resource_type = resource_id.typ.as_str(),
                 resource_name = resource_id.name.as_str(),
                 err = %error,
                 "invalid update_resource input payload"
@@ -363,7 +363,7 @@ where
                 .await
                 .map_err(|error| {
                     error!(
-                        resource_type = resource_id.ty.as_str(),
+                        resource_type = resource_id.typ.as_str(),
                         resource_name = resource_id.name.as_str(),
                         err = %error,
                         "plugin update_resource failed"
@@ -372,7 +372,7 @@ where
                 })?
         };
         info!(
-            resource_type = resource_id.ty.as_str(),
+            resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
             "completed update_resource RPC"
         );
@@ -391,12 +391,12 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = sclc::ResourceId {
-            ty: current.r#type.clone(),
+        let resource_id = ids::ResourceId {
+            typ: current.r#type.clone(),
             name: current.name.clone(),
         };
         info!(
-            resource_type = resource_id.ty.as_str(),
+            resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
             environment_qid = request.environment_qid.as_str(),
             deployment_id = request.deployment_id.as_str(),
@@ -404,7 +404,7 @@ where
         );
         let inputs: sclc::Record = serde_json::from_str(&current.inputs_json).map_err(|error| {
             warn!(
-                resource_type = resource_id.ty.as_str(),
+                resource_type = resource_id.typ.as_str(),
                 resource_name = resource_id.name.as_str(),
                 err = %error,
                 "invalid delete_resource input payload"
@@ -414,7 +414,7 @@ where
         let outputs: sclc::Record =
             serde_json::from_str(&current.outputs_json).map_err(|error| {
                 warn!(
-                    resource_type = resource_id.ty.as_str(),
+                    resource_type = resource_id.typ.as_str(),
                     resource_name = resource_id.name.as_str(),
                     err = %error,
                     "invalid delete_resource output payload"
@@ -453,8 +453,8 @@ where
         let resource = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing check resource"))?;
-        let id = sclc::ResourceId {
-            ty: resource.r#type.clone(),
+        let id = ids::ResourceId {
+            typ: resource.r#type.clone(),
             name: resource.name.clone(),
         };
         let parsed = decode_resource(resource)?;
@@ -470,7 +470,7 @@ where
             .await
             .map_err(|error| {
                 error!(
-                    resource_type = id.ty.as_str(),
+                    resource_type = id.typ.as_str(),
                     resource_name = id.name.as_str(),
                     err = %error,
                     "plugin check failed"
@@ -511,11 +511,11 @@ impl PluginClient {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             environment_qid,
             deployment_id,
@@ -525,7 +525,7 @@ impl PluginClient {
         let response = self
             .inner
             .create_resource(CreateResourceRequest {
-                resource_type: id.ty,
+                resource_type: id.typ,
                 resource_name: id.name,
                 resource_inputs_json,
                 environment_qid: environment_qid.to_string(),
@@ -546,13 +546,13 @@ impl PluginClient {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             environment_qid,
             deployment_id,
@@ -565,7 +565,7 @@ impl PluginClient {
             .inner
             .update_resource(UpdateResourceRequest {
                 resource: Some(Resource {
-                    r#type: id.ty,
+                    r#type: id.typ,
                     name: id.name,
                     inputs_json: current_inputs_json,
                     outputs_json: current_outputs_json,
@@ -590,12 +590,12 @@ impl PluginClient {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
         debug!(
-            resource_type = id.ty.as_str(),
+            resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
             environment_qid,
             deployment_id,
@@ -606,7 +606,7 @@ impl PluginClient {
         self.inner
             .delete_resource(DeleteResourceRequest {
                 resource: Some(Resource {
-                    r#type: id.ty,
+                    r#type: id.typ,
                     name: id.name,
                     inputs_json,
                     outputs_json,
@@ -627,7 +627,7 @@ impl PluginClient {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
         let response = self
@@ -662,7 +662,7 @@ fn decode_marker(value: i32) -> Option<sclc::Marker> {
 }
 
 fn encode_resource(
-    id: sclc::ResourceId,
+    id: ids::ResourceId,
     resource: sclc::Resource,
 ) -> Result<Resource, tonic::Status> {
     let inputs_json = serde_json::to_string(&resource.inputs)
@@ -671,7 +671,7 @@ fn encode_resource(
         .map_err(|error| tonic::Status::internal(error.to_string()))?;
     let markers = resource.markers.iter().map(encode_marker).collect();
     Ok(Resource {
-        r#type: id.ty,
+        r#type: id.typ,
         name: id.name,
         inputs_json,
         outputs_json,

@@ -7,6 +7,7 @@ edition = "2024"
 anyhow = "1.0.102"
 async-trait = "0.1.89"
 clap = { version = "4.5.48", features = ["derive"] }
+ids = { path = "../ids" }
 rtp = { path = "../rtp" }
 sclc = { path = "../sclc" }
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }

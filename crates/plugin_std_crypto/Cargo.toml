@@ -20,6 +20,7 @@ p521 = { version = "0.13", features = ["pkcs8", "pem", "ecdsa"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 rsa = { version = "0.9", features = ["pem", "sha2"] }
+ids = { path = "../ids" }
 rtp = { path = "../rtp" }
 sclc = { path = "../sclc" }
 sha2 = "0.10"

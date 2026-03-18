@@ -34,8 +34,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let config = config_arg.value.assert_record()?;
         let name = config.get("name").assert_str_ref()?;
 
-        let resource_id = crate::ResourceId {
-            ty: ED25519_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: ED25519_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
 
@@ -75,8 +75,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
             other => other.assert_str_ref()?,
         };
 
-        let resource_id = crate::ResourceId {
-            ty: ECDSA_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: ECDSA_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
 
@@ -155,8 +155,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
         let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
-        let resource_id = crate::ResourceId {
-            ty: CSR_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: CSR_RESOURCE_TYPE.to_owned(),
             name: resource_name.clone(),
         };
 
@@ -197,8 +197,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
             other => *other.assert_int_ref()?,
         };
 
-        let resource_id = crate::ResourceId {
-            ty: RSA_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: RSA_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
 
@@ -254,8 +254,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
         let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
-        let resource_id = crate::ResourceId {
-            ty: CERT_SIG_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: CERT_SIG_RESOURCE_TYPE.to_owned(),
             name: resource_name.clone(),
         };
 

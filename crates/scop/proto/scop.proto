@@ -229,6 +229,10 @@ message CreateContainerRequest {
   ContainerConfig config = 2;
   // Configuration of the pod (for reference).
   PodConfig pod_config = 3;
+  // Resource ID in "ResourceType:ResourceName" format (e.g.,
+  // "Std/Container.Pod.Container:web"). Used by the conduit to construct
+  // a ResourceQid for log namespacing.
+  string resource_id = 4;
 }
 
 // Response from creating a container.

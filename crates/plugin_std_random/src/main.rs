@@ -23,12 +23,12 @@ impl RandomPlugin {
 
     fn dispatch(
         &mut self,
-        id: &sclc::ResourceId,
+        id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        match id.ty.as_str() {
+        match id.typ.as_str() {
             INT_RESOURCE_TYPE => self.gen_int_resource(inputs),
-            _ => anyhow::bail!("unsupported resource type: {}", id.ty),
+            _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
 
@@ -54,7 +54,7 @@ impl rtp::Plugin for RandomPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         self.dispatch(&id, inputs)
@@ -64,7 +64,7 @@ impl rtp::Plugin for RandomPlugin {
         &mut self,
         _environment_qid: &str,
         _deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,

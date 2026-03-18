@@ -20,8 +20,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let contents = config.get("contents").assert_str_ref()?;
         let namespace = eval_ctx.namespace();
 
-        let resource_id = crate::ResourceId {
-            ty: FILE_RESOURCE_TYPE.to_owned(),
+        let resource_id = ids::ResourceId {
+            typ: FILE_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
 

@@ -357,7 +357,7 @@ impl ResourceClient {
 
     pub async fn set_dependencies(
         &self,
-        dependencies: &[sclc::ResourceId],
+        dependencies: &[ids::ResourceId],
     ) -> Result<Resource, ResourceError> {
         let dependencies_json = encode_dependencies(dependencies)?;
         let (namespace, resource_type, id) = self.key();
@@ -405,7 +405,7 @@ pub struct Resource {
     pub name: String,
     pub inputs: Option<Record>,
     pub outputs: Option<Record>,
-    pub dependencies: Vec<sclc::ResourceId>,
+    pub dependencies: Vec<ids::ResourceId>,
     pub markers: BTreeSet<sclc::Marker>,
     pub owner: Option<String>,
 }
@@ -439,7 +439,7 @@ fn decode_record(value: Option<String>) -> Result<Option<Record>, ResourceError>
     }
 }
 
-fn decode_dependencies(value: Option<String>) -> Result<Vec<sclc::ResourceId>, ResourceError> {
+fn decode_dependencies(value: Option<String>) -> Result<Vec<ids::ResourceId>, ResourceError> {
     match value {
         None => Ok(Vec::new()),
         Some(text) if text.is_empty() => Ok(Vec::new()),
@@ -459,7 +459,7 @@ fn encode_record(value: &Record) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }
 
-fn encode_dependencies(value: &[sclc::ResourceId]) -> Result<String, ResourceError> {
+fn encode_dependencies(value: &[ids::ResourceId]) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }
 

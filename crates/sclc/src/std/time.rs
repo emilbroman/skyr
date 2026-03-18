@@ -94,8 +94,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         };
 
         let id_str = format!("{months}/{milliseconds}");
-        let resource_id = crate::ResourceId {
-            ty: CLOCK_RESOURCE_TYPE.to_string(),
+        let resource_id = ids::ResourceId {
+            typ: CLOCK_RESOURCE_TYPE.to_string(),
             name: id_str.clone(),
         };
 

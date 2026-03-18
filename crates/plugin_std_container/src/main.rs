@@ -200,7 +200,7 @@ impl ContainerPlugin {
         &self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let name = inputs
@@ -220,7 +220,7 @@ impl ContainerPlugin {
             .to_string();
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             image_name = %name,
             context = %context,
@@ -279,7 +279,7 @@ impl ContainerPlugin {
         .await?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             fullname = %result.fullname,
             digest = %result.digest,
@@ -304,7 +304,7 @@ impl ContainerPlugin {
         &self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
@@ -312,7 +312,7 @@ impl ContainerPlugin {
         // Check if inputs changed
         if inputs_changed(&prev_inputs, &inputs) {
             info!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 "image inputs changed, rebuilding"
             );
@@ -323,7 +323,7 @@ impl ContainerPlugin {
 
         // No changes - return existing outputs
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "image update is a no-op (no changes)"
         );
@@ -343,7 +343,7 @@ impl ContainerPlugin {
     /// by the registry's own policies.
     async fn delete_image(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -351,7 +351,7 @@ impl ContainerPlugin {
         let digest = outputs.get("digest").assert_str_ref().unwrap_or("");
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             fullname = %fullname,
             digest = %digest,
@@ -380,7 +380,7 @@ impl ContainerPlugin {
     async fn create_pod(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let name = inputs
@@ -410,7 +410,7 @@ impl ContainerPlugin {
         };
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             pod_name = %name,
             environment_qid = %environment_qid,
@@ -438,7 +438,7 @@ impl ContainerPlugin {
         let address = inner.address;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
@@ -469,7 +469,7 @@ impl ContainerPlugin {
     async fn update_pod(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
@@ -492,7 +492,7 @@ impl ContainerPlugin {
         if prev_name != name || prev_uid != uid || allow_changed {
             // Pod identity or network config changed - delete old and create new
             warn!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 allow_changed = %allow_changed,
                 "pod config changed, recreating"
@@ -504,7 +504,7 @@ impl ContainerPlugin {
 
         // No changes that require recreation - return existing outputs
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "pod update is a no-op (no recreatable changes)"
         );
@@ -520,7 +520,7 @@ impl ContainerPlugin {
     /// Delete a pod sandbox.
     async fn delete_pod(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -534,7 +534,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::InvalidInput(format!("node output: {e}")))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
@@ -551,7 +551,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::ScopOperation(format!("remove_pod: {e}")))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             pod_id = %pod_id,
             "pod sandbox deleted"
@@ -584,7 +584,7 @@ impl ContainerPlugin {
     async fn create_container(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let pod_id = inputs
@@ -628,7 +628,7 @@ impl ContainerPlugin {
         let envs = extract_env_vars(inputs.get("envs"))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             container_name = %name,
             image = %image,
@@ -656,6 +656,7 @@ impl ContainerPlugin {
                     uid: pod_uid,
                     allowed_destinations: vec![],
                 }),
+                resource_id: id.to_string(),
             })
             .await
             .map_err(|e| PluginError::ScopOperation(format!("create_container: {e}")))?;
@@ -671,7 +672,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::ScopOperation(format!("start_container: {e}")))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             container_id = %container_id,
             container_name = %name,
@@ -698,7 +699,7 @@ impl ContainerPlugin {
     async fn update_container(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
@@ -706,7 +707,7 @@ impl ContainerPlugin {
         // Check if any inputs changed
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 "container inputs changed, recreating"
             );
@@ -717,7 +718,7 @@ impl ContainerPlugin {
 
         // No changes - return existing outputs
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "container update is a no-op (no changes)"
         );
@@ -733,7 +734,7 @@ impl ContainerPlugin {
     /// Delete a container.
     async fn delete_container(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -747,7 +748,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::InvalidInput(format!("node input: {e}")))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             container_id = %container_id,
             node = %node_name,
@@ -774,7 +775,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::ScopOperation(format!("remove_container: {e}")))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             container_id = %container_id,
             "container deleted"
@@ -804,7 +805,7 @@ impl ContainerPlugin {
     async fn create_port(
         &self,
         _environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let pod_id = inputs
@@ -833,7 +834,7 @@ impl ContainerPlugin {
             .to_string();
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
@@ -874,14 +875,14 @@ impl ContainerPlugin {
     async fn update_port(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 "pod port inputs changed, recreating"
             );
@@ -891,7 +892,7 @@ impl ContainerPlugin {
         }
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "pod port update is a no-op (no changes)"
         );
@@ -907,7 +908,7 @@ impl ContainerPlugin {
     /// Delete a port resource.
     async fn delete_port(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -953,7 +954,7 @@ impl ContainerPlugin {
         }
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "pod port deleted"
         );
@@ -976,7 +977,7 @@ impl ContainerPlugin {
     async fn create_host(
         &self,
         _environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let name = inputs
@@ -997,7 +998,7 @@ impl ContainerPlugin {
         let vip_str = vip.to_string();
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             hostname = %hostname,
             vip = %vip_str,
@@ -1026,14 +1027,14 @@ impl ContainerPlugin {
     async fn update_host(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 "host inputs changed, recreating"
             );
@@ -1043,7 +1044,7 @@ impl ContainerPlugin {
         }
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "host update is a no-op (no changes)"
         );
@@ -1059,7 +1060,7 @@ impl ContainerPlugin {
     /// Delete a Host resource.
     async fn delete_host(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -1070,7 +1071,7 @@ impl ContainerPlugin {
             .to_string();
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             hostname = %hostname,
             "deleting host"
@@ -1109,7 +1110,7 @@ impl ContainerPlugin {
     async fn create_host_port(
         &self,
         _environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         let host_hostname = inputs
@@ -1136,7 +1137,7 @@ impl ContainerPlugin {
         let backends = extract_service_backends(inputs.get("backends"))?;
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             hostname = %host_hostname,
             vip = %host_vip,
@@ -1171,14 +1172,14 @@ impl ContainerPlugin {
     async fn update_host_port(
         &self,
         environment_qid: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
-                resource_type = %id.ty,
+                resource_type = %id.typ,
                 resource_name = %id.name,
                 "host port inputs changed, recreating"
             );
@@ -1188,7 +1189,7 @@ impl ContainerPlugin {
         }
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             "host port update is a no-op (no changes)"
         );
@@ -1204,7 +1205,7 @@ impl ContainerPlugin {
     /// Delete a Host.Port resource.
     async fn delete_host_port(
         &self,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         _inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
@@ -1221,7 +1222,7 @@ impl ContainerPlugin {
             .to_string();
 
         info!(
-            resource_type = %id.ty,
+            resource_type = %id.typ,
             resource_name = %id.name,
             vip = %host_vip,
             port = %port,
@@ -1921,7 +1922,7 @@ macro_rules! log_on_error {
     ($result:expr, $id:expr, $op:expr) => {{
         if let Err(ref e) = $result {
             error!(
-                resource_type = %$id.ty,
+                resource_type = %$id.typ,
                 resource_name = %$id.name,
                 err = %e,
                 "{} failed", $op
@@ -1937,10 +1938,10 @@ impl rtp::Plugin for ContainerPlugin {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let result = match id.ty.as_str() {
+        let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 self.create_image(environment_qid, deployment_id, id.clone(), inputs)
                     .await
@@ -1956,7 +1957,7 @@ impl rtp::Plugin for ContainerPlugin {
                 self.create_host_port(environment_qid, id.clone(), inputs)
                     .await
             }
-            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+            _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "create_resource")
     }
@@ -1965,12 +1966,12 @@ impl rtp::Plugin for ContainerPlugin {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let result = match id.ty.as_str() {
+        let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 self.update_image(
                     environment_qid,
@@ -2032,7 +2033,7 @@ impl rtp::Plugin for ContainerPlugin {
                 )
                 .await
             }
-            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+            _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "update_resource")
     }
@@ -2041,19 +2042,19 @@ impl rtp::Plugin for ContainerPlugin {
         &mut self,
         environment_qid: &str,
         deployment_id: &str,
-        id: sclc::ResourceId,
+        id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
         let _ = (environment_qid, deployment_id);
-        let result = match id.ty.as_str() {
+        let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => self.delete_image(id.clone(), inputs, outputs).await,
             POD_RESOURCE_TYPE => self.delete_pod(id.clone(), inputs, outputs).await,
             CONTAINER_RESOURCE_TYPE => self.delete_container(id.clone(), inputs, outputs).await,
             PORT_RESOURCE_TYPE => self.delete_port(id.clone(), inputs, outputs).await,
             HOST_RESOURCE_TYPE => self.delete_host(id.clone(), inputs, outputs).await,
             HOST_PORT_RESOURCE_TYPE => self.delete_host_port(id.clone(), inputs, outputs).await,
-            _ => return Err(PluginError::UnsupportedResourceType(id.ty.clone()).into()),
+            _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "delete_resource")
     }

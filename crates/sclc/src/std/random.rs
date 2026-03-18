@@ -17,8 +17,8 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let arg2 = *config.get("max").assert_int_ref()?;
         let min = arg1.min(arg2);
         let max = arg1.max(arg2);
-        let resource_id = crate::ResourceId {
-            ty: INT_RESOURCE_TYPE.to_string(),
+        let resource_id = ids::ResourceId {
+            typ: INT_RESOURCE_TYPE.to_string(),
             name: name.to_owned(),
         };
 
