@@ -273,10 +273,7 @@ impl CriConduit {
             // environment QID this forms a full ResourceQid.
             let namespace = if container_info.resource_id.is_empty() {
                 // Fallback for older plugins that don't send the resource ID yet.
-                format!(
-                    "{}::{}",
-                    pod_info.environment_qid, container_info.name,
-                )
+                format!("{}::{}", pod_info.environment_qid, container_info.name,)
             } else {
                 match (
                     pod_info.environment_qid.parse::<ids::EnvironmentQid>(),

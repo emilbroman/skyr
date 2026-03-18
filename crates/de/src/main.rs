@@ -552,9 +552,7 @@ impl Worker {
                                     );
 
                                     log_publisher
-                                        .error(format!(
-                                            "Failed to enqueue CREATE {id}: {error}",
-                                        ))
+                                        .error(format!("Failed to enqueue CREATE {id}: {error}",))
                                         .await;
 
                                     continue;
@@ -603,9 +601,7 @@ impl Worker {
                                     );
 
                                     log_publisher
-                                        .error(format!(
-                                            "Failed to enqueue UPDATE {id}: {error}",
-                                        ))
+                                        .error(format!("Failed to enqueue UPDATE {id}: {error}",))
                                         .await;
                                     continue;
                                 }
@@ -647,9 +643,9 @@ impl Worker {
                                         );
 
                                         log_publisher
-                                            .error(format!(
-                                                "Failed to enqueue ADOPT {id}: {error}",
-                                            ))
+                                            .error(
+                                                format!("Failed to enqueue ADOPT {id}: {error}",),
+                                            )
                                             .await;
                                         continue;
                                     }
@@ -673,9 +669,9 @@ impl Worker {
                                         );
 
                                         log_publisher
-                                            .error(format!(
-                                                "Failed to enqueue CHECK {id}: {error}",
-                                            ))
+                                            .error(
+                                                format!("Failed to enqueue CHECK {id}: {error}",),
+                                            )
                                             .await;
                                         continue;
                                     }

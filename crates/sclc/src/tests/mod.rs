@@ -4,9 +4,7 @@ use std::path::Path;
 
 use ids::ResourceId;
 
-use crate::{
-    Effect, Eval, EvalEnv, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value,
-};
+use crate::{Effect, Eval, EvalEnv, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value};
 
 /// An in-memory source repository for testing.
 struct MemSourceRepo {

@@ -694,7 +694,10 @@ pub struct ResourceId {
 impl ResourceId {
     /// Creates a new `ResourceId` from a resource type and name.
     pub fn new(typ: impl Into<String>, name: impl Into<String>) -> Self {
-        Self { typ: typ.into(), name: name.into() }
+        Self {
+            typ: typ.into(),
+            name: name.into(),
+        }
     }
 
     /// Returns the resource type.
@@ -1149,7 +1152,11 @@ mod tests {
         // Missing resource part
         assert!("MyOrg/MyRepo::main".parse::<ResourceQid>().is_err());
         // Invalid resource (no `:` separator within resource)
-        assert!("MyOrg/MyRepo::main::nocolon".parse::<ResourceQid>().is_err());
+        assert!(
+            "MyOrg/MyRepo::main::nocolon"
+                .parse::<ResourceQid>()
+                .is_err()
+        );
     }
 
     #[test]
