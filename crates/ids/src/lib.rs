@@ -32,14 +32,14 @@
 //! | Repo | `MyRepo` | `OrgId/RepoId` | `MyOrg/MyRepo` |
 //! | Env | `main` | `RepoQid::EnvironmentId` | `MyOrg/MyRepo::main` |
 //! | Deploy | `2cbec...` | `EnvironmentQid@DeploymentId` | `MyOrg/MyRepo::main@2cbec...` |
-//! | Resource | `Std/Random.Int.seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::Std/Random.Int.seed` |
+//! | Resource | `Std/Random.Int:seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
 //!
 //! ## Separators
 //!
 //! - `/` between organization and repository
 //! - `::` between repository and environment
 //! - `@` between environment and deployment
-//! - `.` between resource type and resource name (within a resource ID)
+//! - `:` between resource type and resource name (within a resource ID)
 //! - `::` between environment QID and resource ID (within a resource QID)
 //!
 //! ## Namespaces
@@ -127,11 +127,11 @@ pub enum ParseIdError {
     )]
     InvalidDeploymentQid(String),
 
-    #[error("invalid resource ID: {0:?} (expected format: ResourceType.ResourceName)")]
+    #[error("invalid resource ID: {0:?} (expected format: ResourceType:ResourceName)")]
     InvalidResourceId(String),
 
     #[error(
-        "invalid resource QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId::ResourceType.ResourceName)"
+        "invalid resource QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId::ResourceType:ResourceName)"
     )]
     InvalidResourceQid(String),
 
@@ -667,63 +667,55 @@ impl TryFrom<String> for DeploymentId {
 // ---------------------------------------------------------------------------
 
 /// Resource ID. Identifies a resource within an environment by combining
-/// its resource type and resource name, separated by a period.
+/// its resource type and resource name, separated by `:`.
 ///
 /// The resource type is the plugin-qualified type (e.g., `Std/Random.Int`)
 /// and the resource name is the unique name within that type (e.g., `seed`).
 ///
 /// # Format
 ///
-/// `ResourceType.ResourceName` — for example, `Std/Random.Int.seed`.
+/// `ResourceType:ResourceName` — for example, `Std/Random.Int:seed`.
 ///
 /// # Examples
 ///
 /// ```
 /// use ids::ResourceId;
-/// let id: ResourceId = "Std/Random.Int.seed".parse().unwrap();
+/// let id: ResourceId = "Std/Random.Int:seed".parse().unwrap();
 /// assert_eq!(id.resource_type(), "Std/Random.Int");
 /// assert_eq!(id.resource_name(), "seed");
-/// assert_eq!(id.to_string(), "Std/Random.Int.seed");
+/// assert_eq!(id.to_string(), "Std/Random.Int:seed");
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId {
-    /// The full string `Type.Name`.
-    full: String,
-    /// Byte offset of the last `.` separator.
-    sep: usize,
+    pub typ: String,
+    pub name: String,
 }
 
 impl ResourceId {
     /// Creates a new `ResourceId` from a resource type and name.
-    pub fn new(resource_type: impl Into<String>, resource_name: impl Into<String>) -> Self {
-        let resource_type = resource_type.into();
-        let sep = resource_type.len();
-        let resource_name = resource_name.into();
-        Self {
-            full: format!("{resource_type}.{resource_name}"),
-            sep,
-        }
+    pub fn new(typ: impl Into<String>, name: impl Into<String>) -> Self {
+        Self { typ: typ.into(), name: name.into() }
     }
 
-    /// Returns the resource type portion (everything before the last `.`).
+    /// Returns the resource type.
     pub fn resource_type(&self) -> &str {
-        &self.full[..self.sep]
+        &self.typ
     }
 
-    /// Returns the resource name portion (everything after the last `.`).
+    /// Returns the resource name.
     pub fn resource_name(&self) -> &str {
-        &self.full[self.sep + 1..]
+        &self.name
     }
 
-    /// Returns the full `Type.Name` string.
-    pub fn as_str(&self) -> &str {
-        &self.full
+    /// Returns the full `Type:Name` string.
+    pub fn as_str(&self) -> String {
+        format!("{}:{}", self.typ, self.name)
     }
 }
 
 impl fmt::Display for ResourceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.full)
+        write!(f, "{}:{}", self.typ, self.name)
     }
 }
 
@@ -736,45 +728,35 @@ impl fmt::Debug for ResourceId {
 impl FromStr for ResourceId {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Find the last `.` — resource types contain `.` (e.g., `Std/Random.Int`),
-        // so we split on the last one.
-        let Some(sep) = s.rfind('.') else {
+        let Some(sep) = s.find(':') else {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         };
-        let resource_type = &s[..sep];
-        let resource_name = &s[sep + 1..];
-        if resource_type.is_empty() || resource_name.is_empty() {
+        if sep == 0 || sep == s.len() - 1 {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         }
         Ok(Self {
-            full: s.to_string(),
-            sep,
+            typ: s[..sep].to_string(),
+            name: s[sep + 1..].to_string(),
         })
     }
 }
 
 impl From<ResourceId> for String {
     fn from(id: ResourceId) -> Self {
-        id.full
+        id.to_string()
     }
 }
 
 impl TryFrom<String> for ResourceId {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        let Some(sep) = s.rfind('.') else {
-            return Err(ParseIdError::InvalidResourceId(s));
-        };
-        if sep == 0 || sep == s.len() - 1 {
-            return Err(ParseIdError::InvalidResourceId(s));
-        }
-        Ok(Self { full: s, sep })
+        s.parse()
     }
 }
 
 impl Serialize for ResourceId {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.full)
+        serializer.serialize_str(&self.to_string())
     }
 }
 
@@ -796,15 +778,15 @@ impl<'de> Deserialize<'de> for ResourceId {
 ///
 /// # Format
 ///
-/// `OrgId/RepoId::EnvironmentId::ResourceType.ResourceName`
+/// `OrgId/RepoId::EnvironmentId::ResourceType:ResourceName`
 ///
 /// # Examples
 ///
 /// ```
 /// use ids::ResourceQid;
-/// let qid: ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int.seed".parse().unwrap();
+/// let qid: ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
 /// assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
-/// assert_eq!(qid.resource().to_string(), "Std/Random.Int.seed");
+/// assert_eq!(qid.resource().to_string(), "Std/Random.Int:seed");
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceQid {
@@ -847,9 +829,10 @@ impl fmt::Debug for ResourceQid {
 impl FromStr for ResourceQid {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // The format is `OrgId/RepoId::EnvironmentId::ResourceType.ResourceName`.
-        // We need to split on the *last* `::` to separate the environment QID from
-        // the resource ID, since the environment QID itself contains `::`.
+        // The format is `OrgId/RepoId::EnvironmentId::ResourceType:ResourceName`.
+        // We split on the *last* `::` to separate the environment QID from
+        // the resource ID, since the environment QID itself contains `::` but
+        // the resource ID uses `:` (single colon) as its internal separator.
         let Some((env_part, resource_part)) = s.rsplit_once("::") else {
             return Err(ParseIdError::InvalidResourceQid(s.to_string()));
         };
@@ -1099,10 +1082,10 @@ mod tests {
 
     #[test]
     fn resource_id_roundtrip() {
-        let id: ResourceId = "Std/Random.Int.seed".parse().unwrap();
+        let id: ResourceId = "Std/Random.Int:seed".parse().unwrap();
         assert_eq!(id.resource_type(), "Std/Random.Int");
         assert_eq!(id.resource_name(), "seed");
-        assert_eq!(id.to_string(), "Std/Random.Int.seed");
+        assert_eq!(id.to_string(), "Std/Random.Int:seed");
     }
 
     #[test]
@@ -1110,48 +1093,48 @@ mod tests {
         let id = ResourceId::new("Std/Container.Pod", "web");
         assert_eq!(id.resource_type(), "Std/Container.Pod");
         assert_eq!(id.resource_name(), "web");
-        assert_eq!(id.to_string(), "Std/Container.Pod.web");
+        assert_eq!(id.to_string(), "Std/Container.Pod:web");
     }
 
     #[test]
     fn resource_id_with_compound_name() {
-        // Resource names can contain colons and slashes (e.g., "pod:container")
-        let id = ResourceId::new("Std/Container.Pod.Container", "web:nginx");
+        // Resource names can contain slashes (e.g., "pod/container")
+        let id = ResourceId::new("Std/Container.Pod.Container", "web/nginx");
         assert_eq!(id.resource_type(), "Std/Container.Pod.Container");
-        assert_eq!(id.resource_name(), "web:nginx");
-        assert_eq!(id.to_string(), "Std/Container.Pod.Container.web:nginx");
+        assert_eq!(id.resource_name(), "web/nginx");
+        assert_eq!(id.to_string(), "Std/Container.Pod.Container:web/nginx");
     }
 
     #[test]
     fn resource_id_parse_compound_name() {
-        // When parsing, the last `.` separates type from name
-        let id: ResourceId = "Std/Container.Pod.Container.web:nginx".parse().unwrap();
+        // The first `:` separates type from name
+        let id: ResourceId = "Std/Container.Pod.Container:web/nginx".parse().unwrap();
         assert_eq!(id.resource_type(), "Std/Container.Pod.Container");
-        assert_eq!(id.resource_name(), "web:nginx");
+        assert_eq!(id.resource_name(), "web/nginx");
     }
 
     #[test]
     fn resource_id_invalid() {
-        assert!("no_dot_separator".parse::<ResourceId>().is_err());
-        assert!(".no_type".parse::<ResourceId>().is_err());
-        assert!("no_name.".parse::<ResourceId>().is_err());
+        assert!("no_colon_separator".parse::<ResourceId>().is_err());
+        assert!(":no_type".parse::<ResourceId>().is_err());
+        assert!("no_name:".parse::<ResourceId>().is_err());
         assert!("".parse::<ResourceId>().is_err());
     }
 
     #[test]
     fn resource_qid_roundtrip() {
-        let s = "MyOrg/MyRepo::main::Std/Random.Int.seed";
+        let s = "MyOrg/MyRepo::main::Std/Random.Int:seed";
         let qid: ResourceQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
-        assert_eq!(qid.resource().to_string(), "Std/Random.Int.seed");
+        assert_eq!(qid.resource().to_string(), "Std/Random.Int:seed");
         assert_eq!(qid.resource().resource_type(), "Std/Random.Int");
         assert_eq!(qid.resource().resource_name(), "seed");
     }
 
     #[test]
     fn resource_qid_with_slashed_env() {
-        let s = "MyOrg/MyRepo::feature/branch::Std/Artifact.File.readme";
+        let s = "MyOrg/MyRepo::feature/branch::Std/Artifact.File:readme";
         let qid: ResourceQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(
@@ -1165,8 +1148,8 @@ mod tests {
     fn resource_qid_invalid() {
         // Missing resource part
         assert!("MyOrg/MyRepo::main".parse::<ResourceQid>().is_err());
-        // Invalid resource (no dot)
-        assert!("MyOrg/MyRepo::main::nodot".parse::<ResourceQid>().is_err());
+        // Invalid resource (no `:` separator within resource)
+        assert!("MyOrg/MyRepo::main::nocolon".parse::<ResourceQid>().is_err());
     }
 
     #[test]
@@ -1176,7 +1159,7 @@ mod tests {
         let resource_qid = env_qid.resource(resource_id);
         assert_eq!(
             resource_qid.to_string(),
-            "MyOrg/MyRepo::main::Std/Random.Int.seed"
+            "MyOrg/MyRepo::main::Std/Random.Int:seed"
         );
     }
 }
