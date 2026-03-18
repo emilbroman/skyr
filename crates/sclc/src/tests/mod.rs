@@ -173,7 +173,28 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
                 Resource {
                     inputs,
                     outputs,
-                    dependencies: Vec::new(),
+                    dependencies: resource_obj
+                        .get("dependencies")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .map(|dep| {
+                                    let obj =
+                                        dep.as_object().expect("dependency must be an object");
+                                    ResourceId {
+                                        typ: obj["type"]
+                                            .as_str()
+                                            .expect("type must be a string")
+                                            .to_string(),
+                                        name: obj["name"]
+                                            .as_str()
+                                            .expect("name must be a string")
+                                            .to_string(),
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     markers,
                 },
             ));
@@ -465,6 +486,7 @@ test_case!(ArtifactFileWithRdb);
 // Std/Container
 test_case!(ContainerImage);
 test_case!(ContainerPod);
+test_case!(ContainerAttachment);
 test_case!(ContainerHost);
 
 // Std/Crypto

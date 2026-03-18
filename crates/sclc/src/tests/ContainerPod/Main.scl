@@ -1,2 +1,2 @@
 import Std/Container
-export let pod = Container.Pod({ name: "web" })
+export let pod = Container.Pod({ name: "web", containers: [{ image: "nginx:latest" }] })

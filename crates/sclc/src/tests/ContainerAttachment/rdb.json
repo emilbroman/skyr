@@ -1,0 +1,21 @@
+{
+  "resources": {
+    "Std/Container.Pod": {
+      "server-2bfe1251206adb92": {
+        "inputs": { "containers": [{ "image": "nginx:latest" }], "name": "server-2bfe1251206adb92", "namespace": "test" },
+        "outputs": { "node": "worker-1", "address": "10.0.0.2" }
+      },
+      "client-865b41520bb5fd5b": {
+        "inputs": { "containers": [{ "image": "curl:latest" }], "name": "client-865b41520bb5fd5b", "namespace": "test" },
+        "outputs": { "node": "worker-2", "address": "10.0.0.3" }
+      }
+    },
+    "Std/Container.Pod.Port": {
+      "server-2bfe1251206adb92:8080/tcp": {
+        "inputs": { "ip": "10.0.0.2", "node": "worker-1", "podName": "server-2bfe1251206adb92", "port": 8080, "protocol": "tcp" },
+        "outputs": {},
+        "dependencies": [{ "type": "Std/Container.Pod", "name": "server-2bfe1251206adb92" }]
+      }
+    }
+  }
+}
