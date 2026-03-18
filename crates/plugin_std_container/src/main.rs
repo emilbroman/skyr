@@ -75,8 +75,8 @@ struct Args {
 // Resource type constants
 const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
-const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
 const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
+const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
 const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 
@@ -368,15 +368,12 @@ impl ContainerPlugin {
     /// Create a pod sandbox on a worker node.
     ///
     /// Inputs:
-    /// - `name`: Pod name (required)
-    /// - `uid`: Pod UID (required)
-    /// - `node`: Target node name (optional, auto-scheduled if not specified)
-    /// - `allow`: List of port resources this pod can reach (optional)
+    /// - `name`: Full resource name including inputs hash (required)
+    /// - `containers`: List of `{ image: Str }` records (required)
     ///
     /// Outputs:
-    /// - `podId`: The CRI pod sandbox ID
     /// - `node`: The node where the pod was scheduled
-    /// - `name`: Echo of the pod name
+    /// - `address`: The pod's cluster IP address
     async fn create_pod(
         &self,
         environment_qid: &str,
@@ -388,16 +385,11 @@ impl ContainerPlugin {
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
             .to_string();
-        let uid = inputs
-            .get("uid")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("uid: {e}")))?
-            .to_string();
 
-        // Extract the allow list (list of port resource records)
-        let allowed_destinations = extract_allowed_destinations(inputs.get("allow"))?;
+        // Extract containers list
+        let containers = extract_container_configs(inputs.get("containers"))?;
 
-        // Determine target node: use specified node or auto-schedule
+        // Determine target node
         let node_name = match inputs.get("node") {
             Value::Str(n) => n.clone(),
             Value::Nil => self.select_node().await?.name,
@@ -415,8 +407,8 @@ impl ContainerPlugin {
             pod_name = %name,
             environment_qid = %environment_qid,
             node = %node_name,
-            num_allowed = %allowed_destinations.len(),
-            "creating pod sandbox"
+            num_containers = %containers.len(),
+            "creating pod"
         );
 
         // Connect to the target node and create the pod
@@ -426,31 +418,26 @@ impl ContainerPlugin {
                 config: Some(scop::PodConfig {
                     environment_qid: environment_qid.to_string(),
                     name: name.clone(),
-                    uid,
-                    allowed_destinations,
+                    containers,
                 }),
             })
             .await
             .map_err(|e| PluginError::ScopOperation(e.to_string()))?;
 
         let inner = response.into_inner();
-        let pod_id = inner.pod_id;
         let address = inner.address;
 
         info!(
             resource_type = %id.typ,
             resource_name = %id.name,
-            pod_id = %pod_id,
             node = %node_name,
             address = %address,
-            "pod sandbox created"
+            "pod created"
         );
 
         // Build outputs
         let mut outputs = sclc::Record::default();
-        outputs.insert(String::from("podId"), Value::Str(pod_id));
         outputs.insert(String::from("node"), Value::Str(node_name));
-        outputs.insert(String::from("name"), Value::Str(name));
         outputs.insert(String::from("address"), Value::Str(address));
 
         Ok(sclc::Resource {
@@ -461,52 +448,23 @@ impl ContainerPlugin {
         })
     }
 
-    /// Update a pod sandbox.
+    /// Update a pod.
     ///
-    /// Pods are immutable in CRI, so updates that change the pod configuration
-    /// would require destroying and recreating. This includes changes to the
-    /// name, uid, or allow list (since egress rules are applied at pod creation).
+    /// Since the resource name includes the inputs hash, any input change
+    /// results in a new resource name. The deployment engine handles the
+    /// old→new transition as delete+create. So update is always a no-op.
     async fn update_pod(
         &self,
-        environment_qid: &str,
+        _environment_qid: &str,
         id: ids::ResourceId,
-        prev_inputs: sclc::Record,
+        _prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        // Check if inputs that affect the pod have changed
-        // If name, uid, or allow list changed, we need to recreate
-        let prev_name = prev_inputs.get("name").assert_str_ref().ok();
-        let prev_uid = prev_inputs.get("uid").assert_str_ref().ok();
-
-        let name = inputs.get("name").assert_str_ref().ok();
-        let uid = inputs.get("uid").assert_str_ref().ok();
-
-        // Check if the allow list has changed
-        let allow_changed = {
-            let prev_allow = serde_json::to_string(prev_inputs.get("allow")).unwrap_or_default();
-            let curr_allow = serde_json::to_string(inputs.get("allow")).unwrap_or_default();
-            prev_allow != curr_allow
-        };
-
-        if prev_name != name || prev_uid != uid || allow_changed {
-            // Pod identity or network config changed - delete old and create new
-            warn!(
-                resource_type = %id.typ,
-                resource_name = %id.name,
-                allow_changed = %allow_changed,
-                "pod config changed, recreating"
-            );
-            self.delete_pod(id.clone(), prev_inputs, prev_outputs)
-                .await?;
-            return self.create_pod(environment_qid, id, inputs).await;
-        }
-
-        // No changes that require recreation - return existing outputs
         info!(
             resource_type = %id.typ,
             resource_name = %id.name,
-            "pod update is a no-op (no recreatable changes)"
+            "pod update is a no-op (inputs hash in name ensures delete+create)"
         );
 
         Ok(sclc::Resource {
@@ -521,13 +479,13 @@ impl ContainerPlugin {
     async fn delete_pod(
         &self,
         id: ids::ResourceId,
-        _inputs: sclc::Record,
+        inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        let pod_id = outputs
-            .get("podId")
+        let pod_name = inputs
+            .get("name")
             .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podId output: {e}")))?;
+            .map_err(|e| PluginError::InvalidInput(format!("name input: {e}")))?;
         let node_name = outputs
             .get("node")
             .assert_str_ref()
@@ -536,16 +494,16 @@ impl ContainerPlugin {
         info!(
             resource_type = %id.typ,
             resource_name = %id.name,
-            pod_id = %pod_id,
+            pod_name = %pod_name,
             node = %node_name,
-            "deleting pod sandbox"
+            "deleting pod"
         );
 
         let mut conduit = self.get_conduit(node_name).await?;
 
         conduit
             .remove_pod(scop::RemovePodRequest {
-                pod_id: pod_id.to_string(),
+                pod_name: pod_name.to_string(),
             })
             .await
             .map_err(|e| PluginError::ScopOperation(format!("remove_pod: {e}")))?;
@@ -553,232 +511,8 @@ impl ContainerPlugin {
         info!(
             resource_type = %id.typ,
             resource_name = %id.name,
-            pod_id = %pod_id,
-            "pod sandbox deleted"
-        );
-
-        Ok(())
-    }
-
-    // =========================================================================
-    // Container Resource Handlers
-    // =========================================================================
-
-    /// Create a container within a pod.
-    ///
-    /// Inputs:
-    /// - `podId`: The CRI pod sandbox ID (required)
-    /// - `podName`: Pod name for metadata (required)
-    /// - `podUid`: Pod UID for metadata (required)
-    /// - `node`: Node where the pod is running (required)
-    /// - `name`: Container name (required)
-    /// - `image`: Container image (required)
-    /// - `command`: Entrypoint command (optional)
-    /// - `args`: Command arguments (optional)
-    /// - `envs`: Environment variables as a record (optional)
-    ///
-    /// Outputs:
-    /// - `containerId`: The CRI container ID
-    /// - `name`: Echo of the container name
-    /// - `image`: Echo of the image
-    async fn create_container(
-        &self,
-        environment_qid: &str,
-        id: ids::ResourceId,
-        inputs: sclc::Record,
-    ) -> anyhow::Result<sclc::Resource> {
-        let pod_id = inputs
-            .get("podId")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podId: {e}")))?
-            .to_string();
-        let pod_name = inputs
-            .get("podName")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?
-            .to_string();
-        let pod_uid = inputs
-            .get("podUid")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podUid: {e}")))?
-            .to_string();
-        let node_name = inputs
-            .get("node")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("node: {e}")))?
-            .to_string();
-        let name = inputs
-            .get("name")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
-            .to_string();
-        let image = inputs
-            .get("image")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("image: {e}")))?
-            .to_string();
-
-        // Extract optional command
-        let command = extract_string_list(inputs.get("command"))?;
-
-        // Extract optional args
-        let args = extract_string_list(inputs.get("args"))?;
-
-        // Extract optional envs as key-value pairs
-        let envs = extract_env_vars(inputs.get("envs"))?;
-
-        info!(
-            resource_type = %id.typ,
-            resource_name = %id.name,
-            container_name = %name,
-            image = %image,
-            pod_id = %pod_id,
-            node = %node_name,
-            "creating container"
-        );
-
-        let mut conduit = self.get_conduit(&node_name).await?;
-
-        // Create the container
-        let create_response = conduit
-            .create_container(scop::CreateContainerRequest {
-                pod_id: pod_id.clone(),
-                config: Some(scop::ContainerConfig {
-                    name: name.clone(),
-                    image: image.clone(),
-                    command,
-                    args,
-                    envs,
-                }),
-                pod_config: Some(scop::PodConfig {
-                    environment_qid: environment_qid.to_string(),
-                    name: pod_name,
-                    uid: pod_uid,
-                    allowed_destinations: vec![],
-                }),
-                resource_id: id.to_string(),
-            })
-            .await
-            .map_err(|e| PluginError::ScopOperation(format!("create_container: {e}")))?;
-
-        let container_id = create_response.into_inner().container_id;
-
-        // Start the container
-        conduit
-            .start_container(scop::StartContainerRequest {
-                container_id: container_id.clone(),
-            })
-            .await
-            .map_err(|e| PluginError::ScopOperation(format!("start_container: {e}")))?;
-
-        info!(
-            resource_type = %id.typ,
-            resource_name = %id.name,
-            container_id = %container_id,
-            container_name = %name,
-            "container created and started"
-        );
-
-        // Build outputs
-        let mut outputs = sclc::Record::default();
-        outputs.insert(String::from("containerId"), Value::Str(container_id));
-        outputs.insert(String::from("name"), Value::Str(name));
-        outputs.insert(String::from("image"), Value::Str(image));
-
-        Ok(sclc::Resource {
-            inputs,
-            outputs,
-            dependencies: vec![],
-            markers: BTreeSet::from([sclc::Marker::Volatile]),
-        })
-    }
-
-    /// Update a container.
-    ///
-    /// Containers are immutable, so any change requires recreating.
-    async fn update_container(
-        &self,
-        environment_qid: &str,
-        id: ids::ResourceId,
-        prev_inputs: sclc::Record,
-        prev_outputs: sclc::Record,
-        inputs: sclc::Record,
-    ) -> anyhow::Result<sclc::Resource> {
-        // Check if any inputs changed
-        if inputs_changed(&prev_inputs, &inputs) {
-            warn!(
-                resource_type = %id.typ,
-                resource_name = %id.name,
-                "container inputs changed, recreating"
-            );
-            self.delete_container(id.clone(), prev_inputs, prev_outputs)
-                .await?;
-            return self.create_container(environment_qid, id, inputs).await;
-        }
-
-        // No changes - return existing outputs
-        info!(
-            resource_type = %id.typ,
-            resource_name = %id.name,
-            "container update is a no-op (no changes)"
-        );
-
-        Ok(sclc::Resource {
-            inputs,
-            outputs: prev_outputs,
-            dependencies: vec![],
-            markers: BTreeSet::from([sclc::Marker::Volatile]),
-        })
-    }
-
-    /// Delete a container.
-    async fn delete_container(
-        &self,
-        id: ids::ResourceId,
-        inputs: sclc::Record,
-        outputs: sclc::Record,
-    ) -> anyhow::Result<()> {
-        let container_id = outputs
-            .get("containerId")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("containerId output: {e}")))?;
-        let node_name = inputs
-            .get("node")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("node input: {e}")))?;
-
-        info!(
-            resource_type = %id.typ,
-            resource_name = %id.name,
-            container_id = %container_id,
-            node = %node_name,
-            "deleting container"
-        );
-
-        let mut conduit = self.get_conduit(node_name).await?;
-
-        // Stop the container first (with a reasonable timeout)
-        conduit
-            .stop_container(scop::StopContainerRequest {
-                container_id: container_id.to_string(),
-                timeout: 30, // 30 seconds timeout
-            })
-            .await
-            .map_err(|e| PluginError::ScopOperation(format!("stop_container: {e}")))?;
-
-        // Then remove it
-        conduit
-            .remove_container(scop::RemoveContainerRequest {
-                container_id: container_id.to_string(),
-            })
-            .await
-            .map_err(|e| PluginError::ScopOperation(format!("remove_container: {e}")))?;
-
-        info!(
-            resource_type = %id.typ,
-            resource_name = %id.name,
-            container_id = %container_id,
-            "container deleted"
+            pod_name = %pod_name,
+            "pod deleted"
         );
 
         Ok(())
@@ -791,32 +525,23 @@ impl ContainerPlugin {
     /// Create a port resource on a pod.
     ///
     /// Inputs:
-    /// - `podName`: Pod name (required)
-    /// - `podNamespace`: Pod namespace (required)
-    /// - `podAddress`: Pod IP address (required)
+    /// - `podName`: Full resource name with hash (required)
+    /// - `ip`: Pod IP address (required)
+    /// - `node`: Node where the pod is running (required)
     /// - `port`: Port number (required)
     /// - `protocol`: Protocol, e.g. "tcp" or "udp" (required)
-    /// - `name`: Optional port name
     ///
-    /// Outputs:
-    /// - `address`: The pod's IP address
-    /// - `port`: The port number
-    /// - `protocol`: The protocol
+    /// Outputs: empty `{}`
     async fn create_port(
         &self,
         _environment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
-        let pod_id = inputs
-            .get("podId")
+        let pod_name = inputs
+            .get("podName")
             .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podId: {e}")))?
-            .to_string();
-        let pod_address = inputs
-            .get("podAddress")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("podAddress: {e}")))?
+            .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?
             .to_string();
         let node_name = inputs
             .get("node")
@@ -836,7 +561,7 @@ impl ContainerPlugin {
         info!(
             resource_type = %id.typ,
             resource_name = %id.name,
-            pod_id = %pod_id,
+            pod_name = %pod_name,
             node = %node_name,
             port = %port,
             protocol = %protocol,
@@ -847,19 +572,15 @@ impl ContainerPlugin {
         let mut conduit = self.get_conduit(&node_name).await?;
         conduit
             .open_port(scop::OpenPortRequest {
-                pod_id,
+                pod_name,
                 port: *port as i32,
                 protocol: protocol.clone(),
             })
             .await
             .map_err(|e| PluginError::Connect(format!("open_port failed: {e}")))?;
 
-        // Build outputs — the port resource records which address/port/protocol
-        // is now open.
-        let mut outputs = sclc::Record::default();
-        outputs.insert(String::from("address"), Value::Str(pod_address));
-        outputs.insert(String::from("port"), Value::Int(*port));
-        outputs.insert(String::from("protocol"), Value::Str(protocol));
+        // Build outputs — empty record (Port type fields come from closure/inputs, not plugin)
+        let outputs = sclc::Record::default();
 
         Ok(sclc::Resource {
             inputs,
@@ -912,7 +633,11 @@ impl ContainerPlugin {
         inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        let pod_id = inputs.get("podId").assert_str_ref().ok().map(String::from);
+        let pod_name = inputs
+            .get("podName")
+            .assert_str_ref()
+            .ok()
+            .map(String::from);
         let node_name = inputs.get("node").assert_str_ref().ok().map(String::from);
         let port = inputs.get("port").assert_int_ref().ok().copied();
         let protocol = inputs
@@ -921,14 +646,14 @@ impl ContainerPlugin {
             .ok()
             .map(String::from);
 
-        if let (Some(pod_id), Some(node_name), Some(port), Some(protocol)) =
-            (pod_id, node_name, port, protocol)
+        if let (Some(pod_name), Some(node_name), Some(port), Some(protocol)) =
+            (pod_name, node_name, port, protocol)
         {
             match self.get_conduit(&node_name).await {
                 Ok(mut conduit) => {
                     if let Err(e) = conduit
                         .close_port(scop::ClosePortRequest {
-                            pod_id: pod_id.clone(),
+                            pod_name: pod_name.clone(),
                             port: port as i32,
                             protocol,
                         })
@@ -936,7 +661,7 @@ impl ContainerPlugin {
                     {
                         warn!(
                             resource_name = %id.name,
-                            pod_id = %pod_id,
+                            pod_name = %pod_name,
                             error = %e,
                             "failed to close port (pod may already be gone)"
                         );
@@ -957,6 +682,172 @@ impl ContainerPlugin {
             resource_type = %id.typ,
             resource_name = %id.name,
             "pod port deleted"
+        );
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Attachment Resource Handlers
+    // =========================================================================
+
+    /// Create an attachment (open egress port on a pod's firewall).
+    ///
+    /// Inputs:
+    /// - `podName`: Full resource name with hash (required)
+    /// - `node`: Node where the pod is running (required)
+    /// - `source`: Source pod IP address (required)
+    /// - `destination`: Destination IP address (required)
+    /// - `port`: Destination port number (required)
+    /// - `protocol`: Protocol, "tcp" or "udp" (required)
+    async fn create_attachment(
+        &self,
+        _environment_qid: &str,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let pod_name = inputs
+            .get("podName")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("podName: {e}")))?
+            .to_string();
+        let node_name = inputs
+            .get("node")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("node: {e}")))?
+            .to_string();
+        let destination = inputs
+            .get("destination")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("destination: {e}")))?
+            .to_string();
+        let port = *inputs
+            .get("port")
+            .assert_int_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("port: {e}")))?;
+        let protocol = inputs
+            .get("protocol")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("protocol: {e}")))?
+            .to_string();
+
+        info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            pod_name = %pod_name,
+            node = %node_name,
+            destination = %destination,
+            port = %port,
+            protocol = %protocol,
+            "creating attachment"
+        );
+
+        let mut conduit = self.get_conduit(&node_name).await?;
+        conduit
+            .add_attachment(scop::AddAttachmentRequest {
+                pod_name,
+                destination_address: destination,
+                port: port as i32,
+                protocol,
+            })
+            .await
+            .map_err(|e| PluginError::ScopOperation(format!("add_attachment: {e}")))?;
+
+        let outputs = sclc::Record::default();
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+            markers: BTreeSet::new(),
+        })
+    }
+
+    /// Update an attachment (immutable — delete old + create new).
+    async fn update_attachment(
+        &self,
+        environment_qid: &str,
+        id: ids::ResourceId,
+        prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        if inputs_changed(&prev_inputs, &inputs) {
+            self.delete_attachment(id.clone(), prev_inputs, prev_outputs)
+                .await?;
+            return self.create_attachment(environment_qid, id, inputs).await;
+        }
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs: prev_outputs,
+            dependencies: vec![],
+            markers: BTreeSet::new(),
+        })
+    }
+
+    /// Delete an attachment.
+    async fn delete_attachment(
+        &self,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+        _outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        let pod_name = inputs
+            .get("podName")
+            .assert_str_ref()
+            .ok()
+            .map(String::from);
+        let node_name = inputs.get("node").assert_str_ref().ok().map(String::from);
+        let destination = inputs
+            .get("destination")
+            .assert_str_ref()
+            .ok()
+            .map(String::from);
+        let port = inputs.get("port").assert_int_ref().ok().copied();
+        let protocol = inputs
+            .get("protocol")
+            .assert_str_ref()
+            .ok()
+            .map(String::from);
+
+        if let (Some(pod_name), Some(node_name), Some(destination), Some(port), Some(protocol)) =
+            (pod_name, node_name, destination, port, protocol)
+        {
+            match self.get_conduit(&node_name).await {
+                Ok(mut conduit) => {
+                    if let Err(e) = conduit
+                        .remove_attachment(scop::RemoveAttachmentRequest {
+                            pod_name: pod_name.clone(),
+                            destination_address: destination,
+                            port: port as i32,
+                            protocol,
+                        })
+                        .await
+                    {
+                        warn!(
+                            resource_name = %id.name,
+                            pod_name = %pod_name,
+                            error = %e,
+                            "failed to remove attachment (pod may already be gone)"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        resource_name = %id.name,
+                        node = %node_name,
+                        error = %e,
+                        "failed to connect to node for attachment removal"
+                    );
+                }
+            }
+        }
+
+        info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            "attachment deleted"
         );
 
         Ok(())
@@ -1364,90 +1255,34 @@ impl ContainerPlugin {
 // Helper Functions
 // =============================================================================
 
-/// Extract a string list from a Value (for command/args).
-fn extract_string_list(value: &Value) -> Result<Vec<String>, PluginError> {
-    match value {
-        Value::Nil => Ok(vec![]),
-        Value::List(list) => {
-            let mut result = Vec::with_capacity(list.len());
-            for (i, item) in list.iter().enumerate() {
-                let s = item
-                    .assert_str_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("list item {i}: {e}")))?;
-                result.push(s.to_string());
-            }
-            Ok(result)
-        }
-        other => Err(PluginError::InvalidInput(format!(
-            "expected List? but got {other}"
-        ))),
-    }
-}
-
-/// Extract environment variables from a Value (record of string values).
-fn extract_env_vars(value: &Value) -> Result<Vec<scop::KeyValue>, PluginError> {
-    match value {
-        Value::Nil => Ok(vec![]),
-        Value::Record(record) => {
-            let mut envs = Vec::with_capacity(record.iter().count());
-            for (key, val) in record.iter() {
-                let v = val
-                    .assert_str_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("env var {key}: {e}")))?;
-                envs.push(scop::KeyValue {
-                    key: key.to_string(),
-                    value: v.to_string(),
-                });
-            }
-            Ok(envs)
-        }
-        other => Err(PluginError::InvalidInput(format!(
-            "expected Record? for envs but got {other}"
-        ))),
-    }
-}
-
-/// Extract allowed destinations from the `allow` input value.
+/// Extract container configs from the `containers` input value.
 ///
-/// The allow list is a `Value::List` of records, each with `address`, `port`,
-/// and `protocol` fields (matching Pod.Port output shape). Returns an empty
-/// list if the value is Nil (allow not provided).
-fn extract_allowed_destinations(
-    value: &Value,
-) -> Result<Vec<scop::AllowedDestination>, PluginError> {
+/// The containers list is a `Value::List` of records, each with an `image` field.
+fn extract_container_configs(value: &Value) -> Result<Vec<scop::ContainerConfig>, PluginError> {
     match value {
         Value::Nil => Ok(vec![]),
         Value::List(list) => {
-            let mut destinations = Vec::with_capacity(list.len());
+            let mut configs = Vec::with_capacity(list.len());
             for (i, item) in list.iter().enumerate() {
                 let record = item.assert_record_ref().map_err(|e| {
-                    PluginError::InvalidInput(format!("allow[{i}]: expected record: {e}"))
+                    PluginError::InvalidInput(format!("containers[{i}]: expected record: {e}"))
                 })?;
-                let address = record
-                    .get("address")
+                let image = record
+                    .get("image")
                     .assert_str_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].address: {e}")))?
+                    .map_err(|e| PluginError::InvalidInput(format!("containers[{i}].image: {e}")))?
                     .to_string();
-                let port = *record
-                    .get("port")
-                    .assert_int_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].port: {e}")))?
-                    as i32;
-                let protocol = record
-                    .get("protocol")
-                    .assert_str_ref()
-                    .map_err(|e| PluginError::InvalidInput(format!("allow[{i}].protocol: {e}")))?
-                    .to_string();
-                destinations.push(scop::AllowedDestination {
-                    address,
-                    port,
-                    protocol,
+                configs.push(scop::ContainerConfig {
+                    image,
+                    command: vec![],
+                    args: vec![],
+                    envs: vec![],
                 });
             }
-            Ok(destinations)
+            Ok(configs)
         }
         other => Err(PluginError::InvalidInput(format!(
-            "allow: expected List? but got {other}"
+            "containers: expected List? but got {other}"
         ))),
     }
 }
@@ -1947,11 +1782,11 @@ impl rtp::Plugin for ContainerPlugin {
                     .await
             }
             POD_RESOURCE_TYPE => self.create_pod(environment_qid, id.clone(), inputs).await,
-            CONTAINER_RESOURCE_TYPE => {
-                self.create_container(environment_qid, id.clone(), inputs)
+            PORT_RESOURCE_TYPE => self.create_port(environment_qid, id.clone(), inputs).await,
+            ATTACHMENT_RESOURCE_TYPE => {
+                self.create_attachment(environment_qid, id.clone(), inputs)
                     .await
             }
-            PORT_RESOURCE_TYPE => self.create_port(environment_qid, id.clone(), inputs).await,
             HOST_RESOURCE_TYPE => self.create_host(environment_qid, id.clone(), inputs).await,
             HOST_PORT_RESOURCE_TYPE => {
                 self.create_host_port(environment_qid, id.clone(), inputs)
@@ -1993,8 +1828,8 @@ impl rtp::Plugin for ContainerPlugin {
                 )
                 .await
             }
-            CONTAINER_RESOURCE_TYPE => {
-                self.update_container(
+            PORT_RESOURCE_TYPE => {
+                self.update_port(
                     environment_qid,
                     id.clone(),
                     prev_inputs,
@@ -2003,8 +1838,8 @@ impl rtp::Plugin for ContainerPlugin {
                 )
                 .await
             }
-            PORT_RESOURCE_TYPE => {
-                self.update_port(
+            ATTACHMENT_RESOURCE_TYPE => {
+                self.update_attachment(
                     environment_qid,
                     id.clone(),
                     prev_inputs,
@@ -2050,8 +1885,8 @@ impl rtp::Plugin for ContainerPlugin {
         let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => self.delete_image(id.clone(), inputs, outputs).await,
             POD_RESOURCE_TYPE => self.delete_pod(id.clone(), inputs, outputs).await,
-            CONTAINER_RESOURCE_TYPE => self.delete_container(id.clone(), inputs, outputs).await,
             PORT_RESOURCE_TYPE => self.delete_port(id.clone(), inputs, outputs).await,
+            ATTACHMENT_RESOURCE_TYPE => self.delete_attachment(id.clone(), inputs, outputs).await,
             HOST_RESOURCE_TYPE => self.delete_host(id.clone(), inputs, outputs).await,
             HOST_PORT_RESOURCE_TYPE => self.delete_host_port(id.clone(), inputs, outputs).await,
             _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
