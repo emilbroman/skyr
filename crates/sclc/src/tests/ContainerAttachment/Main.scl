@@ -1,0 +1,7 @@
+import Std/Container
+
+let server = Container.Pod({ name: "server", containers: [{ image: "nginx:latest" }] })
+let http = server.Port({ port: 8080 })
+
+let client = Container.Pod({ name: "client", containers: [{ image: "curl:latest" }] })
+export let attachment = client.Attachment(http)
