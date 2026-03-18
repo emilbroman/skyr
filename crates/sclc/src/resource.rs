@@ -7,7 +7,7 @@ use crate::Record;
 )]
 pub struct ResourceId {
     pub ty: String,
-    pub id: String,
+    pub name: String,
 }
 
 #[derive(

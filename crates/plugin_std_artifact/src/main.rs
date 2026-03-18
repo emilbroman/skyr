@@ -62,7 +62,7 @@ impl ArtifactPlugin {
 
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             namespace = namespace,
             name = name,
             "materializing artifact resource"
@@ -73,7 +73,7 @@ impl ArtifactPlugin {
             Err(adb::WriteError::AlreadyExists { .. }) => {
                 warn!(
                     resource_type = id.ty.as_str(),
-                    resource_id = id.id.as_str(),
+                    resource_name = id.name.as_str(),
                     namespace = namespace,
                     name = name,
                     "artifact already exists, treating create as idempotent"
@@ -90,7 +90,7 @@ impl ArtifactPlugin {
 
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             namespace = header.namespace.as_str(),
             name = header.name.as_str(),
             "artifact resource materialized"
@@ -128,7 +128,7 @@ impl ArtifactPlugin {
         if let Err(err) = &result {
             error!(
                 resource_type = id.ty.as_str(),
-                resource_id = id.id.as_str(),
+                resource_name = id.name.as_str(),
                 err = %err,
                 "artifact {operation} failed"
             );
@@ -178,7 +178,7 @@ impl rtp::Plugin for ArtifactPlugin {
         // Artifacts are retained even when the owning deployment is torn down.
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             "artifact delete is a no-op"
         );
         Ok(())

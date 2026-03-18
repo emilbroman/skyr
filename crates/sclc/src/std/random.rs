@@ -19,7 +19,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let max = arg1.max(arg2);
         let resource_id = crate::ResourceId {
             ty: INT_RESOURCE_TYPE.to_string(),
-            id: name.to_owned(),
+            name: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();

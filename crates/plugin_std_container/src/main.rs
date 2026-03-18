@@ -221,7 +221,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             image_name = %name,
             context = %context,
             containerfile = %containerfile,
@@ -280,7 +280,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             fullname = %result.fullname,
             digest = %result.digest,
             "image created"
@@ -313,7 +313,7 @@ impl ContainerPlugin {
         if inputs_changed(&prev_inputs, &inputs) {
             info!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 "image inputs changed, rebuilding"
             );
             return self
@@ -324,7 +324,7 @@ impl ContainerPlugin {
         // No changes - return existing outputs
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "image update is a no-op (no changes)"
         );
 
@@ -352,7 +352,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             fullname = %fullname,
             digest = %digest,
             "image resource deleted (image remains in registry)"
@@ -411,7 +411,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             pod_name = %name,
             environment_qid = %environment_qid,
             node = %node_name,
@@ -439,7 +439,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
             address = %address,
@@ -493,7 +493,7 @@ impl ContainerPlugin {
             // Pod identity or network config changed - delete old and create new
             warn!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 allow_changed = %allow_changed,
                 "pod config changed, recreating"
             );
@@ -505,7 +505,7 @@ impl ContainerPlugin {
         // No changes that require recreation - return existing outputs
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "pod update is a no-op (no recreatable changes)"
         );
 
@@ -535,7 +535,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
             "deleting pod sandbox"
@@ -552,7 +552,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             pod_id = %pod_id,
             "pod sandbox deleted"
         );
@@ -629,7 +629,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             container_name = %name,
             image = %image,
             pod_id = %pod_id,
@@ -672,7 +672,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             container_id = %container_id,
             container_name = %name,
             "container created and started"
@@ -707,7 +707,7 @@ impl ContainerPlugin {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 "container inputs changed, recreating"
             );
             self.delete_container(id.clone(), prev_inputs, prev_outputs)
@@ -718,7 +718,7 @@ impl ContainerPlugin {
         // No changes - return existing outputs
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "container update is a no-op (no changes)"
         );
 
@@ -748,7 +748,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             container_id = %container_id,
             node = %node_name,
             "deleting container"
@@ -775,7 +775,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             container_id = %container_id,
             "container deleted"
         );
@@ -834,7 +834,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             pod_id = %pod_id,
             node = %node_name,
             port = %port,
@@ -882,7 +882,7 @@ impl ContainerPlugin {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 "pod port inputs changed, recreating"
             );
             self.delete_port(id.clone(), prev_inputs, prev_outputs)
@@ -892,7 +892,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "pod port update is a no-op (no changes)"
         );
 
@@ -934,7 +934,7 @@ impl ContainerPlugin {
                         .await
                     {
                         warn!(
-                            resource_id = %id.id,
+                            resource_name = %id.name,
                             pod_id = %pod_id,
                             error = %e,
                             "failed to close port (pod may already be gone)"
@@ -943,7 +943,7 @@ impl ContainerPlugin {
                 }
                 Err(e) => {
                     warn!(
-                        resource_id = %id.id,
+                        resource_name = %id.name,
                         node = %node_name,
                         error = %e,
                         "failed to connect to node for port close (node may be gone)"
@@ -954,7 +954,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "pod port deleted"
         );
 
@@ -998,7 +998,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             hostname = %hostname,
             vip = %vip_str,
             "creating host"
@@ -1034,7 +1034,7 @@ impl ContainerPlugin {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 "host inputs changed, recreating"
             );
             self.delete_host(id.clone(), prev_inputs, prev_outputs)
@@ -1044,7 +1044,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "host update is a no-op (no changes)"
         );
 
@@ -1071,7 +1071,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             hostname = %hostname,
             "deleting host"
         );
@@ -1137,7 +1137,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             hostname = %host_hostname,
             vip = %host_vip,
             port = %port,
@@ -1179,7 +1179,7 @@ impl ContainerPlugin {
         if inputs_changed(&prev_inputs, &inputs) {
             warn!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 "host port inputs changed, recreating"
             );
             self.delete_host_port(id.clone(), prev_inputs, prev_outputs)
@@ -1189,7 +1189,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             "host port update is a no-op (no changes)"
         );
 
@@ -1222,7 +1222,7 @@ impl ContainerPlugin {
 
         info!(
             resource_type = %id.ty,
-            resource_id = %id.id,
+            resource_name = %id.name,
             vip = %host_vip,
             port = %port,
             protocol = %protocol,
@@ -1922,7 +1922,7 @@ macro_rules! log_on_error {
         if let Err(ref e) = $result {
             error!(
                 resource_type = %$id.ty,
-                resource_id = %$id.id,
+                resource_name = %$id.name,
                 err = %e,
                 "{} failed", $op
             );

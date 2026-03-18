@@ -5,7 +5,7 @@ query ListRepositoryResources {
       name
       resources {
         type
-        id
+        name
         inputs
         outputs
         owner {

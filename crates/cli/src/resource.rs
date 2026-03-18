@@ -46,7 +46,7 @@ pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow:
 #[derive(Serialize)]
 struct ResourceListOutput {
     r#type: String,
-    id: String,
+    name: String,
     owner: String,
     inputs: Option<serde_json::Value>,
     outputs: Option<serde_json::Value>,
@@ -91,7 +91,7 @@ async fn list_resources(
                     .unwrap_or_default();
                 ResourceListOutput {
                     r#type: resource.type_,
-                    id: resource.id,
+                    name: resource.name,
                     owner,
                     inputs: resource.inputs,
                     outputs: resource.outputs,
@@ -106,7 +106,7 @@ async fn list_resources(
             let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}  {:<}");
             table.add_row(crate::output::row(vec![
                 String::from("TYPE"),
-                String::from("ID"),
+                String::from("NAME"),
                 String::from("OWNER"),
                 String::from("INPUTS"),
                 String::from("OUTPUTS"),
@@ -122,7 +122,7 @@ async fn list_resources(
                     .unwrap_or_default();
                 table.add_row(crate::output::row(vec![
                     resource.r#type,
-                    resource.id,
+                    resource.name,
                     resource.owner,
                     inputs,
                     outputs,

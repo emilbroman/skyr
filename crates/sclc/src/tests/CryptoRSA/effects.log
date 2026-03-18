@@ -1,1 +1,1 @@
-CreateResource ty=Std/Crypto.RSAPrivateKey id=rsakey inputs={size: 2048}
+CreateResource ty=Std/Crypto.RSAPrivateKey name=rsakey inputs={size: 2048}

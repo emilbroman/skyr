@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Pod id=web inputs={allow: nil, name: web, namespace: test, uid: test-web}
+CreateResource ty=Std/Container.Pod name=web inputs={allow: nil, name: web, namespace: test, uid: test-web}

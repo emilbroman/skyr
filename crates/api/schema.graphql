@@ -82,7 +82,7 @@ type Repository {
 
 type Resource {
   type: String!
-  id: String!
+  name: String!
   inputs: JSON
   outputs: JSON
   owner: Deployment

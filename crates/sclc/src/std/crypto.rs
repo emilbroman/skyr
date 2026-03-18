@@ -36,7 +36,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let resource_id = crate::ResourceId {
             ty: ED25519_RESOURCE_TYPE.to_owned(),
-            id: name.to_owned(),
+            name: name.to_owned(),
         };
 
         let inputs = crate::Record::default();
@@ -77,7 +77,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let resource_id = crate::ResourceId {
             ty: ECDSA_RESOURCE_TYPE.to_owned(),
-            id: name.to_owned(),
+            name: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();
@@ -153,16 +153,16 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let mut hasher = std::hash::DefaultHasher::new();
         std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
-        let id = format!("{:x}", std::hash::Hasher::finish(&hasher));
+        let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
         let resource_id = crate::ResourceId {
             ty: CSR_RESOURCE_TYPE.to_owned(),
-            id: id.clone(),
+            name: resource_name.clone(),
         };
 
         let Some(outputs) = eval_ctx.resource(
             CSR_RESOURCE_TYPE,
-            &id,
+            &resource_name,
             &inputs,
             argument_dependencies.clone(),
         )?
@@ -199,7 +199,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let resource_id = crate::ResourceId {
             ty: RSA_RESOURCE_TYPE.to_owned(),
-            id: name.to_owned(),
+            name: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();
@@ -252,16 +252,16 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let mut hasher = std::hash::DefaultHasher::new();
         std::hash::Hash::hash(&format!("{:?}", inputs), &mut hasher);
-        let id = format!("{:x}", std::hash::Hasher::finish(&hasher));
+        let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
         let resource_id = crate::ResourceId {
             ty: CERT_SIG_RESOURCE_TYPE.to_owned(),
-            id: id.clone(),
+            name: resource_name.clone(),
         };
 
         let Some(outputs) = eval_ctx.resource(
             CERT_SIG_RESOURCE_TYPE,
-            &id,
+            &resource_name,
             &inputs,
             argument_dependencies.clone(),
         )?

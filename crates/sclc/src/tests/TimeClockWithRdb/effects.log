@@ -1,1 +1,1 @@
-TouchResource ty=Std/Time.Clock id=0/60000 inputs={milliseconds: 60000, months: 0}
+TouchResource ty=Std/Time.Clock name=0/60000 inputs={milliseconds: 60000, months: 0}

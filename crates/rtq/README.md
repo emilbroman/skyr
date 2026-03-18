@@ -19,7 +19,7 @@ DE → RTQ → RTE
 | **Adopt** | Transfer resource ownership between deployments |
 | **Destroy** | Delete a resource no longer needed |
 
-Each message contains a `ResourceRef` with `environment_qid`, resource type, and resource ID. Additional fields per message type:
+Each message contains a `ResourceRef` with `environment_qid`, resource type, and resource name. Additional fields per message type:
 
 - **Create**: `owner_deployment_qid`, `desired_inputs`, `dependencies`
 - **Restore**: `owner_deployment_qid`, `desired_inputs`, `dependencies`
@@ -38,7 +38,7 @@ The AMQP topology is hard-coded (the cluster is fully controlled):
 
 - Direct exchange (`rtq.v1`).
 - 32 shards for parallelism.
-- Routing key derived from a consistent hash of the resource UID (`environment_qid:resource_type:resource_id`).
+- Routing key derived from a consistent hash of the resource UID (`environment_qid:resource_type:resource_name`).
 - Worker queue bindings derived from `WorkerConfig` shard ownership — each worker is assigned a subset of shards.
 
 ## Related Crates

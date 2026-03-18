@@ -51,7 +51,7 @@ fn image_extern_fn(
     // (the plugin will compute a content-based ID from the Git tree hash)
     let resource_id = ResourceId {
         ty: IMAGE_RESOURCE_TYPE.to_string(),
-        id: name.clone(),
+        name: name.clone(),
     };
 
     // Build inputs for the RTP plugin
@@ -119,7 +119,7 @@ fn pod_extern_fn(
 
     let resource_id = ResourceId {
         ty: POD_RESOURCE_TYPE.to_string(),
-        id: name.clone(),
+        name: name.clone(),
     };
 
     // Extract the optional allow list (list of port resource records)
@@ -242,7 +242,7 @@ fn create_container_fn(
         let resource_id_str = format!("{}:{}", pod_name, container_name);
         let resource_id = ResourceId {
             ty: CONTAINER_RESOURCE_TYPE.to_string(),
-            id: resource_id_str.clone(),
+            name: resource_id_str.clone(),
         };
 
         // Build inputs for the RTP plugin
@@ -330,7 +330,7 @@ fn create_port_fn(
         let resource_id_str = format!("{}:{}/{}", pod_name, port, protocol);
         let resource_id = ResourceId {
             ty: PORT_RESOURCE_TYPE.to_string(),
-            id: resource_id_str.clone(),
+            name: resource_id_str.clone(),
         };
 
         // Build inputs for the RTP plugin
@@ -407,7 +407,7 @@ fn host_extern_fn(
 
     let resource_id = ResourceId {
         ty: HOST_RESOURCE_TYPE.to_string(),
-        id: name.clone(),
+        name: name.clone(),
     };
 
     // Build inputs for the RTP plugin
@@ -486,7 +486,7 @@ fn create_host_port_fn(
         let resource_id_str = format!("{}:{}/{}", host_hostname, port, protocol);
         let resource_id = ResourceId {
             ty: HOST_PORT_RESOURCE_TYPE.to_string(),
-            id: resource_id_str.clone(),
+            name: resource_id_str.clone(),
         };
 
         // Build inputs for the RTP plugin

@@ -1,1 +1,1 @@
-CreateResource ty=Std/Artifact.File id=readme inputs={contents: hello world, mediaType: nil, name: readme, namespace: test}
+CreateResource ty=Std/Artifact.File name=readme inputs={contents: hello world, mediaType: nil, name: readme, namespace: test}

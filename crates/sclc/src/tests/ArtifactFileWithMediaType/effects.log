@@ -1,1 +1,1 @@
-CreateResource ty=Std/Artifact.File id=data inputs={contents: test data, mediaType: application/json, name: data, namespace: test}
+CreateResource ty=Std/Artifact.File name=data inputs={contents: test data, mediaType: application/json, name: data, namespace: test}

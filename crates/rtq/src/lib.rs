@@ -52,14 +52,14 @@ impl Message {
 pub struct ResourceRef {
     pub environment_qid: String,
     pub resource_type: String,
-    pub resource_id: String,
+    pub resource_name: String,
 }
 
 impl ResourceRef {
     fn uid(&self) -> String {
         format!(
             "{}:{}:{}",
-            self.environment_qid, self.resource_type, self.resource_id
+            self.environment_qid, self.resource_type, self.resource_name
         )
     }
 }
