@@ -269,11 +269,11 @@ impl EvalCtx {
     pub fn get_resource(
         &self,
         ty: impl Into<String>,
-        id: impl Into<String>,
+        name: impl Into<String>,
     ) -> Option<&crate::Resource> {
         let resource_id = crate::ResourceId {
             ty: ty.into(),
-            id: id.into(),
+            name: name.into(),
         };
         self.resources.get(&resource_id)
     }
@@ -285,19 +285,19 @@ impl EvalCtx {
     pub fn resource(
         &self,
         ty: impl Into<String>,
-        id: impl Into<String>,
+        name: impl Into<String>,
         inputs: &crate::Record,
         dependencies: BTreeSet<crate::ResourceId>,
     ) -> Result<Option<crate::Record>, EvalError> {
         let ty = ty.into();
-        let id = id.into();
+        let name = name.into();
         let resource_id = crate::ResourceId {
             ty: ty.clone(),
-            id: id.clone(),
+            name: name.clone(),
         };
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
 
-        let Some(resource) = self.get_resource(ty, id) else {
+        let Some(resource) = self.get_resource(ty, name) else {
             self.emit(Effect::CreateResource {
                 id: resource_id,
                 inputs: inputs.clone(),
@@ -1396,7 +1396,7 @@ mod tests {
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "seed".to_string(),
+            name: "seed".to_string(),
         };
         let env = EvalEnv::new().with_module_id(&module_id).with_local(
             "x",
@@ -1418,11 +1418,11 @@ mod tests {
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "callee".to_string(),
+            name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "arg".to_string(),
+            name: "arg".to_string(),
         };
         let env = EvalEnv::new()
             .with_module_id(&module_id)
@@ -1463,11 +1463,11 @@ mod tests {
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "callee".to_string(),
+            name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "arg".to_string(),
+            name: "arg".to_string(),
         };
         let env = EvalEnv::new()
             .with_module_id(&module_id)
@@ -1509,11 +1509,11 @@ mod tests {
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "callee".to_string(),
+            name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "arg".to_string(),
+            name: "arg".to_string(),
         };
         let fn_value = Value::Fn(crate::FnValue {
             env: crate::FnEnv {
@@ -1550,7 +1550,7 @@ mod tests {
         let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "x".to_string(),
+            name: "x".to_string(),
         };
         let mut inputs = crate::Record::default();
         inputs.insert("min".to_string(), Value::Int(1));
@@ -1566,14 +1566,14 @@ mod tests {
         );
         let dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "seed".to_string(),
+            name: "seed".to_string(),
         };
         let mut dependencies = std::collections::BTreeSet::new();
         dependencies.insert(dependency.clone());
 
         let outputs = eval
             .ctx
-            .resource(id.ty.clone(), id.id.clone(), &inputs, dependencies)
+            .resource(id.ty.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert!(outputs.is_none());
 
@@ -1597,14 +1597,14 @@ mod tests {
         let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
         let id = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "x".to_string(),
+            name: "x".to_string(),
         };
         let mut inputs = crate::Record::default();
         inputs.insert("min".to_string(), Value::Int(1));
         inputs.insert("max".to_string(), Value::Int(2));
         let dependency = ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: "seed".to_string(),
+            name: "seed".to_string(),
         };
         eval.add_resource(
             id.clone(),
@@ -1620,7 +1620,7 @@ mod tests {
 
         let outputs = eval
             .ctx
-            .resource(id.ty.clone(), id.id.clone(), &inputs, dependencies)
+            .resource(id.ty.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert_eq!(outputs, Some(crate::Record::default()));
 

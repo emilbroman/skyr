@@ -12,12 +12,12 @@ query ListRepositoryDeployments {
         state
         resources {
           type
-          id
+          name
           inputs
           outputs
           dependencies {
             type
-            id
+            name
           }
         }
       }

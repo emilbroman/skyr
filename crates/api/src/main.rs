@@ -565,8 +565,8 @@ impl Resource {
         &self.resource.resource_type
     }
 
-    fn id(&self) -> &str {
-        &self.resource.id
+    fn name(&self) -> &str {
+        &self.resource.name
     }
 
     fn inputs(&self) -> FieldResult<Option<JsonValue>> {
@@ -643,14 +643,14 @@ impl Resource {
             let resource = context
                 .rdb_client
                 .namespace(self.resource.namespace.clone())
-                .resource(dependency.ty.clone(), dependency.id.clone())
+                .resource(dependency.ty.clone(), dependency.name.clone())
                 .get()
                 .await
                 .map_err(|error| {
                     tracing::error!(
                         "Failed to load dependency {}/{} in namespace {}: {}",
                         dependency.ty,
-                        dependency.id,
+                        dependency.name,
                         self.resource.namespace,
                         error
                     );

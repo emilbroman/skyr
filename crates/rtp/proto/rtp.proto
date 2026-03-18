@@ -24,7 +24,7 @@ message CapabilityResponse {
 
 message CreateResourceRequest {
   string resource_type = 1;
-  string resource_id = 2;
+  string resource_name = 2;
   string resource_inputs_json = 3;
   // Environment QID (e.g., "MyOrg/MyRepo::main").
   string environment_qid = 4;
@@ -39,7 +39,7 @@ enum Marker {
 
 message Resource {
   string type = 1;
-  string id = 2;
+  string name = 2;
   string inputs_json = 3;
   string outputs_json = 4;
   repeated Marker markers = 5;

@@ -360,10 +360,10 @@ mod tests {
     use super::{TrackedValue, Value};
     use crate::ResourceId;
 
-    fn dep(id: &str) -> ResourceId {
+    fn dep(name: &str) -> ResourceId {
         ResourceId {
             ty: "Std/Random.Int".to_string(),
-            id: id.to_string(),
+            name: name.to_string(),
         }
     }
 

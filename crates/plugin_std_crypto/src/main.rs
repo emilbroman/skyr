@@ -52,7 +52,7 @@ impl CryptoPlugin {
 
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             "generated key pair"
         );
 
@@ -78,7 +78,7 @@ impl CryptoPlugin {
 
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             "generated certification request"
         );
 
@@ -104,7 +104,7 @@ impl CryptoPlugin {
 
         info!(
             resource_type = id.ty.as_str(),
-            resource_id = id.id.as_str(),
+            resource_name = id.name.as_str(),
             "signed certificate"
         );
 

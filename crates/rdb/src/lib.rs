@@ -61,13 +61,13 @@ prepared_statements! {
             CREATE TABLE IF NOT EXISTS rdb.resources (
                 namespace TEXT,
                 resource_type TEXT,
-                id TEXT,
+                name TEXT,
                 inputs_json TEXT,
                 outputs_json TEXT,
                 dependencies_json TEXT,
                 markers_json TEXT,
                 owner TEXT,
-                PRIMARY KEY ((namespace), resource_type, id)
+                PRIMARY KEY ((namespace), resource_type, name)
             )
         "#,
     }
@@ -78,15 +78,15 @@ prepared_statements! {
             FROM rdb.resources
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
         list_resources = r#"
-            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner
+            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner
             FROM rdb.resources
             WHERE namespace = ?
         "#,
         list_resources_by_owner = r#"
-            SELECT resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner
+            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner
             FROM rdb.resources
             WHERE namespace = ?
             AND owner = ?
@@ -98,34 +98,34 @@ prepared_statements! {
                 owner = ?
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
         set_resource_output = r#"
             UPDATE rdb.resources
             SET outputs_json = ?
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
         set_resource_dependencies = r#"
             UPDATE rdb.resources
             SET dependencies_json = ?
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
         set_resource_markers = r#"
             UPDATE rdb.resources
             SET markers_json = ?
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
         delete_resource = r#"
             DELETE FROM rdb.resources
             WHERE namespace = ?
             AND resource_type = ?
-            AND id = ?
+            AND name = ?
         "#,
     }
 }
@@ -141,12 +141,12 @@ type ResourceRow = (
 );
 
 fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, ResourceError> {
-    let (resource_type, id, inputs_json, outputs_json, dependencies_json, markers_json, owner) =
+    let (resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner) =
         row;
     Ok(Resource {
         namespace: namespace.to_owned(),
         resource_type,
-        id,
+        name,
         inputs: decode_record(inputs_json)?,
         outputs: decode_record(outputs_json)?,
         dependencies: decode_dependencies(dependencies_json)?,
@@ -220,11 +220,11 @@ impl NamespaceClient {
         &self.namespace
     }
 
-    pub fn resource(&self, resource_type: String, id: String) -> ResourceClient {
+    pub fn resource(&self, resource_type: String, name: String) -> ResourceClient {
         ResourceClient {
             namespace: self.clone(),
             resource_type,
-            id,
+            name,
         }
     }
 
@@ -270,7 +270,7 @@ impl NamespaceClient {
 pub struct ResourceClient {
     namespace: NamespaceClient,
     resource_type: String,
-    id: String,
+    name: String,
 }
 
 impl ResourceClient {
@@ -286,7 +286,7 @@ impl ResourceClient {
         (
             self.namespace.namespace.as_str(),
             self.resource_type.as_str(),
-            self.id.as_str(),
+            self.name.as_str(),
         )
     }
 
@@ -314,7 +314,7 @@ impl ResourceClient {
         Ok(Some(Resource {
             namespace: self.namespace.namespace.clone(),
             resource_type: self.resource_type.clone(),
-            id: self.id.clone(),
+            name: self.name.clone(),
             inputs: decode_record(inputs_json)?,
             outputs: decode_record(outputs_json)?,
             dependencies: decode_dependencies(dependencies_json)?,
@@ -402,7 +402,7 @@ impl ResourceClient {
 pub struct Resource {
     pub namespace: String,
     pub resource_type: String,
-    pub id: String,
+    pub name: String,
     pub inputs: Option<Record>,
     pub outputs: Option<Record>,
     pub dependencies: Vec<sclc::ResourceId>,

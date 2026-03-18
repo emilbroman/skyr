@@ -20,7 +20,7 @@ fn map_dependencies(namespace: &str, deps: Vec<sclc::ResourceId>) -> Vec<rtq::Re
         .map(|dep| rtq::ResourceRef {
             environment_qid: namespace.to_owned(),
             resource_type: dep.ty,
-            resource_id: dep.id,
+            resource_name: dep.name,
         })
         .collect()
 }
@@ -29,7 +29,7 @@ fn resource_ref(namespace: &str, id: &sclc::ResourceId) -> rtq::ResourceRef {
     rtq::ResourceRef {
         environment_qid: namespace.to_owned(),
         resource_type: id.ty.clone(),
-        resource_id: id.id.clone(),
+        resource_name: id.name.clone(),
     }
 }
 
@@ -43,7 +43,7 @@ fn serialize_inputs(
         Err(error) => {
             tracing::error!(
                 resource_type = %id.ty,
-                resource_id = %id.id,
+                resource_name = %id.name,
                 error = %error,
                 "failed to encode {context} inputs",
             );
@@ -337,13 +337,13 @@ impl Worker {
                 for resource in &owned_resources {
                     let resource_id = sclc::ResourceId {
                         ty: resource.resource_type.clone(),
-                        id: resource.id.clone(),
+                        name: resource.name.clone(),
                     };
 
                     if resource.markers.contains(&sclc::Marker::Sticky) {
                         tracing::info!(
                             resource_type = %resource.resource_type,
-                            resource_id = %resource.id,
+                            resource_name = %resource.name,
                             "sticky resource; skipping destroy",
                         );
                         continue;
@@ -353,7 +353,7 @@ impl Worker {
                         blocked += 1;
                         tracing::info!(
                             resource_type = %resource.resource_type,
-                            resource_id = %resource.id,
+                            resource_name = %resource.name,
                             owner = ?resource.owner,
                             "resource still has living dependents; deferring destroy",
                         );
@@ -369,7 +369,7 @@ impl Worker {
 
                     tracing::info!(
                         resource_type = %resource.resource_type,
-                        resource_id = %resource.id,
+                        resource_name = %resource.name,
                         owner = ?resource.owner,
                         "queued destroy",
                     );
@@ -389,7 +389,7 @@ impl Worker {
                         self.log_publisher
                             .info(format!(
                                 "{}.{} will stick around",
-                                resource.resource_type, resource.id
+                                resource.resource_type, resource.name
                             ))
                             .await;
                     }
@@ -497,7 +497,7 @@ impl Worker {
         while let Some(resource) = resources.try_next().await? {
             let resource_id = sclc::ResourceId {
                 ty: resource.resource_type.clone(),
-                id: resource.id.clone(),
+                name: resource.name.clone(),
             };
             if resource.owner.as_deref() != Some(owner_deployment_qid.as_str())
                 && let Some(owner) = resource.owner.clone()
@@ -554,7 +554,7 @@ impl Worker {
                                     log_publisher
                                         .error(format!(
                                             "Failed to enqueue CREATE {}.{}: {}",
-                                            id.ty, id.id, error
+                                            id.ty, id.name, error
                                         ))
                                         .await;
 
@@ -563,7 +563,7 @@ impl Worker {
 
                                 tracing::info!(
                                     resource_type = %id.ty,
-                                    resource_id = %id.id,
+                                    resource_name = %id.name,
                                     inputs = ?inputs,
                                     "effect create resource",
                                 );
@@ -606,7 +606,7 @@ impl Worker {
                                     log_publisher
                                         .error(format!(
                                             "Failed to enqueue UPDATE {}.{}: {}",
-                                            id.ty, id.id, error
+                                            id.ty, id.name, error
                                         ))
                                         .await;
                                     continue;
@@ -614,7 +614,7 @@ impl Worker {
 
                                 tracing::info!(
                                     resource_type = %id.ty,
-                                    resource_id = %id.id,
+                                    resource_name = %id.name,
                                     inputs = ?inputs,
                                     "effect update resource",
                                 );
@@ -651,7 +651,7 @@ impl Worker {
                                         log_publisher
                                             .error(format!(
                                                 "Failed to enqueue ADOPT {}.{}: {}",
-                                                id.ty, id.id, error
+                                                id.ty, id.name, error
                                             ))
                                             .await;
                                         continue;
@@ -659,7 +659,7 @@ impl Worker {
 
                                     tracing::info!(
                                         resource_type = %id.ty,
-                                        resource_id = %id.id,
+                                        resource_name = %id.name,
                                         inputs = ?inputs,
                                         "effect touch resource adopt",
                                     );
@@ -678,7 +678,7 @@ impl Worker {
                                         log_publisher
                                             .error(format!(
                                                 "Failed to enqueue CHECK {}.{}: {}",
-                                                id.ty, id.id, error
+                                                id.ty, id.name, error
                                             ))
                                             .await;
                                         continue;
@@ -686,7 +686,7 @@ impl Worker {
 
                                     tracing::info!(
                                         resource_type = %id.ty,
-                                        resource_id = %id.id,
+                                        resource_name = %id.name,
                                         "effect touch resource check",
                                     );
                                 }

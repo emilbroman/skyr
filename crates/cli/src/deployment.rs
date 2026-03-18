@@ -63,7 +63,7 @@ struct DeploymentOutput {
 #[derive(Serialize)]
 struct ResourceOutput {
     r#type: String,
-    id: String,
+    name: String,
     inputs: Option<serde_json::Value>,
     outputs: Option<serde_json::Value>,
     dependencies: Vec<ResourceDependencyOutput>,
@@ -72,7 +72,7 @@ struct ResourceOutput {
 #[derive(Serialize)]
 struct ResourceDependencyOutput {
     r#type: String,
-    id: String,
+    name: String,
 }
 
 #[derive(Debug)]
@@ -109,7 +109,7 @@ async fn list_deployments(
                         .into_iter()
                         .map(|resource| ResourceOutput {
                             r#type: resource.type_,
-                            id: resource.id,
+                            name: resource.name,
                             inputs: resource.inputs,
                             outputs: resource.outputs,
                             dependencies: resource
@@ -117,7 +117,7 @@ async fn list_deployments(
                                 .into_iter()
                                 .map(|dependency| ResourceDependencyOutput {
                                     r#type: dependency.type_,
-                                    id: dependency.id,
+                                    name: dependency.name,
                                 })
                                 .collect::<Vec<_>>(),
                         })

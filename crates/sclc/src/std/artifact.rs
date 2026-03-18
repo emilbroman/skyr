@@ -22,7 +22,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let resource_id = crate::ResourceId {
             ty: FILE_RESOURCE_TYPE.to_owned(),
-            id: name.to_owned(),
+            name: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();

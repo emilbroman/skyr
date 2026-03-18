@@ -33,14 +33,17 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
         } => {
-            let mut s = format!("CreateResource ty={} id={} inputs={}", id.ty, id.id, inputs);
+            let mut s = format!(
+                "CreateResource ty={} name={} inputs={}",
+                id.ty, id.name, inputs
+            );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
                 for (i, dep) in dependencies.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.id));
+                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
                 }
                 s.push(']');
             }
@@ -51,14 +54,17 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
         } => {
-            let mut s = format!("UpdateResource ty={} id={} inputs={}", id.ty, id.id, inputs);
+            let mut s = format!(
+                "UpdateResource ty={} name={} inputs={}",
+                id.ty, id.name, inputs
+            );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
                 for (i, dep) in dependencies.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.id));
+                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
                 }
                 s.push(']');
             }
@@ -69,14 +75,17 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
         } => {
-            let mut s = format!("TouchResource ty={} id={} inputs={}", id.ty, id.id, inputs);
+            let mut s = format!(
+                "TouchResource ty={} name={} inputs={}",
+                id.ty, id.name, inputs
+            );
             if !dependencies.is_empty() {
                 s.push_str(" deps=[");
                 for (i, dep) in dependencies.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
                     }
-                    s.push_str(&format!("{}:{}", dep.ty, dep.id));
+                    s.push_str(&format!("{}:{}", dep.ty, dep.name));
                 }
                 s.push(']');
             }
@@ -159,7 +168,7 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
             entries.push((
                 ResourceId {
                     ty: resource_type.clone(),
-                    id: resource_id.clone(),
+                    name: resource_id.clone(),
                 },
                 Resource {
                     inputs,
