@@ -16,6 +16,7 @@ use clap::Parser;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
 use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
+use tower_http::cors::{Any, CorsLayer};
 
 struct Context {
     udb_client: udb::Client,
@@ -1512,9 +1513,15 @@ async fn main() -> anyhow::Result<()> {
 
     let schema = Arc::new(schema());
 
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     let app = Router::new()
         .route("/graphql", get(graphql_ws_handler).post(graphql_handler))
         .route("/graphiql", get(graphiql))
+        .layer(cors)
         .layer(Extension(schema))
         .layer(Extension(challenger))
         .layer(Extension(cdb_client))
@@ -1628,6 +1635,7 @@ async fn graphql_ws_handler(
         None
     };
 
+    let udb_for_ws = udb_client.clone();
     let context = Context {
         udb_client,
         cdb_client,
@@ -1639,10 +1647,15 @@ async fn graphql_ws_handler(
     };
 
     ws.protocols(["graphql-transport-ws"])
-        .on_upgrade(move |socket| graphql_ws_connection(socket, schema, context))
+        .on_upgrade(move |socket| graphql_ws_connection(socket, schema, context, udb_for_ws))
 }
 
-async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, context: Context) {
+async fn graphql_ws_connection(
+    mut socket: WebSocket,
+    schema: Arc<Schema>,
+    mut context: Context,
+    mut udb_client: udb::Client,
+) {
     let mut initialized = false;
 
     while let Some(message) = socket.recv().await {
@@ -1699,6 +1712,31 @@ async fn graphql_ws_connection(mut socket: WebSocket, schema: Arc<Schema>, conte
 
                 match message_type {
                     "connection_init" => {
+                        // Support auth via connection_init payload for browser clients
+                        // that cannot set custom HTTP headers on WebSocket upgrade.
+                        if context.user.is_none()
+                            && let Some(token) = payload
+                                .get("payload")
+                                .and_then(|p| p.get("Authorization"))
+                                .and_then(|v| v.as_str())
+                                .and_then(|v| v.strip_prefix("Bearer "))
+                        {
+                            match udb_client.lookup_token(token.to_owned()).await {
+                                Ok(user) => {
+                                    context.user = Some(user);
+                                }
+                                Err(udb::LookupTokenError::InvalidToken) => {
+                                    tracing::debug!("Invalid token in connection_init payload");
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Failed to lookup token from connection_init: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+
                         initialized = true;
                         if !send_ws_json(
                             &mut socket,

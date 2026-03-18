@@ -1,0 +1,22 @@
+query AuthChallenge($username: String!) {
+  authChallenge(username: $username)
+}
+
+mutation SignIn($username: String!, $signature: String!, $pubkey: String!) {
+  signin(username: $username, signature: $signature, pubkey: $pubkey) {
+    user {
+      username
+      email
+      fullname
+    }
+    token
+  }
+}
+
+query Me {
+  me {
+    username
+    email
+    fullname
+  }
+}

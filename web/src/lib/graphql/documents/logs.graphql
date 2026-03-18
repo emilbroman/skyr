@@ -1,0 +1,23 @@
+subscription DeploymentLogs($deploymentId: String!, $initialAmount: Int) {
+  deploymentLogs(deploymentId: $deploymentId, initialAmount: $initialAmount) {
+    severity
+    timestamp
+    message
+  }
+}
+
+subscription EnvironmentLogs($environmentQid: String!, $initialAmount: Int) {
+  environmentLogs(environmentQid: $environmentQid, initialAmount: $initialAmount) {
+    severity
+    timestamp
+    message
+  }
+}
+
+subscription ResourceLogs($resourceQid: String!, $initialAmount: Int) {
+  resourceLogs(resourceQid: $resourceQid, initialAmount: $initialAmount) {
+    severity
+    timestamp
+    message
+  }
+}

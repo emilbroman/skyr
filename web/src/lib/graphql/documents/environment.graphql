@@ -1,0 +1,48 @@
+query EnvironmentDetail {
+  repositories {
+    name
+    environments {
+      name
+      qid
+      deployments {
+        id
+        ref
+        commit
+        createdAt
+        state
+        resources {
+          type
+          name
+          inputs
+          outputs
+          markers
+        }
+        artifacts {
+          namespace
+          name
+          mediaType
+          url
+        }
+        lastLogs(amount: 20) {
+          severity
+          timestamp
+          message
+        }
+      }
+      resources {
+        type
+        name
+        inputs
+        outputs
+        owner {
+          id
+        }
+        dependencies {
+          type
+          name
+        }
+        markers
+      }
+    }
+  }
+}

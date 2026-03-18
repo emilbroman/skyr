@@ -1,0 +1,9 @@
+query Repositories {
+  repositories {
+    name
+    environments {
+      name
+      qid
+    }
+  }
+}
