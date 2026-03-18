@@ -11,6 +11,7 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { version = "1.49.0", features = ["full"] }
 cdb = { path = "../cdb" }
 rdb = { path = "../rdb" }
+ids = { path = "../ids" }
 sclc = { path = "../sclc" }
 rtq = { path = "../rtq" }
 futures-util = "0.3.31"
