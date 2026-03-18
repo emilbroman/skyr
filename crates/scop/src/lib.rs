@@ -67,16 +67,15 @@ pub mod proto {
 
 // Re-export commonly used types
 pub use proto::{
-    AddOverlayPeerRequest, AddOverlayPeerResponse, AddServiceRouteRequest, AddServiceRouteResponse,
-    AllowedDestination, ClosePortRequest, ClosePortResponse, ConfigureServiceCidrRequest,
-    ConfigureServiceCidrResponse, ContainerConfig, CreateContainerRequest, CreateContainerResponse,
-    CreatePodRequest, CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue,
-    NodeCapacity, NodeUsage, OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest,
-    RegisterNodeResponse, RemoveContainerRequest, RemoveContainerResponse, RemoveDnsRecordRequest,
+    AddAttachmentRequest, AddAttachmentResponse, AddOverlayPeerRequest, AddOverlayPeerResponse,
+    AddServiceRouteRequest, AddServiceRouteResponse, ClosePortRequest, ClosePortResponse,
+    ConfigureServiceCidrRequest, ConfigureServiceCidrResponse, ContainerConfig, CreatePodRequest,
+    CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue, NodeCapacity, NodeUsage,
+    OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest, RegisterNodeResponse,
+    RemoveAttachmentRequest, RemoveAttachmentResponse, RemoveDnsRecordRequest,
     RemoveDnsRecordResponse, RemoveOverlayPeerRequest, RemoveOverlayPeerResponse, RemovePodRequest,
     RemovePodResponse, RemoveServiceRouteRequest, RemoveServiceRouteResponse, ServiceBackend,
-    SetDnsRecordRequest, SetDnsRecordResponse, StartContainerRequest, StartContainerResponse,
-    StopContainerRequest, StopContainerResponse, UnregisterNodeRequest, UnregisterNodeResponse,
+    SetDnsRecordRequest, SetDnsRecordResponse, UnregisterNodeRequest, UnregisterNodeResponse,
 };
 
 // Re-export the generated clients
@@ -267,41 +266,29 @@ pub async fn serve_orchestrator<O: Orchestrator>(
 /// Trait implemented by SCOC to handle pod and container operations.
 #[tonic::async_trait]
 pub trait Conduit: Send + Sync + 'static {
-    /// Create a pod.
+    /// Create a pod with all its containers.
     async fn create_pod(
         &self,
         request: CreatePodRequest,
     ) -> Result<CreatePodResponse, tonic::Status>;
 
-    /// Remove a pod.
+    /// Remove a pod and all its containers.
     async fn remove_pod(
         &self,
         request: RemovePodRequest,
     ) -> Result<RemovePodResponse, tonic::Status>;
 
-    /// Create a container.
-    async fn create_container(
+    /// Add an egress attachment (open egress port on pod firewall).
+    async fn add_attachment(
         &self,
-        request: CreateContainerRequest,
-    ) -> Result<CreateContainerResponse, tonic::Status>;
+        request: AddAttachmentRequest,
+    ) -> Result<AddAttachmentResponse, tonic::Status>;
 
-    /// Start a container.
-    async fn start_container(
+    /// Remove an egress attachment (close egress port on pod firewall).
+    async fn remove_attachment(
         &self,
-        request: StartContainerRequest,
-    ) -> Result<StartContainerResponse, tonic::Status>;
-
-    /// Stop a container.
-    async fn stop_container(
-        &self,
-        request: StopContainerRequest,
-    ) -> Result<StopContainerResponse, tonic::Status>;
-
-    /// Remove a container.
-    async fn remove_container(
-        &self,
-        request: RemoveContainerRequest,
-    ) -> Result<RemoveContainerResponse, tonic::Status>;
+        request: RemoveAttachmentRequest,
+    ) -> Result<RemoveAttachmentResponse, tonic::Status>;
 
     /// Add a VXLAN overlay peer for cross-node pod communication.
     async fn add_overlay_peer(
@@ -378,35 +365,19 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
         Ok(tonic::Response::new(response))
     }
 
-    async fn create_container(
+    async fn add_attachment(
         &self,
-        request: tonic::Request<CreateContainerRequest>,
-    ) -> Result<tonic::Response<CreateContainerResponse>, tonic::Status> {
-        let response = self.conduit.create_container(request.into_inner()).await?;
+        request: tonic::Request<AddAttachmentRequest>,
+    ) -> Result<tonic::Response<AddAttachmentResponse>, tonic::Status> {
+        let response = self.conduit.add_attachment(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 
-    async fn start_container(
+    async fn remove_attachment(
         &self,
-        request: tonic::Request<StartContainerRequest>,
-    ) -> Result<tonic::Response<StartContainerResponse>, tonic::Status> {
-        let response = self.conduit.start_container(request.into_inner()).await?;
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn stop_container(
-        &self,
-        request: tonic::Request<StopContainerRequest>,
-    ) -> Result<tonic::Response<StopContainerResponse>, tonic::Status> {
-        let response = self.conduit.stop_container(request.into_inner()).await?;
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn remove_container(
-        &self,
-        request: tonic::Request<RemoveContainerRequest>,
-    ) -> Result<tonic::Response<RemoveContainerResponse>, tonic::Status> {
-        let response = self.conduit.remove_container(request.into_inner()).await?;
+        request: tonic::Request<RemoveAttachmentRequest>,
+    ) -> Result<tonic::Response<RemoveAttachmentResponse>, tonic::Status> {
+        let response = self.conduit.remove_attachment(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 

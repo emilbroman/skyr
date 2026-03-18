@@ -120,23 +120,17 @@ message UnregisterNodeResponse {
 // The Conduit service handles pod and container operations. The container
 // plugin connects to conduits when it needs to execute operations on a node.
 service Conduit {
-  // CreatePod creates and starts a pod sandbox.
+  // CreatePod creates and starts a pod sandbox with all its containers.
   rpc CreatePod(CreatePodRequest) returns (CreatePodResponse);
 
-  // RemovePod stops and removes a pod sandbox.
+  // RemovePod stops and removes a pod sandbox and all its containers.
   rpc RemovePod(RemovePodRequest) returns (RemovePodResponse);
 
-  // CreateContainer creates a container within a pod.
-  rpc CreateContainer(CreateContainerRequest) returns (CreateContainerResponse);
+  // AddAttachment opens an egress port on a pod's firewall.
+  rpc AddAttachment(AddAttachmentRequest) returns (AddAttachmentResponse);
 
-  // StartContainer starts a created container.
-  rpc StartContainer(StartContainerRequest) returns (StartContainerResponse);
-
-  // StopContainer stops a running container.
-  rpc StopContainer(StopContainerRequest) returns (StopContainerResponse);
-
-  // RemoveContainer removes a container.
-  rpc RemoveContainer(RemoveContainerRequest) returns (RemoveContainerResponse);
+  // RemoveAttachment closes an egress port on a pod's firewall.
+  rpc RemoveAttachment(RemoveAttachmentRequest) returns (RemoveAttachmentResponse);
 
   // AddOverlayPeer adds a VXLAN overlay peer for cross-node pod communication.
   rpc AddOverlayPeer(AddOverlayPeerRequest) returns (AddOverlayPeerResponse);
@@ -187,7 +181,7 @@ message CreatePodResponse {
 
 // Request to remove a pod.
 message RemovePodRequest {
-  string pod_id = 1;
+  string pod_name = 1;
 }
 
 // Response from removing a pod.
@@ -197,80 +191,23 @@ message RemovePodResponse {}
 message PodConfig {
   // Environment QID (e.g., "MyOrg/MyRepo::main").
   string environment_qid = 1;
-  // Pod name.
+  // Full resource name (user name + inputs hash).
   string name = 2;
-  // Pod UID.
-  string uid = 3;
-  // Network destinations this pod is allowed to reach (egress allow list).
-  // Each entry represents a port resource that this pod can connect to.
-  repeated AllowedDestination allowed_destinations = 4;
-}
-
-// A network destination that a pod is allowed to reach.
-// Corresponds to a Pod.Port resource output.
-message AllowedDestination {
-  // IP address of the destination pod.
-  string address = 1;
-  // Port number.
-  int32 port = 2;
-  // Protocol: "tcp" or "udp".
-  string protocol = 3;
+  // Reserved: uid (was field 3), allowed_destinations (was field 4).
+  reserved 3, 4;
+  // Containers to create within this pod.
+  repeated ContainerConfig containers = 5;
 }
 
 // ============================================================================
 // Container Messages
 // ============================================================================
 
-// Request to create a container in a pod.
-message CreateContainerRequest {
-  // ID of the pod to create the container in.
-  string pod_id = 1;
-  // Configuration for the container.
-  ContainerConfig config = 2;
-  // Configuration of the pod (for reference).
-  PodConfig pod_config = 3;
-  // Resource ID in "ResourceType:ResourceName" format (e.g.,
-  // "Std/Container.Pod.Container:web"). Used by the conduit to construct
-  // a ResourceQid for log namespacing.
-  string resource_id = 4;
-}
-
-// Response from creating a container.
-message CreateContainerResponse {
-  // The ID of the created container.
-  string container_id = 1;
-}
-
-// Request to start a container.
-message StartContainerRequest {
-  string container_id = 1;
-}
-
-// Response from starting a container.
-message StartContainerResponse {}
-
-// Request to stop a container.
-message StopContainerRequest {
-  string container_id = 1;
-  // Timeout in seconds before forcefully stopping.
-  int64 timeout = 2;
-}
-
-// Response from stopping a container.
-message StopContainerResponse {}
-
-// Request to remove a container.
-message RemoveContainerRequest {
-  string container_id = 1;
-}
-
-// Response from removing a container.
-message RemoveContainerResponse {}
-
-// Configuration for a container.
+// Configuration for a container within a pod.
+// Containers are identified by their index in the pod's container list.
 message ContainerConfig {
-  // Container name.
-  string name = 1;
+  // Reserved: name (was field 1). Containers are identified by index.
+  reserved 1;
   // Image to use.
   string image = 2;
   // Command to run (entrypoint).
@@ -280,6 +217,40 @@ message ContainerConfig {
   // Environment variables.
   repeated KeyValue envs = 5;
 }
+
+// ============================================================================
+// Attachment Messages
+// ============================================================================
+
+// Request to open an egress port on a pod's firewall.
+message AddAttachmentRequest {
+  // Full resource name (name + hash).
+  string pod_name = 1;
+  // IP address of the destination.
+  string destination_address = 2;
+  // Port number.
+  int32 port = 3;
+  // Protocol: "tcp" or "udp".
+  string protocol = 4;
+}
+
+// Response from adding an attachment.
+message AddAttachmentResponse {}
+
+// Request to close an egress port on a pod's firewall.
+message RemoveAttachmentRequest {
+  // Full resource name (name + hash).
+  string pod_name = 1;
+  // IP address of the destination.
+  string destination_address = 2;
+  // Port number.
+  int32 port = 3;
+  // Protocol: "tcp" or "udp".
+  string protocol = 4;
+}
+
+// Response from removing an attachment.
+message RemoveAttachmentResponse {}
 
 // Key-value pair for environment variables.
 message KeyValue {
@@ -311,8 +282,8 @@ message RemoveOverlayPeerResponse {}
 
 // Request to open an ingress firewall port on a pod.
 message OpenPortRequest {
-  // The pod identifier.
-  string pod_id = 1;
+  // Full resource name (name + hash).
+  string pod_name = 1;
   // The port number to open.
   int32 port = 2;
   // The protocol: "tcp" or "udp".
@@ -324,8 +295,8 @@ message OpenPortResponse {}
 
 // Request to close an ingress firewall port on a pod.
 message ClosePortRequest {
-  // The pod identifier.
-  string pod_id = 1;
+  // Full resource name (name + hash).
+  string pod_name = 1;
   // The port number to close.
   int32 port = 2;
   // The protocol: "tcp" or "udp".
