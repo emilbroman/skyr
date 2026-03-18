@@ -1,0 +1,19 @@
+query DeploymentLastLogs($amount: Int) {
+  repositories {
+    name
+    environments {
+      name
+      qid
+      deployments {
+        id
+        ref
+        state
+        lastLogs(amount: $amount) {
+          severity
+          timestamp
+          message
+        }
+      }
+    }
+  }
+}
