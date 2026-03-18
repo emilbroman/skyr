@@ -71,11 +71,6 @@ enum Command {
         #[command(subcommand)]
         action: PodAction,
     },
-    /// Container operations for testing.
-    Container {
-        #[command(subcommand)]
-        action: ContainerAction,
-    },
 }
 
 #[derive(Subcommand)]
@@ -98,69 +93,21 @@ enum PodAction {
     },
 }
 
-#[derive(Subcommand)]
-enum ContainerAction {
-    /// Create a container in a pod.
-    Create {
-        /// Pod ID.
-        #[arg(long)]
-        pod_id: String,
-        /// Container name.
-        #[arg(long)]
-        name: String,
-        /// Container image.
-        #[arg(long)]
-        image: String,
-        #[arg(long, default_value = "/run/containerd/containerd.sock")]
-        containerd_socket: String,
-    },
-    /// Start a container.
-    Start {
-        /// Container ID.
-        #[arg(long)]
-        id: String,
-        #[arg(long, default_value = "/run/containerd/containerd.sock")]
-        containerd_socket: String,
-    },
-    /// Stop a container.
-    Stop {
-        /// Container ID.
-        #[arg(long)]
-        id: String,
-        /// Timeout in seconds.
-        #[arg(long, default_value = "10")]
-        timeout: i64,
-        #[arg(long, default_value = "/run/containerd/containerd.sock")]
-        containerd_socket: String,
-    },
-    /// Remove a container.
-    Remove {
-        /// Container ID.
-        #[arg(long)]
-        id: String,
-        #[arg(long, default_value = "/run/containerd/containerd.sock")]
-        containerd_socket: String,
-    },
-}
-
 /// Tracked pod info for log streaming and network teardown.
 struct PodInfo {
+    /// CRI pod sandbox ID (internal to SCOC).
+    cri_pod_id: String,
+    #[allow(dead_code)]
     environment_qid: String,
+    #[allow(dead_code)]
     name: String,
     /// Allocated IP address for the pod.
     #[allow(dead_code)]
     ip: Ipv4Addr,
     /// Path to the pod's network namespace (for port opening/closing).
     netns_path: String,
-}
-
-/// Tracked container info for log streaming lifecycle.
-struct ContainerInfo {
-    pod_id: String,
-    name: String,
-    /// Resource ID in "ResourceType:ResourceName" format, used to construct
-    /// a ResourceQid for LDB log namespacing.
-    resource_id: String,
+    /// CRI container IDs for containers within this pod.
+    container_ids: Vec<String>,
 }
 
 /// SCOP Conduit implementation backed by CRI, with per-pod networking.
@@ -168,15 +115,15 @@ struct CriConduit {
     cri: Arc<Mutex<CriClient>>,
     ldb_publisher: Option<ldb::Publisher>,
     log_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Pods keyed by pod_name (full resource name with hash).
     pods: Arc<Mutex<HashMap<String, PodInfo>>>,
-    containers: Arc<Mutex<HashMap<String, ContainerInfo>>>,
     /// Per-node IP address allocator.
     ipam: Arc<Mutex<net::Ipam>>,
     /// The node's pod subnet (for network setup).
     pod_cidr: Ipv4Net,
-    /// The cluster-wide CIDR (for egress allow-list rules).
+    /// The cluster-wide CIDR (for egress rules).
     cluster_cidr: Option<String>,
-    /// The service CIDR for Host VIPs (for egress allow-list rules).
+    /// The service CIDR for Host VIPs (for egress rules).
     service_cidr: Option<String>,
     /// DNS servers to configure in pods.
     dns_servers: Vec<String>,
@@ -201,7 +148,6 @@ impl CriConduit {
             ldb_publisher,
             log_tasks: Arc::new(Mutex::new(HashMap::new())),
             pods: Arc::new(Mutex::new(HashMap::new())),
-            containers: Arc::new(Mutex::new(HashMap::new())),
             ipam: Arc::new(Mutex::new(ipam)),
             pod_cidr,
             cluster_cidr,
@@ -213,12 +159,15 @@ impl CriConduit {
 
     /// Convert SCOP PodConfig to CRI PodSandboxConfig.
     fn to_cri_pod_config(&self, config: &scop::PodConfig) -> k8s_cri::v1::PodSandboxConfig {
-        cri::pod_sandbox_config(&config.name, &self.dns_servers)
+        cri::pod_sandbox_config(&config.name, &config.environment_qid, &self.dns_servers)
     }
 
-    /// Convert SCOP ContainerConfig to CRI ContainerConfig.
-    fn to_cri_container_config(config: &scop::ContainerConfig) -> k8s_cri::v1::ContainerConfig {
-        let mut cri_config = cri::container_config(&config.name, &config.image);
+    /// Convert SCOP ContainerConfig to CRI ContainerConfig by index.
+    fn to_cri_container_config(
+        index: usize,
+        config: &scop::ContainerConfig,
+    ) -> k8s_cri::v1::ContainerConfig {
+        let mut cri_config = cri::container_config(index, &config.image);
 
         if !config.command.is_empty() {
             cri_config.command = config.command.clone();
@@ -242,74 +191,24 @@ impl CriConduit {
         cri_config
     }
 
-    /// Start a log streaming task for a container.
-    async fn start_log_streaming(&self, container_id: &str) {
+    /// Start a log streaming task for a container within a pod.
+    async fn start_log_streaming(
+        &self,
+        pod_name: &str,
+        container_index: usize,
+        ldb_namespace: &str,
+    ) {
         let publisher = match &self.ldb_publisher {
             Some(p) => p.clone(),
             None => return,
         };
 
-        let (pod_name, container_name, ldb_namespace) = {
-            let containers = self.containers.lock().await;
-            let Some(container_info) = containers.get(container_id) else {
-                tracing::warn!(
-                    container_id = %container_id,
-                    "no container info found for log streaming"
-                );
-                return;
-            };
-            let pods = self.pods.lock().await;
-            let Some(pod_info) = pods.get(&container_info.pod_id) else {
-                tracing::warn!(
-                    container_id = %container_id,
-                    pod_id = %container_info.pod_id,
-                    "no pod info found for log streaming"
-                );
-                return;
-            };
-
-            // Build the LDB namespace from the resource QID. The plugin sends the
-            // resource ID in "ResourceType:ResourceName" format; combined with the
-            // environment QID this forms a full ResourceQid.
-            let namespace = if container_info.resource_id.is_empty() {
-                // Fallback for older plugins that don't send the resource ID yet.
-                format!("{}::{}", pod_info.environment_qid, container_info.name,)
-            } else {
-                match (
-                    pod_info.environment_qid.parse::<ids::EnvironmentQid>(),
-                    container_info.resource_id.parse::<ids::ResourceId>(),
-                ) {
-                    (Ok(env_qid), Ok(resource_id)) => {
-                        ids::ResourceQid::new(env_qid, resource_id).to_string()
-                    }
-                    (Err(e), _) | (_, Err(e)) => {
-                        tracing::warn!(
-                            container_id = %container_id,
-                            environment_qid = %pod_info.environment_qid,
-                            resource_id = %container_info.resource_id,
-                            error = %e,
-                            "invalid environment QID or resource ID for log namespace, using raw string"
-                        );
-                        format!(
-                            "{}::{}",
-                            pod_info.environment_qid, container_info.resource_id,
-                        )
-                    }
-                }
-            };
-
-            (
-                pod_info.name.clone(),
-                container_info.name.clone(),
-                namespace,
-            )
-        };
-
-        let namespace_publisher = match publisher.namespace(ldb_namespace.clone()).await {
+        let namespace_publisher = match publisher.namespace(ldb_namespace.to_string()).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(
-                    container_id = %container_id,
+                    pod_name = %pod_name,
+                    container_index = %container_index,
                     ldb_namespace = %ldb_namespace,
                     error = %e,
                     "failed to create LDB namespace publisher for container logs"
@@ -318,38 +217,50 @@ impl CriConduit {
             }
         };
 
-        // Log path: /var/log/pods/skyr_{pod_name}/{container_name}/0.log
+        // Log path: /var/log/pods/skyr_{pod_name}/{index}/0.log
         let log_path = PathBuf::from(format!(
-            "/var/log/pods/skyr_{pod_name}/{container_name}/0.log"
+            "/var/log/pods/skyr_{pod_name}/{container_index}/0.log"
         ));
 
         let cancel = CancellationToken::new();
+        let task_key = format!("{pod_name}_{container_index}");
         {
             let mut tasks = self.log_tasks.lock().await;
-            tasks.insert(container_id.to_string(), cancel.clone());
+            tasks.insert(task_key.clone(), cancel.clone());
         }
 
         tracing::info!(
-            container_id = %container_id,
+            pod_name = %pod_name,
+            container_index = %container_index,
             ldb_namespace = %ldb_namespace,
             log_path = %log_path.display(),
             "starting container log streaming"
         );
 
         tokio::spawn(async move {
-            log_stream::stream_container_logs(log_path, namespace_publisher, cancel).await;
+            log_stream::stream_container_logs(
+                log_path,
+                namespace_publisher,
+                cancel,
+                container_index,
+            )
+            .await;
         });
     }
 
-    /// Cancel a log streaming task for a container.
-    async fn cancel_log_streaming(&self, container_id: &str) {
+    /// Cancel all log streaming tasks for a pod.
+    async fn cancel_pod_log_streaming(&self, pod_name: &str, num_containers: usize) {
         let mut tasks = self.log_tasks.lock().await;
-        if let Some(cancel) = tasks.remove(container_id) {
-            tracing::info!(
-                container_id = %container_id,
-                "cancelling container log streaming"
-            );
-            cancel.cancel();
+        for i in 0..num_containers {
+            let task_key = format!("{pod_name}_{i}");
+            if let Some(cancel) = tasks.remove(&task_key) {
+                tracing::info!(
+                    pod_name = %pod_name,
+                    container_index = %i,
+                    "cancelling container log streaming"
+                );
+                cancel.cancel();
+            }
         }
     }
 }
@@ -361,24 +272,24 @@ impl scop::Conduit for CriConduit {
         request: scop::CreatePodRequest,
     ) -> Result<scop::CreatePodResponse, scop::tonic::Status> {
         let config = request.config.unwrap_or_default();
-        let cri_config = self.to_cri_pod_config(&config);
+        let pod_name = config.name.clone();
+        let cri_pod_config = self.to_cri_pod_config(&config);
         let mut cri = self.cri.lock().await;
 
         // Step 1: Create the CRI pod sandbox (gets its own network namespace)
-        let pod_id = cri
-            .run_pod_sandbox(cri_config)
+        let cri_pod_id = cri
+            .run_pod_sandbox(cri_pod_config.clone())
             .await
             .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
 
         // Step 2: Allocate an IP for this pod
         let ip = {
             let mut ipam = self.ipam.lock().await;
-            match ipam.allocate(&pod_id) {
+            match ipam.allocate(&cri_pod_id) {
                 Ok(ip) => ip,
                 Err(e) => {
-                    // Clean up CRI sandbox on IPAM failure
-                    let _ = cri.stop_pod_sandbox(&pod_id).await;
-                    let _ = cri.remove_pod_sandbox(&pod_id).await;
+                    let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+                    let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
                     return Err(scop::tonic::Status::internal(format!(
                         "IPAM allocation failed: {e}"
                     )));
@@ -387,13 +298,13 @@ impl scop::Conduit for CriConduit {
         };
 
         // Step 3: Discover the pod's network namespace path
-        let netns_path = match cri.pod_network_namespace(&pod_id).await {
+        let netns_path = match cri.pod_network_namespace(&cri_pod_id).await {
             Ok(path) => path,
             Err(e) => {
                 let mut ipam = self.ipam.lock().await;
-                ipam.release(&pod_id);
-                let _ = cri.stop_pod_sandbox(&pod_id).await;
-                let _ = cri.remove_pod_sandbox(&pod_id).await;
+                ipam.release(&cri_pod_id);
+                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to get network namespace: {e}"
                 )));
@@ -402,51 +313,181 @@ impl scop::Conduit for CriConduit {
 
         // Step 4: Set up pod networking (veth pair, bridge, IP, firewall, egress rules)
         if let Err(e) = net::setup_pod_network(
-            &pod_id,
+            &cri_pod_id,
             ip,
             &self.pod_cidr,
             &netns_path,
-            &config.allowed_destinations,
             self.cluster_cidr.as_deref(),
             self.service_cidr.as_deref(),
         ) {
             let mut ipam = self.ipam.lock().await;
-            ipam.release(&pod_id);
-            let _ = cri.stop_pod_sandbox(&pod_id).await;
-            let _ = cri.remove_pod_sandbox(&pod_id).await;
+            ipam.release(&cri_pod_id);
+            let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+            let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
             return Err(scop::tonic::Status::internal(format!(
                 "pod network setup failed: {e:#}"
             )));
         }
 
+        // Step 5: Create and start all containers in the pod
+        let mut container_ids: Vec<String> = Vec::with_capacity(config.containers.len());
+        // Build the LDB namespace from the pod's resource QID
+        let resource_id = ids::ResourceId {
+            typ: "Std/Container.Pod".to_string(),
+            name: pod_name.clone(),
+        };
+        let ldb_namespace = match config.environment_qid.parse::<ids::EnvironmentQid>() {
+            Ok(env_qid) => ids::ResourceQid::new(env_qid, resource_id).to_string(),
+            Err(_) => format!("{}::Std/Container.Pod:{}", config.environment_qid, pod_name),
+        };
+
+        for (i, container_config) in config.containers.iter().enumerate() {
+            let cri_container_config = Self::to_cri_container_config(i, container_config);
+
+            // Pull the image
+            if let Err(e) = cri.pull_image(&container_config.image, None).await {
+                // Clean up on failure
+                for cid in &container_ids {
+                    let _ = cri.stop_container(cid, 10).await;
+                    let _ = cri.remove_container(cid).await;
+                }
+                let _ = net::teardown_pod_network(&cri_pod_id);
+                let mut ipam = self.ipam.lock().await;
+                ipam.release(&cri_pod_id);
+                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                return Err(scop::tonic::Status::internal(format!(
+                    "failed to pull image for container {i}: {e}"
+                )));
+            }
+
+            // Create the container
+            let container_id = match cri
+                .create_container(&cri_pod_id, &cri_pod_config, cri_container_config)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    for cid in &container_ids {
+                        let _ = cri.stop_container(cid, 10).await;
+                        let _ = cri.remove_container(cid).await;
+                    }
+                    let _ = net::teardown_pod_network(&cri_pod_id);
+                    let mut ipam = self.ipam.lock().await;
+                    ipam.release(&cri_pod_id);
+                    let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+                    let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                    return Err(scop::tonic::Status::internal(format!(
+                        "failed to create container {i}: {e}"
+                    )));
+                }
+            };
+
+            // Start the container
+            if let Err(e) = cri.start_container(&container_id).await {
+                let _ = cri.remove_container(&container_id).await;
+                for cid in &container_ids {
+                    let _ = cri.stop_container(cid, 10).await;
+                    let _ = cri.remove_container(cid).await;
+                }
+                let _ = net::teardown_pod_network(&cri_pod_id);
+                let mut ipam = self.ipam.lock().await;
+                ipam.release(&cri_pod_id);
+                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
+                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                return Err(scop::tonic::Status::internal(format!(
+                    "failed to start container {i}: {e}"
+                )));
+            }
+
+            container_ids.push(container_id);
+        }
+
+        // Drop CRI lock before starting log streaming
+        drop(cri);
+
+        // Step 6: Start log streaming for each container
+        for i in 0..container_ids.len() {
+            self.start_log_streaming(&pod_name, i, &ldb_namespace).await;
+        }
+
         let address = ip.to_string();
 
-        // Track pod info for log streaming and network teardown
+        // Track pod info keyed by pod_name
         {
             let mut pods = self.pods.lock().await;
             pods.insert(
-                pod_id.clone(),
+                pod_name,
                 PodInfo {
+                    cri_pod_id,
                     environment_qid: config.environment_qid,
                     name: config.name,
                     ip,
                     netns_path,
+                    container_ids,
                 },
             );
         }
 
-        Ok(scop::CreatePodResponse { pod_id, address })
+        Ok(scop::CreatePodResponse {
+            pod_id: String::new(),
+            address,
+        })
     }
 
     async fn remove_pod(
         &self,
         request: scop::RemovePodRequest,
     ) -> Result<scop::RemovePodResponse, scop::tonic::Status> {
-        // Tear down pod networking before stopping the sandbox
-        // (the netns disappears when the sandbox process exits)
-        if let Err(e) = net::teardown_pod_network(&request.pod_id) {
+        let pod_name = &request.pod_name;
+
+        // Look up pod info
+        let pod_info = {
+            let mut pods = self.pods.lock().await;
+            pods.remove(pod_name)
+        };
+
+        let Some(pod_info) = pod_info else {
+            // Pod already gone — treat as success (idempotent)
             tracing::warn!(
-                pod_id = %request.pod_id,
+                pod_name = %pod_name,
+                "remove_pod: pod not found, treating as success"
+            );
+            return Ok(scop::RemovePodResponse {});
+        };
+
+        // Cancel log streaming for all containers
+        self.cancel_pod_log_streaming(pod_name, pod_info.container_ids.len())
+            .await;
+
+        let mut cri = self.cri.lock().await;
+
+        // Stop and remove all containers in the pod
+        for (i, container_id) in pod_info.container_ids.iter().enumerate() {
+            if let Err(e) = cri.stop_container(container_id, 30).await {
+                tracing::warn!(
+                    pod_name = %pod_name,
+                    container_index = %i,
+                    container_id = %container_id,
+                    error = %e,
+                    "failed to stop container (continuing with removal)"
+                );
+            }
+            if let Err(e) = cri.remove_container(container_id).await {
+                tracing::warn!(
+                    pod_name = %pod_name,
+                    container_index = %i,
+                    container_id = %container_id,
+                    error = %e,
+                    "failed to remove container (continuing with removal)"
+                );
+            }
+        }
+
+        // Tear down pod networking before stopping the sandbox
+        if let Err(e) = net::teardown_pod_network(&pod_info.cri_pod_id) {
+            tracing::warn!(
+                pod_name = %pod_name,
                 error = %e,
                 "failed to tear down pod network (continuing with removal)"
             );
@@ -455,113 +496,59 @@ impl scop::Conduit for CriConduit {
         // Release the pod's IP
         {
             let mut ipam = self.ipam.lock().await;
-            ipam.release(&request.pod_id);
+            ipam.release(&pod_info.cri_pod_id);
         }
 
-        let mut cri = self.cri.lock().await;
-
-        // Stop the pod sandbox first, then remove it
-        cri.stop_pod_sandbox(&request.pod_id)
+        // Stop and remove the CRI sandbox
+        cri.stop_pod_sandbox(&pod_info.cri_pod_id)
             .await
             .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-        cri.remove_pod_sandbox(&request.pod_id)
+        cri.remove_pod_sandbox(&pod_info.cri_pod_id)
             .await
             .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-
-        // Clean up pod info
-        {
-            let mut pods = self.pods.lock().await;
-            pods.remove(&request.pod_id);
-        }
 
         Ok(scop::RemovePodResponse {})
     }
 
-    async fn create_container(
+    async fn add_attachment(
         &self,
-        request: scop::CreateContainerRequest,
-    ) -> Result<scop::CreateContainerResponse, scop::tonic::Status> {
-        let config = request.config.unwrap_or_default();
-        let pod_config = request.pod_config.unwrap_or_default();
-        let cri_pod_config = self.to_cri_pod_config(&pod_config);
-        let cri_container_config = Self::to_cri_container_config(&config);
-        let mut cri = self.cri.lock().await;
+        request: scop::AddAttachmentRequest,
+    ) -> Result<scop::AddAttachmentResponse, scop::tonic::Status> {
+        let pods = self.pods.lock().await;
+        let pod = pods.get(&request.pod_name).ok_or_else(|| {
+            scop::tonic::Status::not_found(format!("pod not found: {}", request.pod_name))
+        })?;
+        net::open_egress_port(
+            &pod.netns_path,
+            &request.destination_address,
+            request.port,
+            &request.protocol,
+        )
+        .map_err(|e| scop::tonic::Status::internal(format!("add attachment failed: {e:#}")))?;
+        Ok(scop::AddAttachmentResponse {})
+    }
 
-        // Pull the image first to ensure it's available in the CRI namespace
-        cri.pull_image(&config.image, None)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(format!("failed to pull image: {}", e)))?;
-
-        let container_id = cri
-            .create_container(&request.pod_id, &cri_pod_config, cri_container_config)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-
-        // Track container info for log streaming
-        {
-            let mut containers = self.containers.lock().await;
-            containers.insert(
-                container_id.clone(),
-                ContainerInfo {
-                    pod_id: request.pod_id,
-                    name: config.name,
-                    resource_id: request.resource_id,
-                },
+    async fn remove_attachment(
+        &self,
+        request: scop::RemoveAttachmentRequest,
+    ) -> Result<scop::RemoveAttachmentResponse, scop::tonic::Status> {
+        let pods = self.pods.lock().await;
+        let Some(pod) = pods.get(&request.pod_name) else {
+            // Pod already gone — treat as success (idempotent)
+            tracing::warn!(
+                pod_name = %request.pod_name,
+                "remove_attachment: pod not found, treating as success"
             );
-        }
-
-        Ok(scop::CreateContainerResponse { container_id })
-    }
-
-    async fn start_container(
-        &self,
-        request: scop::StartContainerRequest,
-    ) -> Result<scop::StartContainerResponse, scop::tonic::Status> {
-        let mut cri = self.cri.lock().await;
-        cri.start_container(&request.container_id)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-        drop(cri);
-
-        // Start log streaming after container starts
-        self.start_log_streaming(&request.container_id).await;
-
-        Ok(scop::StartContainerResponse {})
-    }
-
-    async fn stop_container(
-        &self,
-        request: scop::StopContainerRequest,
-    ) -> Result<scop::StopContainerResponse, scop::tonic::Status> {
-        // Cancel log streaming before stopping
-        self.cancel_log_streaming(&request.container_id).await;
-
-        let mut cri = self.cri.lock().await;
-        cri.stop_container(&request.container_id, request.timeout)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-        Ok(scop::StopContainerResponse {})
-    }
-
-    async fn remove_container(
-        &self,
-        request: scop::RemoveContainerRequest,
-    ) -> Result<scop::RemoveContainerResponse, scop::tonic::Status> {
-        // Cancel log streaming if still running
-        self.cancel_log_streaming(&request.container_id).await;
-
-        let mut cri = self.cri.lock().await;
-        cri.remove_container(&request.container_id)
-            .await
-            .map_err(|e| scop::tonic::Status::internal(e.to_string()))?;
-
-        // Clean up container info
-        {
-            let mut containers = self.containers.lock().await;
-            containers.remove(&request.container_id);
-        }
-
-        Ok(scop::RemoveContainerResponse {})
+            return Ok(scop::RemoveAttachmentResponse {});
+        };
+        net::close_egress_port(
+            &pod.netns_path,
+            &request.destination_address,
+            request.port,
+            &request.protocol,
+        )
+        .map_err(|e| scop::tonic::Status::internal(format!("remove attachment failed: {e:#}")))?;
+        Ok(scop::RemoveAttachmentResponse {})
     }
 
     async fn add_overlay_peer(
@@ -603,8 +590,8 @@ impl scop::Conduit for CriConduit {
         request: scop::OpenPortRequest,
     ) -> Result<scop::OpenPortResponse, scop::tonic::Status> {
         let pods = self.pods.lock().await;
-        let pod = pods.get(&request.pod_id).ok_or_else(|| {
-            scop::tonic::Status::not_found(format!("pod not found: {}", request.pod_id))
+        let pod = pods.get(&request.pod_name).ok_or_else(|| {
+            scop::tonic::Status::not_found(format!("pod not found: {}", request.pod_name))
         })?;
         net::open_port(&pod.netns_path, request.port, &request.protocol)
             .map_err(|e| scop::tonic::Status::internal(format!("open port failed: {e:#}")))?;
@@ -616,10 +603,10 @@ impl scop::Conduit for CriConduit {
         request: scop::ClosePortRequest,
     ) -> Result<scop::ClosePortResponse, scop::tonic::Status> {
         let pods = self.pods.lock().await;
-        let Some(pod) = pods.get(&request.pod_id) else {
+        let Some(pod) = pods.get(&request.pod_name) else {
             // Pod already gone — treat as success (idempotent)
             tracing::warn!(
-                pod_id = %request.pod_id,
+                pod_name = %request.pod_name,
                 "close_port: pod not found, treating as success"
             );
             return Ok(scop::ClosePortResponse {});
@@ -1017,7 +1004,7 @@ async fn main() -> Result<()> {
                 // Use the daemon for full networking support.
                 let mut cri = CriClient::connect(&containerd_socket).await?;
                 let dns_servers = net::host_nameservers();
-                let config = cri::pod_sandbox_config(&name, &dns_servers);
+                let config = cri::pod_sandbox_config(&name, "test", &dns_servers);
                 let pod_id = cri.run_pod_sandbox(config).await?;
                 println!("{pod_id}");
             }
@@ -1029,54 +1016,6 @@ async fn main() -> Result<()> {
                 cri.stop_pod_sandbox(&id).await?;
                 cri.remove_pod_sandbox(&id).await?;
                 println!("Pod removed");
-            }
-        },
-
-        Command::Container { action } => match action {
-            ContainerAction::Create {
-                pod_id,
-                name,
-                image,
-                containerd_socket,
-            } => {
-                let mut cri = CriClient::connect(&containerd_socket).await?;
-
-                // Pull the image first to ensure it's in the CRI namespace
-                cri.pull_image(&image, None).await?;
-
-                // Create a minimal pod config for the container creation call
-                let dns_servers = net::host_nameservers();
-                let pod_config = cri::pod_sandbox_config("pod", &dns_servers);
-                let container_config = cri::container_config(&name, &image);
-                let container_id = cri
-                    .create_container(&pod_id, &pod_config, container_config)
-                    .await?;
-                println!("{container_id}");
-            }
-            ContainerAction::Start {
-                id,
-                containerd_socket,
-            } => {
-                let mut cri = CriClient::connect(&containerd_socket).await?;
-                cri.start_container(&id).await?;
-                println!("Container started");
-            }
-            ContainerAction::Stop {
-                id,
-                timeout,
-                containerd_socket,
-            } => {
-                let mut cri = CriClient::connect(&containerd_socket).await?;
-                cri.stop_container(&id, timeout).await?;
-                println!("Container stopped");
-            }
-            ContainerAction::Remove {
-                id,
-                containerd_socket,
-            } => {
-                let mut cri = CriClient::connect(&containerd_socket).await?;
-                cri.remove_container(&id).await?;
-                println!("Container removed");
             }
         },
     }
