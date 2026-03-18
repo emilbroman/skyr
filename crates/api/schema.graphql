@@ -88,11 +88,13 @@ type Resource {
   owner: Deployment
   dependencies: [Resource!]!
   markers: [ResourceMarker!]!
+  lastLogs(amount: Int): [Log!]!
 }
 
 type Subscription {
   deploymentLogs(deploymentId: String!, initialAmount: Int): Log!
   environmentLogs(environmentQid: String!, initialAmount: Int): Log!
+  resourceLogs(resourceQid: String!, initialAmount: Int): Log!
 }
 
 type User {

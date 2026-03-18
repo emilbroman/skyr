@@ -420,7 +420,7 @@ impl Environment {
 
         for deployment in &self.deployments {
             let deployment_qid = deployment.deployment_qid().to_string();
-            match load_deployment_logs(context, deployment_qid.clone(), amount).await {
+            match load_logs(context, deployment_qid.clone(), amount).await {
                 Ok(logs) => all_logs.extend(logs),
                 Err(error) => {
                     tracing::warn!("Failed to fetch logs for deployment {deployment_qid}: {error}");
@@ -505,7 +505,7 @@ impl Deployment {
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
         let deployment_qid = self.deployment.deployment_qid().to_string();
-        load_deployment_logs(context, deployment_qid.clone(), amount)
+        load_logs(context, deployment_qid.clone(), amount)
             .await
             .map_err(|error| {
                 tracing::error!("Failed to fetch deployment logs for {deployment_qid}: {error}");
@@ -556,6 +556,20 @@ impl Artifact {
 
 struct Resource {
     resource: rdb::Resource,
+}
+
+impl Resource {
+    fn resource_qid(&self) -> FieldResult<ids::ResourceQid> {
+        let env_qid: ids::EnvironmentQid = self.resource.namespace.parse().map_err(|_| {
+            tracing::error!(
+                "Invalid environment QID in resource namespace: {}",
+                self.resource.namespace
+            );
+            internal_error()
+        })?;
+        let resource_id = ids::ResourceId::new(&self.resource.resource_type, &self.resource.name);
+        Ok(ids::ResourceQid::new(env_qid, resource_id))
+    }
 }
 
 #[juniper::graphql_object(Context = Context)]
@@ -669,6 +683,18 @@ impl Resource {
             .copied()
             .map(ResourceMarker::from)
             .collect()
+    }
+
+    #[graphql(name = "lastLogs")]
+    async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
+        let amount = amount.unwrap_or(20).max(0) as u64;
+        let resource_qid = self.resource_qid()?.to_string();
+        load_logs(context, resource_qid.clone(), amount)
+            .await
+            .map_err(|error| {
+                tracing::error!("Failed to fetch resource logs for {resource_qid}: {error}");
+                internal_error()
+            })
     }
 }
 
@@ -949,18 +975,87 @@ impl Subscription {
             }
         }))
     }
+
+    async fn resource_logs(
+        context: &Context,
+        resource_qid: String,
+        initial_amount: Option<i32>,
+    ) -> FieldResult<LogStream> {
+        let (_, user) = context.check_auth().await?;
+
+        let parsed_qid: ids::ResourceQid = resource_qid
+            .parse()
+            .map_err(|_| field_error("invalid resource QID"))?;
+        let organization = parsed_qid.environment_qid().repo.org.to_string();
+
+        if organization != user.username {
+            tracing::warn!(
+                "Rejected resource logs subscription for resource outside user organization: resource={} user={}",
+                resource_qid,
+                user.username
+            );
+            return Err(field_error("resource outside user organization"));
+        }
+
+        let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
+
+        let consumer = ldb::ClientBuilder::new()
+            .brokers(context.ldb_brokers.clone())
+            .build_consumer()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to build ldb consumer for resource logs subscription: {e}");
+                field_error("failed to tail logs")
+            })?;
+
+        let namespace = consumer
+            .namespace(resource_qid.clone())
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to prepare resource logs subscription consumer for {resource_qid}: {e}"
+                );
+                field_error("failed to tail logs")
+            })?;
+        let mut inner = namespace
+            .tail(ldb::TailConfig {
+                follow: true,
+                start_from: ldb::StartFrom::End(initial_amount),
+            })
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to tail resource logs subscription for {resource_qid}: {e}"
+                );
+                field_error("failed to tail logs")
+            })?;
+
+        Ok(Box::pin(async_stream::stream! {
+            while let Some(item) = inner.next().await {
+                match item {
+                    Ok((timestamp, severity, message)) => {
+                        yield Log {
+                            severity: severity.into(),
+                            timestamp: format_timestamp(timestamp),
+                            message,
+                        };
+                    }
+                    Err(error) => {
+                        tracing::warn!("Error while streaming resource logs: {}", error);
+                        break;
+                    }
+                }
+            }
+        }))
+    }
 }
 
-async fn load_deployment_logs(
-    context: &Context,
-    deployment_id: String,
-    amount: u64,
-) -> anyhow::Result<Vec<Log>> {
+async fn load_logs(context: &Context, namespace: String, amount: u64) -> anyhow::Result<Vec<Log>> {
     let consumer = ldb::ClientBuilder::new()
         .brokers(context.ldb_brokers.clone())
         .build_consumer()
         .await?;
-    let namespace = consumer.namespace(deployment_id).await?;
+    let namespace = consumer.namespace(namespace).await?;
     let mut stream = namespace
         .tail(ldb::TailConfig {
             follow: false,
