@@ -13,20 +13,17 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-let pod = Container.Pod({ name: "my-app" })
-
-pod.Container({
-    name: "app",
-    image: image.fullname,
+let pod = Container.Pod({
+    name: "my-app",
+    containers: [{ image: image.fullname }],
 })
 ```
 
 This configuration:
 1. Builds a container image from your repository
-2. Creates a pod (a group of containers)
-3. Runs a container using the built image
+2. Creates a pod with a container using the built image
 
-Skyr automatically handles the dependency order—the container waits for both the pod and image to be ready.
+Skyr automatically handles the dependency order — the pod waits for the image to be ready before starting.
 
 ## Getting Started
 
@@ -166,9 +163,9 @@ let image = Container.Image({
 })
 
 // image.fullname creates a dependency on the image
-pod.Container({
+let pod = Container.Pod({
     name: "app",
-    image: image.fullname,  // Uses the built image
+    containers: [{ image: image.fullname }],  // Uses the built image
 })
 ```
 

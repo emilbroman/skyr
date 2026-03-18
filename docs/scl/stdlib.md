@@ -39,17 +39,13 @@ The image is built using BuildKit and pushed to Skyr's container registry. The r
 
 ### Pod
 
-Create a pod sandbox on a worker node:
+Create a pod with containers on a worker node:
 
 ```scl
-let pod = Container.Pod({ name: "my-pod" })
-```
-
-To allow a pod to reach another pod's port, pass port resources in the `allow` list:
-
-```scl
-let dbPort = dbPod.Port({ port: 5432, protocol: "tcp" })
-let apiPod = Container.Pod({ name: "api", allow: [dbPort] })
+let pod = Container.Pod({
+    name: "my-pod",
+    containers: [{ image: "nginx:latest" }],
+})
 ```
 
 **Inputs:**
@@ -57,23 +53,23 @@ let apiPod = Container.Pod({ name: "api", allow: [dbPort] })
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `Str` | Pod name |
-| `allow` | `[{ address: Str, port: Int, protocol: Str }]?` | Port resources this pod can reach (optional) |
+| `containers` | `[{ image: Str }]` | List of containers to run in the pod |
 
 **Outputs:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `podId` | `Str` | Unique pod identifier |
+| `name` | `Str` | Full resource name (includes inputs hash) |
 | `node` | `Str` | Worker node hosting this pod |
-| `name` | `Str` | Pod name |
-| `namespace` | `Str` | Namespace (deployment ID) |
-| `address` | `Str` | Pod IP address |
-| `Container` | `fn({...}) {...}` | Function to create containers in this pod |
-| `Port` | `fn({...}) {...}` | Function to expose ports on this pod |
+| `address` | `Str` | Pod IP address within the cluster network |
+| `Port` | `fn({...}) {...}` | Function to open ingress ports on this pod |
+| `Attachment` | `fn(Port) {...}` | Function to grant this pod egress access to a port |
 
-A pod is a group of containers that share resources. Use the `Container` method to add containers and `Port` to expose network ports.
+A pod is the smallest unit of deployment — a group of containers that share a network namespace. Containers are specified inline in the `containers` list.
 
-By default, pods are network-isolated: all ingress is denied, and egress to other cluster pods is blocked. Pods can always reach the internet. To allow a pod to communicate with another pod, use `Pod.Port` to open an ingress port, then pass that port resource in the `allow` list of the pod that needs to connect.
+By default, pods are network-isolated: all ingress is denied, and egress to other cluster pods is blocked. Pods can always reach the internet. To allow a pod to communicate with another pod, use `Pod.Port` to open an ingress port on the destination, then use `Pod.Attachment` on the source pod to grant it egress access.
+
+The resource name includes a hash of the inputs, so any change to the pod's configuration results in a new resource (the deployment engine handles the old-to-new transition as delete + create).
 
 ### Port
 
@@ -98,7 +94,27 @@ let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
 | `port` | `Int` | The opened port number |
 | `protocol` | `Str` | The protocol |
 
-Port resources act as access tokens. Pass them to another pod's `allow` list to grant that pod egress access to this port.
+Port resources represent open ingress ports. Pass them to another pod's `Attachment` function to grant that pod egress access to this port.
+
+### Attachment
+
+Grant a pod egress access to a destination port. Accessed via `pod.Attachment`:
+
+```scl
+let httpPort = serverPod.Port({ port: 8080 })
+let attachment = clientPod.Attachment(httpPort)
+```
+
+**Input:** A `Port` record `{ address: Str, port: Int, protocol: Str }` — typically the output of another pod's `Port` call.
+
+**Outputs:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `port` | `{ address: Str, port: Int, protocol: Str }` | The destination port |
+| `clientAddress` | `Str` | The source pod's IP address |
+
+An Attachment creates a firewall rule allowing the source pod to send traffic to the destination port. Without an attachment, egress to other cluster pods is blocked.
 
 ### Host
 
@@ -151,7 +167,7 @@ let apiHostPort = apiHost.Port({
 | `port` | `Int` | The exposed port number |
 | `protocol` | `Str` | The protocol |
 
-Host.Port resources can be passed to a pod's `allow` list just like Pod.Port resources. Traffic is load-balanced across backends using round-robin. Backends can be Pod.Port or Host.Port resources, enabling complex routing topologies such as internal API gateways:
+Host.Port resources can be passed to a pod's `Attachment` function just like Pod.Port resources. Traffic is load-balanced across backends using round-robin. Backends can be Pod.Port or Host.Port resources, enabling complex routing topologies such as internal API gateways:
 
 ```scl
 // Chain Host.Ports to build a gateway that routes through backend services
@@ -163,35 +179,6 @@ let gatewayPort = gateway.Port({
 ```
 
 When a Host.Port is used as a backend, traffic is forwarded through its own load-balancing rules to the ultimate pod backends.
-
-### Container
-
-Create a container within a pod. Accessed via `pod.Container`:
-
-```scl
-let container = pod.Container({
-    name: "app",
-    image: image.fullname,
-})
-```
-
-**Inputs:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `name` | `Str` | Container name |
-| `image` | `Str` | Full image reference (use `image.fullname`) |
-| `command` | `[Str]?` | Entrypoint command (optional) |
-| `args` | `[Str]?` | Command arguments (optional) |
-| `envs` | `#{ Str: Str }?` | Environment variables (optional) |
-
-**Outputs:**
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `containerId` | `Str` | Unique container identifier |
-| `name` | `Str` | Container name |
-| `image` | `Str` | Image used |
 
 ### Complete Example
 
@@ -206,19 +193,18 @@ let image = Container.Image({
 })
 
 // Create a pod with a container
-let pod = Container.Pod({ name: "hello-world" })
-pod.Container({
-    name: "app",
-    image: image.fullname,
+let pod = Container.Pod({
+    name: "hello-world",
+    containers: [{ image: image.fullname }],
 })
 let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
 
 // Another pod that can access the first pod's HTTP port
-let clientPod = Container.Pod({ name: "client", allow: [httpPort] })
-clientPod.Container({
-    name: "curl",
-    image: "curlimages/curl",
+let clientPod = Container.Pod({
+    name: "client",
+    containers: [{ image: "curlimages/curl" }],
 })
+clientPod.Attachment(httpPort)
 ```
 
 ### Networking Example
@@ -227,21 +213,18 @@ clientPod.Container({
 import Std/Container
 
 // Database tier
-let dbPod = Container.Pod({ name: "postgres" })
-dbPod.Container({
+let dbPod = Container.Pod({
     name: "postgres",
-    image: "postgres:16",
-    envs: { POSTGRES_PASSWORD: "secret" },
+    containers: [{ image: "postgres:16" }],
 })
 let dbPort = dbPod.Port({ port: 5432 })
 
 // API tier with access to the database
-let apiPod = Container.Pod({ name: "api", allow: [dbPort] })
-apiPod.Container({
+let apiPod = Container.Pod({
     name: "api",
-    image: image.fullname,
-    envs: { DATABASE_URL: "postgres://postgres:secret@{dbPort.address}:5432/app" },
+    containers: [{ image: image.fullname }],
 })
+apiPod.Attachment(dbPort)
 let apiPort = apiPod.Port({ port: 8080 })
 
 // Load-balanced API host
@@ -249,16 +232,15 @@ let apiHost = Container.Host({ name: "api" })
 let apiHostPort = apiHost.Port({ port: 80, backends: [apiPort] })
 
 // Frontend pod that accesses the API via DNS
-let frontendPod = Container.Pod({ name: "frontend", allow: [apiHostPort] })
-frontendPod.Container({
-    name: "nginx",
-    image: "nginx:latest",
-    envs: { API_URL: "http://{apiHostPort.hostname}:{apiHostPort.port}" },
+let frontendPod = Container.Pod({
+    name: "frontend",
+    containers: [{ image: "nginx:latest" }],
 })
+frontendPod.Attachment(apiHostPort)
 ```
 
 In this example:
-- The database is only reachable by the API pod (via `dbPort`)
+- The database is only reachable by the API pod (via `Attachment`)
 - The API is load-balanced behind `api.internal:80`
 - The frontend reaches the API via the Host DNS name
 - No pod can reach the database except the API tier
@@ -863,11 +845,9 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-let pod = Container.Pod({ name: "api" })
-
-let container = pod.Container({
+let pod = Container.Pod({
     name: "api",
-    image: image.fullname,
+    containers: [{ image: image.fullname }],
 })
 
 // Export deployment information
@@ -878,7 +858,6 @@ Artifact.File({
         image: image.fullname,
         pod: pod.name,
         node: pod.node,
-        container: container.name,
     }),
 })
 ```
