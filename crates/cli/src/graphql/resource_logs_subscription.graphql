@@ -1,0 +1,7 @@
+subscription ResourceLogs($resourceQid: String!, $initialAmount: Int) {
+  resourceLogs(resourceQid: $resourceQid, initialAmount: $initialAmount) {
+    severity
+    timestamp
+    message
+  }
+}

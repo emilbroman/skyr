@@ -3,6 +3,7 @@ query ListRepositoryResources {
     name
     environments {
       name
+      qid
       resources {
         type
         name

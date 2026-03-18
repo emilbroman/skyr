@@ -76,10 +76,10 @@ struct ResourceDependencyOutput {
 }
 
 #[derive(Debug)]
-struct SubscriptionLog {
-    severity: String,
-    timestamp: String,
-    message: String,
+pub(crate) struct SubscriptionLog {
+    pub(crate) severity: String,
+    pub(crate) timestamp: String,
+    pub(crate) message: String,
 }
 
 async fn list_deployments(
@@ -312,7 +312,7 @@ async fn stream_single_environment(
     Ok(())
 }
 
-async fn wait_for_connection_ack<Read, Write>(
+pub(crate) async fn wait_for_connection_ack<Read, Write>(
     read: &mut Read,
     write: &mut Write,
 ) -> anyhow::Result<()>
@@ -365,6 +365,13 @@ where
 }
 
 fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
+    decode_subscription_log(text, "environmentLogs")
+}
+
+pub(crate) fn decode_subscription_log(
+    text: &str,
+    field_name: &str,
+) -> anyhow::Result<Option<SubscriptionLog>> {
     let value: serde_json::Value =
         serde_json::from_str(text).with_context(|| format!("failed to decode message: {text}"))?;
 
@@ -386,8 +393,8 @@ fn decode_log_message(text: &str) -> anyhow::Result<Option<SubscriptionLog>> {
 
             let log = payload
                 .get("data")
-                .and_then(|data| data.get("environmentLogs"))
-                .ok_or_else(|| anyhow!("subscription message missing environmentLogs"))?;
+                .and_then(|data| data.get(field_name))
+                .ok_or_else(|| anyhow!("subscription message missing {field_name}"))?;
 
             let severity = log
                 .get("severity")
@@ -450,7 +457,7 @@ async fn query_repository_environments(
     Ok(repository.environments)
 }
 
-fn graphql_ws_endpoint(graphql_endpoint: &str) -> anyhow::Result<String> {
+pub(crate) fn graphql_ws_endpoint(graphql_endpoint: &str) -> anyhow::Result<String> {
     let ws_endpoint = if let Some(rest) = graphql_endpoint.strip_prefix("https://") {
         format!("wss://{rest}")
     } else if let Some(rest) = graphql_endpoint.strip_prefix("http://") {
