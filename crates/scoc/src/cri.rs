@@ -284,23 +284,25 @@ impl CriClient {
 /// Create a pod sandbox config for CRI.
 ///
 /// Each pod gets its own network namespace for isolation. PID and IPC
-/// namespaces remain shared with the host. The CRI namespace is always
-/// "skyr" — SCOC is the translation boundary where Skyr QID concepts
-/// map to CRI concepts.
+/// namespaces remain shared with the host. The metadata name is the full
+/// resource name (with hash), and the namespace is the environment QID.
 ///
 /// `dns_servers` configures the pod's `/etc/resolv.conf`. Pass the host's
 /// nameservers for now; a cluster DNS server will be added in a later phase.
-pub(crate) fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandboxConfig {
-    let namespace = "skyr";
+pub(crate) fn pod_sandbox_config(
+    name: &str,
+    environment_qid: &str,
+    dns_servers: &[String],
+) -> PodSandboxConfig {
     PodSandboxConfig {
         metadata: Some(PodSandboxMetadata {
             name: name.to_string(),
             uid: format!("{name}-uid"),
-            namespace: namespace.to_string(),
+            namespace: environment_qid.to_string(),
             attempt: 0,
         }),
         hostname: name.to_string(),
-        log_directory: format!("/var/log/pods/{namespace}_{name}"),
+        log_directory: format!("/var/log/pods/skyr_{name}"),
         dns_config: Some(DnsConfig {
             servers: dns_servers.to_vec(),
             searches: vec![],
@@ -343,10 +345,13 @@ pub(crate) fn pod_sandbox_config(name: &str, dns_servers: &[String]) -> PodSandb
 }
 
 /// Create a container config for CRI.
-pub(crate) fn container_config(name: &str, image: &str) -> ContainerConfig {
+///
+/// Containers are identified by their index within the pod.
+pub(crate) fn container_config(index: usize, image: &str) -> ContainerConfig {
+    let name = index.to_string();
     ContainerConfig {
         metadata: Some(ContainerMetadata {
-            name: name.to_string(),
+            name: name.clone(),
             attempt: 0,
         }),
         image: Some(k8s_cri::v1::ImageSpec {

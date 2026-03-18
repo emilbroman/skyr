@@ -16,13 +16,14 @@ use tokio_util::sync::CancellationToken;
 /// 2. Tails the file incrementally
 /// 3. Parses the CRI log format
 /// 4. Detects log severity on a best-effort basis
-/// 5. Publishes each log line to LDB
+/// 5. Publishes each log line to LDB, prefixed with `[{container_index}] `
 ///
 /// All errors are logged via tracing and never cause a panic.
 pub(crate) async fn stream_container_logs(
     log_path: PathBuf,
     publisher: ldb::NamespacePublisher,
     cancel: CancellationToken,
+    container_index: usize,
 ) {
     // Wait for log file to appear
     let file = match wait_for_file(&log_path, &cancel).await {
@@ -42,7 +43,8 @@ pub(crate) async fn stream_container_logs(
                 // Flush any remaining partial buffer
                 if !partial_buf.is_empty() {
                     let severity = detect_severity(&partial_buf, false);
-                    publish(&publisher, severity, std::mem::take(&mut partial_buf)).await;
+                    let msg = format!("[{container_index}] {}", std::mem::take(&mut partial_buf));
+                    publish(&publisher, severity, msg).await;
                 }
                 return;
             }
@@ -70,7 +72,8 @@ pub(crate) async fn stream_container_logs(
                                             std::mem::take(&mut partial_buf)
                                         };
                                         let severity = detect_severity(&full_message, is_stderr);
-                                        publish(&publisher, severity, full_message).await;
+                                        let prefixed = format!("[{container_index}] {full_message}");
+                                        publish(&publisher, severity, prefixed).await;
                                     }
                                 }
                             }
@@ -78,7 +81,8 @@ pub(crate) async fn stream_container_logs(
                                 // Non-CRI format line — publish as-is
                                 if !line.is_empty() {
                                     let severity = detect_severity(line, false);
-                                    publish(&publisher, severity, line.to_string()).await;
+                                    let prefixed = format!("[{container_index}] {line}");
+                                    publish(&publisher, severity, prefixed).await;
                                 }
                             }
                         }

@@ -240,15 +240,13 @@ fn bridge_exists() -> Result<bool> {
 ///
 /// Creates a veth pair, attaches the host end to the bridge, moves the pod end
 /// into the pod's network namespace, assigns an IP, configures routes, and
-/// installs deny-all ingress firewall rules. If an allow list and cluster CIDR
-/// are provided, egress rules are also configured to restrict cluster-internal
-/// traffic to only the allowed destinations.
+/// installs deny-all ingress firewall rules. Egress rules restrict cluster-internal
+/// traffic by default; use `open_egress_port` to allow specific destinations.
 pub(crate) fn setup_pod_network(
     pod_id: &str,
     ip: Ipv4Addr,
     subnet: &Ipv4Net,
     netns_path: &str,
-    allowed_destinations: &[scop::AllowedDestination],
     cluster_cidr: Option<&str>,
     service_cidr: Option<&str>,
 ) -> Result<()> {
@@ -311,9 +309,9 @@ pub(crate) fn setup_pod_network(
     setup_pod_firewall(netns_path)
         .with_context(|| format!("failed to set up firewall for pod {pod_id}"))?;
 
-    // Apply egress allow-list rules (restricts cluster-internal traffic)
+    // Apply egress rules (restricts cluster-internal traffic)
     if let Some(cidr) = cluster_cidr {
-        setup_pod_egress_rules(netns_path, allowed_destinations, cidr, service_cidr)
+        setup_pod_egress_rules(netns_path, cidr, service_cidr)
             .with_context(|| format!("failed to set up egress rules for pod {pod_id}"))?;
     }
 
@@ -361,6 +359,9 @@ fn simple_hash(s: &str) -> u64 {
 // Firewall
 // ============================================================================
 
+/// Egress chain name for per-pod egress rules.
+const EGRESS_CHAIN: &str = "SKYR-EGRESS";
+
 /// Set up deny-all ingress firewall inside a pod's network namespace.
 ///
 /// Rules:
@@ -369,6 +370,7 @@ fn simple_hash(s: &str) -> u64 {
 /// - Allow loopback
 /// - OUTPUT default policy: ACCEPT (internet access)
 /// - FORWARD default policy: DROP
+/// - SKYR-EGRESS chain: jumped to from OUTPUT before cluster/service DROP rules
 fn setup_pod_firewall(netns_path: &str) -> Result<()> {
     debug!(netns = %netns_path, "configuring pod firewall");
 
@@ -400,30 +402,32 @@ fn setup_pod_firewall(netns_path: &str) -> Result<()> {
         &["-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
     )?;
 
+    // Create SKYR-EGRESS chain for attachment-managed egress rules
+    nsenter_run(netns_path, "iptables", &["-N", EGRESS_CHAIN])?;
+
     Ok(())
 }
 
-/// Configure egress rules for a pod based on its allow list.
+/// Configure base egress rules for a pod.
 ///
 /// By default pods can reach the internet but not other cluster-internal
-/// destinations. The allow list grants access to specific address:port
-/// pairs within the cluster.
+/// destinations. Attachments dynamically add ACCEPT rules to the SKYR-EGRESS
+/// chain for specific destinations.
 ///
 /// Rules (appended to the OUTPUT chain, which defaults to ACCEPT):
 /// 1. Allow loopback output
 /// 2. Allow established/related outbound connections
-/// 3. For each allowed destination: allow traffic to that address:port/protocol
-/// 4. Drop all other traffic to the cluster CIDR (blocks cluster-internal)
-/// 5. Everything else (internet) falls through to the ACCEPT policy
+/// 3. Jump to SKYR-EGRESS chain (for attachment-managed rules)
+/// 4. Drop all traffic to the cluster CIDR (blocks cluster-internal)
+/// 5. Drop all traffic to the service CIDR (blocks Host VIPs)
+/// 6. Everything else (internet) falls through to the ACCEPT policy
 fn setup_pod_egress_rules(
     netns_path: &str,
-    allowed: &[scop::AllowedDestination],
     cluster_cidr: &str,
     service_cidr: Option<&str>,
 ) -> Result<()> {
     debug!(
         netns = %netns_path,
-        num_allowed = %allowed.len(),
         cluster_cidr = %cluster_cidr,
         "configuring pod egress rules"
     );
@@ -451,35 +455,12 @@ fn setup_pod_egress_rules(
         ],
     )?;
 
-    // Allow traffic to each destination in the allow list.
-    // Destinations can be either pod IPs (for Pod.Port) or VIPs (for Host.Port).
-    for dest in allowed {
-        let port_str = dest.port.to_string();
-        nsenter_run(
-            netns_path,
-            "iptables",
-            &[
-                "-A",
-                "OUTPUT",
-                "-d",
-                &dest.address,
-                "-p",
-                &dest.protocol,
-                "--dport",
-                &port_str,
-                "-j",
-                "ACCEPT",
-            ],
-        )?;
-
-        debug!(
-            netns = %netns_path,
-            dest_address = %dest.address,
-            dest_port = %dest.port,
-            dest_protocol = %dest.protocol,
-            "added egress allow rule"
-        );
-    }
+    // Jump to SKYR-EGRESS chain (before DROP rules)
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &["-A", "OUTPUT", "-j", EGRESS_CHAIN],
+    )?;
 
     // Drop all other traffic to cluster-internal IPs (pod CIDR)
     nsenter_run(
@@ -501,11 +482,84 @@ fn setup_pod_egress_rules(
 
     info!(
         netns = %netns_path,
-        num_allowed = %allowed.len(),
         "pod egress rules configured"
     );
 
     Ok(())
+}
+
+/// Open an egress port on a pod's firewall (for Attachment resources).
+///
+/// Appends an iptables ACCEPT rule to the SKYR-EGRESS chain in the pod's
+/// network namespace, allowing outbound traffic to the specified destination.
+pub(crate) fn open_egress_port(
+    netns_path: &str,
+    dest_address: &str,
+    port: i32,
+    protocol: &str,
+) -> Result<()> {
+    let port_str = port.to_string();
+    info!(
+        netns = %netns_path,
+        dest_address = %dest_address,
+        port = %port,
+        protocol = %protocol,
+        "opening egress port"
+    );
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &[
+            "-A",
+            EGRESS_CHAIN,
+            "-d",
+            dest_address,
+            "-p",
+            protocol,
+            "--dport",
+            &port_str,
+            "-j",
+            "ACCEPT",
+        ],
+    )
+    .with_context(|| format!("failed to open egress port {dest_address}:{port}/{protocol}"))
+}
+
+/// Close an egress port on a pod's firewall (for Attachment resources).
+///
+/// Deletes the matching iptables ACCEPT rule from the SKYR-EGRESS chain
+/// in the pod's network namespace.
+pub(crate) fn close_egress_port(
+    netns_path: &str,
+    dest_address: &str,
+    port: i32,
+    protocol: &str,
+) -> Result<()> {
+    let port_str = port.to_string();
+    info!(
+        netns = %netns_path,
+        dest_address = %dest_address,
+        port = %port,
+        protocol = %protocol,
+        "closing egress port"
+    );
+    nsenter_run(
+        netns_path,
+        "iptables",
+        &[
+            "-D",
+            EGRESS_CHAIN,
+            "-d",
+            dest_address,
+            "-p",
+            protocol,
+            "--dport",
+            &port_str,
+            "-j",
+            "ACCEPT",
+        ],
+    )
+    .with_context(|| format!("failed to close egress port {dest_address}:{port}/{protocol}"))
 }
 
 // ============================================================================
