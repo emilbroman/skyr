@@ -83,12 +83,15 @@ src/tests/
       "<resource-id>": {
         "inputs": { ... },
         "outputs": { ... },
-        "markers": ["Volatile", "Sticky"]
+        "markers": ["Volatile", "Sticky"],
+        "dependencies": [{ "type": "<resource-type>", "name": "<resource-name>" }]
       }
     }
   }
 }
 ```
+
+The `dependencies` field is optional. When present, it provides the list of resource IDs that this resource depends on, allowing the test harness to distinguish `TouchResource` from `UpdateResource` effects for resources with dependencies.
 
 ### Adding a Test Case
 
