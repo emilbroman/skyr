@@ -1,15 +1,17 @@
 //! Std/Container - Container orchestration resources
 //!
-//! This module provides Image, Pod, Container, Port, Host, and Host.Port resources
+//! This module provides Image, Pod, Port, Attachment, Host, and Host.Port resources
 //! for container orchestration and networking.
 //!
 //! Resource types:
 //! - `Std/Container.Image` - Container image build via BuildKit
-//! - `Std/Container.Pod` - Pod sandbox lifecycle
-//! - `Std/Container.Pod.Container` - Container lifecycle within a pod
-//! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
+//! - `Std/Container.Pod` - Pod sandbox with inline containers
+//! - `Std/Container.Pod.Port` - Pod port (firewall opening)
+//! - `Std/Container.Pod.Attachment` - Egress attachment from pod to a port
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
 //! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
+
+use std::hash::{DefaultHasher, Hash, Hasher};
 
 use ids::ResourceId;
 
@@ -17,8 +19,8 @@ use crate::{EvalCtx, ExternFnValue, Record, TrackedValue, Value, ValueAssertions
 
 const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
-const CONTAINER_RESOURCE_TYPE: &str = "Std/Container.Pod.Container";
 const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
+const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
 const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 
@@ -100,10 +102,25 @@ fn image_extern_fn(
     Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
 }
 
+/// Compute a deterministic hash of the pod inputs for the resource name.
+///
+/// Builds a canonical JSON representation of the inputs (sorted keys via BTreeMap)
+/// and hashes it to produce a hex suffix for the resource name.
+fn compute_inputs_hash(name: &str, containers: &[serde_json::Value]) -> String {
+    let canonical = serde_json::json!({
+        "containers": containers,
+        "name": name,
+    });
+    let json_str = serde_json::to_string(&canonical).unwrap();
+    let mut hasher = DefaultHasher::new();
+    Hash::hash(&json_str, &mut hasher);
+    format!("{:x}", hasher.finish())
+}
+
 /// Extern function for creating Pod resources.
 ///
-/// Input: `{ name: Str, allow: [{ address: Str, port: Int, protocol: Str }]? }`
-/// Output: `{ podId: Str, node: Str, name: Str, namespace: Str, address: Str, Container: fn(...), Port: fn(...) }`
+/// Input: `{ name: Str, containers: [{ image: Str }] }`
+/// Output: `{ name: Str, node: Str, address: Str, Port: fn(...), Attachment: fn(...) }`
 fn pod_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
@@ -116,62 +133,68 @@ fn pod_extern_fn(
 
     let config = config_arg.value.assert_record()?;
 
-    // Extract the name from input
+    // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
+    let containers_value = config.get("containers").clone();
+
+    // Extract container list for building inputs and computing hash
+    let containers_list = match &containers_value {
+        Value::List(list) => list.clone(),
+        _ => vec![],
+    };
+
+    // Build canonical JSON representation of containers for hashing
+    let containers_json: Vec<serde_json::Value> = containers_list
+        .iter()
+        .map(|c| {
+            if let Value::Record(rec) = c {
+                let image = rec
+                    .get("image")
+                    .assert_str_ref()
+                    .unwrap_or("")
+                    .to_owned();
+                serde_json::json!({ "image": image })
+            } else {
+                serde_json::json!(null)
+            }
+        })
+        .collect();
+
+    // Compute resource name: "{name}-{hash}"
+    let hash = compute_inputs_hash(&name, &containers_json);
+    let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
         typ: POD_RESOURCE_TYPE.to_string(),
-        name: name.clone(),
+        name: resource_name.clone(),
     };
 
-    // Extract the optional allow list (list of port resource records)
-    let allow_value = config.get("allow").clone();
-
     // Build inputs for the RTP plugin
-    // The plugin expects: name, namespace, uid, node (optional), labels, annotations
-    // For the minimal interface, we only pass name and generate uid/namespace
     let mut inputs = Record::default();
-    inputs.insert(String::from("name"), Value::Str(name.clone()));
-    // Use the deployment namespace from eval context
+    inputs.insert(String::from("name"), Value::Str(resource_name.clone()));
+    inputs.insert(String::from("containers"), containers_value);
     inputs.insert(
         String::from("namespace"),
         Value::Str(eval_ctx.namespace().to_owned()),
     );
-    // Generate a uid based on the name (the plugin may override this)
-    inputs.insert(
-        String::from("uid"),
-        Value::Str(format!("{}-{}", eval_ctx.namespace(), name)),
-    );
-    // Pass the allow list through to the plugin (Value::Nil if not provided)
-    inputs.insert(String::from("allow"), allow_value);
 
     let Some(outputs) = eval_ctx.resource(
         POD_RESOURCE_TYPE,
-        &name,
+        &resource_name,
         &inputs,
         argument_dependencies.clone(),
     )?
     else {
-        // Resource is pending - return pending value with dependency
+        // Resource is pending
         argument_dependencies.insert(resource_id);
         return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
     };
 
     // Extract outputs from the plugin
-    let pod_id = outputs
-        .get("podId")
-        .assert_str_ref()
-        .unwrap_or(&name)
-        .to_owned();
     let node = outputs
         .get("node")
         .assert_str_ref()
         .unwrap_or("")
-        .to_owned();
-    let namespace = outputs
-        .get("namespace")
-        .assert_str_ref()
-        .unwrap_or(eval_ctx.namespace())
         .to_owned();
     let address = outputs
         .get("address")
@@ -179,126 +202,40 @@ fn pod_extern_fn(
         .unwrap_or("")
         .to_owned();
 
-    // Build the result record with outputs
+    // Build the result record
     let mut result = Record::default();
-    result.insert(String::from("podId"), Value::Str(pod_id.clone()));
+    result.insert(String::from("name"), Value::Str(resource_name.clone()));
     result.insert(String::from("node"), Value::Str(node.clone()));
-    result.insert(String::from("name"), Value::Str(name.clone()));
-    result.insert(String::from("namespace"), Value::Str(namespace.clone()));
     result.insert(String::from("address"), Value::Str(address.clone()));
 
-    // Create the Container function that captures the pod's context
-    let container_fn = create_container_fn(
-        pod_id.clone(),
-        name.clone(),
-        namespace.clone(),
+    // Create the Port function
+    let port_fn = create_port_fn(
+        resource_name.clone(),
+        address.clone(),
         node.clone(),
         resource_id.clone(),
     );
-    result.insert(String::from("Container"), Value::ExternFn(container_fn));
+    result.insert(String::from("Port"), Value::ExternFn(port_fn));
 
-    // Create the Port function that captures the pod's context
-    let port_fn = create_port_fn(
-        pod_id,
-        name.clone(),
-        namespace,
+    // Create the Attachment function
+    let attachment_fn = create_attachment_fn(
+        resource_name,
         address,
         node,
         resource_id.clone(),
     );
-    result.insert(String::from("Port"), Value::ExternFn(port_fn));
+    result.insert(String::from("Attachment"), Value::ExternFn(attachment_fn));
 
     argument_dependencies.insert(resource_id);
     Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
 }
 
-/// Creates an ExternFnValue for creating containers within a pod.
-///
-/// The returned function captures the pod's context (podId, name, namespace, node)
-/// and uses them when creating Container resources.
-fn create_container_fn(
-    pod_id: String,
-    pod_name: String,
-    pod_namespace: String,
-    node: String,
-    pod_resource_id: ResourceId,
-) -> ExternFnValue {
-    ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-        let mut argument_dependencies = config_arg.dependencies.clone();
-
-        // The container depends on the pod
-        argument_dependencies.insert(pod_resource_id.clone());
-
-        let config = config_arg.value.assert_record()?;
-
-        // Extract container-specific inputs
-        let container_name = config.get("name").assert_str_ref()?.to_owned();
-        let image = config.get("image").assert_str_ref()?.to_owned();
-
-        // Build the resource ID for this container
-        // Use pod_name:container_name as the unique ID
-        let resource_id_str = format!("{}:{}", pod_name, container_name);
-        let resource_id = ResourceId {
-            typ: CONTAINER_RESOURCE_TYPE.to_string(),
-            name: resource_id_str.clone(),
-        };
-
-        // Build inputs for the RTP plugin
-        // The plugin expects: podId, podName, podNamespace, podUid, node, name, image, ...
-        let mut inputs = Record::default();
-        inputs.insert(String::from("podId"), Value::Str(pod_id.clone()));
-        inputs.insert(String::from("podName"), Value::Str(pod_name.clone()));
-        inputs.insert(String::from("podNamespace"), Value::Str(pod_namespace.clone()));
-        inputs.insert(
-            String::from("podUid"),
-            Value::Str(format!("{}-{}", pod_namespace, pod_name)),
-        );
-        inputs.insert(String::from("node"), Value::Str(node.clone()));
-        inputs.insert(String::from("name"), Value::Str(container_name.clone()));
-        inputs.insert(String::from("image"), Value::Str(image.clone()));
-
-        let Some(outputs) = eval_ctx.resource(
-            CONTAINER_RESOURCE_TYPE,
-            &resource_id_str,
-            &inputs,
-            argument_dependencies.clone(),
-        )?
-        else {
-            // Resource is pending
-            argument_dependencies.insert(resource_id);
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-        };
-
-        // Extract outputs from the plugin
-        let container_id = outputs
-            .get("containerId")
-            .assert_str_ref()
-            .unwrap_or(&container_name)
-            .to_owned();
-
-        // Build the result record
-        let mut result = Record::default();
-        result.insert(String::from("containerId"), Value::Str(container_id));
-        result.insert(String::from("name"), Value::Str(container_name));
-        result.insert(String::from("image"), Value::Str(image));
-
-        argument_dependencies.insert(resource_id);
-        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
-    }))
-}
-
 /// Creates an ExternFnValue for exposing ports on a pod.
 ///
-/// The returned function captures the pod's context (name, namespace, address)
+/// The returned function captures the pod's context (resource_name, address, node)
 /// and uses them when creating Pod.Port resources.
 fn create_port_fn(
-    pod_id: String,
-    pod_name: String,
-    pod_namespace: String,
+    resource_name: String,
     pod_address: String,
     node: String,
     pod_resource_id: ResourceId,
@@ -322,14 +259,9 @@ fn create_port_fn(
             .assert_str_ref()
             .unwrap_or("tcp")
             .to_lowercase();
-        let port_name = config
-            .get("name")
-            .assert_str_ref()
-            .ok()
-            .map(|s| s.to_owned());
 
-        // Build the resource ID: "{pod_name}:{port}/{protocol}"
-        let resource_id_str = format!("{}:{}/{}", pod_name, port, protocol);
+        // Build the resource ID: "{resource_name}:{port}/{protocol}"
+        let resource_id_str = format!("{}:{}/{}", resource_name, port, protocol);
         let resource_id = ResourceId {
             typ: PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
@@ -337,18 +269,13 @@ fn create_port_fn(
 
         // Build inputs for the RTP plugin
         let mut inputs = Record::default();
-        inputs.insert(String::from("podId"), Value::Str(pod_id.clone()));
-        inputs.insert(String::from("podName"), Value::Str(pod_name.clone()));
-        inputs.insert(String::from("podNamespace"), Value::Str(pod_namespace.clone()));
-        inputs.insert(String::from("podAddress"), Value::Str(pod_address.clone()));
+        inputs.insert(String::from("podName"), Value::Str(resource_name.clone()));
+        inputs.insert(String::from("ip"), Value::Str(pod_address.clone()));
         inputs.insert(String::from("node"), Value::Str(node.clone()));
         inputs.insert(String::from("port"), Value::Int(port));
         inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
-        if let Some(ref name) = port_name {
-            inputs.insert(String::from("name"), Value::Str(name.clone()));
-        }
 
-        let Some(outputs) = eval_ctx.resource(
+        let Some(_outputs) = eval_ctx.resource(
             PORT_RESOURCE_TYPE,
             &resource_id_str,
             &inputs,
@@ -360,28 +287,81 @@ fn create_port_fn(
             return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
         };
 
-        // Extract outputs from the plugin
-        let address = outputs
-            .get("address")
-            .assert_str_ref()
-            .unwrap_or(&pod_address)
-            .to_owned();
-        let out_port = outputs
-            .get("port")
-            .assert_int_ref()
-            .copied()
-            .unwrap_or(port);
-        let out_protocol = outputs
-            .get("protocol")
-            .assert_str_ref()
-            .unwrap_or(&protocol)
-            .to_owned();
+        // Build the result record from closure/inputs (plugin outputs are empty)
+        let mut result = Record::default();
+        result.insert(String::from("address"), Value::Str(pod_address.clone()));
+        result.insert(String::from("port"), Value::Int(port));
+        result.insert(String::from("protocol"), Value::Str(protocol));
+
+        argument_dependencies.insert(resource_id);
+        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+    }))
+}
+
+/// Creates an ExternFnValue for creating egress attachments from a pod to a port.
+///
+/// The returned function takes a Port record `{ address, port, protocol }` and
+/// creates an Attachment resource granting egress access from the pod.
+fn create_attachment_fn(
+    resource_name: String,
+    pod_address: String,
+    node: String,
+    pod_resource_id: ResourceId,
+) -> ExternFnValue {
+    ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
+        let mut args = args.into_iter();
+        let port_arg = args
+            .next()
+            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+        let mut argument_dependencies = port_arg.dependencies.clone();
+
+        // The attachment depends on the pod
+        argument_dependencies.insert(pod_resource_id.clone());
+
+        let port_record = port_arg.value.assert_record()?;
+
+        // Extract destination port details
+        let dest_address = port_record.get("address").assert_str_ref()?.to_owned();
+        let port = *port_record.get("port").assert_int_ref()?;
+        let protocol = port_record.get("protocol").assert_str_ref()?.to_owned();
+
+        // Build the resource ID: "{resource_name}@{dest_address}:{port}/{protocol}"
+        let resource_id_str = format!("{}@{}:{}/{}", resource_name, dest_address, port, protocol);
+        let resource_id = ResourceId {
+            typ: ATTACHMENT_RESOURCE_TYPE.to_string(),
+            name: resource_id_str.clone(),
+        };
+
+        // Build inputs for the RTP plugin
+        let mut inputs = Record::default();
+        inputs.insert(String::from("podName"), Value::Str(resource_name.clone()));
+        inputs.insert(String::from("node"), Value::Str(node.clone()));
+        inputs.insert(String::from("source"), Value::Str(pod_address.clone()));
+        inputs.insert(String::from("destination"), Value::Str(dest_address.clone()));
+        inputs.insert(String::from("port"), Value::Int(port));
+        inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
+
+        let Some(_outputs) = eval_ctx.resource(
+            ATTACHMENT_RESOURCE_TYPE,
+            &resource_id_str,
+            &inputs,
+            argument_dependencies.clone(),
+        )?
+        else {
+            // Resource is pending
+            argument_dependencies.insert(resource_id);
+            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        };
 
         // Build the result record
+        let mut port_result = Record::default();
+        port_result.insert(String::from("address"), Value::Str(dest_address));
+        port_result.insert(String::from("port"), Value::Int(port));
+        port_result.insert(String::from("protocol"), Value::Str(protocol));
+
         let mut result = Record::default();
-        result.insert(String::from("address"), Value::Str(address));
-        result.insert(String::from("port"), Value::Int(out_port));
-        result.insert(String::from("protocol"), Value::Str(out_protocol));
+        result.insert(String::from("port"), Value::Record(port_result));
+        result.insert(String::from("clientAddress"), Value::Str(pod_address.clone()));
 
         argument_dependencies.insert(resource_id);
         Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
