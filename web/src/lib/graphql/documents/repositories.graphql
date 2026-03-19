@@ -4,6 +4,15 @@ query Repositories {
     environments {
       name
       qid
+      deployments {
+        id
+        ref
+        state
+        commit {
+          hash
+          message
+        }
+      }
     }
   }
 }

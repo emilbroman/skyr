@@ -3,6 +3,7 @@
 	import { onMount } from 'svelte';
 	import { query } from '$lib/graphql/client';
 	import {
+		DeploymentState,
 		EnvironmentDetailDocument,
 		EnvironmentLogsDocument,
 		type EnvironmentDetailQuery
@@ -10,15 +11,20 @@
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
+	import FileBrowser from '$lib/components/FileBrowser.svelte';
 
-	let repoName = $derived($page.params.repo);
-	let envName = $derived($page.params.env);
+	let repoName = $derived($page.params.repo ?? '');
+	let envName = $derived($page.params.env ?? '');
 
 	type EnvData = EnvironmentDetailQuery['repositories'][0]['environments'][0];
 	let env = $state<EnvData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 	let showLogs = $state(false);
+
+	let desiredDeployment = $derived(
+		env?.deployments.find((d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up) ?? null
+	);
 
 	onMount(async () => {
 		try {
@@ -72,6 +78,24 @@
 			</div>
 		{/if}
 
+		<!-- File Browser for desired deployment -->
+		{#if desiredDeployment}
+			<section class="mb-8">
+				<h2 class="text-lg font-medium text-gray-300 mb-3">
+					Files
+					<span class="text-gray-500 text-sm font-normal ml-2">
+						from <span class="font-mono">{desiredDeployment.commit.hash.substring(0, 8)}</span>
+					</span>
+				</h2>
+				<FileBrowser
+					{repoName}
+					{envName}
+					deploymentId={desiredDeployment.id}
+					commitHash={desiredDeployment.commit.hash}
+				/>
+			</section>
+		{/if}
+
 		<!-- Deployments -->
 		<section class="mb-8">
 			<h2 class="text-lg font-medium text-gray-300 mb-4">
@@ -95,7 +119,7 @@
 										<span class="text-gray-500 text-xs">{deployment.ref}</span>
 									</div>
 									<div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
-										<span class="font-mono">{deployment.commit.substring(0, 8)}</span>
+										<span class="font-mono">{deployment.commit.hash.substring(0, 8)}</span>
 										<span>{new Date(deployment.createdAt).toLocaleString()}</span>
 										<span>{deployment.resources.length} resource{deployment.resources.length !== 1 ? 's' : ''}</span>
 									</div>
