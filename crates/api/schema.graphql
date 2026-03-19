@@ -102,7 +102,14 @@ type Resource {
   owner: Deployment
   dependencies: [Resource!]!
   markers: [ResourceMarker!]!
+  sourceTrace: [SourceFrame!]!
   lastLogs(amount: Int): [Log!]!
+}
+
+type SourceFrame {
+  moduleId: String!
+  span: String!
+  name: String!
 }
 
 type Subscription {

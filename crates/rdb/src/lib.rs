@@ -67,6 +67,7 @@ prepared_statements! {
                 dependencies_json TEXT,
                 markers_json TEXT,
                 owner TEXT,
+                source_trace_json TEXT,
                 PRIMARY KEY ((namespace), resource_type, name)
             )
         "#,
@@ -74,19 +75,19 @@ prepared_statements! {
 
     PreparedStatements {
         get_resource = r#"
-            SELECT inputs_json, outputs_json, dependencies_json, markers_json, owner
+            SELECT inputs_json, outputs_json, dependencies_json, markers_json, owner, source_trace_json
             FROM rdb.resources
             WHERE namespace = ?
             AND resource_type = ?
             AND name = ?
         "#,
         list_resources = r#"
-            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner
+            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner, source_trace_json
             FROM rdb.resources
             WHERE namespace = ?
         "#,
         list_resources_by_owner = r#"
-            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner
+            SELECT resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner, source_trace_json
             FROM rdb.resources
             WHERE namespace = ?
             AND owner = ?
@@ -121,6 +122,13 @@ prepared_statements! {
             AND resource_type = ?
             AND name = ?
         "#,
+        set_resource_source_trace = r#"
+            UPDATE rdb.resources
+            SET source_trace_json = ?
+            WHERE namespace = ?
+            AND resource_type = ?
+            AND name = ?
+        "#,
         delete_resource = r#"
             DELETE FROM rdb.resources
             WHERE namespace = ?
@@ -138,11 +146,20 @@ type ResourceRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    Option<String>,
 );
 
 fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, ResourceError> {
-    let (resource_type, name, inputs_json, outputs_json, dependencies_json, markers_json, owner) =
-        row;
+    let (
+        resource_type,
+        name,
+        inputs_json,
+        outputs_json,
+        dependencies_json,
+        markers_json,
+        owner,
+        source_trace_json,
+    ) = row;
     Ok(Resource {
         namespace: namespace.to_owned(),
         resource_type,
@@ -152,6 +169,7 @@ fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, Resou
         dependencies: decode_dependencies(dependencies_json)?,
         markers: decode_markers(markers_json)?,
         owner,
+        source_trace: decode_source_trace(source_trace_json)?,
     })
 }
 
@@ -296,20 +314,22 @@ impl ResourceClient {
             .execute_iter(self.statements().get_resource.clone(), self.key())
             .await?;
 
-        let (inputs_json, outputs_json, dependencies_json, markers_json, owner) = match pager
-            .rows_stream::<(
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            )>()?
-            .try_next()
-            .await?
-        {
-            Some(row) => row,
-            None => return Ok(None),
-        };
+        let (inputs_json, outputs_json, dependencies_json, markers_json, owner, source_trace_json) =
+            match pager
+                .rows_stream::<(
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                    Option<String>,
+                )>()?
+                .try_next()
+                .await?
+            {
+                Some(row) => row,
+                None => return Ok(None),
+            };
 
         Ok(Some(Resource {
             namespace: self.namespace.namespace.clone(),
@@ -320,6 +340,7 @@ impl ResourceClient {
             dependencies: decode_dependencies(dependencies_json)?,
             markers: decode_markers(markers_json)?,
             owner,
+            source_trace: decode_source_trace(source_trace_json)?,
         }))
     }
 
@@ -389,6 +410,23 @@ impl ResourceClient {
         self.get().await?.ok_or(ResourceError::MissingAfterWrite)
     }
 
+    pub async fn set_source_trace(
+        &self,
+        source_trace: &ids::SourceTrace,
+    ) -> Result<Resource, ResourceError> {
+        let source_trace_json = encode_source_trace(source_trace)?;
+        let (namespace, resource_type, id) = self.key();
+
+        self.session()
+            .execute_unpaged(
+                &self.statements().set_resource_source_trace,
+                (source_trace_json, namespace, resource_type, id),
+            )
+            .await?;
+
+        self.get().await?.ok_or(ResourceError::MissingAfterWrite)
+    }
+
     pub async fn delete(&self) -> Result<(), ResourceError> {
         self.session()
             .execute_unpaged(&self.statements().delete_resource, self.key())
@@ -408,6 +446,7 @@ pub struct Resource {
     pub dependencies: Vec<ids::ResourceId>,
     pub markers: BTreeSet<sclc::Marker>,
     pub owner: Option<String>,
+    pub source_trace: ids::SourceTrace,
 }
 
 #[derive(Error, Debug)]
@@ -464,5 +503,17 @@ fn encode_dependencies(value: &[ids::ResourceId]) -> Result<String, ResourceErro
 }
 
 fn encode_markers(value: &BTreeSet<sclc::Marker>) -> Result<String, ResourceError> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn decode_source_trace(value: Option<String>) -> Result<ids::SourceTrace, ResourceError> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(text) if text.is_empty() => Ok(Vec::new()),
+        Some(text) => Ok(serde_json::from_str(&text)?),
+    }
+}
+
+fn encode_source_trace(value: &ids::SourceTrace) -> Result<String, ResourceError> {
     Ok(serde_json::to_string(value)?)
 }

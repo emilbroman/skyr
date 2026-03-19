@@ -5030,6 +5030,7 @@ name = "rtq"
 version = "0.1.0"
 dependencies = [
  "futures-util",
+ "ids",
  "lapin",
  "serde",
  "serde_json",

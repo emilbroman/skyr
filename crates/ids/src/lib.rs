@@ -140,6 +140,22 @@ pub enum ParseIdError {
 }
 
 // ---------------------------------------------------------------------------
+// SourceFrame / SourceTrace
+// ---------------------------------------------------------------------------
+
+/// A single frame in a source-code trace, capturing where a resource function
+/// was invoked.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceFrame {
+    pub module_id: String,
+    pub span: String,
+    pub name: String,
+}
+
+/// A full source-code trace: innermost (call-site) frame first.
+pub type SourceTrace = Vec<SourceFrame>;
+
+// ---------------------------------------------------------------------------
 // OrgId
 // ---------------------------------------------------------------------------
 

@@ -381,6 +381,21 @@ async fn handle_create(
         return Ok(());
     }
 
+    if let Err(error) = resource_client
+        .set_source_trace(&message.source_trace)
+        .await
+    {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type,
+            resource_name = %message.resource.resource_name,
+            error = %error,
+            "failed to persist created resource source trace",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type,
@@ -567,6 +582,7 @@ struct UpdateParams<'a> {
     desired_inputs: serde_json::Value,
     dependencies: &'a [rtq::ResourceRef],
     operation: &'a str,
+    source_trace: &'a ids::SourceTrace,
 }
 
 async fn handle_update_inputs(
@@ -787,6 +803,17 @@ async fn handle_update_inputs(
         delivery.nack(false).await?;
         return Ok(None);
     }
+    if let Err(error) = resource_client.set_source_trace(params.source_trace).await {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type,
+            resource_name = %resource.resource_name,
+            error = %error,
+            "failed to persist {operation} resource source trace",
+        );
+        delivery.nack(false).await?;
+        return Ok(None);
+    }
 
     Ok(Some(target_dep_qid))
 }
@@ -808,6 +835,7 @@ async fn handle_adopt(
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "adopt",
+            source_trace: &message.source_trace,
         },
         delivery,
         ctx,
@@ -870,6 +898,7 @@ async fn handle_restore(
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "restore",
+            source_trace: &message.source_trace,
         },
         delivery,
         ctx,

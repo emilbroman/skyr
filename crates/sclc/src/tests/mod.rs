@@ -32,6 +32,7 @@ fn format_effect(effect: &Effect) -> String {
             id,
             inputs,
             dependencies,
+            source_trace: _,
         } => {
             let mut s = format!(
                 "CreateResource ty={} name={} inputs={}",
@@ -53,6 +54,7 @@ fn format_effect(effect: &Effect) -> String {
             id,
             inputs,
             dependencies,
+            source_trace: _,
         } => {
             let mut s = format!(
                 "UpdateResource ty={} name={} inputs={}",
@@ -74,6 +76,7 @@ fn format_effect(effect: &Effect) -> String {
             id,
             inputs,
             dependencies,
+            source_trace: _,
         } => {
             let mut s = format!(
                 "TouchResource ty={} name={} inputs={}",
