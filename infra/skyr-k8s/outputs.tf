@@ -3,6 +3,11 @@ output "namespace" {
   description = "The Kubernetes namespace all resources were deployed into."
 }
 
+output "web_service_name" {
+  value       = kubernetes_service.web.metadata[0].name
+  description = "Name of the web frontend Kubernetes Service."
+}
+
 output "api_service_name" {
   value       = kubernetes_service.api.metadata[0].name
   description = "Name of the API Kubernetes Service."
