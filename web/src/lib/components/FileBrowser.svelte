@@ -278,6 +278,20 @@
 				Back to directory
 			</button>
 		</div>
+		{#snippet resourceInlay(items: string[])}
+			{#if items.length === 1}
+				<span class="ml-4 text-xs text-indigo-400/70 font-sans select-none">{items[0]}</span>
+			{:else}
+				<span class="ml-4 relative inline-block font-sans select-none group/inlay">
+					<span class="text-xs text-indigo-400/70 cursor-default">{items.length} resources</span>
+					<div class="hidden group-hover/inlay:block absolute left-0 top-full z-10 mt-1 py-1 px-2 bg-gray-800 border border-gray-700 rounded shadow-lg whitespace-nowrap">
+						{#each items as item}
+							<div class="text-xs text-indigo-300 leading-5">{item}</div>
+						{/each}
+					</div>
+				</span>
+			{/if}
+		{/snippet}
 		{#if blobContent.content != null}
 			<div class="overflow-x-auto" style="background:{highlightBg}">
 				<table class="w-full text-sm font-mono leading-6 border-collapse">
@@ -291,7 +305,7 @@
 									class="hover:bg-white/5 {highlightLine === lineNum ? 'bg-indigo-900/30' : ''}"
 								>
 									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
-									<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}{#if inlay}<span class="ml-4 text-xs text-indigo-400/70 font-sans select-none">{inlay.join(', ')}</span>{/if}</td>
+									<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}{#if inlay}{@render resourceInlay(inlay)}{/if}</td>
 								</tr>
 							{/each}
 						{:else}
@@ -303,7 +317,7 @@
 									class="hover:bg-white/5 {highlightLine === lineNum ? 'bg-indigo-900/30' : ''}"
 								>
 									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
-									<td class="px-4 py-0 whitespace-pre text-gray-300">{line}{#if inlay}<span class="ml-4 text-xs text-indigo-400/70 font-sans select-none">{inlay.join(', ')}</span>{/if}</td>
+									<td class="px-4 py-0 whitespace-pre text-gray-300">{line}{#if inlay}{@render resourceInlay(inlay)}{/if}</td>
 								</tr>
 							{/each}
 						{/if}
