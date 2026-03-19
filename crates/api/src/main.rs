@@ -97,6 +97,24 @@ impl Query {
         })
     }
 
+    async fn organizations(context: &Context) -> FieldResult<Vec<Organization>> {
+        let (_, user) = context.check_auth().await?;
+        Ok(vec![Organization {
+            name: user
+                .username
+                .parse::<ids::OrgId>()
+                .map_err(|_| field_error("Invalid organization name"))?,
+        }])
+    }
+
+    async fn organization(context: &Context, name: String) -> FieldResult<Organization> {
+        let (_, _user) = context.check_auth().await?;
+        let org: ids::OrgId = name
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        Ok(Organization { name: org })
+    }
+
     async fn repositories(context: &Context) -> FieldResult<Vec<Repository>> {
         let (_, user) = context.check_auth().await?;
         context
@@ -327,14 +345,94 @@ impl User {
     }
 }
 
+struct Organization {
+    name: ids::OrgId,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Organization {
+    fn name(&self) -> String {
+        self.name.to_string()
+    }
+
+    async fn repository(&self, context: &Context, name: String) -> FieldResult<Repository> {
+        let repo: ids::RepoId = name
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let repo_qid = ids::RepoQid::new(self.name.clone(), repo);
+        let repository = context
+            .cdb_client
+            .repository(&repo_qid)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to find repository {repo_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(Repository { repository })
+    }
+
+    async fn repositories(&self, context: &Context) -> FieldResult<Vec<Repository>> {
+        context
+            .cdb_client
+            .repositories_by_organization(self.name.to_string())
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list repositories for {}: {}", self.name, e);
+                internal_error()
+            })?
+            .map(|repository| repository.map(|repository| Repository { repository }))
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read repository for {}: {}", self.name, e);
+                internal_error()
+            })
+    }
+}
+
 struct Repository {
     repository: cdb::Repository,
 }
 
 #[juniper::graphql_object(Context = Context)]
 impl Repository {
+    fn organization(&self) -> Organization {
+        Organization {
+            name: self.repository.name.org.clone(),
+        }
+    }
+
     fn name(&self) -> String {
         self.repository.name.repo.to_string()
+    }
+
+    async fn environment(&self, context: &Context, name: String) -> FieldResult<Environment> {
+        let env: ids::EnvironmentId = name
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let qid = self.repository.name.environment(env);
+        let deployments = context
+            .cdb_client
+            .repo(self.repository.name.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list deployments for {qid}: {e}");
+                internal_error()
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read deployments for {qid}: {e}");
+                internal_error()
+            })?;
+
+        let deployments: Vec<_> = deployments
+            .into_iter()
+            .filter(|d| d.environment_qid() == qid)
+            .collect();
+
+        Ok(Environment { qid, deployments })
     }
 
     async fn environments(&self, context: &Context) -> FieldResult<Vec<Environment>> {
@@ -392,6 +490,24 @@ impl Environment {
 
     fn qid(&self) -> String {
         self.qid.to_string()
+    }
+
+    async fn deployment(&self, context: &Context, commit: String) -> FieldResult<Deployment> {
+        let deployment_id: ids::DeploymentId = commit
+            .parse()
+            .map_err(|_| field_error("Invalid commit hash"))?;
+        let deployment = context
+            .cdb_client
+            .find_deployment(&self.qid.repo, &self.qid.environment, &deployment_id)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to find deployment {deployment_id} in {}: {e}",
+                    self.qid
+                );
+                internal_error()
+            })?;
+        Ok(Deployment { deployment })
     }
 
     fn deployments(&self) -> Vec<Deployment> {
