@@ -166,21 +166,32 @@
 	let highlightLine = $state<number | null>(null);
 
 	/**
+	 * Strip the repo QID prefix from a moduleId.
+	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the repo name.
+	 */
+	function stripRepoPrefix(moduleId: string): string {
+		if (repoName && moduleId.startsWith(repoName + '/')) {
+			return moduleId.slice(repoName.length + 1);
+		}
+		return moduleId;
+	}
+
+	/**
 	 * Build a map from line number to resource labels for the currently viewed file.
 	 * Multiple resources can map to the same line.
 	 */
 	let resourceInlays = $derived.by(() => {
 		if (!blobContent || !resources.length) return new Map<number, string[]>();
 
-		// Current file as module ID: strip .scl extension and match
+		// Current file path without .scl extension, to compare with stripped moduleId
 		const currentFile = currentPath.join('/');
-		const moduleIdForFile = currentFile.replace(/\.scl$/, '');
+		const modulePathForFile = currentFile.replace(/\.scl$/, '');
 
 		const inlays = new Map<number, string[]>();
 		for (const resource of resources) {
 			if (!resource.sourceTrace?.length) continue;
 			const frame = resource.sourceTrace[0];
-			if (frame.moduleId !== moduleIdForFile) continue;
+			if (stripRepoPrefix(frame.moduleId) !== modulePathForFile) continue;
 			const line = parseSpanStartLine(frame.span);
 			const label = `${resource.type}/${resource.name}`;
 			const existing = inlays.get(line);
@@ -202,7 +213,8 @@
 	// Handle external navigation requests
 	$effect(() => {
 		if (navigateToFile) {
-			const filePath = navigateToFile.moduleId.split('/');
+			const localPath = stripRepoPrefix(navigateToFile.moduleId);
+			const filePath = localPath.split('/');
 			const lastSegment = filePath[filePath.length - 1];
 			filePath[filePath.length - 1] = lastSegment + '.scl';
 			currentPath = filePath;

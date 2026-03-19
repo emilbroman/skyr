@@ -153,7 +153,7 @@
 			{:else}
 				<div class="space-y-2">
 					{#each env.resources as resource}
-						<ResourceCard {resource} onNavigateToSource={handleNavigateToSource} />
+						<ResourceCard {resource} {repoName} onNavigateToSource={handleNavigateToSource} />
 					{/each}
 				</div>
 			{/if}

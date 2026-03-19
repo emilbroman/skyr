@@ -19,8 +19,9 @@
 		sourceTrace?: SourceFrame[];
 	};
 
-	let { resource, onNavigateToSource }: {
+	let { resource, repoName = '', onNavigateToSource }: {
 		resource: ResourceData;
+		repoName?: string;
 		onNavigateToSource?: (moduleId: string, line: number) => void;
 	} = $props();
 	let expanded = $state(false);
@@ -30,12 +31,25 @@
 		return JSON.stringify(formatRecord(value), null, 2);
 	}
 
+	/**
+	 * Strip the repo QID prefix from a moduleId.
+	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the repo name.
+	 * The file path within the repo is the suffix after the repo name prefix.
+	 */
+	function stripRepoPrefix(moduleId: string): string {
+		if (repoName && moduleId.startsWith(repoName + '/')) {
+			return moduleId.slice(repoName.length + 1);
+		}
+		return moduleId;
+	}
+
 	/** Parse the first source frame into a displayable location string and line number. */
 	function parseSourceLocation(trace: SourceFrame[] | undefined): { label: string; moduleId: string; line: number } | null {
 		if (!trace || trace.length === 0) return null;
 		const frame = trace[0];
 		const line = parseSpanStartLine(frame.span);
-		const filePath = frame.moduleId.replace(/\//g, '/') + '.scl';
+		const localPath = stripRepoPrefix(frame.moduleId);
+		const filePath = localPath + '.scl';
 		return { label: `${filePath}:${line}`, moduleId: frame.moduleId, line };
 	}
 
