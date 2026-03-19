@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { ResourceMarker } from '$lib/graphql/generated';
+	import { formatRecord } from '$lib/format';
 
 	type ResourceData = {
 		type: string;
@@ -16,7 +17,7 @@
 
 	function formatJson(value: any): string {
 		if (value == null) return 'null';
-		return JSON.stringify(value, null, 2);
+		return JSON.stringify(formatRecord(value), null, 2);
 	}
 </script>
 
