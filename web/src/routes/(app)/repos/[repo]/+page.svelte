@@ -5,8 +5,9 @@
 	import { DeploymentState, RepositoriesDocument, type RepositoriesQuery } from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
+	import { decodeSegment, envHref } from '$lib/paths';
 
-	let repoName = $derived($page.params.repo ?? '');
+	let repoName = $derived(decodeSegment($page.params.repo ?? ''));
 	let repo = $state<RepositoriesQuery['repositories'][0] | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -81,7 +82,7 @@
 						(d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up
 					)}
 					<a
-						href="/repos/{repoName}/{env.name}"
+						href={envHref(repoName, env.name)}
 						class="block bg-gray-900 border border-gray-800 rounded-lg p-5 hover:border-gray-700 transition-colors"
 					>
 						<div class="flex items-center justify-between">
