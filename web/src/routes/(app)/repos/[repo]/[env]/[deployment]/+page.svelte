@@ -10,15 +10,17 @@
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
+	import FileBrowser from '$lib/components/FileBrowser.svelte';
 
-	let repoName = $derived($page.params.repo);
-	let envName = $derived($page.params.env);
-	let deploymentId = $derived($page.params.deployment);
+	let repoName = $derived($page.params.repo ?? '');
+	let envName = $derived($page.params.env ?? '');
+	let deploymentId = $derived($page.params.deployment ?? '');
 
 	type DeploymentData = EnvironmentDetailQuery['repositories'][0]['environments'][0]['deployments'][0];
 	let deployment = $state<DeploymentData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let showFiles = $state(true);
 
 	onMount(async () => {
 		try {
@@ -68,7 +70,7 @@
 				</div>
 				<div>
 					<dt class="text-gray-500">Commit</dt>
-					<dd class="text-gray-200 font-mono">{deployment.commit}</dd>
+					<dd class="text-gray-200 font-mono" title={deployment.commit.message}>{deployment.commit.hash.substring(0, 8)} &mdash; {deployment.commit.message}</dd>
 				</div>
 				<div>
 					<dt class="text-gray-500">Created</dt>
@@ -80,6 +82,27 @@
 				</div>
 			</dl>
 		</div>
+
+		<!-- File Browser -->
+		<section class="mb-6">
+			<div class="flex items-center justify-between mb-3">
+				<h2 class="text-lg font-medium text-gray-300">Files</h2>
+				<button
+					class="text-sm px-3 py-1.5 rounded border transition-colors {showFiles ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600'}"
+					onclick={() => showFiles = !showFiles}
+				>
+					{showFiles ? 'Hide Files' : 'Browse Files'}
+				</button>
+			</div>
+			{#if showFiles}
+				<FileBrowser
+					{repoName}
+					{envName}
+					deploymentId={deployment.id}
+					commitHash={deployment.commit.hash}
+				/>
+			{/if}
+		</section>
 
 		<!-- Artifacts -->
 		{#if deployment.artifacts.length > 0}

@@ -7,7 +7,10 @@ query EnvironmentDetail {
       deployments {
         id
         ref
-        commit
+        commit {
+          hash
+          message
+        }
         createdAt
         state
         resources {

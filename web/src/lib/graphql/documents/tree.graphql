@@ -1,0 +1,73 @@
+query DeploymentTree($path: String!) {
+  repositories {
+    name
+    environments {
+      name
+      deployments {
+        id
+        commit {
+          hash
+          treeEntry(path: $path) {
+            ... on Tree {
+              __typename
+              hash
+              name
+              entries {
+                ... on Tree {
+                  __typename
+                  hash
+                  name
+                }
+                ... on Blob {
+                  __typename
+                  hash
+                  name
+                  size
+                }
+              }
+            }
+            ... on Blob {
+              __typename
+              hash
+              name
+              size
+              content
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+query DeploymentRootTree {
+  repositories {
+    name
+    environments {
+      name
+      deployments {
+        id
+        commit {
+          hash
+          message
+          tree {
+            hash
+            entries {
+              ... on Tree {
+                __typename
+                hash
+                name
+              }
+              ... on Blob {
+                __typename
+                hash
+                name
+                size
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
