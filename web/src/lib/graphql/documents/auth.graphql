@@ -13,6 +13,17 @@ mutation SignIn($username: String!, $signature: String!, $pubkey: String!) {
   }
 }
 
+query RefreshToken {
+  refreshToken {
+    user {
+      username
+      email
+      fullname
+    }
+    token
+  }
+}
+
 query Me {
   me {
     username
