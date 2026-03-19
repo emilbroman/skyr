@@ -83,6 +83,20 @@ impl Query {
         Ok(context.challenger.challenge(Utc::now(), &username))
     }
 
+    async fn refresh_token(context: &Context) -> FieldResult<AuthSuccess> {
+        let (user_client, user) = context.check_auth().await?;
+
+        let token = user_client.tokens().issue().await.map_err(|e| {
+            tracing::error!("Failed to issue token: {}", e);
+            internal_error()
+        })?;
+
+        Ok(AuthSuccess {
+            user: User { user },
+            token,
+        })
+    }
+
     async fn repositories(context: &Context) -> FieldResult<Vec<Repository>> {
         let (_, user) = context.check_auth().await?;
         context

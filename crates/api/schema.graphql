@@ -86,6 +86,7 @@ type Query {
   health: Boolean!
   me: User!
   authChallenge(username: String!): String!
+  refreshToken: AuthSuccess!
   repositories: [Repository!]!
 }
 
