@@ -73,6 +73,7 @@ The RTQ carries four message types:
 | [de](crates/de/) | Deployment engine daemon |
 | [rte](crates/rte/) | Resource transition engine daemon |
 | [cli](crates/cli/) | CLI/REPL binary (`skyr`) |
+| [web](web/) | Web dashboard (SvelteKit SPA) |
 
 ### Data Layer
 
@@ -139,6 +140,7 @@ Application services:
 | Service | Port | Description |
 |---------|------|-------------|
 | api | 8080 | GraphQL API |
+| web | 5173 | Web dashboard (dev server) |
 | scs | 2222 | SSH Git server |
 | de | — | Deployment engine |
 | rte-{0,1,2} | — | Resource transition engine workers |
