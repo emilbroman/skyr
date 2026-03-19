@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { query } from '$lib/graphql/client';
 	import { RepositoriesDocument, type RepositoriesQuery } from '$lib/graphql/generated';
+	import { repoHref } from '$lib/paths';
 
 	let repositories = $state<RepositoriesQuery['repositories']>([]);
 	let loading = $state(true);
@@ -35,7 +36,7 @@
 		<div class="grid gap-4">
 			{#each repositories as repo}
 				<a
-					href="/repos/{repo.name}"
+					href={repoHref(repo.name)}
 					class="block bg-gray-900 border border-gray-800 rounded-lg p-5 hover:border-gray-700 transition-colors"
 				>
 					<div class="flex items-center justify-between">

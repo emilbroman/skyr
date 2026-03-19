@@ -12,9 +12,10 @@
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
+	import { decodeSegment, repoHref, deploymentHref } from '$lib/paths';
 
-	let repoName = $derived($page.params.repo ?? '');
-	let envName = $derived($page.params.env ?? '');
+	let repoName = $derived(decodeSegment($page.params.repo ?? ''));
+	let envName = $derived(decodeSegment($page.params.env ?? ''));
 
 	type EnvData = EnvironmentDetailQuery['repositories'][0]['environments'][0];
 	let env = $state<EnvData | null>(null);
@@ -46,7 +47,7 @@
 	<nav class="text-sm text-gray-500 mb-4">
 		<a href="/repos" class="hover:text-gray-300">Repositories</a>
 		<span class="mx-2">/</span>
-		<a href="/repos/{repoName}" class="hover:text-gray-300">{repoName}</a>
+		<a href={repoHref(repoName)} class="hover:text-gray-300">{repoName}</a>
 		<span class="mx-2">/</span>
 		<span class="text-gray-300">{envName}</span>
 	</nav>
@@ -108,7 +109,7 @@
 				<div class="space-y-3">
 					{#each env.deployments as deployment}
 						<a
-							href="/repos/{repoName}/{envName}/{deployment.id}"
+							href={deploymentHref(repoName, envName, deployment.id)}
 							class="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
 						>
 							<div class="flex items-center gap-4">
