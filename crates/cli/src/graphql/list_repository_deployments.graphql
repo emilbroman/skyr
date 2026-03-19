@@ -7,7 +7,9 @@ query ListRepositoryDeployments {
       deployments {
         id
         ref
-        commit
+        commit {
+          hash
+        }
         createdAt
         state
         resources {
