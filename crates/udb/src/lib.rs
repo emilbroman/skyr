@@ -95,7 +95,7 @@ pub struct Client {
     rng: rand::rngs::StdRng,
 }
 
-const TOKEN_TTL_SECONDS: u64 = 900;
+const TOKEN_TTL_SECONDS: u64 = 86400;
 
 fn user_key(username: &str) -> String {
     format!("u:{username}")
