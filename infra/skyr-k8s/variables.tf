@@ -141,17 +141,3 @@ variable "web_service_type" {
   description = "Kubernetes Service type for the web frontend (ClusterIP, LoadBalancer, or NodePort)."
   default     = "ClusterIP"
 }
-
-# --- Ingress ---
-
-variable "web_hostname" {
-  type        = string
-  description = "Hostname for the web frontend Traefik IngressRoute. When null, no IngressRoute is created."
-  default     = null
-}
-
-variable "scs_hostname" {
-  type        = string
-  description = "Hostname for the SCS SSH server Traefik IngressRouteTCP. When null, no IngressRoute is created."
-  default     = null
-}
