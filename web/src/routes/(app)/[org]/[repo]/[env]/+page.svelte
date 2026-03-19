@@ -12,12 +12,13 @@
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
-	import { decodeSegment, repoHref, deploymentHref } from '$lib/paths';
+	import { decodeSegment, orgHref, repoHref, deploymentHref } from '$lib/paths';
 
-	let repoName = $derived(decodeSegment($page.params.repo ?? ''));
+	let orgName = $derived($page.params.org ?? '');
+	let repoName = $derived($page.params.repo ?? '');
 	let envName = $derived(decodeSegment($page.params.env ?? ''));
 
-	type EnvData = EnvironmentDetailQuery['repositories'][0]['environments'][0];
+	type EnvData = EnvironmentDetailQuery['organization']['repository']['environment'];
 	let env = $state<EnvData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -37,12 +38,8 @@
 
 	onMount(async () => {
 		try {
-			const data = await query(EnvironmentDetailDocument);
-			const repo = data.repositories.find((r) => r.name === repoName);
-			env = repo?.environments.find((e) => e.name === envName) ?? null;
-			if (!env) {
-				error = `Environment "${envName}" not found`;
-			}
+			const data = await query(EnvironmentDetailDocument, { org: orgName, repo: repoName, env: envName });
+			env = data.organization.repository.environment;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load environment';
 		} finally {
@@ -53,15 +50,17 @@
 
 <div class="p-6">
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/repos" class="hover:text-gray-300">Repositories</a>
+		<a href="/" class="hover:text-gray-300">Home</a>
 		<span class="mx-2">/</span>
-		<a href={repoHref(repoName)} class="hover:text-gray-300">{repoName}</a>
+		<a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
+		<span class="mx-2">/</span>
+		<a href={repoHref(orgName, repoName)} class="hover:text-gray-300">{repoName}</a>
 		<span class="mx-2">/</span>
 		<span class="text-gray-300">{envName}</span>
 	</nav>
 
 	<div class="flex items-center justify-between mb-6">
-		<h1 class="text-2xl font-bold text-white">{envName}</h1>
+		<h1 class="text-2xl font-bold text-white">{orgName}/{repoName} &mdash; {envName}</h1>
 		{#if env}
 			<button
 				class="text-sm px-3 py-1.5 rounded border transition-colors {showLogs ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600'}"
@@ -97,9 +96,9 @@
 					</span>
 				</h2>
 				<FileBrowser
+					{orgName}
 					{repoName}
 					{envName}
-					deploymentId={desiredDeployment.id}
 					commitHash={desiredDeployment.commit.hash}
 					resources={env?.resources}
 					{navigateToFile}
@@ -119,18 +118,18 @@
 				<div class="space-y-3">
 					{#each env.deployments as deployment}
 						<a
-							href={deploymentHref(repoName, envName, deployment.id)}
+							href={deploymentHref(orgName, repoName, envName, deployment.commit.hash)}
 							class="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
 						>
 							<div class="flex items-center gap-4">
 								<DeploymentStateBadge state={deployment.state} />
 								<div class="min-w-0 flex-1">
 									<div class="flex items-center gap-3">
-										<span class="text-white font-mono text-sm truncate">{deployment.id}</span>
+										<span class="text-white font-mono text-sm truncate">{deployment.commit.hash.substring(0, 8)}</span>
 										<span class="text-gray-500 text-xs">{deployment.ref}</span>
 									</div>
 									<div class="flex items-center gap-3 mt-1 text-xs text-gray-500">
-										<span class="font-mono">{deployment.commit.hash.substring(0, 8)}</span>
+										<span class="truncate">{deployment.commit.message}</span>
 										<span>{new Date(deployment.createdAt).toLocaleString()}</span>
 										<span>{deployment.resources.length} resource{deployment.resources.length !== 1 ? 's' : ''}</span>
 									</div>

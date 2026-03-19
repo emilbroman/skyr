@@ -78,7 +78,7 @@
 				pubkey: parsed.pubkey
 			});
 			setAuth(data.signin.token, data.signin.user);
-			goto('/repos');
+			goto('/');
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Sign-in failed';
 		} finally {

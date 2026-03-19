@@ -1,17 +1,56 @@
-query DeploymentTree($path: String!) {
-  repositories {
-    name
-    environments {
-      name
-      deployments {
-        id
-        commit {
-          hash
-          treeEntry(path: $path) {
-            ... on Tree {
-              __typename
+query DeploymentTree($org: String!, $repo: String!, $env: String!, $commit: String!, $path: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environment(name: $env) {
+        deployment(commit: $commit) {
+          id
+          commit {
+            hash
+            treeEntry(path: $path) {
+              ... on Tree {
+                __typename
+                hash
+                name
+                entries {
+                  ... on Tree {
+                    __typename
+                    hash
+                    name
+                  }
+                  ... on Blob {
+                    __typename
+                    hash
+                    name
+                    size
+                  }
+                }
+              }
+              ... on Blob {
+                __typename
+                hash
+                name
+                size
+                content
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+query DeploymentRootTree($org: String!, $repo: String!, $env: String!, $commit: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environment(name: $env) {
+        deployment(commit: $commit) {
+          id
+          commit {
+            hash
+            message
+            tree {
               hash
-              name
               entries {
                 ... on Tree {
                   __typename
@@ -24,45 +63,6 @@ query DeploymentTree($path: String!) {
                   name
                   size
                 }
-              }
-            }
-            ... on Blob {
-              __typename
-              hash
-              name
-              size
-              content
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-query DeploymentRootTree {
-  repositories {
-    name
-    environments {
-      name
-      deployments {
-        id
-        commit {
-          hash
-          message
-          tree {
-            hash
-            entries {
-              ... on Tree {
-                __typename
-                hash
-                name
-              }
-              ... on Blob {
-                __typename
-                hash
-                name
-                size
               }
             }
           }

@@ -2,13 +2,16 @@
 	import { page } from '$app/stores';
 	import { onMount } from 'svelte';
 	import { query } from '$lib/graphql/client';
-	import { DeploymentState, RepositoriesDocument, type RepositoriesQuery } from '$lib/graphql/generated';
+	import { DeploymentState, RepositoryDetailDocument, type RepositoryDetailQuery } from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
-	import { decodeSegment, envHref } from '$lib/paths';
+	import { orgHref, envHref } from '$lib/paths';
 
-	let repoName = $derived(decodeSegment($page.params.repo ?? ''));
-	let repo = $state<RepositoriesQuery['repositories'][0] | null>(null);
+	let orgName = $derived($page.params.org ?? '');
+	let repoName = $derived($page.params.repo ?? '');
+
+	type RepoData = RepositoryDetailQuery['organization']['repository'];
+	let repo = $state<RepoData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
@@ -25,11 +28,8 @@
 
 	onMount(async () => {
 		try {
-			const data = await query(RepositoriesDocument);
-			repo = data.repositories.find((r) => r.name === repoName) ?? null;
-			if (!repo) {
-				error = `Repository "${repoName}" not found`;
-			}
+			const data = await query(RepositoryDetailDocument, { org: orgName, repo: repoName });
+			repo = data.organization.repository;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load repository';
 		} finally {
@@ -40,12 +40,14 @@
 
 <div class="p-6">
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/repos" class="hover:text-gray-300">Repositories</a>
+		<a href="/" class="hover:text-gray-300">Home</a>
+		<span class="mx-2">/</span>
+		<a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
 		<span class="mx-2">/</span>
 		<span class="text-gray-300">{repoName}</span>
 	</nav>
 
-	<h1 class="text-2xl font-bold text-white mb-6">{repoName}</h1>
+	<h1 class="text-2xl font-bold text-white mb-6">{orgName}/{repoName}</h1>
 
 	{#if loading}
 		<p class="text-gray-400">Loading repository...</p>
@@ -63,9 +65,9 @@
 					</span>
 				</h2>
 				<FileBrowser
+					{orgName}
 					{repoName}
 					envName={mainEnv.name}
-					deploymentId={mainDesiredDeployment.id}
 					commitHash={mainDesiredDeployment.commit.hash}
 				/>
 			</section>
@@ -82,7 +84,7 @@
 						(d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up
 					)}
 					<a
-						href={envHref(repoName, env.name)}
+						href={envHref(orgName, repoName, env.name)}
 						class="block bg-gray-900 border border-gray-800 rounded-lg p-5 hover:border-gray-700 transition-colors"
 					>
 						<div class="flex items-center justify-between">

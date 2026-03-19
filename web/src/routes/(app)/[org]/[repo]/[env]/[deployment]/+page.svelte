@@ -3,21 +3,22 @@
 	import { onMount } from 'svelte';
 	import { query } from '$lib/graphql/client';
 	import {
-		EnvironmentDetailDocument,
+		DeploymentDetailDocument,
 		DeploymentLogsDocument,
-		type EnvironmentDetailQuery
+		type DeploymentDetailQuery
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
-	import { decodeSegment, repoHref, envHref } from '$lib/paths';
+	import { decodeSegment, orgHref, repoHref, envHref } from '$lib/paths';
 
-	let repoName = $derived(decodeSegment($page.params.repo ?? ''));
+	let orgName = $derived($page.params.org ?? '');
+	let repoName = $derived($page.params.repo ?? '');
 	let envName = $derived(decodeSegment($page.params.env ?? ''));
-	let deploymentId = $derived(decodeSegment($page.params.deployment ?? ''));
+	let commitHash = $derived($page.params.deployment ?? '');
 
-	type DeploymentData = EnvironmentDetailQuery['repositories'][0]['environments'][0]['deployments'][0];
+	type DeploymentData = DeploymentDetailQuery['organization']['repository']['environment']['deployment'];
 	let deployment = $state<DeploymentData | null>(null);
 	let loading = $state(true);
 	let error = $state<string | null>(null);
@@ -36,13 +37,8 @@
 
 	onMount(async () => {
 		try {
-			const data = await query(EnvironmentDetailDocument);
-			const repo = data.repositories.find((r) => r.name === repoName);
-			const env = repo?.environments.find((e) => e.name === envName);
-			deployment = env?.deployments.find((d) => d.id === deploymentId) ?? null;
-			if (!deployment) {
-				error = `Deployment "${deploymentId}" not found`;
-			}
+			const data = await query(DeploymentDetailDocument, { org: orgName, repo: repoName, env: envName, commit: commitHash });
+			deployment = data.organization.repository.environment.deployment;
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load deployment';
 		} finally {
@@ -53,13 +49,15 @@
 
 <div class="p-6">
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/repos" class="hover:text-gray-300">Repositories</a>
+		<a href="/" class="hover:text-gray-300">Home</a>
 		<span class="mx-2">/</span>
-		<a href={repoHref(repoName)} class="hover:text-gray-300">{repoName}</a>
+		<a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
 		<span class="mx-2">/</span>
-		<a href={envHref(repoName, envName)} class="hover:text-gray-300">{envName}</a>
+		<a href={repoHref(orgName, repoName)} class="hover:text-gray-300">{repoName}</a>
 		<span class="mx-2">/</span>
-		<span class="text-gray-300 font-mono text-xs">{deploymentId}</span>
+		<a href={envHref(orgName, repoName, envName)} class="hover:text-gray-300">{envName}</a>
+		<span class="mx-2">/</span>
+		<span class="text-gray-300 font-mono text-xs">{commitHash.substring(0, 8)}</span>
 	</nav>
 
 	{#if loading}
@@ -70,7 +68,10 @@
 		<!-- Header -->
 		<div class="flex items-center gap-4 mb-6">
 			<DeploymentStateBadge state={deployment.state} />
-			<h1 class="text-xl font-bold text-white font-mono">{deployment.id}</h1>
+			<h1 class="text-xl font-bold text-white">
+				<span class="text-gray-400 font-normal">{orgName}/{repoName} &mdash; {envName} &mdash;</span>
+				<span class="font-mono">{deployment.commit.hash.substring(0, 8)}</span>
+			</h1>
 		</div>
 
 		<!-- Metadata -->
@@ -108,9 +109,9 @@
 			</div>
 			{#if showFiles}
 				<FileBrowser
+					{orgName}
 					{repoName}
 					{envName}
-					deploymentId={deployment.id}
 					commitHash={deployment.commit.hash}
 					resources={deployment.resources}
 					{navigateToFile}

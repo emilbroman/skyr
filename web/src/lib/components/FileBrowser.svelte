@@ -22,15 +22,15 @@
 	};
 
 	type Props = {
+		orgName: string;
 		repoName: string;
 		envName: string;
-		deploymentId: string;
 		commitHash: string;
 		resources?: ResourceInfo[];
 		navigateToFile?: { moduleId: string; line: number } | null;
 	};
 
-	let { repoName, envName, deploymentId, commitHash, resources = [], navigateToFile = null }: Props = $props();
+	let { orgName, repoName, envName, commitHash, resources = [], navigateToFile = null }: Props = $props();
 
 	type TreeEntry =
 		| { __typename: 'Tree'; hash: string; name?: string | null }
@@ -54,19 +54,7 @@
 
 	let pathString = $derived(currentPath.join('/'));
 
-	function findDeploymentData<T extends { id: string }>(
-		repos: Array<{
-			name: string;
-			environments: Array<{
-				name: string;
-				deployments: Array<T>;
-			}>;
-		}>
-	): T | undefined {
-		const repo = repos.find((r) => r.name === repoName);
-		const env = repo?.environments.find((e) => e.name === envName);
-		return env?.deployments.find((d) => d.id === deploymentId);
-	}
+	let queryVars = $derived({ org: orgName, repo: repoName, env: envName, commit: commitHash });
 
 	async function loadRoot() {
 		loading = true;
@@ -74,12 +62,8 @@
 		blobContent = null;
 		highlightedLines = null;
 		try {
-			const data = await query(DeploymentRootTreeDocument);
-			const dep = findDeploymentData(data.repositories);
-			if (!dep) {
-				error = 'Deployment not found';
-				return;
-			}
+			const data = await query(DeploymentRootTreeDocument, queryVars);
+			const dep = data.organization.repository.environment.deployment;
 			const rawEntries = dep.commit.tree.entries;
 			entries = sortEntries(rawEntries);
 		} catch (e) {
@@ -95,12 +79,8 @@
 		blobContent = null;
 		highlightedLines = null;
 		try {
-			const data = await query(DeploymentTreeDocument, { path });
-			const dep = findDeploymentData(data.repositories);
-			if (!dep) {
-				error = 'Deployment not found';
-				return;
-			}
+			const data = await query(DeploymentTreeDocument, { ...queryVars, path });
+			const dep = data.organization.repository.environment.deployment;
 			const entry = dep.commit.treeEntry;
 			if (!entry) {
 				error = `Path "${path}" not found`;
