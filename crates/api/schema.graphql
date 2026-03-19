@@ -37,10 +37,24 @@ type AuthSuccess {
   token: String!
 }
 
+type Blob {
+  hash: String!
+  name: String
+  size: Int!
+  content: String
+}
+
+type Commit {
+  hash: String!
+  message: String!
+  tree: Tree!
+  treeEntry(path: String!): TreeEntry
+}
+
 type Deployment {
   id: String!
   ref: String!
-  commit: String!
+  commit: Commit!
   createdAt: String!
   state: DeploymentState!
   resources: [Resource!]!
@@ -97,8 +111,16 @@ type Subscription {
   resourceLogs(resourceQid: String!, initialAmount: Int): Log!
 }
 
+type Tree {
+  hash: String!
+  name: String
+  entries: [TreeEntry!]!
+}
+
 type User {
   username: String!
   email: String!
   fullname: String
 }
+
+union TreeEntry = Blob | Tree

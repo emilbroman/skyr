@@ -198,6 +198,8 @@ dependencies = [
  "chrono",
  "clap",
  "futures-util",
+ "gix-hash",
+ "gix-object",
  "http 1.4.0",
  "ids",
  "juniper",

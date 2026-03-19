@@ -652,7 +652,7 @@ impl RepositoryClient {
         self.write_object(id, Object::Commit(object)).await
     }
 
-    async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
+    pub async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
         let data = self.read_object(hash).await?;
         let commit = gix_object::CommitRef::from_bytes(&data)?;
         Ok(commit.into_owned()?)
@@ -662,7 +662,7 @@ impl RepositoryClient {
         self.write_object(id, Object::Tree(object)).await
     }
 
-    async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
+    pub async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
         let data = self.read_object(hash).await?;
         let tree = gix_object::TreeRef::from_bytes(&data)?;
         Ok(tree.into_owned())
@@ -672,7 +672,7 @@ impl RepositoryClient {
         self.write_object(id, Object::Blob(object)).await
     }
 
-    async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
+    pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
         let data = self.read_object(hash).await?;
         let blob = gix_object::BlobRef::from_bytes(&data).unwrap(); // infallible
         Ok(blob.into_owned())
