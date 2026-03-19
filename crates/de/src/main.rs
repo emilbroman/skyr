@@ -218,6 +218,18 @@ enum EvalCompleteness {
     Partial,
 }
 
+struct EvalOutcome {
+    completeness: EvalCompleteness,
+    /// Resource IDs referenced during evaluation. When `fully_explored` is
+    /// true, this is the complete set — any owned resource NOT in this set
+    /// is no longer desired and should be destroyed.
+    touched_resource_ids: HashSet<ids::ResourceId>,
+    /// True when no Create/Update effects were emitted, meaning every
+    /// resource function returned concrete outputs and all code paths
+    /// were fully evaluated.
+    fully_explored: bool,
+}
+
 impl Worker {
     async fn run_loop(mut self, mut rx: oneshot::Receiver<()>) {
         loop {
@@ -253,9 +265,23 @@ impl Worker {
 
             DeploymentState::Desired => {
                 tracing::info!("{short_id} reconciling");
-                let completeness = self.compile_and_evaluate().await?;
+                let outcome = self.compile_and_evaluate().await?;
+                let owner_deployment_qid = deployment.deployment_qid().to_string();
 
-                match completeness {
+                // When the evaluation tree was fully explored (no pending
+                // Create/Update effects), we know the complete set of
+                // referenced resources. Destroy any owned resources that
+                // the evaluation never touched.
+                if outcome.fully_explored {
+                    self.destroy_untouched_resources(
+                        &owner_deployment_qid,
+                        &deployment_id,
+                        &outcome.touched_resource_ids,
+                    )
+                    .await?;
+                }
+
+                match outcome.completeness {
                     EvalCompleteness::Complete => {
                         for superseded in self.client.superseded().await? {
                             let superseded_deployment = superseded.get().await?;
@@ -266,7 +292,6 @@ impl Worker {
 
                         // Check if all owned resources are non-volatile.
                         // If so, transition to Up (no further reconciliation needed).
-                        let owner_deployment_qid = deployment.deployment_qid().to_string();
                         let mut has_volatile = false;
                         let mut resources = self
                             .namespace
@@ -449,6 +474,99 @@ impl Worker {
         }
     }
 
+    /// Destroy resources owned by this deployment that were not referenced
+    /// during the latest evaluation. This handles the case where volatile
+    /// resources change in a way that causes previously-created resources
+    /// to disappear from the configuration.
+    async fn destroy_untouched_resources(
+        &self,
+        owner_deployment_qid: &str,
+        deployment_id: &str,
+        touched_resource_ids: &HashSet<ids::ResourceId>,
+    ) -> anyhow::Result<()> {
+        let mut all_resources = Vec::new();
+        let mut resources = self.namespace.list_resources().await?;
+        while let Some(resource) = resources.try_next().await? {
+            all_resources.push(resource);
+        }
+        drop(resources);
+
+        let untouched_owned: Vec<_> = all_resources
+            .iter()
+            .filter(|resource| {
+                resource.owner.as_deref() == Some(owner_deployment_qid)
+                    && !touched_resource_ids.contains(&ids::ResourceId {
+                        typ: resource.resource_type.clone(),
+                        name: resource.name.clone(),
+                    })
+            })
+            .collect();
+
+        if untouched_owned.is_empty() {
+            return Ok(());
+        }
+
+        // Collect dependency targets from all living resources (excluding
+        // untouched resources themselves) to avoid destroying resources
+        // that are still depended upon.
+        let living_dependency_targets: HashSet<ids::ResourceId> = all_resources
+            .iter()
+            .filter(|resource| {
+                let id = ids::ResourceId {
+                    typ: resource.resource_type.clone(),
+                    name: resource.name.clone(),
+                };
+                // Don't let untouched owned resources block each other.
+                resource.owner.as_deref() != Some(owner_deployment_qid)
+                    || touched_resource_ids.contains(&id)
+            })
+            .flat_map(|resource| resource.dependencies.iter().cloned())
+            .collect();
+
+        for resource in &untouched_owned {
+            let resource_id = ids::ResourceId {
+                typ: resource.resource_type.clone(),
+                name: resource.name.clone(),
+            };
+
+            if resource.markers.contains(&sclc::Marker::Sticky) {
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "untouched sticky resource; skipping destroy",
+                );
+                continue;
+            }
+
+            if living_dependency_targets.contains(&resource_id) {
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "untouched resource still has living dependents; deferring destroy",
+                );
+                continue;
+            }
+
+            let message = rtq::Message::Destroy(rtq::DestroyMessage {
+                resource: resource_ref(self.namespace.namespace(), &resource_id),
+                deployment_id: deployment_id.to_string(),
+            });
+            self.rtq_publisher.enqueue(&message).await?;
+
+            tracing::info!(
+                resource_type = %resource.resource_type,
+                resource_name = %resource.name,
+                "queued destroy for untouched resource",
+            );
+
+            self.log_publisher
+                .info(format!("Destroying untouched resource {resource_id}"))
+                .await;
+        }
+
+        Ok(())
+    }
+
     async fn publish_diagnostics(&self, diags: &sclc::DiagList) {
         for diag in diags.iter() {
             let (module_id, span) = diag.locate();
@@ -468,13 +586,17 @@ impl Worker {
         }
     }
 
-    async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalCompleteness> {
+    async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
         let diagnosed = sclc::compile(self.client.clone()).await?;
         self.publish_diagnostics(diagnosed.diags()).await;
 
         if diagnosed.diags().has_errors() {
             tracing::info!("compile produced errors; skipping evaluation");
-            return Ok(EvalCompleteness::Partial);
+            return Ok(EvalOutcome {
+                completeness: EvalCompleteness::Partial,
+                touched_resource_ids: HashSet::new(),
+                fully_explored: false,
+            });
         }
 
         let mut program = diagnosed.into_inner();
@@ -527,6 +649,8 @@ impl Worker {
             {
                 async move {
                     let mut had_effect = false;
+                    let mut had_mutation = false;
+                    let mut touched_resource_ids = HashSet::new();
                     while let Some(effect) = effects_rx.recv().await {
                         match effect {
                             sclc::Effect::CreateResource {
@@ -536,6 +660,8 @@ impl Worker {
                                 source_trace,
                             } => {
                                 had_effect = true;
+                                had_mutation = true;
+                                touched_resource_ids.insert(id.clone());
                                 let Some(inputs_value) = serialize_inputs(&id, &inputs, "create")
                                 else {
                                     continue;
@@ -574,6 +700,8 @@ impl Worker {
                                 source_trace,
                             } => {
                                 had_effect = true;
+                                had_mutation = true;
+                                touched_resource_ids.insert(id.clone());
                                 let Some(desired_inputs) = serialize_inputs(&id, &inputs, "update")
                                 else {
                                     continue;
@@ -624,6 +752,7 @@ impl Worker {
                                 dependencies,
                                 source_trace,
                             } => {
+                                touched_resource_ids.insert(id.clone());
                                 if let Some(from_owner_deployment_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
@@ -693,10 +822,14 @@ impl Worker {
                         }
                     }
 
-                    if had_effect {
-                        EvalCompleteness::Partial
-                    } else {
-                        EvalCompleteness::Complete
+                    EvalOutcome {
+                        completeness: if had_effect {
+                            EvalCompleteness::Partial
+                        } else {
+                            EvalCompleteness::Complete
+                        },
+                        touched_resource_ids,
+                        fully_explored: !had_mutation,
                     }
                 }
             }
@@ -721,7 +854,7 @@ impl Worker {
             }
         }
         drop(eval);
-        let completeness = effects_task.await?;
-        Ok(completeness)
+        let outcome = effects_task.await?;
+        Ok(outcome)
     }
 }
