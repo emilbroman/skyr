@@ -27,6 +27,14 @@
 		env?.deployments.find((d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up) ?? null
 	);
 
+	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
+
+	function handleNavigateToSource(moduleId: string, line: number) {
+		navigateToFile = { moduleId, line };
+		// Scroll to the file browser section
+		document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
+
 	onMount(async () => {
 		try {
 			const data = await query(EnvironmentDetailDocument);
@@ -81,7 +89,7 @@
 
 		<!-- File Browser for desired deployment -->
 		{#if desiredDeployment}
-			<section class="mb-8">
+			<section class="mb-8" data-file-browser>
 				<h2 class="text-lg font-medium text-gray-300 mb-3">
 					Files
 					<span class="text-gray-500 text-sm font-normal ml-2">
@@ -93,6 +101,8 @@
 					{envName}
 					deploymentId={desiredDeployment.id}
 					commitHash={desiredDeployment.commit.hash}
+					resources={env?.resources}
+					{navigateToFile}
 				/>
 			</section>
 		{/if}
@@ -143,7 +153,7 @@
 			{:else}
 				<div class="space-y-2">
 					{#each env.resources as resource}
-						<ResourceCard {resource} />
+						<ResourceCard {resource} onNavigateToSource={handleNavigateToSource} />
 					{/each}
 				</div>
 			{/if}

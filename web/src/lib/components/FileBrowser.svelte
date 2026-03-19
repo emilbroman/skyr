@@ -9,14 +9,28 @@
 	import { highlight, type HighlightedLine } from '$lib/highlight';
 	import type { ThemedToken } from 'shiki';
 
+	type SourceFrame = {
+		moduleId: string;
+		span: string;
+		name: string;
+	};
+
+	type ResourceInfo = {
+		type: string;
+		name: string;
+		sourceTrace?: SourceFrame[];
+	};
+
 	type Props = {
 		repoName: string;
 		envName: string;
 		deploymentId: string;
 		commitHash: string;
+		resources?: ResourceInfo[];
+		navigateToFile?: { moduleId: string; line: number } | null;
 	};
 
-	let { repoName, envName, deploymentId, commitHash }: Props = $props();
+	let { repoName, envName, deploymentId, commitHash, resources = [], navigateToFile = null }: Props = $props();
 
 	type TreeEntry =
 		| { __typename: 'Tree'; hash: string; name?: string | null }
@@ -129,14 +143,17 @@
 	}
 
 	function navigateTo(name: string) {
+		highlightLine = null;
 		currentPath = [...currentPath, name];
 	}
 
 	function navigateUp() {
+		highlightLine = null;
 		currentPath = currentPath.slice(0, -1);
 	}
 
 	function navigateToIndex(index: number) {
+		highlightLine = null;
 		currentPath = currentPath.slice(0, index + 1);
 	}
 
@@ -145,6 +162,61 @@
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
+
+	let highlightLine = $state<number | null>(null);
+
+	/**
+	 * Build a map from line number to resource labels for the currently viewed file.
+	 * Multiple resources can map to the same line.
+	 */
+	let resourceInlays = $derived.by(() => {
+		if (!blobContent || !resources.length) return new Map<number, string[]>();
+
+		// Current file as module ID: strip .scl extension and match
+		const currentFile = currentPath.join('/');
+		const moduleIdForFile = currentFile.replace(/\.scl$/, '');
+
+		const inlays = new Map<number, string[]>();
+		for (const resource of resources) {
+			if (!resource.sourceTrace?.length) continue;
+			const frame = resource.sourceTrace[0];
+			if (frame.moduleId !== moduleIdForFile) continue;
+			const line = parseSpanStartLine(frame.span);
+			const label = `${resource.type}/${resource.name}`;
+			const existing = inlays.get(line);
+			if (existing) {
+				existing.push(label);
+			} else {
+				inlays.set(line, [label]);
+			}
+		}
+		return inlays;
+	});
+
+	function parseSpanStartLine(span: string): number {
+		const startPart = span.split(',')[0];
+		const line = parseInt(startPart.split(':')[0], 10);
+		return isNaN(line) ? 1 : line;
+	}
+
+	// Handle external navigation requests
+	$effect(() => {
+		if (navigateToFile) {
+			const filePath = navigateToFile.moduleId.split('/');
+			const lastSegment = filePath[filePath.length - 1];
+			filePath[filePath.length - 1] = lastSegment + '.scl';
+			currentPath = filePath;
+			highlightLine = navigateToFile.line;
+		}
+	});
+
+	// Scroll to highlighted line after render
+	$effect(() => {
+		if (highlightLine && !loading) {
+			const el = document.getElementById(`line-${highlightLine}`);
+			el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+		}
+	});
 
 	$effect(() => {
 		if (currentPath.length === 0) {
@@ -201,16 +273,26 @@
 					<tbody>
 						{#if highlightedLines}
 							{#each highlightedLines as tokens, i}
-								<tr class="hover:bg-white/5">
-									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{i + 1}</td>
-									<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}</td>
+								{@const lineNum = i + 1}
+								{@const inlay = resourceInlays.get(lineNum)}
+								<tr
+									id="line-{lineNum}"
+									class="hover:bg-white/5 {highlightLine === lineNum ? 'bg-indigo-900/30' : ''}"
+								>
+									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
+									<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}{#if inlay}<span class="ml-4 text-xs text-indigo-400/70 font-sans select-none">{inlay.join(', ')}</span>{/if}</td>
 								</tr>
 							{/each}
 						{:else}
 							{#each blobContent.content.split('\n') as line, i}
-								<tr class="hover:bg-white/5">
-									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{i + 1}</td>
-									<td class="px-4 py-0 whitespace-pre text-gray-300">{line}</td>
+								{@const lineNum = i + 1}
+								{@const inlay = resourceInlays.get(lineNum)}
+								<tr
+									id="line-{lineNum}"
+									class="hover:bg-white/5 {highlightLine === lineNum ? 'bg-indigo-900/30' : ''}"
+								>
+									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
+									<td class="px-4 py-0 whitespace-pre text-gray-300">{line}{#if inlay}<span class="ml-4 text-xs text-indigo-400/70 font-sans select-none">{inlay.join(', ')}</span>{/if}</td>
 								</tr>
 							{/each}
 						{/if}
