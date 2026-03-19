@@ -166,14 +166,13 @@
 	let highlightLine = $state<number | null>(null);
 
 	/**
-	 * Strip the repo QID prefix from a moduleId.
-	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the repo name.
+	 * Strip the package prefix from a moduleId.
+	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the
+	 * 2-segment package prefix. The file path within the repo is everything after.
 	 */
-	function stripRepoPrefix(moduleId: string): string {
-		if (repoName && moduleId.startsWith(repoName + '/')) {
-			return moduleId.slice(repoName.length + 1);
-		}
-		return moduleId;
+	function moduleIdToLocalPath(moduleId: string): string {
+		const segments = moduleId.split('/');
+		return segments.length > 2 ? segments.slice(2).join('/') : moduleId;
 	}
 
 	/**
@@ -191,7 +190,7 @@
 		for (const resource of resources) {
 			if (!resource.sourceTrace?.length) continue;
 			const frame = resource.sourceTrace[0];
-			if (stripRepoPrefix(frame.moduleId) !== modulePathForFile) continue;
+			if (moduleIdToLocalPath(frame.moduleId) !== modulePathForFile) continue;
 			const line = parseSpanStartLine(frame.span);
 			const label = `${resource.type}/${resource.name}`;
 			const existing = inlays.get(line);
@@ -213,7 +212,7 @@
 	// Handle external navigation requests
 	$effect(() => {
 		if (navigateToFile) {
-			const localPath = stripRepoPrefix(navigateToFile.moduleId);
+			const localPath = moduleIdToLocalPath(navigateToFile.moduleId);
 			const filePath = localPath.split('/');
 			const lastSegment = filePath[filePath.length - 1];
 			filePath[filePath.length - 1] = lastSegment + '.scl';

@@ -154,7 +154,7 @@
 			{:else}
 				<div class="space-y-2">
 					{#each deployment.resources as resource}
-						<ResourceCard resource={{ ...resource, markers: resource.markers, owner: null, dependencies: [] }} {repoName} onNavigateToSource={handleNavigateToSource} />
+						<ResourceCard resource={{ ...resource, markers: resource.markers, owner: null, dependencies: [] }} onNavigateToSource={handleNavigateToSource} />
 					{/each}
 				</div>
 			{/if}

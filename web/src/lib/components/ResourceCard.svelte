@@ -19,9 +19,8 @@
 		sourceTrace?: SourceFrame[];
 	};
 
-	let { resource, repoName = '', onNavigateToSource }: {
+	let { resource, onNavigateToSource }: {
 		resource: ResourceData;
-		repoName?: string;
 		onNavigateToSource?: (moduleId: string, line: number) => void;
 	} = $props();
 	let expanded = $state(false);
@@ -32,15 +31,14 @@
 	}
 
 	/**
-	 * Strip the repo QID prefix from a moduleId.
-	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the repo name.
-	 * The file path within the repo is the suffix after the repo name prefix.
+	 * Strip the package prefix from a moduleId.
+	 * Module IDs are fully qualified: "org/repo/Module" where "org/repo" is the
+	 * 2-segment package prefix. The file path within the repo is everything after.
 	 */
-	function stripRepoPrefix(moduleId: string): string {
-		if (repoName && moduleId.startsWith(repoName + '/')) {
-			return moduleId.slice(repoName.length + 1);
-		}
-		return moduleId;
+	function moduleIdToLocalPath(moduleId: string): string {
+		const segments = moduleId.split('/');
+		// Package prefix is always 2 segments (org/repo)
+		return segments.length > 2 ? segments.slice(2).join('/') : moduleId;
 	}
 
 	/** Parse the first source frame into a displayable location string and line number. */
@@ -48,7 +46,7 @@
 		if (!trace || trace.length === 0) return null;
 		const frame = trace[0];
 		const line = parseSpanStartLine(frame.span);
-		const localPath = stripRepoPrefix(frame.moduleId);
+		const localPath = moduleIdToLocalPath(frame.moduleId);
 		const filePath = localPath + '.scl';
 		return { label: `${filePath}:${line}`, moduleId: frame.moduleId, line };
 	}
