@@ -7,7 +7,8 @@ terraform {
 }
 
 inputs = {
-  namespace = "skyr-dev"
+  namespace         = "skyr-dev"
+  image_pull_policy = "Always"
 }
 
 generate "ingress" {
