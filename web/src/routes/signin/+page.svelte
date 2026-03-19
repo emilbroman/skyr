@@ -7,8 +7,7 @@
 
 	let username = $state('');
 	let challenge = $state<string | null>(null);
-	let pubkey = $state('');
-	let signature = $state('');
+	let response = $state('');
 	let error = $state<string | null>(null);
 	let loading = $state(false);
 	let step = $state<'username' | 'sign'>('username');
@@ -54,9 +53,20 @@
 
 	onDestroy(stopChallengeRefresh);
 
+	function parseResponse(raw: string): { pubkey: string; signature: string } | null {
+		const marker = '-----BEGIN SSH SIGNATURE-----';
+		const idx = raw.indexOf(marker);
+		if (idx === -1) return null;
+		const pubkey = raw.slice(0, idx).trim();
+		const signature = raw.slice(idx).trim();
+		if (!pubkey || !signature) return null;
+		return { pubkey, signature };
+	}
+
 	async function submitSignIn() {
-		if (!signature.trim() || !pubkey.trim()) {
-			error = 'Both public key and signature are required';
+		const parsed = parseResponse(response);
+		if (!parsed) {
+			error = 'Could not find both a public key and an SSH signature in the output. Make sure you pasted the full output.';
 			return;
 		}
 		error = null;
@@ -64,8 +74,8 @@
 		try {
 			const data = await mutate(SignInDocument, {
 				username: username.trim(),
-				signature: signature.trim(),
-				pubkey: pubkey.trim()
+				signature: parsed.signature,
+				pubkey: parsed.pubkey
 			});
 			setAuth(data.signin.token, data.signin.user);
 			goto('/repos');
@@ -133,50 +143,25 @@
 
 					<div>
 						<p class="text-sm text-gray-300 mb-2">
-							1. Copy your public key:
+							Run this command in your terminal:
 						</p>
 						<div class="relative">
-							<pre class="bg-gray-800 border border-gray-700 rounded p-3 text-sm text-green-400 overflow-x-auto">cat ~/.ssh/id_ed25519.pub</pre>
+							<pre class="bg-gray-800 border border-gray-700 rounded p-3 text-sm text-green-400 overflow-x-auto whitespace-pre-wrap break-all">cat ~/.ssh/id_ed25519.pub; echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
 							<button
 								class="absolute top-2 right-2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-700 rounded"
-								onclick={() => copyToClipboard('cat ~/.ssh/id_ed25519.pub')}
+								onclick={() => copyToClipboard(`cat ~/.ssh/id_ed25519.pub; echo -n '${challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`)}
 							>
 								Copy
 							</button>
 						</div>
-						<label class="block mt-2 text-sm text-gray-400" for="pubkey">
-							Paste your public key:
+						<label class="block mt-2 text-sm text-gray-400" for="response">
+							Paste the full output:
 						</label>
 						<textarea
-							id="pubkey"
-							bind:value={pubkey}
-							placeholder="ssh-ed25519 AAAA..."
-							rows={2}
-							class="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 font-mono text-xs"
-						></textarea>
-					</div>
-
-					<div>
-						<p class="text-sm text-gray-300 mb-2">
-							2. Sign the challenge by running:
-						</p>
-						<div class="relative">
-							<pre class="bg-gray-800 border border-gray-700 rounded p-3 text-sm text-green-400 overflow-x-auto whitespace-pre-wrap break-all">echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
-							<button
-								class="absolute top-2 right-2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-700 rounded"
-								onclick={() => copyToClipboard(`echo -n '${challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`)}
-							>
-								Copy
-							</button>
-						</div>
-						<label class="block mt-2 text-sm text-gray-400" for="signature">
-							Paste the signature output:
-						</label>
-						<textarea
-							id="signature"
-							bind:value={signature}
-							placeholder="-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
-							rows={6}
+							id="response"
+							bind:value={response}
+							placeholder="ssh-ed25519 AAAA...&#10;-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
+							rows={8}
 							class="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 font-mono text-xs"
 						></textarea>
 					</div>
@@ -191,7 +176,7 @@
 					<button
 						onclick={submitSignIn}
 						class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-						disabled={loading || !signature.trim() || !pubkey.trim()}
+						disabled={loading || !response.trim()}
 					>
 						{loading ? 'Signing in...' : 'Sign In'}
 					</button>
