@@ -21,6 +21,7 @@
             opentofu
             terragrunt
             gettext
+            nodejs_25
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
