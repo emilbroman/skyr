@@ -1,20 +1,21 @@
 /**
  * Encode a segment for use in a URL path.
- * This handles names that may contain slashes (e.g., environment names like "staging/eu").
+ * Slashes are replaced with `~` (which is forbidden in Git ref names)
+ * rather than percent-encoded as `%2F`, because Traefik rejects `%2F` in paths.
  */
 export function encodeSegment(value: string): string {
-	return encodeURIComponent(value);
+	return encodeURIComponent(value.replaceAll('/', '~'));
 }
 
 /**
  * Decode a URL path segment back to the original value.
- * SvelteKit already decodes params, but we call this explicitly for clarity and safety.
+ * Reverses the `~` → `/` substitution applied by `encodeSegment`.
  */
 export function decodeSegment(value: string): string {
 	try {
-		return decodeURIComponent(value);
+		return decodeURIComponent(value).replaceAll('~', '/');
 	} catch {
-		return value;
+		return value.replaceAll('~', '/');
 	}
 }
 
