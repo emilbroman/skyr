@@ -23,6 +23,17 @@
 	let error = $state<string | null>(null);
 	let showFiles = $state(true);
 
+	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
+
+	function handleNavigateToSource(moduleId: string, line: number) {
+		showFiles = true;
+		navigateToFile = { moduleId, line };
+		// Small delay to let the FileBrowser mount if it was hidden
+		requestAnimationFrame(() => {
+			document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		});
+	}
+
 	onMount(async () => {
 		try {
 			const data = await query(EnvironmentDetailDocument);
@@ -85,7 +96,7 @@
 		</div>
 
 		<!-- File Browser -->
-		<section class="mb-6">
+		<section class="mb-6" data-file-browser>
 			<div class="flex items-center justify-between mb-3">
 				<h2 class="text-lg font-medium text-gray-300">Files</h2>
 				<button
@@ -101,6 +112,8 @@
 					{envName}
 					deploymentId={deployment.id}
 					commitHash={deployment.commit.hash}
+					resources={deployment.resources}
+					{navigateToFile}
 				/>
 			{/if}
 		</section>
@@ -141,7 +154,7 @@
 			{:else}
 				<div class="space-y-2">
 					{#each deployment.resources as resource}
-						<ResourceCard resource={{ ...resource, markers: resource.markers, owner: null, dependencies: [] }} />
+						<ResourceCard resource={{ ...resource, markers: resource.markers, owner: null, dependencies: [] }} onNavigateToSource={handleNavigateToSource} />
 					{/each}
 				</div>
 			{/if}

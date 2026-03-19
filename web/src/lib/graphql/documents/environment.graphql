@@ -19,6 +19,11 @@ query EnvironmentDetail {
           inputs
           outputs
           markers
+          sourceTrace {
+            moduleId
+            span
+            name
+          }
         }
         artifacts {
           namespace
@@ -45,6 +50,11 @@ query EnvironmentDetail {
           name
         }
         markers
+        sourceTrace {
+          moduleId
+          span
+          name
+        }
       }
     }
   }
