@@ -3,6 +3,7 @@
 	import { query, mutate } from '$lib/graphql/client';
 	import { AuthChallengeDocument, SignInDocument } from '$lib/graphql/generated';
 	import { setAuth } from '$lib/stores/auth';
+	import { onDestroy } from 'svelte';
 
 	let username = $state('');
 	let challenge = $state<string | null>(null);
@@ -11,6 +12,7 @@
 	let error = $state<string | null>(null);
 	let loading = $state(false);
 	let step = $state<'username' | 'sign'>('username');
+	let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 	async function fetchChallenge() {
 		if (!username.trim()) return;
@@ -20,12 +22,37 @@
 			const data = await query(AuthChallengeDocument, { username: username.trim() });
 			challenge = data.authChallenge;
 			step = 'sign';
+			startChallengeRefresh();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to fetch challenge';
 		} finally {
 			loading = false;
 		}
 	}
+
+	async function refreshChallenge() {
+		if (!username.trim()) return;
+		try {
+			const data = await query(AuthChallengeDocument, { username: username.trim() });
+			challenge = data.authChallenge;
+		} catch {
+			// Silently ignore refresh errors — the user can still try with the current challenge
+		}
+	}
+
+	function startChallengeRefresh() {
+		stopChallengeRefresh();
+		refreshInterval = setInterval(refreshChallenge, 60_000);
+	}
+
+	function stopChallengeRefresh() {
+		if (refreshInterval) {
+			clearInterval(refreshInterval);
+			refreshInterval = null;
+		}
+	}
+
+	onDestroy(stopChallengeRefresh);
 
 	async function submitSignIn() {
 		if (!signature.trim() || !pubkey.trim()) {
@@ -53,12 +80,6 @@
 		navigator.clipboard.writeText(text);
 	}
 
-	$effect(() => {
-		// Reset to step 1 when username changes
-		if (step === 'sign') {
-			// Don't auto-reset while on sign step
-		}
-	});
 </script>
 
 <div class="min-h-screen bg-gray-950 flex items-center justify-center p-4">
@@ -103,7 +124,7 @@
 							Signing in as <span class="text-white font-medium">{username}</span>
 							<button
 								class="text-indigo-400 hover:text-indigo-300 ml-2 text-xs"
-								onclick={() => { step = 'username'; challenge = null; error = null; }}
+								onclick={() => { step = 'username'; challenge = null; error = null; stopChallengeRefresh(); }}
 							>
 								Change
 							</button>
@@ -164,7 +185,7 @@
 						<svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
 							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
 						</svg>
-						<span>The challenge expires in ~2 minutes. If sign-in fails, click Continue again to get a fresh challenge.</span>
+						<span>The challenge auto-refreshes every minute. Make sure to sign the latest command shown above.</span>
 					</div>
 
 					<button
