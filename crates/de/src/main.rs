@@ -533,6 +533,7 @@ impl Worker {
                                 id,
                                 inputs,
                                 dependencies,
+                                source_trace,
                             } => {
                                 had_effect = true;
                                 let Some(inputs_value) = serialize_inputs(&id, &inputs, "create")
@@ -544,6 +545,7 @@ impl Worker {
                                     deployment_id: deployment_id.clone(),
                                     inputs: inputs_value,
                                     dependencies: map_dependencies(&namespace_id, dependencies),
+                                    source_trace,
                                 });
                                 if let Err(error) = rtq_publisher.enqueue(&message).await {
                                     tracing::error!(
@@ -569,6 +571,7 @@ impl Worker {
                                 id,
                                 inputs,
                                 dependencies,
+                                source_trace,
                             } => {
                                 had_effect = true;
                                 let Some(desired_inputs) = serialize_inputs(&id, &inputs, "update")
@@ -585,6 +588,7 @@ impl Worker {
                                         to_deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies,
+                                        source_trace,
                                     })
                                 } else {
                                     rtq::Message::Restore(rtq::RestoreMessage {
@@ -592,6 +596,7 @@ impl Worker {
                                         deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies,
+                                        source_trace,
                                     })
                                 };
                                 if let Err(error) = rtq_publisher.enqueue(&message).await {
@@ -617,6 +622,7 @@ impl Worker {
                                 id,
                                 inputs,
                                 dependencies,
+                                source_trace,
                             } => {
                                 if let Some(from_owner_deployment_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
@@ -635,6 +641,7 @@ impl Worker {
                                         to_deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies: map_dependencies(&namespace_id, dependencies),
+                                        source_trace,
                                     });
                                     if let Err(error) = rtq_publisher.enqueue(&message).await {
                                         tracing::error!(

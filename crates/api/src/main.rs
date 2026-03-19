@@ -750,6 +750,15 @@ impl Artifact {
     }
 }
 
+#[derive(juniper::GraphQLObject)]
+#[graphql(Context = Context)]
+struct SourceFrame {
+    #[graphql(name = "moduleId")]
+    module_id: String,
+    span: String,
+    name: String,
+}
+
 struct Resource {
     resource: rdb::Resource,
 }
@@ -878,6 +887,19 @@ impl Resource {
             .iter()
             .copied()
             .map(ResourceMarker::from)
+            .collect()
+    }
+
+    #[graphql(name = "sourceTrace")]
+    fn source_trace(&self) -> Vec<SourceFrame> {
+        self.resource
+            .source_trace
+            .iter()
+            .map(|f| SourceFrame {
+                module_id: f.module_id.clone(),
+                span: f.span.clone(),
+                name: f.name.clone(),
+            })
             .collect()
     }
 

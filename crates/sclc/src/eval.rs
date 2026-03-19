@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Mutex;
 
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -235,24 +236,28 @@ pub enum Effect {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
+        source_trace: ids::SourceTrace,
     },
     UpdateResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
+        source_trace: ids::SourceTrace,
     },
     TouchResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
+        source_trace: ids::SourceTrace,
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<ResourceId, crate::Resource>,
     namespace: String,
+    source_trace: Mutex<ids::SourceTrace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -298,12 +303,14 @@ impl EvalCtx {
             name: name.clone(),
         };
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
+        let source_trace = self.source_trace.lock().unwrap().clone();
 
         let Some(resource) = self.get_resource(ty, name) else {
             self.emit(Effect::CreateResource {
                 id: resource_id,
                 inputs: inputs.clone(),
                 dependencies,
+                source_trace,
             })?;
             return Ok(None);
         };
@@ -313,6 +320,7 @@ impl EvalCtx {
                 id: resource_id,
                 inputs: inputs.clone(),
                 dependencies,
+                source_trace,
             })?;
             return Ok(None);
         }
@@ -321,6 +329,7 @@ impl EvalCtx {
             id: resource_id,
             inputs: inputs.clone(),
             dependencies,
+            source_trace,
         })?;
 
         Ok(Some(resource.outputs.clone()))
@@ -522,6 +531,7 @@ impl Eval {
                 effects,
                 resources: HashMap::new(),
                 namespace: namespace.into(),
+                source_trace: Mutex::new(Vec::new()),
             },
             externs: HashMap::new(),
         };
@@ -667,17 +677,38 @@ impl Eval {
                             .map(|value| value.with_dependencies(callee_dependencies))
                     }
                     Value::ExternFn(function) => {
+                        // Capture the full source trace for resource tracking.
+                        let call_module_id = env.module_id.cloned().unwrap_or_default();
+                        let mut trace = vec![ids::SourceFrame {
+                            module_id: call_module_id.to_string(),
+                            span: expr.span().to_string(),
+                            name: frame_name.clone(),
+                        }];
+                        if let Some(stack) = env.stack {
+                            for (mid, sp, nm) in stack.collect_trace() {
+                                trace.push(ids::SourceFrame {
+                                    module_id: mid.to_string(),
+                                    span: sp.to_string(),
+                                    name: nm,
+                                });
+                            }
+                        }
+                        *self.ctx.source_trace.lock().unwrap() = trace;
+
                         if args
                             .iter()
                             .any(|arg| matches!(arg.value, Value::Pending(_)))
                         {
+                            self.ctx.source_trace.lock().unwrap().clear();
                             return Ok(
                                 TrackedValue::pending().with_dependencies(callee_dependencies)
                             );
                         }
-                        function
+                        let result = function
                             .call(args, &self.ctx)
-                            .map(|value| value.with_dependencies(callee_dependencies))
+                            .map(|value| value.with_dependencies(callee_dependencies));
+                        self.ctx.source_trace.lock().unwrap().clear();
+                        result
                     }
                     _ => Ok(Self::tracked(Value::Nil).with_dependencies(callee_dependencies)),
                 }

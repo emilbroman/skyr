@@ -70,6 +70,8 @@ pub struct CreateMessage {
     pub deployment_id: String,
     pub inputs: Value,
     pub dependencies: Vec<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_trace: ids::SourceTrace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -78,6 +80,8 @@ pub struct RestoreMessage {
     pub deployment_id: String,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_trace: ids::SourceTrace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,6 +91,8 @@ pub struct AdoptMessage {
     pub to_deployment_id: String,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_trace: ids::SourceTrace,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
