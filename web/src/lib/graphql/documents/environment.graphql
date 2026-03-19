@@ -1,23 +1,54 @@
-query EnvironmentDetail {
-  repositories {
-    name
-    environments {
-      name
-      qid
-      deployments {
-        id
-        ref
-        commit {
-          hash
-          message
+query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environment(name: $env) {
+        name
+        qid
+        deployments {
+          id
+          ref
+          commit {
+            hash
+            message
+          }
+          createdAt
+          state
+          resources {
+            type
+            name
+            inputs
+            outputs
+            markers
+            sourceTrace {
+              moduleId
+              span
+              name
+            }
+          }
+          artifacts {
+            namespace
+            name
+            mediaType
+            url
+          }
+          lastLogs(amount: 20) {
+            severity
+            timestamp
+            message
+          }
         }
-        createdAt
-        state
         resources {
           type
           name
           inputs
           outputs
+          owner {
+            id
+          }
+          dependencies {
+            type
+            name
+          }
           markers
           sourceTrace {
             moduleId
@@ -25,35 +56,47 @@ query EnvironmentDetail {
             name
           }
         }
-        artifacts {
-          namespace
-          name
-          mediaType
-          url
-        }
-        lastLogs(amount: 20) {
-          severity
-          timestamp
-          message
-        }
       }
-      resources {
-        type
-        name
-        inputs
-        outputs
-        owner {
+    }
+  }
+}
+
+query DeploymentDetail($org: String!, $repo: String!, $env: String!, $commit: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environment(name: $env) {
+        deployment(commit: $commit) {
           id
-        }
-        dependencies {
-          type
-          name
-        }
-        markers
-        sourceTrace {
-          moduleId
-          span
-          name
+          ref
+          commit {
+            hash
+            message
+          }
+          createdAt
+          state
+          resources {
+            type
+            name
+            inputs
+            outputs
+            markers
+            sourceTrace {
+              moduleId
+              span
+              name
+            }
+          }
+          artifacts {
+            namespace
+            name
+            mediaType
+            url
+          }
+          lastLogs(amount: 20) {
+            severity
+            timestamp
+            message
+          }
         }
       }
     }

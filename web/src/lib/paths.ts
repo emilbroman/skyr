@@ -19,14 +19,23 @@ export function decodeSegment(value: string): string {
 	}
 }
 
-export function repoHref(repoName: string): string {
-	return `/repos/${encodeSegment(repoName)}`;
+export function orgHref(orgName: string): string {
+	return `/${encodeURIComponent(orgName)}`;
 }
 
-export function envHref(repoName: string, envName: string): string {
-	return `/repos/${encodeSegment(repoName)}/${encodeSegment(envName)}`;
+export function repoHref(orgName: string, repoName: string): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}`;
 }
 
-export function deploymentHref(repoName: string, envName: string, deploymentId: string): string {
-	return `/repos/${encodeSegment(repoName)}/${encodeSegment(envName)}/${encodeSegment(deploymentId)}`;
+export function envHref(orgName: string, repoName: string, envName: string): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}`;
+}
+
+export function deploymentHref(
+	orgName: string,
+	repoName: string,
+	envName: string,
+	commitHash: string
+): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/${encodeURIComponent(commitHash)}`;
 }

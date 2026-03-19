@@ -1,10 +1,17 @@
-query RepositoryDetail($org: String!, $repo: String!) {
-  organization(name: $org) {
-    repository(name: $repo) {
+query Organizations {
+  organizations {
+    name
+    repositories {
       name
-      organization {
-        name
-      }
+    }
+  }
+}
+
+query OrganizationDetail($org: String!) {
+  organization(name: $org) {
+    name
+    repositories {
+      name
       environments {
         name
         qid
