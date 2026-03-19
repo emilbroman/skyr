@@ -6,6 +6,8 @@
 		type DeploymentRootTreeQuery,
 		type DeploymentTreeQuery
 	} from '$lib/graphql/generated';
+	import { highlight, type HighlightedLine } from '$lib/highlight';
+	import type { ThemedToken } from 'shiki';
 
 	type Props = {
 		repoName: string;
@@ -31,6 +33,8 @@
 	let currentPath = $state<string[]>([]);
 	let entries = $state<TreeEntry[]>([]);
 	let blobContent = $state<BlobContent | null>(null);
+	let highlightedLines = $state<ThemedToken[][] | null>(null);
+	let highlightBg = $state<string>('#0d1117');
 	let loading = $state(true);
 	let error = $state<string | null>(null);
 
@@ -54,6 +58,7 @@
 		loading = true;
 		error = null;
 		blobContent = null;
+		highlightedLines = null;
 		try {
 			const data = await query(DeploymentRootTreeDocument);
 			const dep = findDeploymentData(data.repositories);
@@ -74,6 +79,7 @@
 		loading = true;
 		error = null;
 		blobContent = null;
+		highlightedLines = null;
 		try {
 			const data = await query(DeploymentTreeDocument, { path });
 			const dep = findDeploymentData(data.repositories);
@@ -92,6 +98,9 @@
 			} else {
 				blobContent = entry;
 				entries = [];
+				if (entry.content != null && entry.name) {
+					highlightCode(entry.content, entry.name);
+				}
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load path';
@@ -100,9 +109,18 @@
 		}
 	}
 
+	async function highlightCode(code: string, filename: string) {
+		try {
+			const result = await highlight(code, filename);
+			highlightedLines = result.lines;
+			highlightBg = result.bg;
+		} catch {
+			// Highlighting failed — fall back to plain text (highlightedLines stays null)
+		}
+	}
+
 	function sortEntries(raw: TreeEntry[]): TreeEntry[] {
 		return [...raw].sort((a, b) => {
-			// Directories first
 			if (a.__typename !== b.__typename) {
 				return a.__typename === 'Tree' ? -1 : 1;
 			}
@@ -128,7 +146,6 @@
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 	}
 
-	// React to path changes
 	$effect(() => {
 		if (currentPath.length === 0) {
 			loadRoot();
@@ -179,9 +196,26 @@
 			</button>
 		</div>
 		{#if blobContent.content != null}
-			<div class="overflow-x-auto">
-				<pre class="p-4 text-sm text-gray-300 font-mono leading-6 whitespace-pre">{#each blobContent.content.split('\n') as line, i}<span class="inline-block w-12 text-right text-gray-600 select-none mr-4">{i + 1}</span>{line}
-{/each}</pre>
+			<div class="overflow-x-auto" style="background:{highlightBg}">
+				<table class="w-full text-sm font-mono leading-6 border-collapse">
+					<tbody>
+						{#if highlightedLines}
+							{#each highlightedLines as tokens, i}
+								<tr class="hover:bg-white/5">
+									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{i + 1}</td>
+									<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}</td>
+								</tr>
+							{/each}
+						{:else}
+							{#each blobContent.content.split('\n') as line, i}
+								<tr class="hover:bg-white/5">
+									<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{i + 1}</td>
+									<td class="px-4 py-0 whitespace-pre text-gray-300">{line}</td>
+								</tr>
+							{/each}
+						{/if}
+					</tbody>
+				</table>
 			</div>
 		{:else}
 			<div class="p-8 text-center text-gray-500">
