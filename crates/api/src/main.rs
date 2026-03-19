@@ -434,6 +434,192 @@ impl Environment {
     }
 }
 
+struct Commit {
+    repo: ids::RepoQid,
+    hash: gix_hash::ObjectId,
+    commit: gix_object::Commit,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Commit {
+    fn hash(&self) -> String {
+        self.hash.to_string()
+    }
+
+    fn message(&self) -> String {
+        String::from_utf8_lossy(&self.commit.message).into_owned()
+    }
+
+    async fn tree(&self, context: &Context) -> FieldResult<Tree> {
+        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let tree = repo_client.read_tree(self.commit.tree).await.map_err(|e| {
+            tracing::error!("Failed to read tree {}: {e}", self.commit.tree);
+            internal_error()
+        })?;
+        Ok(Tree {
+            repo: self.repo.clone(),
+            hash: self.commit.tree,
+            name: None,
+            tree,
+        })
+    }
+
+    #[graphql(name = "treeEntry")]
+    async fn tree_entry(&self, context: &Context, path: String) -> FieldResult<Option<TreeEntry>> {
+        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let root_tree = repo_client.read_tree(self.commit.tree).await.map_err(|e| {
+            tracing::error!("Failed to read root tree {}: {e}", self.commit.tree);
+            internal_error()
+        })?;
+
+        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.is_empty() {
+            return Ok(Some(TreeEntry::Tree(Tree {
+                repo: self.repo.clone(),
+                hash: self.commit.tree,
+                name: None,
+                tree: root_tree,
+            })));
+        }
+
+        let mut current_tree = root_tree;
+        for (i, segment) in segments.iter().enumerate() {
+            let entry = current_tree
+                .entries
+                .iter()
+                .find(|e| e.filename.as_slice() == segment.as_bytes());
+
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
+
+            if i == segments.len() - 1 {
+                // Last segment: return the entry
+                let name = Some(String::from_utf8_lossy(entry.filename.as_slice()).into_owned());
+                if entry.mode.is_tree() {
+                    let tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
+                        tracing::error!("Failed to read tree {}: {e}", entry.oid);
+                        internal_error()
+                    })?;
+                    return Ok(Some(TreeEntry::Tree(Tree {
+                        repo: self.repo.clone(),
+                        hash: entry.oid,
+                        name,
+                        tree,
+                    })));
+                } else if entry.mode.is_blob() {
+                    let blob = repo_client.read_blob(entry.oid).await.map_err(|e| {
+                        tracing::error!("Failed to read blob {}: {e}", entry.oid);
+                        internal_error()
+                    })?;
+                    return Ok(Some(TreeEntry::Blob(Blob {
+                        hash: entry.oid,
+                        name,
+                        blob,
+                    })));
+                } else {
+                    return Ok(None);
+                }
+            }
+
+            // Intermediate segment: must be a tree
+            if !entry.mode.is_tree() {
+                return Ok(None);
+            }
+            current_tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
+                tracing::error!("Failed to read tree {}: {e}", entry.oid);
+                internal_error()
+            })?;
+        }
+
+        Ok(None)
+    }
+}
+
+struct Tree {
+    repo: ids::RepoQid,
+    hash: gix_hash::ObjectId,
+    name: Option<String>,
+    tree: gix_object::Tree,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Tree {
+    fn hash(&self) -> String {
+        self.hash.to_string()
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    async fn entries(&self, context: &Context) -> FieldResult<Vec<TreeEntry>> {
+        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let mut entries = Vec::with_capacity(self.tree.entries.len());
+
+        for entry in &self.tree.entries {
+            let name = Some(String::from_utf8_lossy(entry.filename.as_slice()).into_owned());
+            if entry.mode.is_tree() {
+                let tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
+                    tracing::error!("Failed to read tree entry {}: {e}", entry.oid);
+                    internal_error()
+                })?;
+                entries.push(TreeEntry::Tree(Tree {
+                    repo: self.repo.clone(),
+                    hash: entry.oid,
+                    name,
+                    tree,
+                }));
+            } else if entry.mode.is_blob() {
+                let blob = repo_client.read_blob(entry.oid).await.map_err(|e| {
+                    tracing::error!("Failed to read blob entry {}: {e}", entry.oid);
+                    internal_error()
+                })?;
+                entries.push(TreeEntry::Blob(Blob {
+                    hash: entry.oid,
+                    name,
+                    blob,
+                }));
+            }
+            // Skip non-tree/non-blob entries (e.g., submodule commits)
+        }
+
+        Ok(entries)
+    }
+}
+
+struct Blob {
+    hash: gix_hash::ObjectId,
+    name: Option<String>,
+    blob: gix_object::Blob,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Blob {
+    fn hash(&self) -> String {
+        self.hash.to_string()
+    }
+
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    fn size(&self) -> i32 {
+        self.blob.data.len() as i32
+    }
+
+    fn content(&self) -> Option<String> {
+        std::str::from_utf8(&self.blob.data).ok().map(String::from)
+    }
+}
+
+#[derive(juniper::GraphQLUnion)]
+#[graphql(Context = Context)]
+enum TreeEntry {
+    Blob(Blob),
+    Tree(Tree),
+}
+
 struct Deployment {
     deployment: cdb::Deployment,
 }
@@ -449,8 +635,18 @@ impl Deployment {
         self.deployment.environment.to_string()
     }
 
-    fn commit(&self) -> String {
-        self.deployment.deployment.to_string()
+    async fn commit(&self, context: &Context) -> FieldResult<Commit> {
+        let repo_client = context.cdb_client.repo(self.deployment.repo.clone());
+        let hash = gix_hash::ObjectId::from_bytes_or_panic(&self.deployment.deployment.to_bytes());
+        let commit = repo_client.read_commit(hash).await.map_err(|e| {
+            tracing::error!("Failed to read commit {hash}: {e}");
+            internal_error()
+        })?;
+        Ok(Commit {
+            repo: self.deployment.repo.clone(),
+            hash,
+            commit,
+        })
     }
 
     #[graphql(name = "createdAt")]
