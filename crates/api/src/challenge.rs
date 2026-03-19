@@ -2,7 +2,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use sha2::Digest;
 
-const CHALLENGE_FRAME_SECONDS: i64 = 600;
+const CHALLENGE_FRAME_SECONDS: i64 = 60;
 const CHALLENGE_NAMESPACE: &str = "skyr-auth-challenge";
 
 pub(crate) struct Challenger {
