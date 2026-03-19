@@ -47,7 +47,7 @@ generate "ingress" {
         spec = {
           entryPoints = ["websecure"]
           routes = [{
-            match    = "Host(`dev.skyr.cloud`)"
+            match    = "Host(`dev.skyr.cloud`) && (PathPrefix(`/graphql`) || PathPrefix(`/graphiql`))"
             kind     = "Rule"
             services = [{
               name = kubernetes_service.api.metadata[0].name
@@ -75,8 +75,9 @@ generate "ingress" {
         spec = {
           entryPoints = ["websecure"]
           routes = [{
-            match    = "Host(`dev.skyr.cloud`) && !PathPrefix(`/graphql`)"
+            match    = "Host(`dev.skyr.cloud`)"
             kind     = "Rule"
+            priority = 1
             services = [{
               name = kubernetes_service.web.metadata[0].name
               port = 80
