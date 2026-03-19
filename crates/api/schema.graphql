@@ -65,6 +65,7 @@ type Deployment {
 type Environment {
   name: String!
   qid: String!
+  deployment(commit: String!): Deployment!
   deployments: [Deployment!]!
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
@@ -82,16 +83,26 @@ type Mutation {
   signin(username: String!, signature: String!, pubkey: String!): AuthSuccess!
 }
 
+type Organization {
+  name: String!
+  repository(name: String!): Repository!
+  repositories: [Repository!]!
+}
+
 type Query {
   health: Boolean!
   me: User!
   authChallenge(username: String!): String!
   refreshToken: AuthSuccess!
+  organizations: [Organization!]!
+  organization(name: String!): Organization!
   repositories: [Repository!]!
 }
 
 type Repository {
+  organization: Organization!
   name: String!
+  environment(name: String!): Environment!
   environments: [Environment!]!
 }
 
