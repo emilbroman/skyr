@@ -129,7 +129,7 @@ async fn list_deployments(
                 .into_iter()
                 .map(|deployment| DeploymentOutput {
                     r#ref: deployment.ref_,
-                    commit: deployment.commit,
+                    commit: deployment.commit.hash,
                     created_at: deployment.created_at,
                     state: format!("{:?}", deployment.state),
                     resources: deployment
