@@ -47,11 +47,40 @@ generate "ingress" {
         spec = {
           entryPoints = ["websecure"]
           routes = [{
-            match    = "Host(`skyr.cloud`)"
+            match    = "Host(`skyr.cloud`) && (PathPrefix(`/graphql`) || PathPrefix(`/graphiql`))"
             kind     = "Rule"
             services = [{
               name = kubernetes_service.api.metadata[0].name
               port = 8080
+            }]
+          }]
+          tls = {
+            secretName = "skyr-tls"
+          }
+        }
+      }
+    }
+
+    resource "kubernetes_manifest" "ingress_route_web" {
+      manifest = {
+        apiVersion = "traefik.io/v1alpha1"
+        kind       = "IngressRoute"
+        metadata = {
+          name      = "skyr-web"
+          namespace = "skyr"
+          annotations = {
+            "kubernetes.io/ingress.class" = "external"
+          }
+        }
+        spec = {
+          entryPoints = ["websecure"]
+          routes = [{
+            match    = "Host(`skyr.cloud`)"
+            kind     = "Rule"
+            priority = 1
+            services = [{
+              name = kubernetes_service.web.metadata[0].name
+              port = 80
             }]
           }]
           tls = {

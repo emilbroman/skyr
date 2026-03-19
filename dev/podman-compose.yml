@@ -120,6 +120,14 @@ services:
     ports:
       - 8080:8080
 
+  web:
+    image: skyr-web:latest
+    environment:
+      API_UPSTREAM: api:8080
+    restart: always
+    ports:
+      - 3000:80
+
   scs:
     image: skyr:latest
     entrypoint: ["/scs"]

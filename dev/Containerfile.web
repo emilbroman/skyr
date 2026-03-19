@@ -1,0 +1,15 @@
+# Stage 1: build static files
+FROM node:25-alpine AS build
+WORKDIR /app
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: nginx serving static files with API reverse proxy
+FROM nginx:1-alpine
+ENV NGINX_ENVSUBST_FILTER=API_UPSTREAM
+ENV API_UPSTREAM=api:8080
+COPY --from=build /app/build /usr/share/nginx/html
+COPY dev/nginx-web.conf.template /etc/nginx/templates/default.conf.template
+EXPOSE 80

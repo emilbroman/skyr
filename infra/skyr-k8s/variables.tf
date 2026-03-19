@@ -135,3 +135,9 @@ variable "scs_service_type" {
   description = "Kubernetes Service type for the SCS SSH server (ClusterIP, LoadBalancer, or NodePort)."
   default     = "ClusterIP"
 }
+
+variable "web_service_type" {
+  type        = string
+  description = "Kubernetes Service type for the web frontend (ClusterIP, LoadBalancer, or NodePort)."
+  default     = "ClusterIP"
+}

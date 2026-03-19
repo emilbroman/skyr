@@ -1,4 +1,71 @@
 # =============================================================================
+# Web — Static frontend (port 80)
+# =============================================================================
+
+resource "kubernetes_deployment" "web" {
+  metadata {
+    name      = "web"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "web" })
+  }
+
+  spec {
+    replicas = 2
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "web" }
+    }
+
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "web" })
+      }
+
+      spec {
+        container {
+          name              = "web"
+          image             = "ghcr.io/emilbroman/skyr-web:latest"
+          image_pull_policy = var.image_pull_policy
+
+          env {
+            name  = "API_UPSTREAM"
+            value = "api.${local.namespace}.svc.cluster.local:8080"
+          }
+
+          port {
+            container_port = 80
+            protocol       = "TCP"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [spec[0].template[0].spec[0].container[0].image]
+  }
+}
+
+resource "kubernetes_service" "web" {
+  metadata {
+    name      = "web"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "web" })
+  }
+
+  spec {
+    type     = var.web_service_type
+    selector = { "app.kubernetes.io/name" = "web" }
+
+    port {
+      port        = 80
+      target_port = 80
+      protocol    = "TCP"
+    }
+  }
+}
+
+# =============================================================================
 # API — GraphQL endpoint (port 8080)
 # =============================================================================
 
