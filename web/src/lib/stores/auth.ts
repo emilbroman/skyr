@@ -1,5 +1,7 @@
 import { writable, derived, get } from 'svelte/store';
 import type { User } from '$lib/graphql/generated';
+import { RefreshTokenDocument } from '$lib/graphql/generated';
+import { query } from '$lib/graphql/client';
 
 const TOKEN_KEY = 'skyr_token';
 const USER_KEY = 'skyr_user';
@@ -38,17 +40,6 @@ export const isAuthenticated = derived(token, ($token) => {
 	return Date.now() / 1000 < expiry;
 });
 
-export const tokenExpiry = derived(token, ($token) => {
-	if (!$token) return null;
-	return parseTokenExpiry($token);
-});
-
-export const isExpiringSoon = derived(tokenExpiry, ($expiry) => {
-	if (!$expiry) return false;
-	const remaining = $expiry - Date.now() / 1000;
-	return remaining > 0 && remaining < 120;
-});
-
 export function setAuth(newToken: string, newUser: User) {
 	token.set(newToken);
 	user.set(newUser);
@@ -67,8 +58,23 @@ export function getToken(): string | null {
 	return get(token);
 }
 
-// Periodically check token expiry
+// Periodically check token expiry and auto-refresh
 let expiryInterval: ReturnType<typeof setInterval> | null = null;
+let refreshing = false;
+
+async function tryRefreshToken() {
+	if (refreshing) return;
+	refreshing = true;
+	try {
+		const data = await query(RefreshTokenDocument);
+		setAuth(data.refreshToken.token, data.refreshToken.user);
+	} catch {
+		// Refresh failed — token may already be invalid
+		clearAuth();
+	} finally {
+		refreshing = false;
+	}
+}
 
 export function startExpiryWatch() {
 	if (expiryInterval) return;
@@ -76,8 +82,12 @@ export function startExpiryWatch() {
 		const t = get(token);
 		if (!t) return;
 		const expiry = parseTokenExpiry(t);
-		if (expiry && Date.now() / 1000 >= expiry) {
+		if (!expiry) return;
+		const remaining = expiry - Date.now() / 1000;
+		if (remaining <= 0) {
 			clearAuth();
+		} else if (remaining < 120) {
+			tryRefreshToken();
 		}
 		// Trigger reactivity by re-setting the same value
 		// (derived stores will re-evaluate)

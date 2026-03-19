@@ -2,7 +2,6 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { isAuthenticated, user, clearAuth } from '$lib/stores/auth';
-	import TokenRefresh from '$lib/components/TokenRefresh.svelte';
 	import { onMount } from 'svelte';
 
 	let { children } = $props();
@@ -23,8 +22,6 @@
 
 {#if $isAuthenticated}
 	<div class="min-h-screen bg-gray-950 flex flex-col">
-		<TokenRefresh />
-
 		<div class="flex flex-1">
 			<!-- Sidebar -->
 			<nav class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
