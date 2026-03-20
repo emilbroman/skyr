@@ -14,15 +14,15 @@ In development, Vite proxies `/graphql` requests to `http://localhost:8080` (the
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Framework | [SvelteKit 2](https://kit.svelte.dev/) (static adapter, CSR-only) |
-| UI | [Svelte 5](https://svelte.dev/) |
-| Styling | [Tailwind CSS 4](https://tailwindcss.com/) |
-| Build | [Vite 6](https://vite.dev/) |
-| Language | TypeScript 5 |
-| GraphQL | `graphql` + `graphql-ws` (WebSocket subscriptions) |
-| Code generation | `@graphql-codegen` (typed document nodes from `.graphql` files) |
+| Layer               | Technology                                                          |
+| ------------------- | ------------------------------------------------------------------- |
+| Framework           | [SvelteKit 2](https://kit.svelte.dev/) (static adapter, CSR-only)   |
+| UI                  | [Svelte 5](https://svelte.dev/)                                     |
+| Styling             | [Tailwind CSS 4](https://tailwindcss.com/)                          |
+| Build               | [Vite 6](https://vite.dev/)                                         |
+| Language            | TypeScript 5                                                        |
+| GraphQL             | `graphql` + `graphql-ws` (WebSocket subscriptions)                  |
+| Code generation     | `@graphql-codegen` (typed document nodes from `.graphql` files)     |
 | Syntax highlighting | [Shiki](https://shiki.matsu.io/) with a custom SCL TextMate grammar |
 
 ## Project Structure
@@ -71,13 +71,13 @@ web/
 
 ## Pages
 
-| Route | Description |
-|-------|-------------|
-| `~signin` | SSH challenge-response sign-in |
-| `/` | Organizations dashboard |
-| `[org]` | Repositories for an organization |
-| `[org]/[repo]` | Environments for a repository |
-| `[org]/[repo]/[env]` | Deployments and resources for an environment |
+| Route                             | Description                                                |
+| --------------------------------- | ---------------------------------------------------------- |
+| `~signin`                         | SSH challenge-response sign-in                             |
+| `/`                               | Organizations dashboard                                    |
+| `[org]`                           | Repositories for an organization                           |
+| `[org]/[repo]`                    | Environments for a repository                              |
+| `[org]/[repo]/[env]`              | Deployments and resources for an environment               |
 | `[org]/[repo]/[env]/[deployment]` | Deployment detail: resources, logs, source tree, artifacts |
 
 ## Authentication
@@ -94,14 +94,14 @@ The web app uses the same SSH challenge-response flow as the [CLI](../crates/cli
 
 GraphQL operations are defined as `.graphql` files in `src/lib/graphql/documents/`:
 
-| File | Operations |
-|------|------------|
-| `auth.graphql` | Challenge, sign-in, token refresh |
-| `organizations.graphql` | Organization listing and detail |
-| `repositories.graphql` | Repository listing and detail |
-| `environment.graphql` | Environment and deployment queries |
-| `logs.graphql` | Log subscriptions (WebSocket) |
-| `tree.graphql` | File tree and blob content |
+| File                    | Operations                         |
+| ----------------------- | ---------------------------------- |
+| `auth.graphql`          | Challenge, sign-in, token refresh  |
+| `organizations.graphql` | Organization listing and detail    |
+| `repositories.graphql`  | Repository listing and detail      |
+| `environment.graphql`   | Environment and deployment queries |
+| `logs.graphql`          | Log subscriptions (WebSocket)      |
+| `tree.graphql`          | File tree and blob content         |
 
 Running `npm run codegen` reads the API schema from `../crates/api/schema.graphql` and generates typed document nodes into `src/lib/graphql/generated.ts`. Re-run this whenever the API schema changes.
 
@@ -124,13 +124,13 @@ The dev server starts on `http://localhost:5173` by default.
 
 ### Available Scripts
 
-| Script | Description |
-|--------|-------------|
-| `npm run dev` | Start Vite dev server with hot reload and GraphQL proxy |
-| `npm run build` | Production build (static files output to `build/`) |
-| `npm run preview` | Preview production build locally |
-| `npm run check` | Run svelte-check for type errors |
-| `npm run codegen` | Regenerate TypeScript types from GraphQL schema |
+| Script            | Description                                             |
+| ----------------- | ------------------------------------------------------- |
+| `npm run dev`     | Start Vite dev server with hot reload and GraphQL proxy |
+| `npm run build`   | Production build (static files output to `build/`)      |
+| `npm run preview` | Preview production build locally                        |
+| `npm run check`   | Run svelte-check for type errors                        |
+| `npm run codegen` | Regenerate TypeScript types from GraphQL schema         |
 
 ### Regenerating GraphQL Types
 
@@ -145,12 +145,12 @@ Environment and ref names may contain slashes. Since some reverse proxies (e.g. 
 
 ## Components
 
-| Component | Description |
-|-----------|-------------|
-| `DeploymentState` | Colored badge for deployment states (DESIRED, LINGERING, UNDESIRED, DOWN) |
-| `FileBrowser` | Recursive tree/blob display for browsing a deployment's source files |
-| `LogStream` | Real-time log viewer via WebSocket subscription with auto-scroll |
-| `ResourceCard` | Collapsible card showing a resource's type, inputs, outputs, and dependencies |
+| Component         | Description                                                                   |
+| ----------------- | ----------------------------------------------------------------------------- |
+| `DeploymentState` | Colored badge for deployment states (DESIRED, LINGERING, UNDESIRED, DOWN)     |
+| `FileBrowser`     | Recursive tree/blob display for browsing a deployment's source files          |
+| `LogStream`       | Real-time log viewer via WebSocket subscription with auto-scroll              |
+| `ResourceCard`    | Collapsible card showing a resource's type, inputs, outputs, and dependencies |
 
 ## Related Crates
 

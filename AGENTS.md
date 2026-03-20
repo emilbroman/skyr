@@ -6,13 +6,41 @@ This file contains guidance for AI agents working on the Skyr codebase. For arch
 
 Always run formatting and linting before committing:
 
+**Rust (from repo root):**
+
 ```sh
 cargo clippy --all-targets
 cargo test
 cargo fmt
 ```
 
+**Web frontend (from `web/`):**
+
+```sh
+npm run format        # biome format --write .
+npx biome check .     # format + lint + import sorting (read-only)
+npm run check         # svelte-kit sync && svelte-check
+```
+
+In CI, the web frontend runs `npx biome ci .` (which checks formatting, linting, and import sorting in one pass) followed by `npm run check` (svelte-check for type checking).
+
 Fix any warnings or errors before pushing.
+
+### Web Frontend Formatting and Linting
+
+The `web/` directory uses [Biome](https://biomejs.dev/) for formatting and linting, configured in `web/biome.json`.
+
+**Formatting rules** (aligned with `cargo fmt` conventions):
+- 4-space indentation
+- 100-character line width
+- Double quotes, trailing commas, semicolons always
+- Parentheses always around arrow function parameters
+
+**Biome + Svelte caveats:**
+- Biome's Svelte support is experimental — it cannot see variables, imports, or functions used in Svelte template markup (`{...}` blocks, `<Component />` tags, event handlers, etc.).
+- Because of this, `noUnusedVariables` is disabled globally, and `noUnusedImports`, `useImportType`, and `organizeImports` are disabled for `.svelte` files via overrides. Svelte-check handles these correctly.
+- Do **not** run `biome lint --unsafe` on `.svelte` files — it will rename template-referenced variables with `_` prefixes and break the app.
+- Do **not** convert `import { Foo }` to `import type { Foo }` in `.svelte` files if `Foo` is used as a value in the template (e.g., as an enum variant in comparisons). Biome thinks it's type-only because it can't see template usage.
 
 ### Conventions and Gotchas
 

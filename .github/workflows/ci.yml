@@ -34,6 +34,18 @@ jobs:
       - name: cargo test
         run: nix develop -c cargo test --workspace
 
+      - name: web install
+        run: npm ci
+        working-directory: web
+
+      - name: web biome ci
+        run: npx biome ci .
+        working-directory: web
+
+      - name: web check
+        run: npm run check
+        working-directory: web
+
   # ---------------------------------------------------------------------------
   # Container images (main only)
   # ---------------------------------------------------------------------------

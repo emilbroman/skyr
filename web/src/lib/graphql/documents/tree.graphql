@@ -1,4 +1,9 @@
-query CommitTreeEntry($org: String!, $repo: String!, $commit: String!, $path: String!) {
+query CommitTreeEntry(
+  $org: String!
+  $repo: String!
+  $commit: String!
+  $path: String!
+) {
   organization(name: $org) {
     repository(name: $repo) {
       commit(hash: $commit) {

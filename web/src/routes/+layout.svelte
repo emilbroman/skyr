@@ -1,29 +1,29 @@
 <script lang="ts">
-	import '../app.css';
-	import { QueryClientProvider, QueryClient } from '@tanstack/svelte-query';
-	import { startExpiryWatch, stopExpiryWatch } from '$lib/stores/auth';
-	import { onMount, onDestroy } from 'svelte';
+import "../app.css";
+import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+import { onDestroy, onMount } from "svelte";
+import { startExpiryWatch, stopExpiryWatch } from "$lib/stores/auth";
 
-	let { children } = $props();
+let { children } = $props();
 
-	const queryClient = new QueryClient({
-		defaultOptions: {
-			queries: {
-				staleTime: 30_000,
-				refetchOnWindowFocus: false
-			}
-		}
-	});
+const queryClient = new QueryClient({
+    defaultOptions: {
+        queries: {
+            staleTime: 30_000,
+            refetchOnWindowFocus: false,
+        },
+    },
+});
 
-	onMount(() => {
-		startExpiryWatch();
-	});
+onMount(() => {
+    startExpiryWatch();
+});
 
-	onDestroy(() => {
-		stopExpiryWatch();
-	});
+onDestroy(() => {
+    stopExpiryWatch();
+});
 </script>
 
 <QueryClientProvider client={queryClient}>
-	{@render children()}
+  {@render children()}
 </QueryClientProvider>
