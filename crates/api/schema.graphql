@@ -103,6 +103,7 @@ type Repository {
   organization: Organization!
   name: String!
   environment(name: String!): Environment!
+  commit(hash: String!): Commit!
   environments: [Environment!]!
 }
 
