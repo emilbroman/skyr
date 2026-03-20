@@ -1,0 +1,34 @@
+query UserSettings {
+    me {
+        username
+        email
+        fullname
+        publicKeys
+    }
+}
+
+mutation UpdateFullname($fullname: String!) {
+    updateFullname(fullname: $fullname) {
+        username
+        email
+        fullname
+    }
+}
+
+mutation AddPublicKey($fingerprint: String!) {
+    addPublicKey(fingerprint: $fingerprint) {
+        username
+        email
+        fullname
+        publicKeys
+    }
+}
+
+mutation RemovePublicKey($fingerprint: String!) {
+    removePublicKey(fingerprint: $fingerprint) {
+        username
+        email
+        fullname
+        publicKeys
+    }
+}

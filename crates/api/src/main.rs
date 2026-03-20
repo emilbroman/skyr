@@ -248,6 +248,61 @@ impl Mutation {
         }
     }
 
+    #[graphql(name = "updateFullname")]
+    async fn update_fullname(context: &Context, fullname: String) -> FieldResult<User> {
+        let (mut user_client, _) = context.check_auth().await?;
+
+        user_client.set_fullname(&fullname).await.map_err(|e| {
+            tracing::error!("Failed to update fullname: {}", e);
+            internal_error()
+        })?;
+
+        let user = user_client.get().await.map_err(|e| {
+            tracing::error!("Failed to fetch user after fullname update: {}", e);
+            internal_error()
+        })?;
+
+        Ok(User { user })
+    }
+
+    #[graphql(name = "addPublicKey")]
+    async fn add_public_key(context: &Context, fingerprint: String) -> FieldResult<User> {
+        let (mut user_client, _) = context.check_auth().await?;
+
+        user_client.pubkeys().add(&fingerprint).await.map_err(|e| {
+            tracing::error!("Failed to add public key: {}", e);
+            internal_error()
+        })?;
+
+        let user = user_client.get().await.map_err(|e| {
+            tracing::error!("Failed to fetch user after adding public key: {}", e);
+            internal_error()
+        })?;
+
+        Ok(User { user })
+    }
+
+    #[graphql(name = "removePublicKey")]
+    async fn remove_public_key(context: &Context, fingerprint: String) -> FieldResult<User> {
+        let (mut user_client, _) = context.check_auth().await?;
+
+        user_client
+            .pubkeys()
+            .remove(&fingerprint)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to remove public key: {}", e);
+                internal_error()
+            })?;
+
+        let user = user_client.get().await.map_err(|e| {
+            tracing::error!("Failed to fetch user after removing public key: {}", e);
+            internal_error()
+        })?;
+
+        Ok(User { user })
+    }
+
     async fn signin(
         context: &Context,
         username: String,
@@ -342,6 +397,20 @@ impl User {
 
     fn fullname(&self) -> Option<&str> {
         self.user.fullname.as_deref()
+    }
+
+    #[graphql(name = "publicKeys")]
+    async fn public_keys(&self, context: &Context) -> FieldResult<Vec<String>> {
+        context
+            .udb_client
+            .user(&self.user.username)
+            .pubkeys()
+            .list()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list public keys: {}", e);
+                internal_error()
+            })
     }
 }
 
