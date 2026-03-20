@@ -3,9 +3,9 @@
 	import { graphqlQuery } from '$lib/graphql/query';
 	import { ResourceDetailDocument, ResourceLogsDocument } from '$lib/graphql/generated';
 	import { decodeSegment, commitTreeHref, deploymentHref, resourceHref } from '$lib/paths';
-	import { formatRecord } from '$lib/format';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
+	import JsonTree from '$lib/components/JsonTree.svelte';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -23,11 +23,6 @@
 	let resourceQid = $derived(envQid && resourceId ? `${envQid}::${resourceId}` : '');
 
 	let typeParts = $derived(resource?.type.split('.') ?? []);
-
-	function formatJson(value: any): string {
-		if (value == null) return 'null';
-		return JSON.stringify(formatRecord(value), null, 2);
-	}
 
 	function moduleIdToLocalPath(moduleId: string): string {
 		const segments = moduleId.split('/');
@@ -125,7 +120,9 @@
 	{#if resource.inputs != null}
 		<section class="mb-6">
 			<h3 class="text-lg font-medium text-gray-300 mb-3">Inputs</h3>
-			<pre class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 overflow-x-auto">{formatJson(resource.inputs)}</pre>
+			<div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 font-mono overflow-x-auto">
+				<JsonTree value={resource.inputs} />
+			</div>
 		</section>
 	{/if}
 
@@ -133,7 +130,9 @@
 	{#if resource.outputs != null}
 		<section class="mb-6">
 			<h3 class="text-lg font-medium text-gray-300 mb-3">Outputs</h3>
-			<pre class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 overflow-x-auto">{formatJson(resource.outputs)}</pre>
+			<div class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 font-mono overflow-x-auto">
+				<JsonTree value={resource.outputs} />
+			</div>
 		</section>
 	{/if}
 
