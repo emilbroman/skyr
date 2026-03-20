@@ -67,6 +67,7 @@ type Environment {
   qid: String!
   deployment(commit: String!): Deployment!
   deployments: [Deployment!]!
+  resource(id: String!): Resource
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
 }

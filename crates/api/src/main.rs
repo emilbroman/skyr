@@ -536,6 +536,29 @@ impl Environment {
             .collect()
     }
 
+    async fn resource(&self, context: &Context, id: String) -> FieldResult<Option<Resource>> {
+        let resource_id: ids::ResourceId =
+            id.parse().map_err(|_| field_error("Invalid resource ID"))?;
+        let namespace = self.qid.to_string();
+
+        context
+            .rdb_client
+            .namespace(namespace.clone())
+            .resource(
+                resource_id.resource_type().to_string(),
+                resource_id.resource_name().to_string(),
+            )
+            .get()
+            .await
+            .map(|resource| resource.map(|resource| Resource { resource }))
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to get resource {id} in environment namespace {namespace}: {e}"
+                );
+                internal_error()
+            })
+    }
+
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
         let namespace = self.qid.to_string();
 
