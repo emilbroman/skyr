@@ -4,7 +4,7 @@
  * rather than percent-encoded as `%2F`, because Traefik rejects `%2F` in paths.
  */
 export function encodeSegment(value: string): string {
-	return encodeURIComponent(value.replaceAll('/', '~'));
+    return encodeURIComponent(value.replaceAll("/", "~"));
 }
 
 /**
@@ -12,62 +12,62 @@ export function encodeSegment(value: string): string {
  * Reverses the `~` → `/` substitution applied by `encodeSegment`.
  */
 export function decodeSegment(value: string): string {
-	try {
-		return decodeURIComponent(value).replaceAll('~', '/');
-	} catch {
-		return value.replaceAll('~', '/');
-	}
+    try {
+        return decodeURIComponent(value).replaceAll("~", "/");
+    } catch {
+        return value.replaceAll("~", "/");
+    }
 }
 
 export function orgHref(orgName: string): string {
-	return `/${encodeURIComponent(orgName)}`;
+    return `/${encodeURIComponent(orgName)}`;
 }
 
 export function repoHref(orgName: string, repoName: string): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}`;
 }
 
 export function envHref(orgName: string, repoName: string, envName: string): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}`;
 }
 
 export function deploymentHref(
-	orgName: string,
-	repoName: string,
-	envName: string,
-	commitHash: string
+    orgName: string,
+    repoName: string,
+    envName: string,
+    commitHash: string,
 ): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/${encodeURIComponent(commitHash)}`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/${encodeURIComponent(commitHash)}`;
 }
 
 export function envDeploymentsHref(orgName: string, repoName: string, envName: string): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d`;
 }
 
 export function envLogsHref(orgName: string, repoName: string, envName: string): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~l`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~l`;
 }
 
 export function resourcesHref(orgName: string, repoName: string, envName: string): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r`;
 }
 
 export function resourceHref(
-	orgName: string,
-	repoName: string,
-	envName: string,
-	resourceId: string
+    orgName: string,
+    repoName: string,
+    envName: string,
+    resourceId: string,
 ): string {
-	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r/${encodeSegment(resourceId)}`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r/${encodeSegment(resourceId)}`;
 }
 
 export function commitTreeHref(
-	orgName: string,
-	repoName: string,
-	commitHash: string,
-	path?: string
+    orgName: string,
+    repoName: string,
+    commitHash: string,
+    path?: string,
 ): string {
-	const base = `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/~c/${encodeURIComponent(commitHash)}`;
-	if (!path) return base + '/';
-	return `${base}/${path}`;
+    const base = `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/~c/${encodeURIComponent(commitHash)}`;
+    if (!path) return `${base}/`;
+    return `${base}/${path}`;
 }

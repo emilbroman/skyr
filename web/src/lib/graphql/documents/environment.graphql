@@ -61,7 +61,12 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
   }
 }
 
-query ResourceDetail($org: String!, $repo: String!, $env: String!, $resourceId: String!) {
+query ResourceDetail(
+  $org: String!
+  $repo: String!
+  $env: String!
+  $resourceId: String!
+) {
   organization(name: $org) {
     repository(name: $repo) {
       environment(name: $env) {
@@ -97,7 +102,12 @@ query ResourceDetail($org: String!, $repo: String!, $env: String!, $resourceId: 
   }
 }
 
-query DeploymentDetail($org: String!, $repo: String!, $env: String!, $commit: String!) {
+query DeploymentDetail(
+  $org: String!
+  $repo: String!
+  $env: String!
+  $commit: String!
+) {
   organization(name: $org) {
     repository(name: $repo) {
       environment(name: $env) {
