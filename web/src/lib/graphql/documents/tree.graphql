@@ -1,38 +1,34 @@
-query DeploymentTree($org: String!, $repo: String!, $env: String!, $commit: String!, $path: String!) {
+query CommitTreeEntry($org: String!, $repo: String!, $commit: String!, $path: String!) {
   organization(name: $org) {
     repository(name: $repo) {
-      environment(name: $env) {
-        deployment(commit: $commit) {
-          id
-          commit {
+      commit(hash: $commit) {
+        hash
+        message
+        treeEntry(path: $path) {
+          ... on Tree {
+            __typename
             hash
-            treeEntry(path: $path) {
+            name
+            entries {
               ... on Tree {
                 __typename
                 hash
                 name
-                entries {
-                  ... on Tree {
-                    __typename
-                    hash
-                    name
-                  }
-                  ... on Blob {
-                    __typename
-                    hash
-                    name
-                    size
-                  }
-                }
               }
               ... on Blob {
                 __typename
                 hash
                 name
                 size
-                content
               }
             }
+          }
+          ... on Blob {
+            __typename
+            hash
+            name
+            size
+            content
           }
         }
       }
@@ -40,30 +36,25 @@ query DeploymentTree($org: String!, $repo: String!, $env: String!, $commit: Stri
   }
 }
 
-query DeploymentRootTree($org: String!, $repo: String!, $env: String!, $commit: String!) {
+query CommitRootTree($org: String!, $repo: String!, $commit: String!) {
   organization(name: $org) {
     repository(name: $repo) {
-      environment(name: $env) {
-        deployment(commit: $commit) {
-          id
-          commit {
-            hash
-            message
-            tree {
+      commit(hash: $commit) {
+        hash
+        message
+        tree {
+          hash
+          entries {
+            ... on Tree {
+              __typename
               hash
-              entries {
-                ... on Tree {
-                  __typename
-                  hash
-                  name
-                }
-                ... on Blob {
-                  __typename
-                  hash
-                  name
-                  size
-                }
-              }
+              name
+            }
+            ... on Blob {
+              __typename
+              hash
+              name
+              size
             }
           }
         }

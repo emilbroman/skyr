@@ -3,7 +3,7 @@
 	import { graphqlQuery } from '$lib/graphql/query';
 	import { DeploymentState, RepositoryDetailDocument } from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
-	import FileBrowser from '$lib/components/FileBrowser.svelte';
+	import RootTree from '$lib/components/RootTree.svelte';
 	import { orgHref, envHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
@@ -45,7 +45,7 @@
 	{:else if repoDetail.error}
 		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{repoDetail.error.message}</div>
 	{:else if repo}
-		<!-- File Browser for main environment's desired deployment -->
+		<!-- Root tree for main environment's desired deployment -->
 		{#if mainEnv && mainDesiredDeployment}
 			<section class="mb-8">
 				<h2 class="text-lg font-medium text-gray-300 mb-3">
@@ -55,10 +55,9 @@
 						&mdash; {mainDesiredDeployment.commit.message}
 					</span>
 				</h2>
-				<FileBrowser
+				<RootTree
 					{orgName}
 					{repoName}
-					envName={mainEnv.name}
 					commitHash={mainDesiredDeployment.commit.hash}
 				/>
 			</section>

@@ -9,8 +9,8 @@
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import FileBrowser from '$lib/components/FileBrowser.svelte';
-	import { decodeSegment, orgHref, repoHref, envHref } from '$lib/paths';
+	import RootTree from '$lib/components/RootTree.svelte';
+	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -24,19 +24,16 @@
 	}));
 
 	let deployment = $derived(deploymentDetail.data?.organization.repository.environment.deployment ?? null);
-	let showFiles = $state(true);
-
-	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
 
 	const liveStates: DeploymentState[] = [DeploymentState.Desired, DeploymentState.Lingering, DeploymentState.Undesired];
 	let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 
 	function handleNavigateToSource(moduleId: string, line: number) {
-		showFiles = true;
-		navigateToFile = { moduleId, line };
-		requestAnimationFrame(() => {
-			document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-		});
+		const segments = moduleId.split('/');
+		const localPath = segments.length > 2 ? segments.slice(2).join('/') : moduleId;
+		const filePath = localPath + '.scl';
+		const url = commitTreeHref(orgName, repoName, commitHash, filePath) + `#line-${line}`;
+		window.location.href = url;
 	}
 </script>
 
@@ -89,27 +86,14 @@
 			</dl>
 		</div>
 
-		<!-- File Browser -->
-		<section class="mb-6" data-file-browser>
-			<div class="flex items-center justify-between mb-3">
-				<h2 class="text-lg font-medium text-gray-300">Files</h2>
-				<button
-					class="text-sm px-3 py-1.5 rounded border transition-colors {showFiles ? 'bg-indigo-600 border-indigo-500 text-white' : 'border-gray-700 text-gray-400 hover:text-gray-200 hover:border-gray-600'}"
-					onclick={() => showFiles = !showFiles}
-				>
-					{showFiles ? 'Hide Files' : 'Browse Files'}
-				</button>
-			</div>
-			{#if showFiles}
-				<FileBrowser
-					{orgName}
-					{repoName}
-					{envName}
-					commitHash={deployment.commit.hash}
-					resources={deployment.resources}
-					{navigateToFile}
-				/>
-			{/if}
+		<!-- Root Tree -->
+		<section class="mb-6">
+			<h2 class="text-lg font-medium text-gray-300 mb-3">Files</h2>
+			<RootTree
+				{orgName}
+				{repoName}
+				commitHash={deployment.commit.hash}
+			/>
 		</section>
 
 		<!-- Artifacts -->
