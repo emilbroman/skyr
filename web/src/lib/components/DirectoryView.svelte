@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { query } from '$lib/graphql/client';
-	import { CommitTreeEntryDocument, type CommitTreeEntryQuery } from '$lib/graphql/generated';
-	import { highlight } from '$lib/highlight';
+	import { CommitTreeEntryDocument } from '$lib/graphql/generated';
 	import { commitTreeHref } from '$lib/paths';
-	import type { ThemedToken } from 'shiki';
+	import FileView from './FileView.svelte';
 
 	type TreeEntry =
 		| { __typename: 'Tree'; hash: string; name?: string | null }
@@ -52,14 +51,11 @@
 	);
 
 	let readmeContent = $state<string | null>(null);
-	let readmeHighlightedLines = $state<ThemedToken[][] | null>(null);
-	let readmeHighlightBg = $state<string>('#0d1117');
 	let readmeLoading = $state(false);
 
 	$effect(() => {
 		if (!readmeEntry?.name) {
 			readmeContent = null;
-			readmeHighlightedLines = null;
 			return;
 		}
 
@@ -67,19 +63,10 @@
 		readmeLoading = true;
 
 		query(CommitTreeEntryDocument, { org: orgName, repo: repoName, commit: commitHash, path: readmePath })
-			.then(async (data) => {
+			.then((data) => {
 				const entry = data.organization.repository.commit.treeEntry;
 				if (entry?.__typename === 'Blob' && entry.content != null) {
 					readmeContent = entry.content;
-					if (readmeEntry?.name) {
-						try {
-							const result = await highlight(entry.content, readmeEntry.name);
-							readmeHighlightedLines = result.lines;
-							readmeHighlightBg = result.bg;
-						} catch {
-							// fall back to plain text
-						}
-					}
 				}
 			})
 			.finally(() => {
@@ -130,33 +117,15 @@
 	<div class="mt-4 bg-gray-900 border border-gray-800 rounded-lg p-8 text-center text-gray-400">
 		Loading README...
 	</div>
-{:else if readmeContent != null}
-	<div class="mt-4 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-		<div class="px-4 py-2.5 border-b border-gray-800 bg-gray-900/80 text-sm text-gray-400">
-			{readmeEntry?.name}
-		</div>
-		<div class="overflow-x-auto" style="background:{readmeHighlightBg}">
-			<table class="w-full text-sm font-mono leading-6 border-collapse">
-				<tbody>
-					{#if readmeHighlightedLines}
-						{#each readmeHighlightedLines as tokens, i}
-							{@const lineNum = i + 1}
-							<tr class="hover:bg-white/5">
-								<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
-								<td class="px-4 py-0 whitespace-pre">{#each tokens as token}<span style="color:{token.color ?? ''};font-style:{token.fontStyle === 1 ? 'italic' : 'normal'}">{token.content}</span>{/each}</td>
-							</tr>
-						{/each}
-					{:else}
-						{#each readmeContent.split('\n') as line, i}
-							{@const lineNum = i + 1}
-							<tr class="hover:bg-white/5">
-								<td class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap">{lineNum}</td>
-								<td class="px-4 py-0 whitespace-pre text-gray-300">{line}</td>
-							</tr>
-						{/each}
-					{/if}
-				</tbody>
-			</table>
-		</div>
+{:else if readmeContent != null && readmeEntry}
+	<div class="mt-4">
+		<FileView
+			{orgName}
+			{repoName}
+			{commitHash}
+			path={[...path, readmeEntry.name ?? '']}
+			content={readmeContent}
+			size={readmeEntry.size}
+		/>
 	</div>
 {/if}

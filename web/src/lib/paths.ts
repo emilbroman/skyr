@@ -40,13 +40,25 @@ export function deploymentHref(
 	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/${encodeURIComponent(commitHash)}`;
 }
 
+export function envDeploymentsHref(orgName: string, repoName: string, envName: string): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d`;
+}
+
+export function envLogsHref(orgName: string, repoName: string, envName: string): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~l`;
+}
+
+export function resourcesHref(orgName: string, repoName: string, envName: string): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r`;
+}
+
 export function commitTreeHref(
 	orgName: string,
 	repoName: string,
 	commitHash: string,
 	path?: string
 ): string {
-	const base = `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/~/${encodeURIComponent(commitHash)}`;
+	const base = `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/~c/${encodeURIComponent(commitHash)}`;
 	if (!path) return base + '/';
 	return `${base}/${path}`;
 }

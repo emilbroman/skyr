@@ -7,10 +7,9 @@
 		DeploymentState
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
-	import ResourceCard from '$lib/components/ResourceCard.svelte';
+	import ResourceCardCompact from '$lib/components/ResourceCardCompact.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import RootTree from '$lib/components/RootTree.svelte';
-	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref } from '$lib/paths';
+	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref, resourcesHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -28,19 +27,11 @@
 	const liveStates: DeploymentState[] = [DeploymentState.Desired, DeploymentState.Lingering, DeploymentState.Undesired];
 	let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 
-	function handleNavigateToSource(moduleId: string, line: number) {
-		const segments = moduleId.split('/');
-		const localPath = segments.length > 2 ? segments.slice(2).join('/') : moduleId;
-		const filePath = localPath + '.scl';
-		const url = commitTreeHref(orgName, repoName, commitHash, filePath) + `#line-${line}`;
-		window.location.href = url;
-	}
+
 </script>
 
 <div class="p-6">
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/" class="hover:text-gray-300">Home</a>
-		<span class="mx-2">/</span>
 		<a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
 		<span class="mx-2">/</span>
 		<a href={repoHref(orgName, repoName)} class="hover:text-gray-300">{repoName}</a>
@@ -84,17 +75,13 @@
 					<dd class="text-gray-200">{deployment.state}</dd>
 				</div>
 			</dl>
+			<a
+				href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
+				class="inline-block mt-3 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+			>
+				View files &rarr;
+			</a>
 		</div>
-
-		<!-- Root Tree -->
-		<section class="mb-6">
-			<h2 class="text-lg font-medium text-gray-300 mb-3">Files</h2>
-			<RootTree
-				{orgName}
-				{repoName}
-				commitHash={deployment.commit.hash}
-			/>
-		</section>
 
 		<!-- Artifacts -->
 		{#if deployment.artifacts.length > 0}
@@ -123,16 +110,16 @@
 
 		<!-- Resources -->
 		<section class="mb-6">
-			<h2 class="text-lg font-medium text-gray-300 mb-3">
+			<a href={resourcesHref(orgName, repoName, envName)} class="text-lg font-medium text-gray-300 mb-3 block hover:text-white transition-colors">
 				Resources
 				<span class="text-gray-500 text-sm font-normal ml-1">({deployment.resources.length})</span>
-			</h2>
+			</a>
 			{#if deployment.resources.length === 0}
 				<p class="text-gray-500">No resources.</p>
 			{:else}
-				<div class="space-y-2">
+				<div class="space-y-1.5">
 					{#each deployment.resources as resource}
-						<ResourceCard resource={{ ...resource, markers: resource.markers, owner: null, dependencies: [] }} onNavigateToSource={handleNavigateToSource} />
+						<ResourceCardCompact {resource} />
 					{/each}
 				</div>
 			{/if}

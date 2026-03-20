@@ -14,8 +14,6 @@
 
 <div class="p-6">
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/" class="hover:text-gray-300">Home</a>
-		<span class="mx-2">/</span>
 		<span class="text-gray-300">{orgName}</span>
 	</nav>
 

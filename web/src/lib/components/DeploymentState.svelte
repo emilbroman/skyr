@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { DeploymentState } from '$lib/graphql/generated';
 
-	let { state }: { state: DeploymentState } = $props();
+	let { state, size = 'default' }: { state: DeploymentState; size?: 'default' | 'small' } = $props();
 
 	const styles: Record<DeploymentState, { bg: string; text: string }> = {
 		[DeploymentState.Up]: { bg: 'bg-green-900/40 border-green-700', text: 'text-green-300' },
@@ -14,6 +14,6 @@
 	const style = $derived(styles[state]);
 </script>
 
-<span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border {style.bg} {style.text}">
+<span class="inline-flex items-center rounded font-medium border {style.bg} {style.text} {size === 'small' ? 'px-1.5 py-px text-[10px]' : 'px-2 py-0.5 text-xs'}">
 	{state}
 </span>

@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { highlight } from '$lib/highlight';
+	import { marked } from 'marked';
 	import type { ThemedToken } from 'shiki';
-	import { commitTreeHref } from '$lib/paths';
+
 
 	type SourceFrame = {
 		moduleId: string;
@@ -33,6 +34,11 @@
 	let highlightBg = $state<string>('#0d1117');
 
 	let filename = $derived(path[path.length - 1] ?? '');
+	let isMarkdown = $derived(/\.md$/i.test(filename));
+	let showSource = $state(false);
+	let renderedMarkdown = $derived(
+		isMarkdown && content != null ? marked.parse(content, { async: false }) as string : ''
+	);
 
 	$effect(() => {
 		highlightedLines = null;
@@ -50,12 +56,6 @@
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	}
-
-	function parentHref(): string {
-		if (path.length <= 1) return commitTreeHref(orgName, repoName, commitHash);
-		const parentPath = path.slice(0, -1).join('/');
-		return commitTreeHref(orgName, repoName, commitHash, parentPath + '/');
 	}
 
 	/**
@@ -112,12 +112,14 @@
 <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
 	<div class="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-800/30">
 		<span class="text-sm text-gray-400">{formatSize(size)}</span>
-		<a
-			href={parentHref()}
-			class="text-xs text-indigo-400 hover:text-indigo-300"
-		>
-			Back to directory
-		</a>
+		{#if isMarkdown && content != null}
+			<button
+				class="text-xs transition-colors {showSource ? 'text-gray-400 hover:text-gray-200' : 'text-indigo-400 hover:text-indigo-300'}"
+				onclick={() => showSource = !showSource}
+			>
+				{showSource ? 'Preview' : 'Source'}
+			</button>
+		{/if}
 	</div>
 	{#snippet resourceInlay(items: string[])}
 		{#if items.length === 1}
@@ -133,7 +135,11 @@
 			</span>
 		{/if}
 	{/snippet}
-	{#if content != null}
+	{#if content != null && isMarkdown && !showSource}
+		<div class="p-6 prose prose-invert prose-sm max-w-none">
+			{@html renderedMarkdown}
+		</div>
+	{:else if content != null}
 		<div class="overflow-x-auto" style="background:{highlightBg}">
 			<table class="w-full text-sm font-mono leading-6 border-collapse">
 				<tbody>

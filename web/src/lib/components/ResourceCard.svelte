@@ -59,39 +59,45 @@
 	}
 
 	let sourceLocation = $derived(parseSourceLocation(resource.sourceTrace));
+	let typeParts = $derived(resource.type.split('.'));
 </script>
 
 <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-	<div class="w-full text-left px-4 py-3 flex items-center justify-between hover:bg-gray-800/50 transition-colors">
-		<button class="flex items-center gap-3 min-w-0 flex-1" onclick={() => expanded = !expanded}>
-			<span class="text-indigo-400 font-medium text-sm">{resource.type}</span>
-			<span class="text-gray-300 text-sm">{resource.name}</span>
-			{#each resource.markers as marker}
-				<span class="text-xs px-1.5 py-0.5 rounded border {marker === ResourceMarker.Volatile ? 'border-yellow-700 text-yellow-400' : 'border-blue-700 text-blue-400'}">
-					{marker}
-				</span>
-			{/each}
-		</button>
-		{#if sourceLocation}
-			<button
-				class="text-xs text-gray-500 hover:text-indigo-400 font-mono mx-3 transition-colors shrink-0"
-				onclick={() => onNavigateToSource?.(sourceLocation!.moduleId, sourceLocation!.line)}
-				title="Go to source"
-			>
-				{sourceLocation.label}
-			</button>
-		{/if}
-		<button
-			class="shrink-0"
-			onclick={() => expanded = !expanded}
-			title="Toggle details"
-		>
-			<svg
-				class="w-4 h-4 text-gray-500 transition-transform {expanded ? 'rotate-180' : ''}"
-				fill="none" viewBox="0 0 24 24" stroke="currentColor"
-			>
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-			</svg>
+	<div class="w-full text-left px-4 py-3 hover:bg-gray-800/50 transition-colors">
+		<button class="w-full" onclick={() => expanded = !expanded}>
+			<div class="text-[11px] truncate text-start">
+				{#if typeParts.length > 1}
+					<span class="text-indigo-400/70">{typeParts.slice(0, -1).join('.')}.</span>
+				{/if}
+				<span class="text-indigo-300">{typeParts[typeParts.length - 1]}</span>
+			</div>
+			<div class="flex items-center justify-between gap-2 mt-0.5">
+				<div class="flex items-center gap-2 min-w-0">
+					<span class="text-gray-300 text-sm truncate">{resource.name}</span>
+					{#each resource.markers as marker}
+						<span class="text-[10px] px-1.5 py-px rounded border {marker === ResourceMarker.Volatile ? 'border-yellow-700 text-yellow-400' : 'border-blue-700 text-blue-400'}">
+							{marker}
+						</span>
+					{/each}
+				</div>
+				<div class="flex items-center gap-2 shrink-0">
+					{#if sourceLocation}
+						<button
+							class="text-[11px] text-gray-500 hover:text-indigo-400 font-mono transition-colors"
+							onclick={(e: MouseEvent) => { e.stopPropagation(); onNavigateToSource?.(sourceLocation!.moduleId, sourceLocation!.line); }}
+							title="Go to source"
+						>
+							{sourceLocation.label}
+						</button>
+					{/if}
+					<svg
+						class="w-3.5 h-3.5 text-gray-500 transition-transform {expanded ? 'rotate-180' : ''}"
+						fill="none" viewBox="0 0 24 24" stroke="currentColor"
+					>
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+					</svg>
+				</div>
+			</div>
 		</button>
 	</div>
 

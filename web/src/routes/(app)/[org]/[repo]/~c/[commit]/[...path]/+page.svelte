@@ -96,8 +96,6 @@
 <div class="p-6">
 	<!-- Breadcrumb -->
 	<nav class="text-sm text-gray-500 mb-4">
-		<a href="/" class="hover:text-gray-300">Home</a>
-		<span class="mx-2">/</span>
 		<a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
 		<span class="mx-2">/</span>
 		<a href={repoHref(orgName, repoName)} class="hover:text-gray-300">{repoName}</a>
