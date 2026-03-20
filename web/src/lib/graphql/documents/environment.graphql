@@ -115,6 +115,13 @@ query DeploymentDetail($org: String!, $repo: String!, $env: String!, $commit: St
             name
             inputs
             outputs
+            owner {
+              id
+            }
+            dependencies {
+              type
+              name
+            }
             markers
             sourceTrace {
               moduleId

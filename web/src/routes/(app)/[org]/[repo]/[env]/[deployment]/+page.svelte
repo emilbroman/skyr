@@ -7,9 +7,9 @@
 		DeploymentState
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
-	import ResourceCardCompact from '$lib/components/ResourceCardCompact.svelte';
+	import ResourceDag from '$lib/components/ResourceDag.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref, resourcesHref, resourceHref } from '$lib/paths';
+	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref, resourcesHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -114,15 +114,7 @@
 				Resources
 				<span class="text-gray-500 text-sm font-normal ml-1">({deployment.resources.length})</span>
 			</a>
-			{#if deployment.resources.length === 0}
-				<p class="text-gray-500">No resources.</p>
-			{:else}
-				<div class="space-y-1.5">
-					{#each deployment.resources as resource}
-						<ResourceCardCompact {resource} href={resourceHref(orgName, repoName, envName, `${resource.type}:${resource.name}`)} />
-					{/each}
-				</div>
-			{/if}
+			<ResourceDag resources={deployment.resources} org={orgName} repo={repoName} env={envName} />
 		</section>
 
 		<!-- Logs -->
