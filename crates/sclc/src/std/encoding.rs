@@ -10,6 +10,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
 
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+
         first.try_map(|value| {
             let json = to_json_value(&value)?;
             let encoded = serde_json::to_string(&json)
@@ -25,6 +29,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let first = args
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
 
         first.try_map(|value| {
             let input = value.assert_str()?;

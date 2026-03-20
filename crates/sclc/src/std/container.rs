@@ -44,6 +44,10 @@ fn image_extern_fn(
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
     let mut argument_dependencies = config_arg.dependencies.clone();
 
+    if config_arg.value.has_pending() {
+        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+    }
+
     let config = config_arg.value.assert_record()?;
 
     // Extract inputs
@@ -130,6 +134,10 @@ fn pod_extern_fn(
         .next()
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
     let mut argument_dependencies = config_arg.dependencies.clone();
+
+    if config_arg.value.has_pending() {
+        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+    }
 
     let config = config_arg.value.assert_record()?;
 
@@ -250,6 +258,10 @@ fn create_port_fn(
         // The port depends on the pod
         argument_dependencies.insert(pod_resource_id.clone());
 
+        if config_arg.value.has_pending() {
+            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
+
         let config = config_arg.value.assert_record()?;
 
         // Extract port-specific inputs
@@ -318,6 +330,10 @@ fn create_attachment_fn(
         // The attachment depends on the pod
         argument_dependencies.insert(pod_resource_id.clone());
 
+        if port_arg.value.has_pending() {
+            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
+
         let port_record = port_arg.value.assert_record()?;
 
         // Extract destination port details
@@ -381,6 +397,10 @@ fn host_extern_fn(
         .next()
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
     let mut argument_dependencies = config_arg.dependencies.clone();
+
+    if config_arg.value.has_pending() {
+        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+    }
 
     let config = config_arg.value.assert_record()?;
 
@@ -450,6 +470,10 @@ fn create_host_port_fn(
 
         // The host port depends on the host
         argument_dependencies.insert(host_resource_id.clone());
+
+        if config_arg.value.has_pending() {
+            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
 
         let config = config_arg.value.assert_record()?;
 

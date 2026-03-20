@@ -11,6 +11,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
 
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+
         first.try_map(|value| {
             let record = value.assert_record()?;
             let epoch_millis = *record.get("epochMillis").assert_int_ref()?;
@@ -24,6 +28,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let first = args
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
 
         first.try_map(|value| {
             let record = value.assert_record()?;
@@ -63,6 +71,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .cloned()
             .collect();
 
+        if instant_arg.value.has_pending() || duration_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
+        }
+
         let instant = instant_arg.value.assert_record()?;
         let duration = duration_arg.value.assert_record()?;
         let epoch_millis = *instant.get("epochMillis").assert_int_ref()?;
@@ -81,6 +93,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
         let mut argument_dependencies = duration_arg.dependencies.clone();
+
+        if duration_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
 
         let duration = duration_arg.value.assert_record()?;
 
@@ -136,6 +152,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .union(&duration_arg.dependencies)
             .cloned()
             .collect();
+
+        if instant_arg.value.has_pending() || duration_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
+        }
 
         let instant = instant_arg.value.assert_record()?;
         let duration = duration_arg.value.assert_record()?;

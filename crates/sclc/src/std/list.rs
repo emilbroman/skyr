@@ -7,6 +7,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
 
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+
         first.try_map(|value| {
             let n = value.assert_int()?;
             if n < 0 {
