@@ -13,6 +13,7 @@
   "dependencies": {
     "graphql": "^16.9.0",
     "graphql-ws": "^5.16.0",
+    "marked": "^17.0.4",
     "shiki": "^4.0.2"
   },
   "devDependencies": {
@@ -23,6 +24,7 @@
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/kit": "^2.0.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
+    "@tailwindcss/typography": "^0.5.19",
     "@tailwindcss/vite": "^4.0.0",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
