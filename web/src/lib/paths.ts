@@ -39,3 +39,14 @@ export function deploymentHref(
 ): string {
 	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/${encodeURIComponent(commitHash)}`;
 }
+
+export function commitTreeHref(
+	orgName: string,
+	repoName: string,
+	commitHash: string,
+	path?: string
+): string {
+	const base = `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/~/${encodeURIComponent(commitHash)}`;
+	if (!path) return base + '/';
+	return `${base}/${path}`;
+}

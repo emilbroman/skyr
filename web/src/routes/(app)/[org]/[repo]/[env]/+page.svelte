@@ -9,8 +9,8 @@
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import FileBrowser from '$lib/components/FileBrowser.svelte';
-	import { decodeSegment, orgHref, repoHref, deploymentHref } from '$lib/paths';
+	import RootTree from '$lib/components/RootTree.svelte';
+	import { decodeSegment, orgHref, repoHref, deploymentHref, commitTreeHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -29,11 +29,13 @@
 		env?.deployments.find((d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up) ?? null
 	);
 
-	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
-
 	function handleNavigateToSource(moduleId: string, line: number) {
-		navigateToFile = { moduleId, line };
-		document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+		if (!desiredDeployment) return;
+		const segments = moduleId.split('/');
+		const localPath = segments.length > 2 ? segments.slice(2).join('/') : moduleId;
+		const filePath = localPath + '.scl';
+		const url = commitTreeHref(orgName, repoName, desiredDeployment.commit.hash, filePath) + `#line-${line}`;
+		window.location.href = url;
 	}
 </script>
 
@@ -75,22 +77,19 @@
 			</div>
 		{/if}
 
-		<!-- File Browser for desired deployment -->
+		<!-- Root tree for desired deployment -->
 		{#if desiredDeployment}
-			<section class="mb-8" data-file-browser>
+			<section class="mb-8">
 				<h2 class="text-lg font-medium text-gray-300 mb-3">
 					Files
 					<span class="text-gray-500 text-sm font-normal ml-2">
 						from <span class="font-mono">{desiredDeployment.commit.hash.substring(0, 8)}</span>
 					</span>
 				</h2>
-				<FileBrowser
+				<RootTree
 					{orgName}
 					{repoName}
-					{envName}
 					commitHash={desiredDeployment.commit.hash}
-					resources={env?.resources}
-					{navigateToFile}
 				/>
 			</section>
 		{/if}
