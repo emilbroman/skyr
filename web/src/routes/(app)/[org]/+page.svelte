@@ -1,28 +1,15 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
-	import { query } from '$lib/graphql/client';
-	import { OrganizationDetailDocument, type OrganizationDetailQuery } from '$lib/graphql/generated';
-	import { DeploymentState } from '$lib/graphql/generated';
+	import { graphqlQuery } from '$lib/graphql/query';
+	import { OrganizationDetailDocument } from '$lib/graphql/generated';
 	import { repoHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 
-	type OrgData = OrganizationDetailQuery['organization'];
-	let org = $state<OrgData | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-
-	onMount(async () => {
-		try {
-			const data = await query(OrganizationDetailDocument, { org: orgName });
-			org = data.organization;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load organization';
-		} finally {
-			loading = false;
-		}
-	});
+	const orgDetail = graphqlQuery(() => ({
+		document: OrganizationDetailDocument,
+		variables: { org: orgName }
+	}));
 </script>
 
 <div class="p-6">
@@ -34,11 +21,12 @@
 
 	<h1 class="text-2xl font-bold text-white mb-6">{orgName}</h1>
 
-	{#if loading}
+	{#if orgDetail.isPending}
 		<p class="text-gray-400">Loading repositories...</p>
-	{:else if error}
-		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{error}</div>
-	{:else if org}
+	{:else if orgDetail.error}
+		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{orgDetail.error.message}</div>
+	{:else}
+		{@const org = orgDetail.data.organization}
 		{#if org.repositories.length === 0}
 			<div class="text-center py-16">
 				<p class="text-gray-400 mb-2">No repositories found.</p>

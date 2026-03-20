@@ -1,8 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
-	import { query } from '$lib/graphql/client';
-	import { DeploymentState, RepositoryDetailDocument, type RepositoryDetailQuery } from '$lib/graphql/generated';
+	import { graphqlQuery } from '$lib/graphql/query';
+	import { DeploymentState, RepositoryDetailDocument } from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import FileBrowser from '$lib/components/FileBrowser.svelte';
 	import { orgHref, envHref } from '$lib/paths';
@@ -10,10 +9,13 @@
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
 
-	type RepoData = RepositoryDetailQuery['organization']['repository'];
-	let repo = $state<RepoData | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
+	const repoDetail = graphqlQuery(() => ({
+		document: RepositoryDetailDocument,
+		variables: { org: orgName, repo: repoName },
+		refetchInterval: 10_000
+	}));
+
+	let repo = $derived(repoDetail.data?.organization.repository ?? null);
 
 	// Find the "main" environment (named "main" or the first one) and its desired deployment
 	let mainEnv = $derived(
@@ -25,17 +27,6 @@
 			(d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up
 		) ?? null
 	);
-
-	onMount(async () => {
-		try {
-			const data = await query(RepositoryDetailDocument, { org: orgName, repo: repoName });
-			repo = data.organization.repository;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load repository';
-		} finally {
-			loading = false;
-		}
-	});
 </script>
 
 <div class="p-6">
@@ -49,10 +40,10 @@
 
 	<h1 class="text-2xl font-bold text-white mb-6">{orgName}/{repoName}</h1>
 
-	{#if loading}
+	{#if repoDetail.isPending}
 		<p class="text-gray-400">Loading repository...</p>
-	{:else if error}
-		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{error}</div>
+	{:else if repoDetail.error}
+		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{repoDetail.error.message}</div>
 	{:else if repo}
 		<!-- File Browser for main environment's desired deployment -->
 		{#if mainEnv && mainDesiredDeployment}
