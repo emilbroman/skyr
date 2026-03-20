@@ -3,12 +3,10 @@ import { print } from 'graphql';
 import { getToken } from '$lib/stores/auth';
 
 function getApiUrl(): string {
-	// In dev, Vite proxy handles /graphql.
-	// In production, configure via env or use relative URL.
 	return '/graphql';
 }
 
-async function execute<TData>(
+export async function execute<TData>(
 	document: TypedDocumentNode<TData, any>,
 	variables: Record<string, unknown>
 ): Promise<TData> {
@@ -51,11 +49,4 @@ export async function query<TData, TVars extends Record<string, unknown>>(
 	...args: TVars extends Record<string, never> ? [variables?: TVars] : [variables: TVars]
 ): Promise<TData> {
 	return execute(document, args[0] ?? {});
-}
-
-export async function mutate<TData, TVars extends Record<string, unknown>>(
-	document: TypedDocumentNode<TData, TVars>,
-	variables: TVars
-): Promise<TData> {
-	return execute(document, variables);
 }

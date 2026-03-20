@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { query, mutate } from '$lib/graphql/client';
+	import { graphqlMutation } from '$lib/graphql/query';
+	import { query } from '$lib/graphql/client';
 	import { AuthChallengeDocument, SignInDocument } from '$lib/graphql/generated';
 	import { setAuth } from '$lib/stores/auth';
 	import { onDestroy } from 'svelte';
@@ -12,6 +13,16 @@
 	let loading = $state(false);
 	let step = $state<'username' | 'sign'>('username');
 	let refreshInterval: ReturnType<typeof setInterval> | null = null;
+
+	const signIn = graphqlMutation(SignInDocument, {
+		onSuccess: (data) => {
+			setAuth(data.signin.token, data.signin.user);
+			goto('/');
+		},
+		onError: (e) => {
+			error = e.message;
+		}
+	});
 
 	async function fetchChallenge() {
 		if (!username.trim()) return;
@@ -63,27 +74,18 @@
 		return { pubkey, signature };
 	}
 
-	async function submitSignIn() {
+	function submitSignIn() {
 		const parsed = parseResponse(response);
 		if (!parsed) {
 			error = 'Could not find both a public key and an SSH signature in the output. Make sure you pasted the full output.';
 			return;
 		}
 		error = null;
-		loading = true;
-		try {
-			const data = await mutate(SignInDocument, {
-				username: username.trim(),
-				signature: parsed.signature,
-				pubkey: parsed.pubkey
-			});
-			setAuth(data.signin.token, data.signin.user);
-			goto('/');
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Sign-in failed';
-		} finally {
-			loading = false;
-		}
+		signIn.mutate({
+			username: username.trim(),
+			signature: parsed.signature,
+			pubkey: parsed.pubkey
+		});
 	}
 
 	function copyToClipboard(text: string) {
@@ -176,9 +178,9 @@
 					<button
 						onclick={submitSignIn}
 						class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-						disabled={loading || !response.trim()}
+						disabled={signIn.isPending || !response.trim()}
 					>
-						{loading ? 'Signing in...' : 'Sign In'}
+						{signIn.isPending ? 'Signing in...' : 'Sign In'}
 					</button>
 				</div>
 			{/if}

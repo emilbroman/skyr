@@ -1,11 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
-	import { query } from '$lib/graphql/client';
+	import { graphqlQuery } from '$lib/graphql/query';
 	import {
 		DeploymentDetailDocument,
-		DeploymentLogsDocument,
-		type DeploymentDetailQuery
+		DeploymentLogsDocument
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
@@ -18,10 +16,13 @@
 	let envName = $derived(decodeSegment($page.params.env ?? ''));
 	let commitHash = $derived($page.params.deployment ?? '');
 
-	type DeploymentData = DeploymentDetailQuery['organization']['repository']['environment']['deployment'];
-	let deployment = $state<DeploymentData | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
+	const deploymentDetail = graphqlQuery(() => ({
+		document: DeploymentDetailDocument,
+		variables: { org: orgName, repo: repoName, env: envName, commit: commitHash },
+		refetchInterval: 10_000
+	}));
+
+	let deployment = $derived(deploymentDetail.data?.organization.repository.environment.deployment ?? null);
 	let showFiles = $state(true);
 
 	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
@@ -29,22 +30,10 @@
 	function handleNavigateToSource(moduleId: string, line: number) {
 		showFiles = true;
 		navigateToFile = { moduleId, line };
-		// Small delay to let the FileBrowser mount if it was hidden
 		requestAnimationFrame(() => {
 			document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 		});
 	}
-
-	onMount(async () => {
-		try {
-			const data = await query(DeploymentDetailDocument, { org: orgName, repo: repoName, env: envName, commit: commitHash });
-			deployment = data.organization.repository.environment.deployment;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load deployment';
-		} finally {
-			loading = false;
-		}
-	});
 </script>
 
 <div class="p-6">
@@ -60,10 +49,10 @@
 		<span class="text-gray-300 font-mono text-xs">{commitHash.substring(0, 8)}</span>
 	</nav>
 
-	{#if loading}
+	{#if deploymentDetail.isPending}
 		<p class="text-gray-400">Loading deployment...</p>
-	{:else if error}
-		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{error}</div>
+	{:else if deploymentDetail.error}
+		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{deploymentDetail.error.message}</div>
 	{:else if deployment}
 		<!-- Header -->
 		<div class="flex items-center gap-4 mb-6">

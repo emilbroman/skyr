@@ -1,12 +1,10 @@
 <script lang="ts">
-	import { query } from '$lib/graphql/client';
+	import { graphqlQuery } from '$lib/graphql/query';
 	import {
 		DeploymentRootTreeDocument,
-		DeploymentTreeDocument,
-		type DeploymentRootTreeQuery,
-		type DeploymentTreeQuery
+		DeploymentTreeDocument
 	} from '$lib/graphql/generated';
-	import { highlight, type HighlightedLine } from '$lib/highlight';
+	import { highlight } from '$lib/highlight';
 	import { marked } from 'marked';
 	import type { ThemedToken } from 'shiki';
 
@@ -46,16 +44,82 @@
 	};
 
 	let currentPath = $state<string[]>([]);
-	let entries = $state<TreeEntry[]>([]);
-	let blobContent = $state<BlobContent | null>(null);
 	let highlightedLines = $state<ThemedToken[][] | null>(null);
 	let highlightBg = $state<string>('#0d1117');
-	let loading = $state(true);
-	let error = $state<string | null>(null);
-	let readmeContent = $state<string | null>(null);
-	let readmeIsMarkdown = $state(false);
 
 	let pathString = $derived(currentPath.join('/'));
+	let isRoot = $derived(currentPath.length === 0);
+
+	let queryVars = $derived({ org: orgName, repo: repoName, env: envName, commit: commitHash });
+
+	const rootTree = graphqlQuery(() => ({
+		document: DeploymentRootTreeDocument,
+		variables: queryVars,
+		enabled: isRoot
+	}));
+
+	const subTree = graphqlQuery(() => ({
+		document: DeploymentTreeDocument,
+		variables: { ...queryVars, path: pathString },
+		enabled: !isRoot
+	}));
+
+	let loading = $derived(isRoot ? rootTree.isPending : subTree.isPending);
+	let error = $derived.by<string | null>(() => {
+		if (isRoot) return rootTree.error?.message ?? null;
+		if (subTree.error) return subTree.error.message;
+		if (subTree.data && !subTree.data.organization.repository.environment.deployment.commit.treeEntry) {
+			return `Path "${pathString}" not found`;
+		}
+		return null;
+	});
+
+	let entries = $derived.by<TreeEntry[]>(() => {
+		if (isRoot) {
+			if (!rootTree.data) return [];
+			return sortEntries(rootTree.data.organization.repository.environment.deployment.commit.tree.entries);
+		}
+		const entry = subTree.data?.organization.repository.environment.deployment.commit.treeEntry;
+		if (!entry || entry.__typename !== 'Tree') return [];
+		return sortEntries(entry.entries);
+	});
+
+	let blobContent = $derived.by<BlobContent | null>(() => {
+		if (isRoot) return null;
+		const entry = subTree.data?.organization.repository.environment.deployment.commit.treeEntry;
+		if (!entry || entry.__typename !== 'Blob') return null;
+		return entry;
+	});
+
+	// README support: find a README in the current directory entries and fetch it
+	function findReadme(dirEntries: TreeEntry[]): string | null {
+		for (const name of ['README.md', 'readme.md', 'Readme.md', 'README', 'readme']) {
+			if (dirEntries.some((e) => e.__typename === 'Blob' && e.name === name)) return name;
+		}
+		return null;
+	}
+
+	let readmeName = $derived(findReadme(entries));
+	let readmePath = $derived.by(() => {
+		if (!readmeName) return null;
+		return currentPath.length > 0
+			? currentPath.join('/') + '/' + readmeName
+			: readmeName;
+	});
+
+	const readmeQuery = graphqlQuery(() => ({
+		document: DeploymentTreeDocument,
+		variables: { ...queryVars, path: readmePath! },
+		enabled: readmePath != null
+	}));
+
+	let readmeContent = $derived.by<string | null>(() => {
+		const entry = readmeQuery.data?.organization.repository.environment.deployment.commit.treeEntry;
+		if (entry?.__typename === 'Blob' && entry.content != null) return entry.content;
+		return null;
+	});
+
+	let readmeIsMarkdown = $derived(readmeName?.toLowerCase().endsWith('.md') ?? false);
 
 	let renderedReadme = $derived.by(() => {
 		if (!readmeContent) return null;
@@ -65,57 +129,14 @@
 		return null;
 	});
 
-	let queryVars = $derived({ org: orgName, repo: repoName, env: envName, commit: commitHash });
-
-	async function loadRoot() {
-		loading = true;
-		error = null;
-		blobContent = null;
+	// Trigger syntax highlighting when blob content changes
+	$effect(() => {
 		highlightedLines = null;
-		readmeContent = null;
-		try {
-			const data = await query(DeploymentRootTreeDocument, queryVars);
-			const dep = data.organization.repository.environment.deployment;
-			const rawEntries = dep.commit.tree.entries;
-			entries = sortEntries(rawEntries);
-			loadReadme(rawEntries);
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load tree';
-		} finally {
-			loading = false;
+		highlightBg = '#0d1117';
+		if (blobContent?.content != null && blobContent.name) {
+			highlightCode(blobContent.content, blobContent.name);
 		}
-	}
-
-	async function loadPath(path: string) {
-		loading = true;
-		error = null;
-		blobContent = null;
-		highlightedLines = null;
-		try {
-			const data = await query(DeploymentTreeDocument, { ...queryVars, path });
-			const dep = data.organization.repository.environment.deployment;
-			const entry = dep.commit.treeEntry;
-			if (!entry) {
-				error = `Path "${path}" not found`;
-				return;
-			}
-			if (entry.__typename === 'Tree') {
-				entries = sortEntries(entry.entries);
-				blobContent = null;
-				loadReadme(entry.entries);
-			} else {
-				blobContent = entry;
-				entries = [];
-				if (entry.content != null && entry.name) {
-					highlightCode(entry.content, entry.name);
-				}
-			}
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load path';
-		} finally {
-			loading = false;
-		}
-	}
+	});
 
 	async function highlightCode(code: string, filename: string) {
 		try {
@@ -124,33 +145,6 @@
 			highlightBg = result.bg;
 		} catch {
 			// Highlighting failed — fall back to plain text (highlightedLines stays null)
-		}
-	}
-
-	function findReadme(dirEntries: TreeEntry[]): string | null {
-		for (const name of ['README.md', 'readme.md', 'Readme.md', 'README', 'readme']) {
-			if (dirEntries.some((e) => e.__typename === 'Blob' && e.name === name)) return name;
-		}
-		return null;
-	}
-
-	async function loadReadme(dirEntries: TreeEntry[]) {
-		readmeContent = null;
-		readmeIsMarkdown = false;
-		const readmeName = findReadme(dirEntries);
-		if (!readmeName) return;
-		try {
-			const readmePath = currentPath.length > 0
-				? currentPath.join('/') + '/' + readmeName
-				: readmeName;
-			const data = await query(DeploymentTreeDocument, { ...queryVars, path: readmePath });
-			const entry = data.organization.repository.environment.deployment.commit.treeEntry;
-			if (entry?.__typename === 'Blob' && entry.content != null) {
-				readmeContent = entry.content;
-				readmeIsMarkdown = readmeName.toLowerCase().endsWith('.md');
-			}
-		} catch {
-			// README fetch failed — not critical, just skip
 		}
 	}
 
@@ -250,13 +244,6 @@
 		}
 	});
 
-	$effect(() => {
-		if (currentPath.length === 0) {
-			loadRoot();
-		} else {
-			loadPath(currentPath.join('/'));
-		}
-	});
 </script>
 
 <div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">

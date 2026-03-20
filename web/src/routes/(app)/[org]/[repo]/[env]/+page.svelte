@@ -1,12 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { onMount } from 'svelte';
-	import { query } from '$lib/graphql/client';
+	import { graphqlQuery } from '$lib/graphql/query';
 	import {
 		DeploymentState,
 		EnvironmentDetailDocument,
-		EnvironmentLogsDocument,
-		type EnvironmentDetailQuery
+		EnvironmentLogsDocument
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
@@ -18,10 +16,13 @@
 	let repoName = $derived($page.params.repo ?? '');
 	let envName = $derived(decodeSegment($page.params.env ?? ''));
 
-	type EnvData = EnvironmentDetailQuery['organization']['repository']['environment'];
-	let env = $state<EnvData | null>(null);
-	let loading = $state(true);
-	let error = $state<string | null>(null);
+	const envDetail = graphqlQuery(() => ({
+		document: EnvironmentDetailDocument,
+		variables: { org: orgName, repo: repoName, env: envName },
+		refetchInterval: 10_000
+	}));
+
+	let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 	let showLogs = $state(false);
 
 	let desiredDeployment = $derived(
@@ -32,20 +33,8 @@
 
 	function handleNavigateToSource(moduleId: string, line: number) {
 		navigateToFile = { moduleId, line };
-		// Scroll to the file browser section
 		document.querySelector('[data-file-browser]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
 	}
-
-	onMount(async () => {
-		try {
-			const data = await query(EnvironmentDetailDocument, { org: orgName, repo: repoName, env: envName });
-			env = data.organization.repository.environment;
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load environment';
-		} finally {
-			loading = false;
-		}
-	});
 </script>
 
 <div class="p-6">
@@ -71,10 +60,10 @@
 		{/if}
 	</div>
 
-	{#if loading}
+	{#if envDetail.isPending}
 		<p class="text-gray-400">Loading environment...</p>
-	{:else if error}
-		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{error}</div>
+	{:else if envDetail.error}
+		<div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">{envDetail.error.message}</div>
 	{:else if env}
 		{#if showLogs}
 			<div class="mb-6 h-80 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
