@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { replaceState } from '$app/navigation';
 	import { query } from '$lib/graphql/client';
 	import {
 		CommitRootTreeDocument,
@@ -60,14 +60,15 @@
 		}
 	}
 
-	// Trailing slash normalization: directories get trailing slash, files lose it
+	// Trailing slash normalization: directories get trailing slash, files lose it.
+	// Uses replaceState to update the URL without triggering a navigation cycle.
 	$effect(() => {
 		const currentUrl = $page.url.pathname;
 		const hasTrailingSlash = currentUrl.endsWith('/');
 		if (view.kind === 'directory' && !hasTrailingSlash) {
-			goto(currentUrl + '/', { replaceState: true });
+			replaceState(currentUrl + '/', {});
 		} else if (view.kind === 'file' && hasTrailingSlash) {
-			goto(currentUrl.replace(/\/+$/, ''), { replaceState: true });
+			replaceState(currentUrl.replace(/\/+$/, ''), {});
 		}
 	});
 
