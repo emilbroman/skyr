@@ -52,6 +52,15 @@ export function resourcesHref(orgName: string, repoName: string, envName: string
 	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r`;
 }
 
+export function resourceHref(
+	orgName: string,
+	repoName: string,
+	envName: string,
+	resourceId: string
+): string {
+	return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r/${encodeSegment(resourceId)}`;
+}
+
 export function commitTreeHref(
 	orgName: string,
 	repoName: string,

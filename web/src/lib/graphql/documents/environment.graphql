@@ -61,6 +61,42 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
   }
 }
 
+query ResourceDetail($org: String!, $repo: String!, $env: String!, $resourceId: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environment(name: $env) {
+        qid
+        resource(id: $resourceId) {
+          type
+          name
+          inputs
+          outputs
+          markers
+          owner {
+            id
+            ref
+            commit {
+              hash
+              message
+            }
+            createdAt
+            state
+          }
+          dependencies {
+            type
+            name
+          }
+          sourceTrace {
+            moduleId
+            span
+            name
+          }
+        }
+      }
+    }
+  }
+}
+
 query DeploymentDetail($org: String!, $repo: String!, $env: String!, $commit: String!) {
   organization(name: $org) {
     repository(name: $repo) {

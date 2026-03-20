@@ -9,7 +9,7 @@
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCardCompact from '$lib/components/ResourceCardCompact.svelte';
 	import LogStream from '$lib/components/LogStream.svelte';
-	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref, resourcesHref } from '$lib/paths';
+	import { decodeSegment, orgHref, repoHref, envHref, commitTreeHref, resourcesHref, resourceHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -119,7 +119,7 @@
 			{:else}
 				<div class="space-y-1.5">
 					{#each deployment.resources as resource}
-						<ResourceCardCompact {resource} />
+						<ResourceCardCompact {resource} href={resourceHref(orgName, repoName, envName, `${resource.type}:${resource.name}`)} />
 					{/each}
 				</div>
 			{/if}

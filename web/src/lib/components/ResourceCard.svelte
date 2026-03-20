@@ -19,8 +19,9 @@
 		sourceTrace?: SourceFrame[];
 	};
 
-	let { resource, onNavigateToSource }: {
+	let { resource, href, onNavigateToSource }: {
 		resource: ResourceData;
+		href?: string;
 		onNavigateToSource?: (moduleId: string, line: number) => void;
 	} = $props();
 	let expanded = $state(false);
@@ -73,7 +74,11 @@
 			</div>
 			<div class="flex items-center justify-between gap-2 mt-0.5">
 				<div class="flex items-center gap-2 min-w-0">
-					<span class="text-gray-300 text-sm truncate">{resource.name}</span>
+					{#if href}
+						<a {href} class="text-gray-300 hover:text-white text-sm truncate transition-colors" onclick={(e: MouseEvent) => e.stopPropagation()}>{resource.name}</a>
+					{:else}
+						<span class="text-gray-300 text-sm truncate">{resource.name}</span>
+					{/if}
 					{#each resource.markers as marker}
 						<span class="text-[10px] px-1.5 py-px rounded border {marker === ResourceMarker.Volatile ? 'border-yellow-700 text-yellow-400' : 'border-blue-700 text-blue-400'}">
 							{marker}

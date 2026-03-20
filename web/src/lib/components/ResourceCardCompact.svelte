@@ -7,11 +7,11 @@
 		markers: ResourceMarker[];
 	};
 
-	let { resource }: { resource: ResourceData } = $props();
+	let { resource, href }: { resource: ResourceData; href?: string } = $props();
 	let typeParts = $derived(resource.type.split('.'));
 </script>
 
-<div class="bg-gray-900 border border-gray-800 rounded px-3 py-2">
+{#snippet content()}
 	<div class="text-[10px] text-indigo-400/70 truncate">
 		{#if typeParts.length > 1}
 			<span>{typeParts.slice(0, -1).join('.')}.</span>
@@ -26,4 +26,14 @@
 			</span>
 		{/each}
 	</div>
-</div>
+{/snippet}
+
+{#if href}
+	<a {href} class="block bg-gray-900 border border-gray-800 rounded px-3 py-2 hover:bg-gray-800/50 transition-colors">
+		{@render content()}
+	</a>
+{:else}
+	<div class="bg-gray-900 border border-gray-800 rounded px-3 py-2">
+		{@render content()}
+	</div>
+{/if}

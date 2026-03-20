@@ -2,8 +2,8 @@
 	import { page } from '$app/stores';
 	import { graphqlQuery } from '$lib/graphql/query';
 	import { EnvironmentDetailDocument } from '$lib/graphql/generated';
-	import ResourceCard from '$lib/components/ResourceCard.svelte';
-	import { decodeSegment, commitTreeHref, deploymentHref } from '$lib/paths';
+	import ResourceCardCompact from '$lib/components/ResourceCardCompact.svelte';
+	import { decodeSegment, deploymentHref, resourceHref } from '$lib/paths';
 
 	let orgName = $derived($page.params.org ?? '');
 	let repoName = $derived($page.params.repo ?? '');
@@ -66,18 +66,6 @@
 
 		return result;
 	});
-
-	function handleNavigateToSource(moduleId: string, line: number) {
-		const segments = moduleId.split('/');
-		const localPath = segments.length > 2 ? segments.slice(2).join('/') : moduleId;
-		const filePath = localPath + '.scl';
-		const desiredDeployment = env?.deployments.find(
-			(d) => d.state === 'DESIRED' || d.state === 'UP'
-		);
-		if (!desiredDeployment) return;
-		const url = commitTreeHref(orgName, repoName, desiredDeployment.commit.hash, filePath) + `#line-${line}`;
-		window.location.href = url;
-	}
 </script>
 
 {#if env}
@@ -100,9 +88,9 @@
 					{:else}
 						<h3 class="text-sm font-medium text-gray-500 mb-2">Unowned</h3>
 					{/if}
-					<div class="space-y-2">
+					<div class="space-y-1.5">
 						{#each group.resources as resource}
-							<ResourceCard {resource} onNavigateToSource={handleNavigateToSource} />
+							<ResourceCardCompact {resource} href={resourceHref(orgName, repoName, envName, `${resource.type}:${resource.name}`)} />
 						{/each}
 					</div>
 				</section>
