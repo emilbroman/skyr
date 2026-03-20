@@ -216,6 +216,14 @@ fn deployment_qid(environment_qid: &str, deployment_id: &str) -> String {
     format!("{environment_qid}@{deployment_id}")
 }
 
+fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
+    let resource_id = ids::ResourceId::new(&resource.resource_type, &resource.resource_name);
+    match resource.environment_qid.parse::<ids::EnvironmentQid>() {
+        Ok(env_qid) => ids::ResourceQid::new(env_qid, resource_id).to_string(),
+        Err(_) => format!("{}::{}", resource.environment_qid, resource_id),
+    }
+}
+
 fn resolve_plugin<'a>(
     resource_type: &'a str,
     plugins: &'a HashMap<String, rtp::PluginClient>,
@@ -297,6 +305,10 @@ async fn handle_create(
     };
 
     let id = resource_id_from_ref(&message.resource);
+    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let res_qid = resource_qid_string(&message.resource);
+    let dep_short = &message.deployment_id[..8];
+
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
@@ -304,6 +316,16 @@ async fn handle_create(
         resource_name = %message.resource.resource_name,
         "calling plugin create_resource",
     );
+    log_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        &res_qid,
+        Severity::Info,
+        format!("Creating {} for {}", id, dep_short),
+        format!("Creating for {}", dep_short),
+    )
+    .await;
+
     let resource = match plugin
         .create_resource(
             &message.resource.environment_qid,
@@ -326,8 +348,6 @@ async fn handle_create(
             return Ok(());
         }
     };
-
-    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
 
     if let Err(error) = resource_client
         .set_input(resource.inputs.clone(), dep_qid.clone())
@@ -402,9 +422,10 @@ async fn handle_create(
         resource_name = %message.resource.resource_name,
         "created resource",
     );
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &dep_qid,
+        &res_qid,
         Severity::Info,
         format!(
             "Created {} for {}",
@@ -412,8 +433,9 @@ async fn handle_create(
                 &message.resource.resource_type,
                 &message.resource.resource_name
             ),
-            &message.deployment_id[..8]
+            dep_short,
         ),
+        format!("Created for {}", dep_short),
     )
     .await;
     Ok(())
@@ -512,6 +534,9 @@ async fn handle_destroy(
     };
 
     let id = resource_id_from_ref(&message.resource);
+    let res_qid = resource_qid_string(&message.resource);
+    let dep_short = &message.deployment_id[..8];
+
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
@@ -519,6 +544,16 @@ async fn handle_destroy(
         resource_name = %message.resource.resource_name,
         "calling plugin delete_resource",
     );
+    log_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        &res_qid,
+        Severity::Info,
+        format!("Destroying {} for {}", id, dep_short),
+        format!("Destroying for {}", dep_short),
+    )
+    .await;
+
     if let Err(error) = plugin
         .delete_resource(
             &message.resource.environment_qid,
@@ -558,9 +593,10 @@ async fn handle_destroy(
         resource_name = %message.resource.resource_name,
         "deleted resource",
     );
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &dep_qid,
+        &res_qid,
         Severity::Info,
         format!(
             "Destroyed {} for {}",
@@ -568,8 +604,9 @@ async fn handle_destroy(
                 &message.resource.resource_type,
                 &message.resource.resource_name
             ),
-            &message.deployment_id[..8]
+            dep_short
         ),
+        format!("Destroyed for {}", dep_short),
     )
     .await;
     Ok(())
@@ -699,6 +736,15 @@ async fn handle_update_inputs(
         };
 
         let id = resource_id_from_ref(resource);
+        let res_qid = resource_qid_string(resource);
+        let target_dep_qid_for_log =
+            deployment_qid(&resource.environment_qid, target_deployment_id);
+        let dep_short = &target_deployment_id[..8];
+        let verb = match operation {
+            "adopt" => "Adopting",
+            "restore" => "Restoring",
+            _ => "Updating",
+        };
         tracing::info!(
             plugin = plugin_name,
             environment_qid = %resource.environment_qid,
@@ -706,6 +752,16 @@ async fn handle_update_inputs(
             resource_name = %resource.resource_name,
             "calling plugin update_resource for {operation}",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &target_dep_qid_for_log,
+            &res_qid,
+            Severity::Info,
+            format!("{} {} for {}", verb, id, dep_short),
+            format!("{} for {}", verb, dep_short),
+        )
+        .await;
+
         let updated = match plugin
             .update_resource(
                 &resource.environment_qid,
@@ -845,6 +901,14 @@ async fn handle_adopt(
         return Ok(());
     };
 
+    let res_qid = resource_qid_string(&message.resource);
+    let resource_id = ids::ResourceId::new(
+        &message.resource.resource_type,
+        &message.resource.resource_name,
+    );
+    let to_short = &message.to_deployment_id[..8];
+    let from_short = &message.from_deployment_id[..8];
+
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type,
@@ -853,32 +917,22 @@ async fn handle_adopt(
         to_owner = %to_dep_qid,
         "adopted resource",
     );
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &from_dep_qid,
+        &res_qid,
         Severity::Info,
-        format!(
-            "Relinquished {} to {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
-            &message.to_deployment_id[..8]
-        ),
+        format!("Relinquished {} to {}", resource_id, to_short),
+        format!("Relinquished to {}", to_short),
     )
     .await;
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &to_dep_qid,
+        &res_qid,
         Severity::Info,
-        format!(
-            "Adopted {} from {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
-            &message.from_deployment_id[..8]
-        ),
+        format!("Adopted {} from {}", resource_id, from_short),
+        format!("Adopted from {}", from_short),
     )
     .await;
     Ok(())
@@ -908,6 +962,9 @@ async fn handle_restore(
         return Ok(());
     };
 
+    let res_qid = resource_qid_string(&message.resource);
+    let dep_short = &message.deployment_id[..8];
+
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type,
@@ -915,9 +972,10 @@ async fn handle_restore(
         owner = %dep_qid,
         "restored resource",
     );
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &dep_qid,
+        &res_qid,
         Severity::Info,
         format!(
             "Restored {} for {}",
@@ -925,8 +983,9 @@ async fn handle_restore(
                 &message.resource.resource_type,
                 &message.resource.resource_name
             ),
-            &message.deployment_id[..8]
+            dep_short,
         ),
+        format!("Restored for {}", dep_short),
     )
     .await;
     Ok(())
@@ -1039,6 +1098,9 @@ async fn handle_check(
         markers: current.markers,
     };
 
+    let res_qid = resource_qid_string(&message.resource);
+    let dep_short = &message.deployment_id[..8];
+
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
@@ -1046,6 +1108,16 @@ async fn handle_check(
         resource_name = %message.resource.resource_name,
         "calling plugin check",
     );
+    log_event(
+        &ctx.ldb_publisher,
+        &dep_qid,
+        &res_qid,
+        Severity::Info,
+        format!("Checking {} for {}", id, dep_short),
+        format!("Checking for {}", dep_short),
+    )
+    .await;
+
     let checked = match plugin
         .check(
             &message.resource.environment_qid,
@@ -1087,9 +1159,10 @@ async fn handle_check(
         resource_name = %message.resource.resource_name,
         "checked resource",
     );
-    log_deployment_event(
+    log_event(
         &ctx.ldb_publisher,
         &dep_qid,
+        &res_qid,
         Severity::Info,
         format!(
             "Checked {} for {}",
@@ -1097,8 +1170,9 @@ async fn handle_check(
                 &message.resource.resource_type,
                 &message.resource.resource_name
             ),
-            &message.deployment_id[..8]
+            dep_short
         ),
+        format!("Checked for {}", dep_short),
     )
     .await;
     Ok(())
@@ -1168,4 +1242,42 @@ async fn log_deployment_event(
             "failed to publish deployment log event",
         );
     }
+}
+
+async fn log_resource_event(
+    publisher: &ldb::Publisher,
+    resource_qid: &str,
+    severity: Severity,
+    message: String,
+) {
+    let namespace_publisher = match publisher.namespace(resource_qid.to_string()).await {
+        Ok(namespace_publisher) => namespace_publisher,
+        Err(error) => {
+            tracing::warn!(
+                resource_qid,
+                error = %error,
+                "failed to prepare resource log publisher",
+            );
+            return;
+        }
+    };
+    if let Err(error) = namespace_publisher.log(severity, message).await {
+        tracing::warn!(
+            resource_qid,
+            error = %error,
+            "failed to publish resource log event",
+        );
+    }
+}
+
+async fn log_event(
+    publisher: &ldb::Publisher,
+    deployment_qid: &str,
+    resource_qid: &str,
+    severity: Severity,
+    deployment_message: String,
+    resource_message: String,
+) {
+    log_deployment_event(publisher, deployment_qid, severity, deployment_message).await;
+    log_resource_event(publisher, resource_qid, severity, resource_message).await;
 }

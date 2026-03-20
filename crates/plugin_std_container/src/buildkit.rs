@@ -47,6 +47,7 @@ pub(crate) async fn build_and_push(
     image_name: &str,
     registry_url: &str,
     log: &ldb::NamespacePublisher,
+    resource_log: &ldb::NamespacePublisher,
 ) -> Result<BuildResult, PluginError> {
     // Parse the registry URL to extract the host:port
     let registry_host = parse_registry_host(registry_url)?;
@@ -100,8 +101,10 @@ pub(crate) async fn build_and_push(
     let stdout_pipe = child.stdout.take().expect("stdout was piped");
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
 
-    let stdout_log = log.clone();
-    let stderr_log = log.clone();
+    let stdout_deployment_log = log.clone();
+    let stdout_resource_log = resource_log.clone();
+    let stderr_deployment_log = log.clone();
+    let stderr_resource_log = resource_log.clone();
 
     let stdout_task = tokio::spawn(async move {
         let mut lines = BufReader::new(stdout_pipe).lines();
@@ -110,7 +113,8 @@ pub(crate) async fn build_and_push(
             if digest.is_none() {
                 digest = try_extract_digest(&line);
             }
-            stdout_log.info(line).await;
+            stdout_deployment_log.info(line.clone()).await;
+            stdout_resource_log.info(line).await;
         }
         digest
     });
@@ -123,7 +127,8 @@ pub(crate) async fn build_and_push(
             if digest.is_none() {
                 digest = try_extract_digest(&line);
             }
-            stderr_log.info(line.clone()).await;
+            stderr_deployment_log.info(line.clone()).await;
+            stderr_resource_log.info(line.clone()).await;
             last_line = line;
         }
         (digest, last_line)

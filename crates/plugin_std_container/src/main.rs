@@ -237,7 +237,7 @@ impl ContainerPlugin {
         let deployment: ids::DeploymentId = deployment_id.parse().map_err(|e| {
             PluginError::InvalidInput(format!("invalid deployment ID '{deployment_id}': {e}"))
         })?;
-        let deployment_qid = ids::DeploymentQid::new(env_qid, deployment);
+        let deployment_qid = ids::DeploymentQid::new(env_qid.clone(), deployment);
 
         // Create a DeploymentClient for this deployment
         let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
@@ -267,6 +267,17 @@ impl ContainerPlugin {
             .await
             .map_err(|e| PluginError::Internal(format!("failed to create log publisher: {e}")))?;
 
+        // Create an LDB namespace publisher for this resource
+        let resource_qid = ids::ResourceQid::new(env_qid, id.clone());
+        let resource_log_publisher = self
+            .inner
+            .ldb_publisher
+            .namespace(resource_qid.to_string())
+            .await
+            .map_err(|e| {
+                PluginError::Internal(format!("failed to create resource log publisher: {e}"))
+            })?;
+
         // Build and push the image
         let result = buildkit::build_and_push(
             &self.inner.buildkit_addr,
@@ -275,6 +286,7 @@ impl ContainerPlugin {
             &name,
             &self.inner.registry_url,
             &log_publisher,
+            &resource_log_publisher,
         )
         .await?;
 
