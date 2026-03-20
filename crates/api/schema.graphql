@@ -81,6 +81,9 @@ type Log {
 type Mutation {
   createRepository(organization: String!, repository: String!): Repository!
   signup(username: String!, email: String!, pubkey: String!, signature: String!): AuthSuccess!
+  updateFullname(fullname: String!): User!
+  addPublicKey(fingerprint: String!): User!
+  removePublicKey(fingerprint: String!): User!
   signin(username: String!, signature: String!, pubkey: String!): AuthSuccess!
 }
 
@@ -142,6 +145,7 @@ type User {
   username: String!
   email: String!
   fullname: String
+  publicKeys: [String!]!
 }
 
 union TreeEntry = Blob | Tree

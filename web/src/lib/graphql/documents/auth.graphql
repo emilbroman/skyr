@@ -8,6 +8,7 @@ mutation SignIn($username: String!, $signature: String!, $pubkey: String!) {
       username
       email
       fullname
+      publicKeys
     }
     token
   }
@@ -19,6 +20,7 @@ query RefreshToken {
       username
       email
       fullname
+      publicKeys
     }
     token
   }
@@ -29,5 +31,6 @@ query Me {
     username
     email
     fullname
+    publicKeys
   }
 }

@@ -172,17 +172,13 @@ impl UserClient {
     ) -> Result<(), UserQueryError> {
         let fullname = fullname.into();
 
-        let result: i32 = self
+        let _: () = self
             .client
             .conn
             .hset(user_key(&self.username), "fullname", &fullname)
             .await?;
 
-        if result == 0 {
-            Err(UserQueryError::NotFound)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     pub async fn get(&mut self) -> Result<User, UserQueryError> {
@@ -258,6 +254,17 @@ pub struct PubkeysClient {
 }
 
 impl PubkeysClient {
+    pub async fn list(&mut self) -> Result<Vec<String>, UserQueryError> {
+        let members: Vec<String> = self
+            .user
+            .client
+            .conn
+            .smembers(pubkey_key(&self.user.username))
+            .await?;
+
+        Ok(members)
+    }
+
     pub async fn add(&mut self, pubkey: impl Into<String>) -> Result<(), UserQueryError> {
         let pubkey = pubkey.into();
 

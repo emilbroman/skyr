@@ -29,6 +29,12 @@ function signOut() {
 
       <div class="flex items-center gap-4">
         <span class="text-sm text-gray-400">{$user?.username ?? ""}</span>
+        <a
+          href="/~settings"
+          class="text-sm text-gray-400 hover:text-gray-200 transition-colors"
+        >
+          Settings
+        </a>
         <button
           onclick={signOut}
           class="text-sm text-gray-400 hover:text-gray-200 transition-colors"
