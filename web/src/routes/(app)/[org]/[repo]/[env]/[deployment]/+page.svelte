@@ -3,7 +3,8 @@
 	import { graphqlQuery } from '$lib/graphql/query';
 	import {
 		DeploymentDetailDocument,
-		DeploymentLogsDocument
+		DeploymentLogsDocument,
+		DeploymentState
 	} from '$lib/graphql/generated';
 	import DeploymentStateBadge from '$lib/components/DeploymentState.svelte';
 	import ResourceCard from '$lib/components/ResourceCard.svelte';
@@ -26,6 +27,9 @@
 	let showFiles = $state(true);
 
 	let navigateToFile = $state<{ moduleId: string; line: number } | null>(null);
+
+	const liveStates: DeploymentState[] = [DeploymentState.Desired, DeploymentState.Lingering, DeploymentState.Undesired];
+	let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 
 	function handleNavigateToSource(moduleId: string, line: number) {
 		showFiles = true;
@@ -150,22 +154,18 @@
 			{/if}
 		</section>
 
-		<!-- Streaming Logs -->
+		<!-- Logs -->
 		<section>
-			<h2 class="text-lg font-medium text-gray-300 mb-3">Live Logs</h2>
-			<div class="h-96 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
-				<LogStream
-					document={DeploymentLogsDocument}
-					variables={{ deploymentId: deployment.id, initialAmount: 100 }}
-					logField="deploymentLogs"
-				/>
-			</div>
-		</section>
-
-		<!-- Recent logs snapshot (from query) -->
-		{#if deployment.lastLogs.length > 0}
-			<section class="mt-6">
-				<h2 class="text-lg font-medium text-gray-300 mb-3">Recent Log Snapshot</h2>
+			<h2 class="text-lg font-medium text-gray-300 mb-3">Logs</h2>
+			{#if isLive}
+				<div class="h-96 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+					<LogStream
+						document={DeploymentLogsDocument}
+						variables={{ deploymentId: deployment.id, initialAmount: 100 }}
+						logField="deploymentLogs"
+					/>
+				</div>
+			{:else if deployment.lastLogs.length > 0}
 				<div class="bg-gray-900 border border-gray-800 rounded-lg p-3 font-mono text-xs space-y-0.5 max-h-60 overflow-y-auto">
 					{#each deployment.lastLogs as log}
 						<div class="flex gap-2 leading-5">
@@ -174,7 +174,9 @@
 						</div>
 					{/each}
 				</div>
-			</section>
-		{/if}
+			{:else}
+				<p class="text-gray-500">No logs available.</p>
+			{/if}
+		</section>
 	{/if}
 </div>
