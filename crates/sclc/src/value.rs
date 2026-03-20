@@ -278,6 +278,19 @@ impl Dict {
     }
 }
 
+impl Value {
+    /// Recursively checks whether this value or any nested value is pending.
+    pub fn has_pending(&self) -> bool {
+        match self {
+            Value::Pending(_) => true,
+            Value::List(values) => values.iter().any(Value::has_pending),
+            Value::Record(record) => record.iter().any(|(_, v)| v.has_pending()),
+            Value::Dict(dict) => dict.iter().any(|(k, v)| k.has_pending() || v.has_pending()),
+            _ => false,
+        }
+    }
+}
+
 impl std::fmt::Display for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

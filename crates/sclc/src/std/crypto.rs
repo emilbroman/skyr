@@ -31,6 +31,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
         let mut argument_dependencies = config_arg.dependencies.clone();
 
+        if config_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
+
         let config = config_arg.value.assert_record()?;
         let name = config.get("name").assert_str_ref()?;
 
@@ -66,6 +70,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
         let mut argument_dependencies = config_arg.dependencies.clone();
+
+        if config_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
 
         let config = config_arg.value.assert_record()?;
         let name = config.get("name").assert_str_ref()?;
@@ -107,6 +115,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
         let mut argument_dependencies = config_arg.dependencies.clone();
+
+        if config_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
 
         let config = config_arg.value.assert_record()?;
         let private_key_pem = config.get("privateKeyPem").assert_str_ref()?;
@@ -189,6 +201,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
         let mut argument_dependencies = config_arg.dependencies.clone();
 
+        if config_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
+
         let config = config_arg.value.assert_record()?;
         let name = config.get("name").assert_str_ref()?;
 
@@ -229,6 +245,10 @@ pub fn register_extern(eval: &mut crate::Eval) {
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
         let mut argument_dependencies = config_arg.dependencies.clone();
+
+        if config_arg.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+        }
 
         let config = config_arg.value.assert_record()?;
 

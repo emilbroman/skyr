@@ -695,15 +695,6 @@ impl Eval {
                         }
                         *self.ctx.source_trace.lock().unwrap() = trace;
 
-                        if args
-                            .iter()
-                            .any(|arg| matches!(arg.value, Value::Pending(_)))
-                        {
-                            self.ctx.source_trace.lock().unwrap().clear();
-                            return Ok(
-                                TrackedValue::pending().with_dependencies(callee_dependencies)
-                            );
-                        }
                         let result = function
                             .call(args, &self.ctx)
                             .map(|value| value.with_dependencies(callee_dependencies));
