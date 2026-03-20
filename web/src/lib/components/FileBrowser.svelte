@@ -7,6 +7,7 @@
 		type DeploymentTreeQuery
 	} from '$lib/graphql/generated';
 	import { highlight, type HighlightedLine } from '$lib/highlight';
+	import { marked } from 'marked';
 	import type { ThemedToken } from 'shiki';
 
 	type SourceFrame = {
@@ -51,8 +52,18 @@
 	let highlightBg = $state<string>('#0d1117');
 	let loading = $state(true);
 	let error = $state<string | null>(null);
+	let readmeContent = $state<string | null>(null);
+	let readmeIsMarkdown = $state(false);
 
 	let pathString = $derived(currentPath.join('/'));
+
+	let renderedReadme = $derived.by(() => {
+		if (!readmeContent) return null;
+		if (readmeIsMarkdown) {
+			return marked.parse(readmeContent, { async: false }) as string;
+		}
+		return null;
+	});
 
 	let queryVars = $derived({ org: orgName, repo: repoName, env: envName, commit: commitHash });
 
@@ -61,11 +72,13 @@
 		error = null;
 		blobContent = null;
 		highlightedLines = null;
+		readmeContent = null;
 		try {
 			const data = await query(DeploymentRootTreeDocument, queryVars);
 			const dep = data.organization.repository.environment.deployment;
 			const rawEntries = dep.commit.tree.entries;
 			entries = sortEntries(rawEntries);
+			loadReadme(rawEntries);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load tree';
 		} finally {
@@ -89,6 +102,7 @@
 			if (entry.__typename === 'Tree') {
 				entries = sortEntries(entry.entries);
 				blobContent = null;
+				loadReadme(entry.entries);
 			} else {
 				blobContent = entry;
 				entries = [];
@@ -110,6 +124,33 @@
 			highlightBg = result.bg;
 		} catch {
 			// Highlighting failed — fall back to plain text (highlightedLines stays null)
+		}
+	}
+
+	function findReadme(dirEntries: TreeEntry[]): string | null {
+		for (const name of ['README.md', 'readme.md', 'Readme.md', 'README', 'readme']) {
+			if (dirEntries.some((e) => e.__typename === 'Blob' && e.name === name)) return name;
+		}
+		return null;
+	}
+
+	async function loadReadme(dirEntries: TreeEntry[]) {
+		readmeContent = null;
+		readmeIsMarkdown = false;
+		const readmeName = findReadme(dirEntries);
+		if (!readmeName) return;
+		try {
+			const readmePath = currentPath.length > 0
+				? currentPath.join('/') + '/' + readmeName
+				: readmeName;
+			const data = await query(DeploymentTreeDocument, { ...queryVars, path: readmePath });
+			const entry = data.organization.repository.environment.deployment.commit.treeEntry;
+			if (entry?.__typename === 'Blob' && entry.content != null) {
+				readmeContent = entry.content;
+				readmeIsMarkdown = readmeName.toLowerCase().endsWith('.md');
+			}
+		} catch {
+			// README fetch failed — not critical, just skip
 		}
 	}
 
@@ -346,5 +387,16 @@
 				<div class="p-8 text-center text-gray-500">Empty directory</div>
 			{/if}
 		</div>
+
+		<!-- README -->
+		{#if readmeContent}
+			<div class="border-t border-gray-800 px-6 py-5">
+				{#if renderedReadme}
+					<div class="prose prose-invert prose-sm max-w-none">{@html renderedReadme}</div>
+				{:else}
+					<pre class="text-sm text-gray-300 whitespace-pre-wrap font-mono">{readmeContent}</pre>
+				{/if}
+			</div>
+		{/if}
 	{/if}
 </div>
