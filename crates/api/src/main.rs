@@ -435,6 +435,23 @@ impl Repository {
         Ok(Environment { qid, deployments })
     }
 
+    async fn commit(&self, context: &Context, hash: String) -> FieldResult<Commit> {
+        let deployment_id: ids::DeploymentId = hash
+            .parse()
+            .map_err(|_| field_error("Invalid commit hash"))?;
+        let repo_client = context.cdb_client.repo(self.repository.name.clone());
+        let oid = gix_hash::ObjectId::from_bytes_or_panic(&deployment_id.to_bytes());
+        let commit = repo_client.read_commit(oid).await.map_err(|e| {
+            tracing::error!("Failed to read commit {oid}: {e}");
+            internal_error()
+        })?;
+        Ok(Commit {
+            repo: self.repository.name.clone(),
+            hash: oid,
+            commit,
+        })
+    }
+
     async fn environments(&self, context: &Context) -> FieldResult<Vec<Environment>> {
         let deployments = context
             .cdb_client
