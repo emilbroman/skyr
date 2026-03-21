@@ -1,10 +1,9 @@
 <script lang="ts">
 import { page } from "$app/stores";
-import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import RootTree from "$lib/components/RootTree.svelte";
 import { DeploymentState, RepositoryDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { envHref, orgHref } from "$lib/paths";
+import { deploymentHref, envHref, orgHref, resourcesHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -27,6 +26,58 @@ let mainDesiredDeployment = $derived(
         (d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up,
     ) ?? null,
 );
+
+type SortColumn = "name" | "deployment" | "resources";
+type SortDirection = "asc" | "desc";
+
+let sortColumn: SortColumn = $state("name");
+let sortDirection: SortDirection = $state("asc");
+
+function toggleSort(column: SortColumn) {
+    if (sortColumn === column) {
+        sortDirection = sortDirection === "asc" ? "desc" : "asc";
+    } else {
+        sortColumn = column;
+        sortDirection = "asc";
+    }
+}
+
+function desiredDeployment(env: {
+    deployments: { state: DeploymentState; commit: { hash: string; message: string } }[];
+}) {
+    return (
+        env.deployments.find(
+            (d) => d.state === DeploymentState.Desired || d.state === DeploymentState.Up,
+        ) ?? null
+    );
+}
+
+let sortedEnvironments = $derived.by(() => {
+    if (!repo) return [];
+    const envs = [...repo.environments];
+    const dir = sortDirection === "asc" ? 1 : -1;
+    envs.sort((a, b) => {
+        switch (sortColumn) {
+            case "name":
+                return dir * a.name.localeCompare(b.name);
+            case "deployment": {
+                const ha = desiredDeployment(a)?.commit.hash ?? "";
+                const hb = desiredDeployment(b)?.commit.hash ?? "";
+                return dir * ha.localeCompare(hb);
+            }
+            case "resources":
+                return dir * (a.resources.length - b.resources.length);
+            default:
+                return 0;
+        }
+    });
+    return envs;
+});
+
+function sortIndicator(column: SortColumn): string {
+    if (sortColumn !== column) return "";
+    return sortDirection === "asc" ? " \u25B2" : " \u25BC";
+}
 </script>
 
 <div class="p-6">
@@ -45,72 +96,104 @@ let mainDesiredDeployment = $derived(
       {repoDetail.error.message}
     </div>
   {:else if repo}
-    <div class="flex gap-6">
-      <!-- File browser (main column) -->
-      <div class="flex-1 min-w-0">
-        {#if mainEnv && mainDesiredDeployment}
-          <h2 class="text-lg font-medium text-gray-300 mb-3">
-            Files
-            <span class="text-gray-500 text-sm font-normal ml-2">
-              {mainEnv.name} &middot;
-              <span class="font-mono"
-                >{mainDesiredDeployment.commit.hash.substring(0, 8)}</span
-              >
-              &mdash; {mainDesiredDeployment.commit.message}
-            </span>
-          </h2>
-          <RootTree
-            {orgName}
-            {repoName}
-            commitHash={mainDesiredDeployment.commit.hash}
-          />
-        {/if}
+    <!-- File browser -->
+    {#if mainEnv && mainDesiredDeployment}
+      <div class="mb-8">
+        <h2 class="text-lg font-medium text-gray-300 mb-3">
+          Files
+          <span class="text-gray-500 text-sm font-normal ml-2">
+            {mainEnv.name} &middot;
+            <span class="font-mono"
+              >{mainDesiredDeployment.commit.hash.substring(0, 8)}</span
+            >
+            &mdash; {mainDesiredDeployment.commit.message}
+          </span>
+        </h2>
+        <RootTree
+          {orgName}
+          {repoName}
+          commitHash={mainDesiredDeployment.commit.hash}
+        />
       </div>
+    {/if}
 
-      <!-- Environments sidebar -->
-      <aside class="w-72 shrink-0">
-        <h2 class="text-lg font-medium text-gray-300 mb-3">Environments</h2>
-        {#if repo.environments.length === 0}
-          <p class="text-sm text-gray-400">No environments found.</p>
-        {:else}
-          <div class="grid gap-3">
-            {#each repo.environments as env}
-              {@const desired = env.deployments.find(
-                (d) =>
-                  d.state === DeploymentState.Desired ||
-                  d.state === DeploymentState.Up,
-              )}
-              <a
-                href={envHref(orgName, repoName, env.name)}
-                class="block bg-gray-900 border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors"
-              >
-                <div class="flex items-center gap-2">
-                  <h3 class="text-sm font-medium text-white">{env.name}</h3>
-                  {#if desired}
-                    <DeploymentStateBadge state={desired.state} />
-                  {/if}
-                </div>
-                {#if desired}
-                  <div
-                    class="mt-1.5 text-xs text-gray-500 flex items-center gap-2"
+    <!-- Environments table -->
+    <div>
+      <h2 class="text-lg font-medium text-gray-300 mb-3">Environments</h2>
+      {#if repo.environments.length === 0}
+        <p class="text-sm text-gray-400">No environments found.</p>
+      {:else}
+        <table class="w-full text-sm text-left">
+          <thead>
+            <tr class="border-b border-gray-800 text-gray-400">
+              <th class="pb-2 pr-4 font-medium">
+                <button
+                  class="hover:text-gray-200 transition-colors cursor-pointer"
+                  onclick={() => toggleSort("name")}
+                >
+                  Name{sortIndicator("name")}
+                </button>
+              </th>
+              <th class="pb-2 pr-4 font-medium">
+                <button
+                  class="hover:text-gray-200 transition-colors cursor-pointer"
+                  onclick={() => toggleSort("deployment")}
+                >
+                  Current deployment{sortIndicator("deployment")}
+                </button>
+              </th>
+              <th class="pb-2 font-medium">
+                <button
+                  class="hover:text-gray-200 transition-colors cursor-pointer"
+                  onclick={() => toggleSort("resources")}
+                >
+                  Resources{sortIndicator("resources")}
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each sortedEnvironments as env}
+              {@const desired = desiredDeployment(env)}
+              <tr class="border-b border-gray-800/50 hover:bg-gray-900/50">
+                <td class="py-2 pr-4">
+                  <a
+                    href={envHref(orgName, repoName, env.name)}
+                    class="text-blue-400 hover:text-blue-300"
                   >
-                    <span class="font-mono"
-                      >{desired.commit.hash.substring(0, 8)}</span
+                    {env.name}
+                  </a>
+                </td>
+                <td class="py-2 pr-4 text-gray-400">
+                  {#if desired}
+                    <a
+                      href={deploymentHref(orgName, repoName, env.name, desired.commit.hash)}
+                      class="hover:text-gray-200 transition-colors"
                     >
-                    <span class="truncate">{desired.commit.message}</span>
-                  </div>
-                {/if}
-                <div class="mt-1 text-xs text-gray-600">
-                  {env.deployments.length} deployment{env.deployments.length !==
-                  1
-                    ? "s"
-                    : ""}
-                </div>
-              </a>
+                      <span class="font-mono text-blue-400 hover:text-blue-300"
+                        >{desired.commit.hash.substring(0, 8)}</span
+                      >
+                      <span class="ml-2 truncate"
+                        >{desired.commit.message.split("\n")[0]}</span
+                      >
+                    </a>
+                  {:else}
+                    <span class="text-gray-600">&mdash;</span>
+                  {/if}
+                </td>
+                <td class="py-2">
+                  <a
+                    href={resourcesHref(orgName, repoName, env.name)}
+                    class="text-blue-400 hover:text-blue-300"
+                  >
+                    {env.resources.length}
+                  </a>
+                </td>
+              </tr>
             {/each}
-          </div>
-        {/if}
-      </aside>
+          </tbody>
+        </table>
+      {/if}
     </div>
   {/if}
 </div>
