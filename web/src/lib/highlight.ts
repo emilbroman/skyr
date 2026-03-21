@@ -12,7 +12,7 @@ const SCL_LANG = {
 function getHighlighter(): Promise<Highlighter> {
     if (!highlighterPromise) {
         highlighterPromise = createHighlighter({
-            themes: ["github-dark"],
+            themes: ["github-light"],
             langs: [
                 "javascript",
                 "typescript",
@@ -100,11 +100,11 @@ export async function highlight(
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = hl.codeToTokens(code, {
         lang: lang as any,
-        theme: "github-dark",
+        theme: "github-light",
     });
 
     return {
         lines: result.tokens,
-        bg: result.bg ?? "#0d1117",
+        bg: result.bg ?? "#ffffff",
     };
 }

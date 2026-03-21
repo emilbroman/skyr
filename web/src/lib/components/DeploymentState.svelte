@@ -5,24 +5,24 @@ let { state, size = "default" }: { state: DeploymentState; size?: "default" | "s
 
 const styles: Record<DeploymentState, { bg: string; text: string }> = {
     [DeploymentState.Up]: {
-        bg: "bg-green-900/40 border-green-700",
-        text: "text-green-300",
+        bg: "bg-green-50 border-green-300",
+        text: "text-green-700",
     },
     [DeploymentState.Desired]: {
-        bg: "bg-blue-900/40 border-blue-700",
-        text: "text-blue-300",
+        bg: "bg-blue-50 border-blue-300",
+        text: "text-blue-700",
     },
     [DeploymentState.Down]: {
-        bg: "bg-gray-800 border-gray-600",
-        text: "text-gray-400",
+        bg: "bg-gray-100 border-gray-300",
+        text: "text-gray-500",
     },
     [DeploymentState.Undesired]: {
-        bg: "bg-yellow-900/40 border-yellow-700",
-        text: "text-yellow-300",
+        bg: "bg-yellow-50 border-yellow-300",
+        text: "text-yellow-700",
     },
     [DeploymentState.Lingering]: {
-        bg: "bg-orange-900/40 border-orange-700",
-        text: "text-orange-300",
+        bg: "bg-orange-50 border-orange-300",
+        text: "text-orange-700",
     },
 };
 
@@ -31,10 +31,10 @@ const iconSize = $derived(size === "small" ? 10 : 12);
 </script>
 
 <span
-    class="inline-flex items-center gap-1 rounded font-medium border {style.bg} {style.text} {size ===
+    class="inline-flex items-center gap-1 rounded text-xs font-medium border {style.bg} {style.text} {size ===
     'small'
-        ? 'px-1.5 py-px text-[10px]'
-        : 'px-2 py-0.5 text-xs'}"
+        ? 'px-1.5 py-px'
+        : 'px-2 py-0.5'}"
 >
     {#if state === DeploymentState.Up || state === DeploymentState.Down}
         <svg

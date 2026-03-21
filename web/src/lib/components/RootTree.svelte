@@ -2,6 +2,7 @@
 import { CommitRootTreeDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import DirectoryView from "./DirectoryView.svelte";
+import Spinner from "./Spinner.svelte";
 
 type Props = {
     orgName: string;
@@ -20,13 +21,9 @@ let entries = $derived(rootTree.data?.organization.repository.commit.tree.entrie
 </script>
 
 {#if rootTree.isPending}
-  <div
-    class="bg-gray-900 border border-gray-800 rounded-lg p-8 text-center text-gray-400"
-  >
-    Loading...
-  </div>
+  <Spinner />
 {:else if rootTree.error}
-  <div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">
+  <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
     {rootTree.error.message}
   </div>
 {:else}

@@ -3,6 +3,7 @@ import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
+import Spinner from "$lib/components/Spinner.svelte";
 import { ResourceDetailDocument, ResourceLogsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment, deploymentHref, resourceHref } from "$lib/paths";
@@ -37,29 +38,29 @@ function parseSpanStartLine(span: string): number {
 </script>
 
 {#if resourceDetail.isPending}
-  <p class="text-gray-400">Loading resource...</p>
+  <Spinner />
 {:else if resourceDetail.error}
-  <div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">
+  <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
     {resourceDetail.error.message}
   </div>
 {:else if resource}
   <!-- Header -->
   <div class="mb-6">
-    <div class="text-xs mb-1">
+    <div class="mb-1">
       {#if typeParts.length > 1}
-        <span class="text-indigo-400/70"
+        <span class="text-orange-500/70"
           >{typeParts.slice(0, -1).join(".")}.</span
         >
       {/if}
-      <span class="text-indigo-300">{typeParts[typeParts.length - 1]}</span>
+      <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
     </div>
-    <h2 class="text-xl font-bold text-white flex items-center gap-2">
+    <h2 class="font-bold text-gray-900 flex items-center gap-2">
       {resource.name}
       {#each resource.markers as marker}
         <span
-          class="text-[10px] px-1.5 py-px rounded border {marker === 'VOLATILE'
-            ? 'border-yellow-700 text-yellow-400'
-            : 'border-blue-700 text-blue-400'}"
+          class="px-1.5 py-px rounded border {marker === 'VOLATILE'
+            ? 'border-yellow-300 text-yellow-700'
+            : 'border-blue-300 text-blue-700'}"
         >
           {marker}
         </span>
@@ -68,11 +69,11 @@ function parseSpanStartLine(span: string): number {
   </div>
 
   <!-- Metadata -->
-  <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+  <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+    <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
       {#if resource.owner}
         <div>
-          <dt class="text-gray-500">Owner</dt>
+          <dt class="text-gray-400">Owner</dt>
           <dd>
             <a
               href={deploymentHref(
@@ -81,17 +82,17 @@ function parseSpanStartLine(span: string): number {
                 envName,
                 resource.owner.commit.hash,
               )}
-              class="text-indigo-400 hover:text-indigo-300 font-mono text-xs transition-colors"
+              class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
             >
               {resource.owner.commit.hash.substring(0, 8)}
             </a>
-            <span class="text-gray-400 text-xs ml-2"
+            <span class="text-gray-500 ml-2"
               >{resource.owner.commit.message.split("\n")[0]}</span
             >
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">Deployment State</dt>
+          <dt class="text-gray-400">Deployment State</dt>
           <dd><DeploymentStateBadge state={resource.owner.state} /></dd>
         </div>
       {/if}
@@ -100,7 +101,7 @@ function parseSpanStartLine(span: string): number {
         {@const filePath = moduleIdToLocalPath(frame.moduleId) + ".scl"}
         {@const line = parseSpanStartLine(frame.span)}
         <div>
-          <dt class="text-gray-500">Source</dt>
+          <dt class="text-gray-400">Source</dt>
           <dd>
             <a
               href={commitTreeHref(
@@ -109,7 +110,7 @@ function parseSpanStartLine(span: string): number {
                 resource.owner?.commit.hash ?? "",
                 filePath,
               ) + `#line-${line}`}
-              class="text-indigo-400 hover:text-indigo-300 font-mono text-xs transition-colors"
+              class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
             >
               {filePath}:{line}
             </a>
@@ -122,7 +123,7 @@ function parseSpanStartLine(span: string): number {
   <!-- Dependencies -->
   {#if resource.dependencies.length > 0}
     <section class="mb-6">
-      <h3 class="text-lg font-medium text-gray-300 mb-3">Dependencies</h3>
+      <h3 class="font-medium text-gray-600 mb-3">Dependencies</h3>
       <div class="flex flex-wrap gap-1.5">
         {#each resource.dependencies as dep}
           <a
@@ -132,7 +133,7 @@ function parseSpanStartLine(span: string): number {
               envName,
               `${dep.type}:${dep.name}`,
             )}
-            class="text-xs px-2 py-1 bg-gray-800 border border-gray-700 rounded text-gray-300 hover:text-white hover:border-gray-600 transition-colors"
+            class="px-2 py-1 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:text-gray-900 hover:border-gray-400 transition-colors"
           >
             {dep.type}::{dep.name}
           </a>
@@ -144,9 +145,9 @@ function parseSpanStartLine(span: string): number {
   <!-- Inputs -->
   {#if resource.inputs != null}
     <section class="mb-6">
-      <h3 class="text-lg font-medium text-gray-300 mb-3">Inputs</h3>
+      <h3 class="font-medium text-gray-600 mb-3">Inputs</h3>
       <div
-        class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 font-mono overflow-x-auto"
+        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
       >
         <JsonTree value={resource.inputs} />
       </div>
@@ -156,9 +157,9 @@ function parseSpanStartLine(span: string): number {
   <!-- Outputs -->
   {#if resource.outputs != null}
     <section class="mb-6">
-      <h3 class="text-lg font-medium text-gray-300 mb-3">Outputs</h3>
+      <h3 class="font-medium text-gray-600 mb-3">Outputs</h3>
       <div
-        class="bg-gray-900 border border-gray-800 rounded-lg p-4 text-xs text-gray-300 font-mono overflow-x-auto"
+        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
       >
         <JsonTree value={resource.outputs} />
       </div>
@@ -168,9 +169,9 @@ function parseSpanStartLine(span: string): number {
   <!-- Logs -->
   {#if resourceQid}
     <section>
-      <h3 class="text-lg font-medium text-gray-300 mb-3">Logs</h3>
+      <h3 class="font-medium text-gray-600 mb-3">Logs</h3>
       <div
-        class="h-96 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden"
+        class="h-96 bg-white border border-gray-200 rounded-lg overflow-hidden"
       >
         <LogStream
           document={ResourceLogsDocument}
@@ -181,5 +182,5 @@ function parseSpanStartLine(span: string): number {
     </section>
   {/if}
 {:else}
-  <p class="text-gray-400">Resource not found.</p>
+  <p class="text-gray-500">Resource not found.</p>
 {/if}

@@ -1,6 +1,8 @@
 <script lang="ts">
+import { goto } from "$app/navigation";
 import { page } from "$app/stores";
-import { EnvironmentDetailDocument } from "$lib/graphql/generated";
+import { EnvironmentDetailDocument, RepositoryDetailDocument } from "$lib/graphql/generated";
+import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlQuery } from "$lib/graphql/query";
 import { decodeSegment, envDeploymentsHref, envHref, envLogsHref, resourcesHref } from "$lib/paths";
 
@@ -16,7 +18,15 @@ const envDetail = graphqlQuery(() => ({
     refetchInterval: 10_000,
 }));
 
+const repoDetail = graphqlQuery(() => ({
+    document: RepositoryDetailDocument,
+    variables: { org: orgName, repo: repoName },
+}));
+
 let env = $derived(envDetail.data?.organization.repository.environment ?? null);
+let siblingEnvs = $derived(
+    repoDetail.data?.organization.repository.environments.map((e) => e.name) ?? [],
+);
 
 let currentPath = $derived($page.url.pathname);
 let envBase = $derived(envHref(orgName, repoName, envName));
@@ -32,59 +42,95 @@ let activeTab = $derived(
             ? "logs"
             : "files",
 );
+
+function switchEnv(newEnv: string) {
+    const tabHref =
+        activeTab === "deployments"
+            ? envDeploymentsHref(orgName, repoName, newEnv)
+            : activeTab === "resources"
+              ? resourcesHref(orgName, repoName, newEnv)
+              : activeTab === "logs"
+                ? envLogsHref(orgName, repoName, newEnv)
+                : envHref(orgName, repoName, newEnv);
+    goto(tabHref);
+}
 </script>
 
 <div>
-  <nav class="text-sm text-gray-500 mb-4">
-    <span class="text-gray-300">{envName}</span>
+  <nav class="mb-2">
+    <div class="inline-flex items-center relative">
+      <select
+        class="appearance-none bg-white border border-gray-200 rounded-lg px-3 py-1.5 pr-8 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
+        value={envName}
+        onchange={(e) => switchEnv(e.currentTarget.value)}
+      >
+        <option value={envName}>{envName}</option>
+        {#each siblingEnvs.filter((n) => n !== envName) as name}
+          <option value={name}>{name}</option>
+        {/each}
+      </select>
+      <svg
+        class="w-3.5 h-3.5 text-gray-400 absolute right-2.5 pointer-events-none"
+        fill="none"
+        viewBox="0 0 24 24"
+        stroke="currentColor"
+      >
+        <path
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          stroke-width="2"
+          d="M19 9l-7 7-7-7"
+        />
+      </svg>
+    </div>
   </nav>
 
   {#if envDetail.isPending}
-    <p class="text-gray-400">Loading environment...</p>
+    <Spinner />
   {:else if envDetail.error}
-    <div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">
+    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
       {envDetail.error.message}
     </div>
   {:else if env}
     <!-- Tabs -->
-    <div class="flex gap-1 border-b border-gray-800 mb-4 overflow-x-auto">
+    <div class="flex gap-1 border-b border-gray-200 mb-3 overflow-x-auto overflow-y-hidden">
       <a
         href={envBase}
-        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
         'files'
-          ? 'border-indigo-500 text-white'
-          : 'border-transparent text-gray-400 hover:text-gray-200'}"
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
         Files
       </a>
       <a
         href={deploymentsPath}
-        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
         'deployments'
-          ? 'border-indigo-500 text-white'
-          : 'border-transparent text-gray-400 hover:text-gray-200'}"
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        Deployments <span class="text-gray-500 ml-1"
+        Deployments <span class="text-gray-400 ml-1"
           >({env.deployments.length})</span
         >
       </a>
       <a
         href={resPath}
-        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
         'resources'
-          ? 'border-indigo-500 text-white'
-          : 'border-transparent text-gray-400 hover:text-gray-200'}"
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        Resources <span class="text-gray-500 ml-1"
+        Resources <span class="text-gray-400 ml-1"
           >({env.resources.length})</span
         >
       </a>
       <a
         href={logsPath}
-        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
         'logs'
-          ? 'border-indigo-500 text-white'
-          : 'border-transparent text-gray-400 hover:text-gray-200'}"
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
         Logs
       </a>

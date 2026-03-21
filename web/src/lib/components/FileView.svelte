@@ -39,7 +39,7 @@ let {
 }: Props = $props();
 
 let highlightedLines = $state<ThemedToken[][] | null>(null);
-let highlightBg = $state<string>("#0d1117");
+let highlightBg = $state<string>("#ffffff");
 
 let filename = $derived(path[path.length - 1] ?? "");
 let isMarkdown = $derived(/\.md$/i.test(filename));
@@ -119,16 +119,16 @@ $effect(() => {
 });
 </script>
 
-<div class="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
+<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
   <div
-    class="flex items-center justify-between px-4 py-2 border-b border-gray-800 bg-gray-800/30"
+    class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50"
   >
-    <span class="text-sm text-gray-400">{formatSize(size)}</span>
+    <span class="text-gray-500">{formatSize(size)}</span>
     {#if isMarkdown && content != null}
       <button
-        class="text-xs transition-colors {showSource
-          ? 'text-gray-400 hover:text-gray-200'
-          : 'text-indigo-400 hover:text-indigo-300'}"
+        class="transition-colors {showSource
+          ? 'text-gray-500 hover:text-gray-800'
+          : 'text-orange-600 hover:text-orange-500'}"
         onclick={() => (showSource = !showSource)}
       >
         {showSource ? "Preview" : "Source"}
@@ -137,33 +137,33 @@ $effect(() => {
   </div>
   {#snippet resourceInlay(items: string[])}
     {#if items.length === 1}
-      <span class="ml-4 text-xs text-indigo-400/70 font-sans select-none"
+      <span class="ml-4 text-orange-500/70 font-sans select-none"
         >{items[0]}</span
       >
     {:else}
       <span
         class="ml-4 relative inline-block font-sans select-none group/inlay"
       >
-        <span class="text-xs text-indigo-400/70 cursor-default"
+        <span class="text-orange-500/70 cursor-default"
           >{items.length} resources</span
         >
         <div
-          class="hidden group-hover/inlay:block absolute left-0 top-full z-10 mt-1 py-1 px-2 bg-gray-800 border border-gray-700 rounded shadow-lg whitespace-nowrap"
+          class="hidden group-hover/inlay:block absolute left-0 top-full z-10 mt-1 py-1 px-2 bg-gray-100 border border-gray-300 rounded shadow-lg whitespace-nowrap"
         >
           {#each items as item}
-            <div class="text-xs text-indigo-300 leading-5">{item}</div>
+            <div class="text-orange-500 leading-5">{item}</div>
           {/each}
         </div>
       </span>
     {/if}
   {/snippet}
   {#if content != null && isMarkdown && !showSource}
-    <div class="p-6 prose prose-invert prose-sm max-w-none">
+    <div class="p-6 prose prose-sm max-w-none">
       {@html renderedMarkdown}
     </div>
   {:else if content != null}
     <div class="overflow-x-auto" style="background:{highlightBg}">
-      <table class="w-full text-sm font-mono leading-6 border-collapse">
+      <table class="w-full font-mono text-xs leading-5 border-collapse">
         <tbody>
           {#if highlightedLines}
             {#each highlightedLines as tokens, i}
@@ -171,12 +171,12 @@ $effect(() => {
               {@const inlay = resourceInlays.get(lineNum)}
               <tr
                 id="line-{lineNum}"
-                class="hover:bg-white/5 {highlightLine === lineNum
-                  ? 'bg-indigo-900/30'
+                class="hover:bg-gray-100 {highlightLine === lineNum
+                  ? 'bg-orange-100'
                   : ''}"
               >
                 <td
-                  class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap"
+                  class="px-4 py-0 text-right text-gray-400 select-none align-top w-12 whitespace-nowrap"
                   >{lineNum}</td
                 >
                 <td class="px-4 py-0 whitespace-pre"
@@ -195,15 +195,15 @@ $effect(() => {
               {@const inlay = resourceInlays.get(lineNum)}
               <tr
                 id="line-{lineNum}"
-                class="hover:bg-white/5 {highlightLine === lineNum
-                  ? 'bg-indigo-900/30'
+                class="hover:bg-gray-100 {highlightLine === lineNum
+                  ? 'bg-orange-100'
                   : ''}"
               >
                 <td
-                  class="px-4 py-0 text-right text-gray-600 select-none align-top w-12 whitespace-nowrap"
+                  class="px-4 py-0 text-right text-gray-400 select-none align-top w-12 whitespace-nowrap"
                   >{lineNum}</td
                 >
-                <td class="px-4 py-0 whitespace-pre text-gray-300"
+                <td class="px-4 py-0 whitespace-pre text-gray-600"
                   >{line}{#if inlay}{@render resourceInlay(inlay)}{/if}</td
                 >
               </tr>
@@ -213,7 +213,7 @@ $effect(() => {
       </table>
     </div>
   {:else}
-    <div class="p-8 text-center text-gray-500">
+    <div class="p-8 text-center text-gray-400">
       Binary file ({formatSize(size)})
     </div>
   {/if}

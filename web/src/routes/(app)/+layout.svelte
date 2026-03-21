@@ -20,24 +20,24 @@ function signOut() {
 </script>
 
 {#if $isAuthenticated}
-  <div class="min-h-screen bg-gray-950 flex flex-col">
+  <div class="min-h-screen bg-gray-100 flex flex-col">
     <!-- Header -->
     <header
-      class="h-14 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4 shrink-0"
+      class="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
     >
-      <a href="/" class="text-xl font-bold text-white tracking-tight">Skyr</a>
+      <a href="/" class="font-bold text-gray-900">Skyr</a>
 
       <div class="flex items-center gap-4">
-        <span class="text-sm text-gray-400">{$user?.username ?? ""}</span>
+        <span class="text-gray-500">{$user?.username ?? ""}</span>
         <a
           href="/~settings"
-          class="text-sm text-gray-400 hover:text-gray-200 transition-colors"
+          class="text-gray-500 hover:text-gray-800 transition-colors"
         >
           Settings
         </a>
         <button
           onclick={signOut}
-          class="text-sm text-gray-400 hover:text-gray-200 transition-colors"
+          class="text-gray-500 hover:text-gray-800 transition-colors"
         >
           Sign Out
         </button>

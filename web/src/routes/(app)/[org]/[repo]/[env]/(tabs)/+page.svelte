@@ -25,13 +25,5 @@ let desiredDeployment = $derived(
 </script>
 
 {#if desiredDeployment}
-  <h2 class="text-lg font-medium text-gray-300 mb-3">
-    Files
-    <span class="text-gray-500 text-sm font-normal ml-2">
-      from <span class="font-mono"
-        >{desiredDeployment.commit.hash.substring(0, 8)}</span
-      >
-    </span>
-  </h2>
   <RootTree {orgName} {repoName} commitHash={desiredDeployment.commit.hash} />
 {/if}

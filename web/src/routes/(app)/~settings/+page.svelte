@@ -7,6 +7,7 @@ import {
     UpdateFullnameDocument,
     UserSettingsDocument,
 } from "$lib/graphql/generated";
+import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 
 const queryClient = useQueryClient();
@@ -94,41 +95,41 @@ function removeKey(fingerprint: string) {
 </script>
 
 <div class="p-6 max-w-2xl mx-auto">
-    <h1 class="text-2xl font-bold text-white mb-8">Settings</h1>
+    <h1 class="font-bold text-gray-900 mb-8">Settings</h1>
 
     {#if settings.isPending}
-        <p class="text-gray-400">Loading...</p>
+        <Spinner />
     {:else if settings.error}
         <div
-            class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300"
+            class="p-4 bg-red-50 border border-red-200 rounded text-red-600"
         >
             {settings.error.message}
         </div>
     {:else}
         <!-- Profile section -->
         <section class="mb-10">
-            <h2 class="text-lg font-medium text-white mb-4">Profile</h2>
-            <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <h2 class="font-medium text-gray-900 mb-4">Profile</h2>
+            <div class="bg-white border border-gray-200 rounded-lg p-5">
                 <div class="mb-4">
                     <label
-                        class="block text-sm font-medium text-gray-400 mb-1"
+                        class="block font-medium text-gray-500 mb-1"
                         for="username"
                     >
                         Username
                     </label>
-                    <p id="username" class="text-white">
+                    <p id="username" class="text-gray-900">
                         {settings.data.me.username}
                     </p>
                 </div>
 
                 <div class="mb-4">
                     <label
-                        class="block text-sm font-medium text-gray-400 mb-1"
+                        class="block font-medium text-gray-500 mb-1"
                         for="email"
                     >
                         Email
                     </label>
-                    <p id="email" class="text-white">
+                    <p id="email" class="text-gray-900">
                         {settings.data.me.email}
                     </p>
                 </div>
@@ -140,7 +141,7 @@ function removeKey(fingerprint: string) {
                     }}
                 >
                     <label
-                        class="block text-sm font-medium text-gray-400 mb-1"
+                        class="block font-medium text-gray-500 mb-1"
                         for="fullname"
                     >
                         Full name
@@ -151,21 +152,21 @@ function removeKey(fingerprint: string) {
                             type="text"
                             bind:value={fullname}
                             placeholder="Your full name"
-                            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+                            class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
                         />
                         <button
                             type="submit"
                             disabled={fullnameSaving}
-                            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {fullnameSaving ? "Saving..." : "Save"}
                         </button>
                     </div>
                     {#if fullnameSuccess}
-                        <p class="mt-2 text-sm text-green-400">Saved.</p>
+                        <p class="mt-2 text-green-700">Saved.</p>
                     {/if}
                     {#if fullnameError}
-                        <p class="mt-2 text-sm text-red-400">
+                        <p class="mt-2 text-red-600">
                             {fullnameError}
                         </p>
                     {/if}
@@ -175,25 +176,25 @@ function removeKey(fingerprint: string) {
 
         <!-- Public keys section -->
         <section>
-            <h2 class="text-lg font-medium text-white mb-4">
+            <h2 class="font-medium text-gray-900 mb-4">
                 SSH Public Keys
             </h2>
-            <div class="bg-gray-900 border border-gray-800 rounded-lg p-5">
+            <div class="bg-white border border-gray-200 rounded-lg p-5">
                 {#if settings.data.me.publicKeys.length === 0}
-                    <p class="text-gray-400 mb-4">No public keys registered.</p>
+                    <p class="text-gray-500 mb-4">No public keys registered.</p>
                 {:else}
                     <ul class="space-y-3 mb-4">
                         {#each settings.data.me.publicKeys as fingerprint}
                             <li
-                                class="flex items-center justify-between bg-gray-800 border border-gray-700 rounded px-3 py-2"
+                                class="flex items-center justify-between bg-gray-100 border border-gray-300 rounded px-3 py-2"
                             >
-                                <code class="text-sm text-gray-300 truncate">
+                                <code class="text-gray-600 truncate">
                                     {fingerprint}
                                 </code>
                                 <button
                                     onclick={() => removeKey(fingerprint)}
                                     disabled={removePublicKey.isPending}
-                                    class="ml-3 text-sm text-red-400 hover:text-red-300 transition-colors disabled:opacity-50 shrink-0"
+                                    class="ml-3 text-red-600 hover:text-red-500 transition-colors disabled:opacity-50 shrink-0"
                                 >
                                     Remove
                                 </button>
@@ -203,7 +204,7 @@ function removeKey(fingerprint: string) {
                 {/if}
 
                 {#if removeKeyError}
-                    <p class="mb-3 text-sm text-red-400">{removeKeyError}</p>
+                    <p class="mb-3 text-red-600">{removeKeyError}</p>
                 {/if}
 
                 <form
@@ -213,7 +214,7 @@ function removeKey(fingerprint: string) {
                     }}
                 >
                     <label
-                        class="block text-sm font-medium text-gray-400 mb-1"
+                        class="block font-medium text-gray-500 mb-1"
                         for="new-fingerprint"
                     >
                         Add a public key fingerprint
@@ -224,19 +225,19 @@ function removeKey(fingerprint: string) {
                             type="text"
                             bind:value={newFingerprint}
                             placeholder="SHA256:..."
-                            class="flex-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 font-mono text-sm"
+                            class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
                         />
                         <button
                             type="submit"
                             disabled={addPublicKey.isPending ||
                                 !newFingerprint.trim()}
-                            class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {addPublicKey.isPending ? "Adding..." : "Add"}
                         </button>
                     </div>
                     {#if addKeyError}
-                        <p class="mt-2 text-sm text-red-400">{addKeyError}</p>
+                        <p class="mt-2 text-red-600">{addKeyError}</p>
                     {/if}
                 </form>
             </div>

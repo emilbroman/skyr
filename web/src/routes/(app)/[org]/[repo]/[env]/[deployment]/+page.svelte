@@ -2,6 +2,7 @@
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
+import Spinner from "$lib/components/Spinner.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
 import {
     DeploymentDetailDocument,
@@ -9,7 +10,7 @@ import {
     DeploymentState,
 } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { commitTreeHref, decodeSegment, envHref, resourcesHref } from "$lib/paths";
+import { commitTreeHref, decodeSegment, envHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -40,59 +41,51 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
 </script>
 
 <div>
-  <nav class="text-sm text-gray-500 mb-4">
-    <a href={envHref(orgName, repoName, envName)} class="hover:text-gray-300"
+  <nav class="text-gray-400 mb-4">
+    <a href={envHref(orgName, repoName, envName)} class="hover:text-gray-700"
       >{envName}</a
     >
     <span class="mx-2">/</span>
-    <span class="text-gray-300 font-mono text-xs"
+    <span class="text-gray-600 font-mono text-xs"
       >{commitHash.substring(0, 8)}</span
     >
   </nav>
 
   {#if deploymentDetail.isPending}
-    <p class="text-gray-400">Loading deployment...</p>
+    <Spinner />
   {:else if deploymentDetail.error}
-    <div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">
+    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
       {deploymentDetail.error.message}
     </div>
   {:else if deployment}
-    <!-- Header -->
-    <div class="flex items-center gap-4 mb-6">
-      <DeploymentStateBadge state={deployment.state} />
-      <h1 class="text-xl font-bold text-white font-mono">
-        {deployment.commit.hash.substring(0, 8)}
-      </h1>
-    </div>
-
     <!-- Metadata -->
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
-      <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
+    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+      <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
         <div>
-          <dt class="text-gray-500">Ref</dt>
-          <dd class="text-gray-200">{deployment.ref}</dd>
+          <dt class="text-gray-400">Ref</dt>
+          <dd class="text-gray-700">{deployment.ref}</dd>
         </div>
         <div>
-          <dt class="text-gray-500">Commit</dt>
-          <dd class="text-gray-200 font-mono" title={deployment.commit.message}>
+          <dt class="text-gray-400">Commit</dt>
+          <dd class="text-gray-700 font-mono text-xs" title={deployment.commit.message}>
             {deployment.commit.hash.substring(0, 8)} &mdash; {deployment.commit
               .message}
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">Created</dt>
-          <dd class="text-gray-200">
+          <dt class="text-gray-400">Created</dt>
+          <dd class="text-gray-700">
             {new Date(deployment.createdAt).toLocaleString()}
           </dd>
         </div>
         <div>
-          <dt class="text-gray-500">State</dt>
-          <dd class="text-gray-200">{deployment.state}</dd>
+          <dt class="text-gray-400">State</dt>
+          <dd><DeploymentStateBadge state={deployment.state} /></dd>
         </div>
       </dl>
       <a
         href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
-        class="inline-block mt-3 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+        class="inline-block mt-3 text-orange-600 hover:text-orange-500 transition-colors"
       >
         View files &rarr;
       </a>
@@ -101,15 +94,15 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
     <!-- Artifacts -->
     {#if deployment.artifacts.length > 0}
       <section class="mb-6">
-        <h2 class="text-lg font-medium text-gray-300 mb-3">Artifacts</h2>
+        <h2 class="font-medium text-gray-600 mb-3">Artifacts</h2>
         <div class="space-y-2">
           {#each deployment.artifacts as artifact}
             <div
-              class="bg-gray-900 border border-gray-800 rounded-lg px-4 py-3 flex items-center justify-between"
+              class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between"
             >
               <div>
-                <span class="text-gray-200 text-sm">{artifact.name}</span>
-                <span class="text-gray-500 text-xs ml-2"
+                <span class="text-gray-700">{artifact.name}</span>
+                <span class="text-gray-400 ml-2"
                   >({artifact.mediaType})</span
                 >
               </div>
@@ -117,7 +110,7 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
                 href={artifact.url}
                 target="_blank"
                 rel="noopener noreferrer"
-                class="text-indigo-400 hover:text-indigo-300 text-sm"
+                class="text-orange-600 hover:text-orange-500"
               >
                 Download
               </a>
@@ -127,31 +120,12 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
       </section>
     {/if}
 
-    <!-- Resources -->
-    <section class="mb-6">
-      <a
-        href={resourcesHref(orgName, repoName, envName)}
-        class="text-lg font-medium text-gray-300 mb-3 block hover:text-white transition-colors"
-      >
-        Resources
-        <span class="text-gray-500 text-sm font-normal ml-1"
-          >({deployment.resources.length})</span
-        >
-      </a>
-      <ResourceDag
-        resources={deployment.resources}
-        org={orgName}
-        repo={repoName}
-        env={envName}
-      />
-    </section>
-
     <!-- Logs -->
-    <section>
-      <h2 class="text-lg font-medium text-gray-300 mb-3">Logs</h2>
+    <section class="mb-6">
+      <h2 class="font-medium text-gray-600 mb-3">Logs</h2>
       {#if isLive}
         <div
-          class="h-96 bg-gray-900 border border-gray-800 rounded-lg overflow-hidden"
+          class="h-96 bg-white border border-gray-200 rounded-lg overflow-hidden"
         >
           <LogStream
             document={DeploymentLogsDocument}
@@ -179,8 +153,24 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
           {/each}
         </div>
       {:else}
-        <p class="text-gray-500">No logs available.</p>
+        <p class="text-gray-400">No logs available.</p>
       {/if}
+    </section>
+
+    <!-- Resources -->
+    <section>
+      <h2 class="font-medium text-gray-600 mb-3">
+        Resources
+        <span class="text-gray-400 font-normal ml-1"
+          >({deployment.resources.length})</span
+        >
+      </h2>
+      <ResourceDag
+        resources={deployment.resources}
+        org={orgName}
+        repo={repoName}
+        env={envName}
+      />
     </section>
   {/if}
 </div>

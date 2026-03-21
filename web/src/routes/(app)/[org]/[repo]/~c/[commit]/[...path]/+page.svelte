@@ -3,6 +3,7 @@ import { replaceState } from "$app/navigation";
 import { page } from "$app/stores";
 import { untrack } from "svelte";
 import DirectoryView from "$lib/components/DirectoryView.svelte";
+import Spinner from "$lib/components/Spinner.svelte";
 import FileView from "$lib/components/FileView.svelte";
 import { query } from "$lib/graphql/client";
 import { CommitRootTreeDocument, CommitTreeEntryDocument } from "$lib/graphql/generated";
@@ -135,38 +136,43 @@ let highlightLine = $derived.by(() => {
 </script>
 
 <div>
+  <!-- Commit message -->
+  {#if commitMessage}
+    <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-4">
+      <p class="font-mono text-xs text-gray-400 mb-1">{commitHash.substring(0, 8)}</p>
+      <p class="text-gray-700 whitespace-pre-line">{commitMessage}</p>
+    </div>
+  {/if}
+
   <!-- Breadcrumb -->
-  <nav class="text-sm text-gray-500 mb-4">
-    <a
-      href={commitTreeHref(orgName, repoName, commitHash)}
-      class="hover:text-gray-300 font-mono text-xs"
-      >{commitHash.substring(0, 8)}</a
-    >
-    {#each pathSegments as segment, i}
-      <span class="mx-2">/</span>
-      {#if i < pathSegments.length - 1}
-        <a
-          href={commitTreeHref(
-            orgName,
-            repoName,
-            commitHash,
-            pathSegments.slice(0, i + 1).join("/") + "/",
-          )}
-          class="hover:text-gray-300">{segment}</a
-        >
-      {:else}
-        <span class="text-gray-300">{segment}</span>
-      {/if}
-    {/each}
-    {#if commitMessage}
-      <span class="ml-3 text-gray-600">&mdash; {commitMessage}</span>
-    {/if}
-  </nav>
+  {#if pathSegments.length > 0}
+    <nav class="text-gray-400 mb-4">
+      <a
+        href={commitTreeHref(orgName, repoName, commitHash)}
+        class="hover:text-gray-700">/</a
+      >
+      {#each pathSegments as segment, i}
+        {#if i < pathSegments.length - 1}
+          <a
+            href={commitTreeHref(
+              orgName,
+              repoName,
+              commitHash,
+              pathSegments.slice(0, i + 1).join("/") + "/",
+            )}
+            class="hover:text-gray-700">{segment}</a
+          ><span class="mx-1">/</span>
+        {:else}
+          <span class="text-gray-600">{segment}</span>
+        {/if}
+      {/each}
+    </nav>
+  {/if}
 
   {#if view.kind === "loading"}
-    <p class="text-gray-400">Loading...</p>
+    <Spinner />
   {:else if view.kind === "error"}
-    <div class="p-4 bg-red-900/20 border border-red-800 rounded text-red-300">
+    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
       {view.message}
     </div>
   {:else if view.kind === "directory"}

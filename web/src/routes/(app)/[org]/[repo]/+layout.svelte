@@ -9,10 +9,10 @@ let repoName = $derived($page.params.repo ?? "");
 </script>
 
 <div class="p-6">
-    <nav class="text-lg font-bold text-white mb-6">
-        <a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
-        <span class="mx-1 text-gray-500">/</span>
-        <a href={repoHref(orgName, repoName)} class="hover:text-gray-300">{repoName}</a>
+    <nav class="text-xl font-bold text-gray-900 mb-3">
+        <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
+        <span class="mx-1 text-gray-400">/</span>
+        <a href={repoHref(orgName, repoName)} class="hover:text-gray-700">{repoName}</a>
     </nav>
 
     {@render children()}

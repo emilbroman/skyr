@@ -12,20 +12,20 @@ let typeParts = $derived(resource.type.split("."));
 </script>
 
 {#snippet content()}
-  <div class="text-[10px] text-indigo-400/70 truncate">
+  <div class="text-orange-500/70 truncate">
     {#if typeParts.length > 1}
       <span>{typeParts.slice(0, -1).join(".")}.</span>
     {/if}
-    <span class="text-indigo-300">{typeParts[typeParts.length - 1]}</span>
+    <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
   </div>
   <div class="flex items-center gap-1.5 mt-0.5">
-    <span class="text-gray-300 text-xs truncate">{resource.name}</span>
+    <span class="text-gray-600 truncate">{resource.name}</span>
     {#each resource.markers as marker}
       <span
-        class="text-[9px] px-1 py-px rounded border {marker ===
+        class="px-1 py-px rounded border {marker ===
         ResourceMarker.Volatile
-          ? 'border-yellow-700 text-yellow-400'
-          : 'border-blue-700 text-blue-400'}"
+          ? 'border-yellow-300 text-yellow-700'
+          : 'border-blue-300 text-blue-700'}"
       >
         {marker}
       </span>
@@ -36,12 +36,12 @@ let typeParts = $derived(resource.type.split("."));
 {#if href}
   <a
     {href}
-    class="block bg-gray-900 border border-gray-800 rounded px-3 py-2 hover:bg-gray-800/50 transition-colors"
+    class="block bg-white border border-gray-200 rounded px-3 py-2 hover:bg-gray-50 transition-colors"
   >
     {@render content()}
   </a>
 {:else}
-  <div class="bg-gray-900 border border-gray-800 rounded px-3 py-2">
+  <div class="bg-white border border-gray-200 rounded px-3 py-2">
     {@render content()}
   </div>
 {/if}

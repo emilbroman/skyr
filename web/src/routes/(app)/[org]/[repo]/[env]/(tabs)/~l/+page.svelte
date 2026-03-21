@@ -20,7 +20,7 @@ let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 
 {#if env}
   <div
-    class="h-[calc(100vh-16rem)] bg-gray-900 border border-gray-800 rounded-lg overflow-hidden"
+    class="h-[calc(100vh-16rem)] bg-white border border-gray-200 rounded-lg overflow-hidden"
   >
     <LogStream
       document={EnvironmentLogsDocument}

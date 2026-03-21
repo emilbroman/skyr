@@ -175,42 +175,42 @@ let resolved = $derived(resolve(value));
   {@const count = entries.length}
   <span>
     {#if key !== undefined}
-      <span class="text-purple-300">{key}</span><span class="text-gray-500"
+      <span class="text-purple-600">{key}</span><span class="text-gray-400"
         >:
       </span>
     {/if}
     {#if count === 0}
-      <span class="text-gray-600">{isDict ? "Dict {}" : "{}"}</span>
+      <span class="text-gray-400">{isDict ? "Dict {}" : "{}"}</span>
     {:else}
       <button
         onclick={toggle}
-        class="inline text-gray-500 hover:text-gray-300 transition-colors cursor-pointer select-none"
+        class="inline text-gray-400 hover:text-gray-700 transition-colors cursor-pointer select-none"
         aria-expanded={isExpanded}
       >
         <span
-          class="inline-block w-3 text-center text-[10px] {isExpanded
+          class="inline-block w-3 text-center {isExpanded
             ? ''
             : 'rotate-[-90deg]'} transition-transform">&#9660;</span
         >
         {#if !isExpanded}
-          <span class="text-gray-600"
+          <span class="text-gray-400"
             >{isDict
               ? `Dict {${count} entr${count === 1 ? "y" : "ies"}}`
               : `{${count} field${count === 1 ? "" : "s"}}`}</span
           >
         {:else}
-          <span class="text-gray-600">{isDict ? "Dict {" : "{"}</span>
+          <span class="text-gray-400">{isDict ? "Dict {" : "{"}</span>
         {/if}
       </button>
       {#if isExpanded}
-        <div class="ml-4 border-l border-gray-800 pl-3">
+        <div class="ml-4 border-l border-gray-200 pl-3">
           {#each entries as [k, v]}
             <div class="leading-6">
               <JsonTree value={v} key={k} depth={depth + 1} {defaultExpanded} />
             </div>
           {/each}
         </div>
-        <span class="text-gray-600">{"}"}</span>
+        <span class="text-gray-400">{"}"}</span>
       {/if}
     {/if}
   </span>
@@ -219,65 +219,65 @@ let resolved = $derived(resolve(value));
   {@const count = items.length}
   <span>
     {#if key !== undefined}
-      <span class="text-purple-300">{key}</span><span class="text-gray-500"
+      <span class="text-purple-600">{key}</span><span class="text-gray-400"
         >:
       </span>
     {/if}
     {#if count === 0}
-      <span class="text-gray-600">[]</span>
+      <span class="text-gray-400">[]</span>
     {:else}
       <button
         onclick={toggle}
-        class="inline text-gray-500 hover:text-gray-300 transition-colors cursor-pointer select-none"
+        class="inline text-gray-400 hover:text-gray-700 transition-colors cursor-pointer select-none"
         aria-expanded={isExpanded}
       >
         <span
-          class="inline-block w-3 text-center text-[10px] {isExpanded
+          class="inline-block w-3 text-center {isExpanded
             ? ''
             : 'rotate-[-90deg]'} transition-transform">&#9660;</span
         >
         {#if !isExpanded}
-          <span class="text-gray-600"
+          <span class="text-gray-400"
             >[{count} item{count === 1 ? "" : "s"}]</span
           >
         {:else}
-          <span class="text-gray-600">[</span>
+          <span class="text-gray-400">[</span>
         {/if}
       </button>
       {#if isExpanded}
-        <div class="ml-4 border-l border-gray-800 pl-3">
+        <div class="ml-4 border-l border-gray-200 pl-3">
           {#each items as item}
             <div class="leading-6">
               <JsonTree value={item} depth={depth + 1} {defaultExpanded} />
             </div>
           {/each}
         </div>
-        <span class="text-gray-600">]</span>
+        <span class="text-gray-400">]</span>
       {/if}
     {/if}
   </span>
 {:else}
   <span>
     {#if key !== undefined}
-      <span class="text-purple-300">{key}</span><span class="text-gray-500"
+      <span class="text-purple-600">{key}</span><span class="text-gray-400"
         >:
       </span>
     {/if}
     {#if resolved.kind === "string" && resolved.multiline}
-      <div class="ml-4 border-l border-gray-800 pl-3">
+      <div class="ml-4 border-l border-gray-200 pl-3">
         <pre
-          class="text-green-400 whitespace-pre multiline-string">{resolved.raw}</pre>
+          class="text-green-700 whitespace-pre multiline-string">{resolved.raw}</pre>
       </div>
     {:else if resolved.kind === "string"}
-      <span class="text-green-400">{resolved.display}</span>
+      <span class="text-green-700">{resolved.display}</span>
     {:else if resolved.kind === "number"}
-      <span class="text-blue-400">{resolved.display}</span>
+      <span class="text-orange-600">{resolved.display}</span>
     {:else if resolved.kind === "boolean"}
-      <span class="text-yellow-400">{resolved.display}</span>
+      <span class="text-yellow-600">{resolved.display}</span>
     {:else if resolved.kind === "null"}
-      <span class="text-gray-500 italic">{resolved.display}</span>
+      <span class="text-gray-400 italic">{resolved.display}</span>
     {:else if resolved.kind === "special"}
-      <span class="text-orange-400 italic">{resolved.display}</span>
+      <span class="text-orange-600 italic">{resolved.display}</span>
     {/if}
   </span>
 {/if}
@@ -291,14 +291,14 @@ let resolved = $derived(resolve(value));
     position: absolute;
     right: 100%;
     top: 0;
-    color: var(--color-green-400);
+    color: var(--color-green-700);
     opacity: 0.5;
     user-select: none;
     pointer-events: none;
   }
   .multiline-string::after {
     content: '"';
-    color: var(--color-green-400);
+    color: var(--color-green-700);
     opacity: 0.5;
     user-select: none;
     pointer-events: none;

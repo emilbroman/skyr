@@ -276,11 +276,11 @@ function typeParts(type: string): { prefix: string; last: string } {
 <svelte:window onmousemove={onMouseMove} onmouseup={onMouseUp} />
 
 <div
-  class="relative w-full rounded-lg border border-gray-800 overflow-hidden"
-  style="height: calc(100vh - 240px); min-height: 400px; background-color: #0a0a0f; background-image: radial-gradient(circle, rgba(255,255,255,0.04) 1px, transparent 1px); background-size: 24px 24px;"
+  class="relative w-full rounded-lg border border-gray-200 overflow-hidden"
+  style="height: calc(100vh - 240px); min-height: 400px; background-color: #f9fafb; background-image: radial-gradient(circle, rgba(0,0,0,0.06) 1px, transparent 1px); background-size: 24px 24px;"
 >
   {#if dag.nodes.length === 0}
-    <div class="flex items-center justify-center h-full text-gray-400">
+    <div class="flex items-center justify-center h-full text-gray-500">
       No resources in this environment.
     </div>
   {:else}
@@ -305,7 +305,7 @@ function typeParts(type: string): { prefix: string; last: string } {
           <path
             d="M 0 1 L 7 4 L 0 7"
             fill="none"
-            stroke="#4b5563"
+            stroke="#9ca3af"
             stroke-width="1.5"
             stroke-linecap="round"
             stroke-linejoin="round"
@@ -323,7 +323,7 @@ function typeParts(type: string): { prefix: string; last: string } {
           <path
             d="M 0 1 L 7 4 L 0 7"
             fill="none"
-            stroke="#818cf8"
+            stroke="#ea580c"
             stroke-width="1.5"
             stroke-linecap="round"
             stroke-linejoin="round"
@@ -336,7 +336,7 @@ function typeParts(type: string): { prefix: string; last: string } {
           <path
             d={edgePath(edge)}
             fill="none"
-            stroke={isEdgeHighlighted(edge) ? "#818cf8" : "#374151"}
+            stroke={isEdgeHighlighted(edge) ? "#ea580c" : "#d1d5db"}
             stroke-width={isEdgeHighlighted(edge) ? 2 : 1.5}
             opacity={hoveredNode && !isEdgeHighlighted(edge) ? 0.15 : 1}
             marker-end="url(#{isEdgeHighlighted(edge) ? 'arrow-hl' : 'arrow'})"
@@ -352,48 +352,48 @@ function typeParts(type: string): { prefix: string; last: string } {
                   href={node.href}
                   class="flex flex-col justify-center w-full h-full rounded-lg border px-3 py-2 transition-all duration-150
 										{node.isShadow
-                    ? 'border-dashed border-amber-800/60 bg-gray-900/60'
-                    : 'border-gray-700 bg-gray-900 hover:border-indigo-500'}
+                    ? 'border-dashed border-amber-300/60 bg-white/60'
+                    : 'border-gray-300 bg-white hover:border-orange-500'}
 										{hoveredNode === node.id
                     ? node.isShadow
                       ? 'border-amber-500 shadow-lg shadow-amber-500/10'
-                      : 'border-indigo-500 shadow-lg shadow-indigo-500/10'
+                      : 'border-orange-500 shadow-lg shadow-orange-500/10'
                     : ''}
 										{hoveredNode && hoveredNode !== node.id ? 'opacity-40' : ''}"
                   onmouseenter={() => (hoveredNode = node.id)}
                   onmouseleave={() => (hoveredNode = null)}
                 >
                   <div
-                    class="text-[10px] truncate {node.isShadow
-                      ? 'text-gray-500'
-                      : 'text-indigo-400/70'}"
+                    class="truncate {node.isShadow
+                      ? 'text-gray-400'
+                      : 'text-orange-500/70'}"
                   >
                     {#if tp.prefix}<span>{tp.prefix}</span>{/if}
                     <span
                       class={node.isShadow
-                        ? "text-gray-400"
-                        : "text-indigo-300"}>{tp.last}</span
+                        ? "text-gray-500"
+                        : "text-orange-500"}>{tp.last}</span
                     >
                   </div>
                   <div class="flex items-center gap-1.5 mt-0.5">
                     <span
-                      class="text-xs truncate {node.isShadow
-                        ? 'text-gray-500'
-                        : 'text-gray-300'}">{node.name}</span
+                      class="truncate {node.isShadow
+                        ? 'text-gray-400'
+                        : 'text-gray-600'}">{node.name}</span
                     >
                     {#each node.markers as marker}
                       <span
-                        class="text-[9px] px-1 py-px rounded border shrink-0 {marker ===
+                        class="px-1 py-px rounded border shrink-0 {marker ===
                         ResourceMarker.Volatile
-                          ? 'border-yellow-700 text-yellow-400'
-                          : 'border-blue-700 text-blue-400'}"
+                          ? 'border-yellow-300 text-yellow-700'
+                          : 'border-blue-300 text-blue-700'}"
                       >
                         {marker}
                       </span>
                     {/each}
                   </div>
                   {#if node.isShadow}
-                    <div class="text-[9px] text-amber-500/70 mt-0.5">
+                    <div class="text-amber-500/70 mt-0.5">
                       External
                     </div>
                   {/if}
@@ -402,7 +402,7 @@ function typeParts(type: string): { prefix: string; last: string } {
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
                   class="flex flex-col justify-center w-full h-full rounded-lg border border-dashed px-3 py-2 transition-all duration-150
-										border-amber-800/60 bg-gray-900/60
+										border-amber-300/60 bg-white/60
 										{hoveredNode === node.id
                     ? 'border-amber-500 shadow-lg shadow-amber-500/10'
                     : ''}
@@ -410,16 +410,16 @@ function typeParts(type: string): { prefix: string; last: string } {
                   onmouseenter={() => (hoveredNode = node.id)}
                   onmouseleave={() => (hoveredNode = null)}
                 >
-                  <div class="text-[10px] text-gray-500 truncate">
+                  <div class="text-gray-400 truncate">
                     {#if tp.prefix}<span>{tp.prefix}</span>{/if}
-                    <span class="text-gray-400">{tp.last}</span>
+                    <span class="text-gray-500">{tp.last}</span>
                   </div>
                   <div class="flex items-center gap-1.5 mt-0.5">
-                    <span class="text-xs text-gray-500 truncate"
+                    <span class="text-gray-400 truncate"
                       >{node.name}</span
                     >
                   </div>
-                  <div class="text-[9px] text-amber-500/70 mt-0.5">
+                  <div class="text-amber-500/70 mt-0.5">
                     External
                   </div>
                 </div>
@@ -432,19 +432,19 @@ function typeParts(type: string): { prefix: string; last: string } {
 
     <div class="absolute bottom-3 right-3 flex gap-1">
       <button
-        class="px-2.5 py-1 bg-gray-800/80 backdrop-blur border border-gray-700 rounded text-xs text-gray-300 hover:bg-gray-700 transition-colors"
+        class="px-2.5 py-1 bg-white/80 backdrop-blur border border-gray-300 rounded text-gray-600 hover:bg-gray-200 transition-colors"
         onclick={fitToView}
       >
         Fit
       </button>
       <button
-        class="px-2.5 py-1 bg-gray-800/80 backdrop-blur border border-gray-700 rounded text-xs text-gray-300 hover:bg-gray-700 transition-colors"
+        class="px-2.5 py-1 bg-white/80 backdrop-blur border border-gray-300 rounded text-gray-600 hover:bg-gray-200 transition-colors"
         onclick={zoomInCenter}
       >
         +
       </button>
       <button
-        class="px-2.5 py-1 bg-gray-800/80 backdrop-blur border border-gray-700 rounded text-xs text-gray-300 hover:bg-gray-700 transition-colors"
+        class="px-2.5 py-1 bg-white/80 backdrop-blur border border-gray-300 rounded text-gray-600 hover:bg-gray-200 transition-colors"
         onclick={zoomOutCenter}
       >
         &minus;

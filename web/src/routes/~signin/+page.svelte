@@ -98,17 +98,17 @@ function copyToClipboard(text: string) {
 }
 </script>
 
-<div class="min-h-screen bg-gray-950 flex items-center justify-center p-4">
+<div class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
   <div class="w-full max-w-lg">
     <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold text-white tracking-tight">Skyr</h1>
-      <p class="text-gray-400 mt-2">Sign in with your SSH key</p>
+      <h1 class="text-xl font-bold text-gray-900">Skyr</h1>
+      <p class="text-gray-500 mt-2">Sign in with your SSH key</p>
     </div>
 
-    <div class="bg-gray-900 rounded-lg border border-gray-800 p-6">
+    <div class="bg-white rounded-lg border border-gray-200 p-6">
       {#if error}
         <div
-          class="mb-4 p-3 bg-red-900/30 border border-red-800 rounded text-red-300 text-sm"
+          class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600"
         >
           {error}
         </div>
@@ -122,7 +122,7 @@ function copyToClipboard(text: string) {
           }}
         >
           <label
-            class="block mb-2 text-sm font-medium text-gray-300"
+            class="block mb-2 font-medium text-gray-600"
             for="username"
           >
             Username
@@ -132,12 +132,12 @@ function copyToClipboard(text: string) {
             type="text"
             bind:value={username}
             placeholder="Enter your username"
-            class="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
+            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
             disabled={loading}
           />
           <button
             type="submit"
-            class="w-full mt-4 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full mt-4 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading || !username.trim()}
           >
             {loading ? "Loading..." : "Continue"}
@@ -146,12 +146,12 @@ function copyToClipboard(text: string) {
       {:else}
         <div class="space-y-5">
           <div>
-            <p class="text-sm text-gray-400 mb-3">
-              Signing in as <span class="text-white font-medium"
+            <p class="text-gray-500 mb-3">
+              Signing in as <span class="text-gray-900 font-medium"
                 >{username}</span
               >
               <button
-                class="text-indigo-400 hover:text-indigo-300 ml-2 text-xs"
+                class="text-orange-600 hover:text-orange-500 ml-2"
                 onclick={() => {
                   step = "username";
                   challenge = null;
@@ -165,14 +165,14 @@ function copyToClipboard(text: string) {
           </div>
 
           <div>
-            <p class="text-sm text-gray-300 mb-2">
+            <p class="text-gray-600 mb-2">
               Run this command in your terminal:
             </p>
             <div class="relative">
               <pre
-                class="bg-gray-800 border border-gray-700 rounded p-3 text-sm text-green-400 overflow-x-auto whitespace-pre-wrap break-all">cat ~/.ssh/id_ed25519.pub; echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
+                class="bg-gray-100 border border-gray-300 rounded p-3 text-green-700 overflow-x-auto whitespace-pre-wrap break-all">cat ~/.ssh/id_ed25519.pub; echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
               <button
-                class="absolute top-2 right-2 text-gray-400 hover:text-white text-xs px-2 py-1 bg-gray-700 rounded"
+                class="absolute top-2 right-2 text-gray-500 hover:text-gray-900 px-2 py-1 bg-gray-200 rounded"
                 onclick={() =>
                   copyToClipboard(
                     `cat ~/.ssh/id_ed25519.pub; echo -n '${challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`,
@@ -181,7 +181,7 @@ function copyToClipboard(text: string) {
                 Copy
               </button>
             </div>
-            <label class="block mt-2 text-sm text-gray-400" for="response">
+            <label class="block mt-2 text-gray-500" for="response">
               Paste the full output:
             </label>
             <textarea
@@ -189,11 +189,11 @@ function copyToClipboard(text: string) {
               bind:value={response}
               placeholder="ssh-ed25519 AAAA...&#10;-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
               rows={8}
-              class="w-full mt-1 px-3 py-2 bg-gray-800 border border-gray-700 rounded text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 font-mono text-xs"
+              class="w-full mt-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
             ></textarea>
           </div>
 
-          <div class="pt-1 flex items-center gap-2 text-xs text-gray-500">
+          <div class="pt-1 flex items-center gap-2 text-gray-400">
             <svg
               class="w-4 h-4 shrink-0"
               fill="none"
@@ -215,7 +215,7 @@ function copyToClipboard(text: string) {
 
           <button
             onclick={submitSignIn}
-            class="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={signIn.isPending || !response.trim()}
           >
             {signIn.isPending ? "Signing in..." : "Sign In"}
