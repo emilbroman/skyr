@@ -42,7 +42,7 @@ fn image_extern_fn(
     let config_arg = args
         .next()
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let mut argument_dependencies = config_arg.dependencies.clone();
+    let argument_dependencies = config_arg.dependencies.clone();
 
     if config_arg.value.has_pending() {
         return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
@@ -81,8 +81,7 @@ fn image_extern_fn(
     )?
     else {
         // Resource is pending
-        argument_dependencies.insert(resource_id);
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        return Ok(TrackedValue::pending().with_dependency(resource_id));
     };
 
     // Extract outputs from the plugin
@@ -102,8 +101,7 @@ fn image_extern_fn(
     result.insert(String::from("fullname"), Value::Str(fullname));
     result.insert(String::from("digest"), Value::Str(digest));
 
-    argument_dependencies.insert(resource_id);
-    Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+    Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
 }
 
 /// Compute a deterministic hash of the pod inputs for the resource name.
@@ -133,7 +131,7 @@ fn pod_extern_fn(
     let config_arg = args
         .next()
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let mut argument_dependencies = config_arg.dependencies.clone();
+    let argument_dependencies = config_arg.dependencies.clone();
 
     if config_arg.value.has_pending() {
         return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
@@ -194,8 +192,7 @@ fn pod_extern_fn(
     )?
     else {
         // Resource is pending
-        argument_dependencies.insert(resource_id);
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        return Ok(TrackedValue::pending().with_dependency(resource_id));
     };
 
     // Extract outputs from the plugin
@@ -234,8 +231,7 @@ fn pod_extern_fn(
     );
     result.insert(String::from("Attachment"), Value::ExternFn(attachment_fn));
 
-    argument_dependencies.insert(resource_id);
-    Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+    Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
 }
 
 /// Creates an ExternFnValue for exposing ports on a pod.
@@ -295,8 +291,7 @@ fn create_port_fn(
         )?
         else {
             // Resource is pending
-            argument_dependencies.insert(resource_id);
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+            return Ok(TrackedValue::pending().with_dependency(resource_id));
         };
 
         // Build the result record from closure/inputs (plugin outputs are empty)
@@ -305,8 +300,7 @@ fn create_port_fn(
         result.insert(String::from("port"), Value::Int(port));
         result.insert(String::from("protocol"), Value::Str(protocol));
 
-        argument_dependencies.insert(resource_id);
-        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+        Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
     }))
 }
 
@@ -365,8 +359,7 @@ fn create_attachment_fn(
         )?
         else {
             // Resource is pending
-            argument_dependencies.insert(resource_id);
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+            return Ok(TrackedValue::pending().with_dependency(resource_id));
         };
 
         // Build the result record
@@ -379,8 +372,7 @@ fn create_attachment_fn(
         result.insert(String::from("port"), Value::Record(port_result));
         result.insert(String::from("clientAddress"), Value::Str(pod_address.clone()));
 
-        argument_dependencies.insert(resource_id);
-        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+        Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
     }))
 }
 
@@ -396,7 +388,7 @@ fn host_extern_fn(
     let config_arg = args
         .next()
         .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let mut argument_dependencies = config_arg.dependencies.clone();
+    let argument_dependencies = config_arg.dependencies.clone();
 
     if config_arg.value.has_pending() {
         return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
@@ -424,8 +416,7 @@ fn host_extern_fn(
     )?
     else {
         // Resource is pending
-        argument_dependencies.insert(resource_id);
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+        return Ok(TrackedValue::pending().with_dependency(resource_id));
     };
 
     // Extract outputs from the plugin
@@ -448,8 +439,7 @@ fn host_extern_fn(
     let port_fn = create_host_port_fn(hostname, vip, resource_id.clone());
     result.insert(String::from("Port"), Value::ExternFn(port_fn));
 
-    argument_dependencies.insert(resource_id);
-    Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+    Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
 }
 
 /// Creates an ExternFnValue for creating ports on a Host.
@@ -511,8 +501,7 @@ fn create_host_port_fn(
         )?
         else {
             // Resource is pending
-            argument_dependencies.insert(resource_id);
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+            return Ok(TrackedValue::pending().with_dependency(resource_id));
         };
 
         // Extract outputs from the plugin
@@ -547,7 +536,6 @@ fn create_host_port_fn(
         result.insert(String::from("port"), Value::Int(out_port));
         result.insert(String::from("protocol"), Value::Str(out_protocol));
 
-        argument_dependencies.insert(resource_id);
-        Ok(TrackedValue::new(Value::Record(result)).with_dependencies(argument_dependencies))
+        Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
     }))
 }
