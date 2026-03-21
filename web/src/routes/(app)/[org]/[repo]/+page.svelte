@@ -3,7 +3,7 @@ import { page } from "$app/stores";
 import RootTree from "$lib/components/RootTree.svelte";
 import { DeploymentState, RepositoryDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { envHref, orgHref, resourcesHref } from "$lib/paths";
+import { deploymentHref, envHref, orgHref, resourcesHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -27,7 +27,7 @@ let mainDesiredDeployment = $derived(
     ) ?? null,
 );
 
-type SortColumn = "name" | "hash" | "commit" | "resources";
+type SortColumn = "name" | "deployment" | "resources";
 type SortDirection = "asc" | "desc";
 
 let sortColumn: SortColumn = $state("name");
@@ -60,15 +60,10 @@ let sortedEnvironments = $derived.by(() => {
         switch (sortColumn) {
             case "name":
                 return dir * a.name.localeCompare(b.name);
-            case "hash": {
+            case "deployment": {
                 const ha = desiredDeployment(a)?.commit.hash ?? "";
                 const hb = desiredDeployment(b)?.commit.hash ?? "";
                 return dir * ha.localeCompare(hb);
-            }
-            case "commit": {
-                const ma = desiredDeployment(a)?.commit.message ?? "";
-                const mb = desiredDeployment(b)?.commit.message ?? "";
-                return dir * ma.localeCompare(mb);
             }
             case "resources":
                 return dir * (a.resources.length - b.resources.length);
@@ -142,17 +137,9 @@ function sortIndicator(column: SortColumn): string {
               <th class="pb-2 pr-4 font-medium">
                 <button
                   class="hover:text-gray-200 transition-colors cursor-pointer"
-                  onclick={() => toggleSort("hash")}
+                  onclick={() => toggleSort("deployment")}
                 >
-                  Current hash{sortIndicator("hash")}
-                </button>
-              </th>
-              <th class="pb-2 pr-4 font-medium">
-                <button
-                  class="hover:text-gray-200 transition-colors cursor-pointer"
-                  onclick={() => toggleSort("commit")}
-                >
-                  Current commit{sortIndicator("commit")}
+                  Current deployment{sortIndicator("deployment")}
                 </button>
               </th>
               <th class="pb-2 font-medium">
@@ -177,16 +164,19 @@ function sortIndicator(column: SortColumn): string {
                     {env.name}
                   </a>
                 </td>
-                <td class="py-2 pr-4 font-mono text-gray-400">
+                <td class="py-2 pr-4 text-gray-400">
                   {#if desired}
-                    {desired.commit.hash.substring(0, 8)}
-                  {:else}
-                    <span class="text-gray-600">&mdash;</span>
-                  {/if}
-                </td>
-                <td class="py-2 pr-4 text-gray-400 truncate max-w-md">
-                  {#if desired}
-                    {desired.commit.message.split("\n")[0]}
+                    <a
+                      href={deploymentHref(orgName, repoName, env.name, desired.commit.hash)}
+                      class="hover:text-gray-200 transition-colors"
+                    >
+                      <span class="font-mono text-blue-400 hover:text-blue-300"
+                        >{desired.commit.hash.substring(0, 8)}</span
+                      >
+                      <span class="ml-2 truncate"
+                        >{desired.commit.message.split("\n")[0]}</span
+                      >
+                    </a>
                   {:else}
                     <span class="text-gray-600">&mdash;</span>
                   {/if}
