@@ -47,10 +47,10 @@ let activeTab = $derived(
     </div>
   {:else if env}
     <!-- Tabs -->
-    <div class="flex gap-1 border-b border-gray-800 mb-4">
+    <div class="flex gap-1 border-b border-gray-800 mb-4 overflow-x-auto">
       <a
         href={envBase}
-        class="px-3 py-2 text-sm transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'files'
           ? 'border-indigo-500 text-white'
           : 'border-transparent text-gray-400 hover:text-gray-200'}"
@@ -59,7 +59,7 @@ let activeTab = $derived(
       </a>
       <a
         href={deploymentsPath}
-        class="px-3 py-2 text-sm transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'deployments'
           ? 'border-indigo-500 text-white'
           : 'border-transparent text-gray-400 hover:text-gray-200'}"
@@ -70,7 +70,7 @@ let activeTab = $derived(
       </a>
       <a
         href={resPath}
-        class="px-3 py-2 text-sm transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'resources'
           ? 'border-indigo-500 text-white'
           : 'border-transparent text-gray-400 hover:text-gray-200'}"
@@ -81,7 +81,7 @@ let activeTab = $derived(
       </a>
       <a
         href={logsPath}
-        class="px-3 py-2 text-sm transition-colors border-b-2 -mb-px {activeTab ===
+        class="px-3 py-2 text-sm whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'logs'
           ? 'border-indigo-500 text-white'
           : 'border-transparent text-gray-400 hover:text-gray-200'}"
