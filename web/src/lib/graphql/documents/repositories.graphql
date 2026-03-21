@@ -8,6 +8,9 @@ query RepositoryDetail($org: String!, $repo: String!) {
       environments {
         name
         qid
+        resources {
+          name
+        }
         deployments {
           id
           ref
