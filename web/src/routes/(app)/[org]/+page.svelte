@@ -13,10 +13,6 @@ const orgDetail = graphqlQuery(() => ({
 </script>
 
 <div class="p-6">
-  <nav class="text-sm text-gray-500 mb-4">
-    <span class="text-gray-300">{orgName}</span>
-  </nav>
-
   <h1 class="text-2xl font-bold text-white mb-6">{orgName}</h1>
 
   {#if orgDetail.isPending}

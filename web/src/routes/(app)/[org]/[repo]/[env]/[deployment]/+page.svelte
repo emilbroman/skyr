@@ -9,14 +9,7 @@ import {
     DeploymentState,
 } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import {
-    commitTreeHref,
-    decodeSegment,
-    envHref,
-    orgHref,
-    repoHref,
-    resourcesHref,
-} from "$lib/paths";
+import { commitTreeHref, decodeSegment, envHref, resourcesHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -46,14 +39,8 @@ const liveStates: DeploymentState[] = [
 let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 </script>
 
-<div class="p-6">
+<div>
   <nav class="text-sm text-gray-500 mb-4">
-    <a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
-    <span class="mx-2">/</span>
-    <a href={repoHref(orgName, repoName)} class="hover:text-gray-300"
-      >{repoName}</a
-    >
-    <span class="mx-2">/</span>
     <a href={envHref(orgName, repoName, envName)} class="hover:text-gray-300"
       >{envName}</a
     >
@@ -73,11 +60,8 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
     <!-- Header -->
     <div class="flex items-center gap-4 mb-6">
       <DeploymentStateBadge state={deployment.state} />
-      <h1 class="text-xl font-bold text-white">
-        <span class="text-gray-400 font-normal"
-          >{orgName}/{repoName} &mdash; {envName} &mdash;</span
-        >
-        <span class="font-mono">{deployment.commit.hash.substring(0, 8)}</span>
+      <h1 class="text-xl font-bold text-white font-mono">
+        {deployment.commit.hash.substring(0, 8)}
       </h1>
     </div>
 

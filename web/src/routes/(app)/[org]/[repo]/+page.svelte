@@ -3,7 +3,7 @@ import { page } from "$app/stores";
 import RootTree from "$lib/components/RootTree.svelte";
 import { DeploymentState, RepositoryDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { deploymentHref, envHref, orgHref, resourcesHref } from "$lib/paths";
+import { deploymentHref, envHref, resourcesHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -80,15 +80,7 @@ function sortIndicator(column: SortColumn): string {
 }
 </script>
 
-<div class="p-6">
-  <nav class="text-sm text-gray-500 mb-4">
-    <a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
-    <span class="mx-2">/</span>
-    <span class="text-gray-300">{repoName}</span>
-  </nav>
-
-  <h1 class="text-2xl font-bold text-white mb-6">{orgName}/{repoName}</h1>
-
+<div>
   {#if repoDetail.isPending}
     <p class="text-gray-400">Loading repository...</p>
   {:else if repoDetail.error}
