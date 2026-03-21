@@ -1098,9 +1098,6 @@ async fn handle_check(
         markers: current.markers,
     };
 
-    let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id[..8];
-
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
@@ -1108,16 +1105,6 @@ async fn handle_check(
         resource_name = %message.resource.resource_name,
         "calling plugin check",
     );
-    log_event(
-        &ctx.ldb_publisher,
-        &dep_qid,
-        &res_qid,
-        Severity::Info,
-        format!("Checking {} for {}", id, dep_short),
-        format!("Checking for {}", dep_short),
-    )
-    .await;
-
     let checked = match plugin
         .check(
             &message.resource.environment_qid,
@@ -1159,22 +1146,6 @@ async fn handle_check(
         resource_name = %message.resource.resource_name,
         "checked resource",
     );
-    log_event(
-        &ctx.ldb_publisher,
-        &dep_qid,
-        &res_qid,
-        Severity::Info,
-        format!(
-            "Checked {} for {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
-            dep_short
-        ),
-        format!("Checked for {}", dep_short),
-    )
-    .await;
     Ok(())
 }
 
