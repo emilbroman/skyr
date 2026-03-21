@@ -1,6 +1,7 @@
 <script lang="ts">
 import { replaceState } from "$app/navigation";
 import { page } from "$app/stores";
+import { untrack } from "svelte";
 import DirectoryView from "$lib/components/DirectoryView.svelte";
 import FileView from "$lib/components/FileView.svelte";
 import { query } from "$lib/graphql/client";
@@ -90,25 +91,35 @@ async function loadPath(path: string) {
     }
 }
 
-// Trailing slash normalization: directories get trailing slash, files lose it.
-// Uses replaceState to update the URL without triggering a navigation cycle.
+// Load data when path changes.
+// Uses untrack for the load calls so that setting `view` doesn't
+// re-subscribe this effect to anything new.
 $effect(() => {
-    const currentUrl = $page.url.pathname;
-    const hasTrailingSlash = currentUrl.endsWith("/");
-    if (view.kind === "directory" && !hasTrailingSlash) {
-        replaceState(`${currentUrl}/`, {});
-    } else if (view.kind === "file" && hasTrailingSlash) {
-        replaceState(currentUrl.replace(/\/+$/, ""), {});
-    }
+    // Subscribe to the path-derived reactives:
+    const root = isRoot;
+    const segments = pathSegments;
+    untrack(() => {
+        if (root) {
+            loadRoot();
+        } else {
+            loadPath(segments.join("/"));
+        }
+    });
 });
 
-// Load data when path changes
+// Trailing slash normalization: directories get trailing slash, files lose it.
+// Only depends on `view.kind`; reads the current URL inside untrack to avoid
+// a feedback loop with replaceState updating $page.
 $effect(() => {
-    if (isRoot) {
-        loadRoot();
-    } else {
-        loadPath(pathSegments.join("/"));
-    }
+    const kind = view.kind;
+    untrack(() => {
+        const currentUrl = $page.url.pathname;
+        if (kind === "directory" && !currentUrl.endsWith("/")) {
+            replaceState(`${currentUrl}/`, {});
+        } else if (kind === "file" && currentUrl.endsWith("/")) {
+            replaceState(currentUrl.replace(/\/+$/, ""), {});
+        }
+    });
 });
 
 let commitMessage = $derived(
