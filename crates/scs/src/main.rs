@@ -239,6 +239,7 @@ impl Handler for ConfigHandler {
                     }
                 }
 
+                channel.eof().await.unwrap_or_default();
                 channel.close().await.unwrap_or_default();
             }
             .instrument(span),
@@ -399,6 +400,29 @@ impl<'a> CommandHandler<'a> {
             out
         }
 
+        fn determine_object_kind(
+            oid: gix_hash::ObjectId,
+            data: &[u8],
+        ) -> anyhow::Result<gix_object::Kind> {
+            for kind in [
+                gix_object::Kind::Commit,
+                gix_object::Kind::Tree,
+                gix_object::Kind::Blob,
+                gix_object::Kind::Tag,
+            ] {
+                let header = gix_object::encode::loose_header(kind, data.len() as u64);
+                let mut hasher = gix_hash::hasher(gix_hash::Kind::Sha1);
+                hasher.update(&header);
+                hasher.update(data);
+                if let Ok(digest) = hasher.try_finalize()
+                    && digest == oid
+                {
+                    return Ok(kind);
+                }
+            }
+            bail!("could not determine object kind for {}", oid)
+        }
+
         async fn collect_objects(
             client: &cdb::RepositoryClient,
             wants: Vec<gix_hash::ObjectId>,
@@ -411,24 +435,17 @@ impl<'a> CommandHandler<'a> {
                 if !seen.insert(oid) {
                     continue;
                 }
-                let raw = client.read_raw_object(oid).await?;
-                let (kind, size, offset) = gix_object::decode::loose_header(&raw)?;
-                let size: usize = size
-                    .try_into()
-                    .map_err(|_| anyhow!("object too large to fit into memory"))?;
-                let body = raw
-                    .get(offset..)
-                    .and_then(|s| s.get(..size))
-                    .ok_or_else(|| anyhow!("object body truncated"))?;
+                let data = client.read_raw_object(oid).await?;
+                let kind = determine_object_kind(oid, &data)?;
 
                 out.push(PackObject {
                     kind,
-                    data: body.to_vec(),
+                    data: data.clone(),
                 });
 
                 match kind {
                     gix_object::Kind::Commit => {
-                        let mut iter = gix_object::CommitRefIter::from_bytes(body);
+                        let mut iter = gix_object::CommitRefIter::from_bytes(&data);
                         let tree = iter.tree_id()?;
                         stack.push(tree);
                         for parent in iter.parent_ids() {
@@ -436,13 +453,13 @@ impl<'a> CommandHandler<'a> {
                         }
                     }
                     gix_object::Kind::Tree => {
-                        for entry in gix_object::TreeRefIter::from_bytes(body) {
+                        for entry in gix_object::TreeRefIter::from_bytes(&data) {
                             let entry = entry?;
                             stack.push(entry.oid.to_owned());
                         }
                     }
                     gix_object::Kind::Tag => {
-                        let target = gix_object::TagRefIter::from_bytes(body).target_id()?;
+                        let target = gix_object::TagRefIter::from_bytes(&data).target_id()?;
                         stack.push(target);
                     }
                     gix_object::Kind::Blob => {}
