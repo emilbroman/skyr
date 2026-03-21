@@ -92,7 +92,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let duration_arg = args
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-        let mut argument_dependencies = duration_arg.dependencies.clone();
+        let argument_dependencies = duration_arg.dependencies.clone();
 
         if duration_arg.value.has_pending() {
             return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
@@ -126,16 +126,13 @@ pub fn register_extern(eval: &mut crate::Eval) {
             argument_dependencies.clone(),
         )?
         else {
-            argument_dependencies.insert(resource_id);
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+            return Ok(crate::TrackedValue::pending().with_dependency(resource_id));
         };
 
         let epoch_millis = outputs.get("epochMillis").assert_int_ref()?;
         let mut result = Record::default();
         result.insert("epochMillis".into(), Value::Int(*epoch_millis));
-        argument_dependencies.insert(resource_id);
-        Ok(crate::TrackedValue::new(Value::Record(result))
-            .with_dependencies(argument_dependencies))
+        Ok(crate::TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
     });
 
     eval.add_extern_fn("Std/Time.subtract", |args, _ctx| {

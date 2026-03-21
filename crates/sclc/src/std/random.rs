@@ -8,7 +8,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let config_arg = args
             .next()
             .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let mut argument_dependencies = config_arg.dependencies.clone();
+        let argument_dependencies = config_arg.dependencies.clone();
 
         if config_arg.value.has_pending() {
             return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
@@ -37,16 +37,13 @@ pub fn register_extern(eval: &mut crate::Eval) {
             argument_dependencies.clone(),
         )?
         else {
-            argument_dependencies.insert(resource_id);
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
+            return Ok(crate::TrackedValue::pending().with_dependency(resource_id));
         };
 
         let mut merged = inputs;
         for (name, value) in outputs.iter() {
             merged.insert(name.to_owned(), value.clone());
         }
-        argument_dependencies.insert(resource_id);
-        Ok(crate::TrackedValue::new(crate::Value::Record(merged))
-            .with_dependencies(argument_dependencies))
+        Ok(crate::TrackedValue::new(crate::Value::Record(merged)).with_dependency(resource_id))
     })
 }
