@@ -2,15 +2,7 @@
 import { page } from "$app/stores";
 import { EnvironmentDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import {
-    decodeSegment,
-    envDeploymentsHref,
-    envHref,
-    envLogsHref,
-    orgHref,
-    repoHref,
-    resourcesHref,
-} from "$lib/paths";
+import { decodeSegment, envDeploymentsHref, envHref, envLogsHref, resourcesHref } from "$lib/paths";
 
 let { children } = $props();
 
@@ -42,20 +34,10 @@ let activeTab = $derived(
 );
 </script>
 
-<div class="p-6">
+<div>
   <nav class="text-sm text-gray-500 mb-4">
-    <a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
-    <span class="mx-2">/</span>
-    <a href={repoHref(orgName, repoName)} class="hover:text-gray-300"
-      >{repoName}</a
-    >
-    <span class="mx-2">/</span>
     <span class="text-gray-300">{envName}</span>
   </nav>
-
-  <h1 class="text-2xl font-bold text-white mb-6">
-    {orgName}/{repoName} &mdash; {envName}
-  </h1>
 
   {#if envDetail.isPending}
     <p class="text-gray-400">Loading environment...</p>

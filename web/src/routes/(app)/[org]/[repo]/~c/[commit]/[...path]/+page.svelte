@@ -5,7 +5,7 @@ import DirectoryView from "$lib/components/DirectoryView.svelte";
 import FileView from "$lib/components/FileView.svelte";
 import { query } from "$lib/graphql/client";
 import { CommitRootTreeDocument, CommitTreeEntryDocument } from "$lib/graphql/generated";
-import { commitTreeHref, orgHref, repoHref } from "$lib/paths";
+import { commitTreeHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -123,15 +123,9 @@ let highlightLine = $derived.by(() => {
 });
 </script>
 
-<div class="p-6">
+<div>
   <!-- Breadcrumb -->
   <nav class="text-sm text-gray-500 mb-4">
-    <a href={orgHref(orgName)} class="hover:text-gray-300">{orgName}</a>
-    <span class="mx-2">/</span>
-    <a href={repoHref(orgName, repoName)} class="hover:text-gray-300"
-      >{repoName}</a
-    >
-    <span class="mx-2">/</span>
     <a
       href={commitTreeHref(orgName, repoName, commitHash)}
       class="hover:text-gray-300 font-mono text-xs"
@@ -153,18 +147,10 @@ let highlightLine = $derived.by(() => {
         <span class="text-gray-300">{segment}</span>
       {/if}
     {/each}
+    {#if commitMessage}
+      <span class="ml-3 text-gray-600">&mdash; {commitMessage}</span>
+    {/if}
   </nav>
-
-  <!-- Header -->
-  <div class="flex items-center gap-3 mb-6">
-    <h1 class="text-2xl font-bold text-white">{orgName}/{repoName}</h1>
-    <span class="text-sm text-gray-500">
-      <span class="font-mono">{commitHash.substring(0, 8)}</span>
-      {#if commitMessage}
-        &mdash; {commitMessage}
-      {/if}
-    </span>
-  </div>
 
   {#if view.kind === "loading"}
     <p class="text-gray-400">Loading...</p>
