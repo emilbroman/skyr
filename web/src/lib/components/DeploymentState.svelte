@@ -1,8 +1,7 @@
 <script lang="ts">
 import { DeploymentState } from "$lib/graphql/generated";
 
-let { state, size = "default" }: { state: DeploymentState; size?: "default" | "small" } =
-    $props();
+let { state, size = "default" }: { state: DeploymentState; size?: "default" | "small" } = $props();
 
 const styles: Record<DeploymentState, { bg: string; text: string }> = {
     [DeploymentState.Up]: {
