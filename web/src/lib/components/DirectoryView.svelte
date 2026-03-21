@@ -1,6 +1,6 @@
 <script lang="ts">
-import { query } from "$lib/graphql/client";
 import { CommitTreeEntryDocument } from "$lib/graphql/generated";
+import { graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref } from "$lib/paths";
 import FileView from "./FileView.svelte";
 
@@ -50,33 +50,25 @@ let readmeEntry = $derived(
         | undefined,
 );
 
-let readmeContent = $state<string | null>(null);
-let readmeLoading = $state(false);
+let readmePath = $derived(readmeEntry?.name ? [...path, readmeEntry.name].join("/") : null);
 
-$effect(() => {
-    if (!readmeEntry?.name) {
-        readmeContent = null;
-        return;
-    }
-
-    const readmePath = [...path, readmeEntry.name].join("/");
-    readmeLoading = true;
-
-    query(CommitTreeEntryDocument, {
+let readmeQuery = graphqlQuery(() => ({
+    document: CommitTreeEntryDocument,
+    variables: {
         org: orgName,
         repo: repoName,
         commit: commitHash,
-        path: readmePath,
-    })
-        .then((data) => {
-            const entry = data.organization.repository.commit.treeEntry;
-            if (entry?.__typename === "Blob" && entry.content != null) {
-                readmeContent = entry.content;
-            }
-        })
-        .finally(() => {
-            readmeLoading = false;
-        });
+        path: readmePath!,
+    },
+    enabled: readmePath != null,
+}));
+
+let readmeContent = $derived.by(() => {
+    const entry = readmeQuery.data?.organization.repository.commit.treeEntry;
+    if (entry?.__typename === "Blob" && entry.content != null) {
+        return entry.content;
+    }
+    return null;
 });
 </script>
 
@@ -150,7 +142,7 @@ $effect(() => {
   </div>
 </div>
 
-{#if readmeLoading}
+{#if readmeQuery.isPending && readmePath != null}
   <div
     class="mt-4 bg-gray-900 border border-gray-800 rounded-lg p-8 text-center text-gray-400"
   >
