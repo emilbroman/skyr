@@ -196,7 +196,9 @@ dependencies = [
  "base64",
  "cdb",
  "chrono",
+ "ciborium",
  "clap",
+ "ed25519-dalek",
  "futures-util",
  "gix-hash",
  "gix-object",
@@ -204,6 +206,7 @@ dependencies = [
  "ids",
  "juniper",
  "ldb",
+ "p256 0.13.2",
  "rand 0.9.2",
  "rdb",
  "regex",
@@ -211,6 +214,7 @@ dependencies = [
  "sclc",
  "serde_json",
  "sha2 0.10.9",
+ "ssh-key",
  "tokio",
  "tower-http",
  "tracing",
@@ -1139,6 +1143,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
+]
+
+[[package]]
 name = "cipher"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1385,6 +1416,12 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
+name = "crunchy"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-bigint"
@@ -2616,6 +2653,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "half"
+version = "2.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
+dependencies = [
+ "cfg-if",
+ "crunchy",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5868,6 +5916,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ssh-key"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3b86f5297f0f04d08cabaa0f6bff7cb6aec4d9c3b49d87990d63da9d9156a8c3"
+dependencies = [
+ "ed25519-dalek",
+ "p256 0.13.2",
+ "p384",
+ "p521",
+ "rand_core 0.6.4",
+ "rsa 0.9.10",
+ "sec1 0.7.3",
+ "sha2 0.10.9",
+ "signature 2.2.0",
+ "ssh-cipher",
+ "ssh-encoding",
+ "subtle",
+ "zeroize",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6470,9 +6539,12 @@ name = "udb"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ciborium",
  "hex",
  "rand 0.9.2",
  "redis",
+ "sha2 0.10.9",
+ "ssh-key",
  "thiserror 2.0.18",
 ]
 
