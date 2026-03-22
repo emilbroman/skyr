@@ -400,29 +400,6 @@ impl<'a> CommandHandler<'a> {
             out
         }
 
-        fn determine_object_kind(
-            oid: gix_hash::ObjectId,
-            data: &[u8],
-        ) -> anyhow::Result<gix_object::Kind> {
-            for kind in [
-                gix_object::Kind::Commit,
-                gix_object::Kind::Tree,
-                gix_object::Kind::Blob,
-                gix_object::Kind::Tag,
-            ] {
-                let header = gix_object::encode::loose_header(kind, data.len() as u64);
-                let mut hasher = gix_hash::hasher(gix_hash::Kind::Sha1);
-                hasher.update(&header);
-                hasher.update(data);
-                if let Ok(digest) = hasher.try_finalize()
-                    && digest == oid
-                {
-                    return Ok(kind);
-                }
-            }
-            bail!("could not determine object kind for {}", oid)
-        }
-
         async fn collect_objects(
             client: &cdb::RepositoryClient,
             wants: Vec<gix_hash::ObjectId>,
@@ -435,13 +412,7 @@ impl<'a> CommandHandler<'a> {
                 if !seen.insert(oid) {
                     continue;
                 }
-                let data = client.read_raw_object(oid).await?;
-                let kind = determine_object_kind(oid, &data)?;
-
-                out.push(PackObject {
-                    kind,
-                    data: data.clone(),
-                });
+                let (kind, data) = client.read_raw_object(oid).await?;
 
                 match kind {
                     gix_object::Kind::Commit => {
@@ -464,6 +435,8 @@ impl<'a> CommandHandler<'a> {
                     }
                     gix_object::Kind::Blob => {}
                 }
+
+                out.push(PackObject { kind, data });
             }
 
             Ok(out)
@@ -875,24 +848,6 @@ impl<'a> CommandHandler<'a> {
 
         let mut oid_by_offset: HashMap<u64, gix_hash::ObjectId> = HashMap::new();
 
-        fn infer_object_kind(
-            id: gix_hash::ObjectId,
-            data: &[u8],
-        ) -> anyhow::Result<gix_object::Kind> {
-            for kind in [
-                gix_object::Kind::Commit,
-                gix_object::Kind::Tree,
-                gix_object::Kind::Blob,
-                gix_object::Kind::Tag,
-            ] {
-                let computed = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, data)?;
-                if computed == id {
-                    return Ok(kind);
-                }
-            }
-            bail!("failed to infer object kind for {}", id);
-        }
-
         loop {
             let mut progress = false;
             for entry in &mut entries {
@@ -925,7 +880,7 @@ impl<'a> CommandHandler<'a> {
                         let Some(base_id) = oid_by_offset.get(&base_offset).copied() else {
                             continue;
                         };
-                        let base_data =
+                        let (kind, base_data) =
                             self.client.read_raw_object(base_id).await.map_err(|err| {
                                 anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
                             })?;
@@ -933,7 +888,6 @@ impl<'a> CommandHandler<'a> {
                             .data
                             .take()
                             .ok_or_else(|| anyhow!("missing delta data"))?;
-                        let kind = infer_object_kind(base_id, &base_data)?;
                         let data = apply_delta(&base_data, &delta)?;
                         let id = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, &data)?;
                         let object =
@@ -944,8 +898,8 @@ impl<'a> CommandHandler<'a> {
                         progress = true;
                     }
                     gix_pack::data::entry::Header::RefDelta { base_id } => {
-                        let base_data = match self.client.read_raw_object(base_id).await {
-                            Ok(data) => data,
+                        let (kind, base_data) = match self.client.read_raw_object(base_id).await {
+                            Ok(result) => result,
                             Err(cdb::LoadObjectError::NotFound) => continue,
                             Err(err) => {
                                 return Err(anyhow!(
@@ -955,7 +909,6 @@ impl<'a> CommandHandler<'a> {
                                 ));
                             }
                         };
-                        let kind = infer_object_kind(base_id, &base_data)?;
 
                         let delta = entry
                             .data

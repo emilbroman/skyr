@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use gix_hash::ObjectId;
-use gix_object::{Blob, Commit, Object, Tree, WriteTo};
+use gix_object::{Blob, Commit, Kind, Object, Tree, WriteTo};
 use ids::{DeploymentId, EnvironmentId, RepoQid};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
@@ -20,6 +20,27 @@ use scylla::{
     statement::prepared::PreparedStatement,
 };
 use thiserror::Error;
+
+fn kind_to_db(kind: Kind) -> i8 {
+    match kind {
+        Kind::Commit => 1,
+        Kind::Tree => 2,
+        Kind::Blob => 3,
+        Kind::Tag => 4,
+    }
+}
+
+fn kind_from_db(kind: Option<i8>) -> Kind {
+    match kind {
+        Some(1) => Kind::Commit,
+        Some(2) => Kind::Tree,
+        Some(3) => Kind::Blob,
+        Some(4) => Kind::Tag,
+        // Legacy rows written before the kind column was added have NULL.
+        // Default to Blob since it's the most permissive (content is opaque).
+        _ => Kind::Blob,
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum ConnectError {
@@ -115,6 +136,7 @@ prepared_statements! {
                 organization TEXT,
                 repository TEXT,
                 hash BLOB,
+                kind TINYINT,
                 contents BLOB,
                 PRIMARY KEY ((organization, repository), hash)
             )
@@ -146,15 +168,15 @@ prepared_statements! {
         "#,
 
         read_object = r#"
-            SELECT contents FROM cdb.objects
+            SELECT kind, contents FROM cdb.objects
             WHERE organization = ?
             AND repository = ?
             AND hash = ?
         "#,
 
         write_object = r#"
-            INSERT INTO cdb.objects (organization, repository, hash, contents)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO cdb.objects (organization, repository, hash, kind, contents)
+            VALUES (?, ?, ?, ?, ?)
         "#,
 
         find_deployment_by_qid = r#"
@@ -611,7 +633,7 @@ impl RepositoryClient {
         }
     }
 
-    async fn read_object(&self, hash: ObjectId) -> Result<Vec<u8>, LoadObjectError> {
+    async fn read_object(&self, hash: ObjectId) -> Result<(Kind, Vec<u8>), LoadObjectError> {
         let repo = &self.name;
         let pager = self
             .client
@@ -622,13 +644,21 @@ impl RepositoryClient {
             )
             .await?;
 
-        match pager.rows_stream::<(Vec<u8>,)>()?.try_next().await? {
+        match pager
+            .rows_stream::<(Option<i8>, Vec<u8>)>()?
+            .try_next()
+            .await?
+        {
             None => Err(LoadObjectError::NotFound),
-            Some((contents,)) => Ok(contents),
+            Some((kind, contents)) => {
+                let kind = kind_from_db(kind);
+                Ok((kind, contents))
+            }
         }
     }
 
     pub async fn write_object(&self, id: ObjectId, object: Object) -> Result<(), WriteObjectError> {
+        let kind = kind_to_db(object.kind());
         let mut data = vec![];
         object.write_to(&mut data)?;
         let repo = &self.name;
@@ -637,14 +667,23 @@ impl RepositoryClient {
             .session
             .execute_unpaged(
                 &self.client.statements.write_object,
-                (repo.org.as_str(), repo.repo.as_str(), id.as_slice(), data),
+                (
+                    repo.org.as_str(),
+                    repo.repo.as_str(),
+                    id.as_slice(),
+                    kind,
+                    data,
+                ),
             )
             .await?;
 
         Ok(())
     }
 
-    pub async fn read_raw_object(&self, hash: ObjectId) -> Result<Vec<u8>, LoadObjectError> {
+    pub async fn read_raw_object(
+        &self,
+        hash: ObjectId,
+    ) -> Result<(Kind, Vec<u8>), LoadObjectError> {
         self.read_object(hash).await
     }
 
@@ -653,7 +692,7 @@ impl RepositoryClient {
     }
 
     pub async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
-        let data = self.read_object(hash).await?;
+        let (_, data) = self.read_object(hash).await?;
         let commit = gix_object::CommitRef::from_bytes(&data)?;
         Ok(commit.into_owned()?)
     }
@@ -663,7 +702,7 @@ impl RepositoryClient {
     }
 
     pub async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
-        let data = self.read_object(hash).await?;
+        let (_, data) = self.read_object(hash).await?;
         let tree = gix_object::TreeRef::from_bytes(&data)?;
         Ok(tree.into_owned())
     }
@@ -673,7 +712,7 @@ impl RepositoryClient {
     }
 
     pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
-        let data = self.read_object(hash).await?;
+        let (_, data) = self.read_object(hash).await?;
         let blob = gix_object::BlobRef::from_bytes(&data).unwrap(); // infallible
         Ok(blob.into_owned())
     }
