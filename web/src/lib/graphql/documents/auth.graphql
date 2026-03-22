@@ -1,11 +1,25 @@
 query AuthChallenge($username: String!) {
   authChallenge(username: $username) {
     challenge
+    passkeyRegistration
+    passkeySignin
   }
 }
 
 mutation SignIn($username: String!, $proof: JSON!) {
   signin(username: $username, proof: $proof) {
+    user {
+      username
+      email
+      fullname
+      publicKeys
+    }
+    token
+  }
+}
+
+mutation Signup($username: String!, $email: String!, $proof: JSON!) {
+  signup(username: $username, email: $email, proof: $proof) {
     user {
       username
       email

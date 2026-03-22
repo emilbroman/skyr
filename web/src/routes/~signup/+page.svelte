@@ -1,20 +1,21 @@
 <script lang="ts">
 import { onDestroy, onMount } from "svelte";
 import { goto } from "$app/navigation";
-import { page } from "$app/stores";
 import { query } from "$lib/graphql/client";
-import { AuthChallengeDocument, SignInDocument } from "$lib/graphql/generated";
+import { AuthChallengeDocument, SignupDocument } from "$lib/graphql/generated";
 import type { AuthChallengeQuery } from "$lib/graphql/generated";
 import { graphqlMutation } from "$lib/graphql/query";
 import { setAuth } from "$lib/stores/auth";
-import { createPasskeyAssertion } from "$lib/webauthn";
+import { createPasskeyRegistration } from "$lib/webauthn";
 
 let username = $state("");
+let email = $state("");
+let fullname = $state("");
 let authChallenge = $state<AuthChallengeQuery["authChallenge"] | null>(null);
 let response = $state("");
 let error = $state<string | null>(null);
 let loading = $state(false);
-let step = $state<"username" | "sign">("username");
+let step = $state<"form" | "sign">("form");
 let showSshFlow = $state(false);
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -24,9 +25,9 @@ onMount(() => {
     if (u) username = u;
 });
 
-const signIn = graphqlMutation(SignInDocument, {
+const signup = graphqlMutation(SignupDocument, {
     onSuccess: (data) => {
-        setAuth(data.signin.token, data.signin.user);
+        setAuth(data.signup.token, data.signup.user);
         goto("/");
     },
     onError: (e) => {
@@ -35,7 +36,7 @@ const signIn = graphqlMutation(SignInDocument, {
 });
 
 async function fetchChallenge() {
-    if (!username.trim()) return;
+    if (!username.trim() || !email.trim()) return;
     error = null;
     loading = true;
     try {
@@ -86,31 +87,33 @@ function parseSignature(raw: string): string | null {
     return trimmed;
 }
 
-function submitSshSignIn() {
+function submitSshSignup() {
     const signature = parseSignature(response);
     if (!signature) {
         error = "Could not find a valid SSH signature. Make sure you pasted the full output.";
         return;
     }
     error = null;
-    signIn.mutate({
+    signup.mutate({
         username: username.trim(),
+        email: email.trim(),
         proof: signature,
     });
 }
 
-async function submitPasskeySignIn() {
-    if (!authChallenge?.passkeySignin) return;
+async function submitPasskeySignup() {
+    if (!authChallenge?.passkeyRegistration) return;
     error = null;
     loading = true;
     try {
-        const proof = await createPasskeyAssertion(authChallenge.passkeySignin);
-        signIn.mutate({
+        const proof = await createPasskeyRegistration(authChallenge.passkeyRegistration);
+        signup.mutate({
             username: username.trim(),
+            email: email.trim(),
             proof,
         });
     } catch (e) {
-        error = e instanceof Error ? e.message : "Passkey authentication failed";
+        error = e instanceof Error ? e.message : "Passkey registration failed";
     } finally {
         loading = false;
     }
@@ -125,7 +128,7 @@ function copyToClipboard(text: string) {
   <div class="w-full max-w-lg">
     <div class="text-center mb-8">
       <h1 class="text-xl font-bold text-gray-900">Skyr</h1>
-      <p class="text-gray-500 mt-2">Sign in to your account</p>
+      <p class="text-gray-500 mt-2">Create your account</p>
     </div>
 
     <div class="bg-white rounded-lg border border-gray-200 p-6">
@@ -137,7 +140,7 @@ function copyToClipboard(text: string) {
         </div>
       {/if}
 
-      {#if step === "username"}
+      {#if step === "form"}
         <form
           onsubmit={(e) => {
             e.preventDefault();
@@ -154,39 +157,70 @@ function copyToClipboard(text: string) {
             id="username"
             type="text"
             bind:value={username}
-            placeholder="Enter your username"
+            placeholder="Choose a username"
             class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
             disabled={loading}
           />
+
+          <label
+            class="block mt-4 mb-2 font-medium text-gray-600"
+            for="email"
+          >
+            Email
+          </label>
+          <input
+            id="email"
+            type="email"
+            bind:value={email}
+            placeholder="you@example.com"
+            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            disabled={loading}
+          />
+
+          <label
+            class="block mt-4 mb-2 font-medium text-gray-600"
+            for="fullname"
+          >
+            Full name <span class="text-gray-400 font-normal">(optional)</span>
+          </label>
+          <input
+            id="fullname"
+            type="text"
+            bind:value={fullname}
+            placeholder="Your full name"
+            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            disabled={loading}
+          />
+
           <button
             type="submit"
             class="w-full mt-4 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading || !username.trim()}
+            disabled={loading || !username.trim() || !email.trim()}
           >
             {loading ? "Loading..." : "Continue"}
           </button>
         </form>
 
         <p class="mt-4 text-center text-gray-500">
-          Don't have an account?
+          Already have an account?
           <a
-            href="/~signup{username.trim() ? `?username=${encodeURIComponent(username.trim())}` : ''}"
+            href="/~signin{username.trim() ? `?username=${encodeURIComponent(username.trim())}` : ''}"
             class="text-orange-600 hover:text-orange-500"
           >
-            Sign up
+            Sign in
           </a>
         </p>
       {:else}
         <div class="space-y-5">
           <div>
             <p class="text-gray-500 mb-3">
-              Signing in as <span class="text-gray-900 font-medium"
+              Signing up as <span class="text-gray-900 font-medium"
                 >{username}</span
               >
               <button
                 class="text-orange-600 hover:text-orange-500 ml-2"
                 onclick={() => {
-                  step = "username";
+                  step = "form";
                   authChallenge = null;
                   error = null;
                   showSshFlow = false;
@@ -198,22 +232,20 @@ function copyToClipboard(text: string) {
             </p>
           </div>
 
-          {#if authChallenge?.passkeySignin}
-            <button
-              onclick={submitPasskeySignIn}
-              class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              disabled={loading || signIn.isPending}
-            >
-              {loading || signIn.isPending ? "Signing in..." : "Sign in with passkey"}
-            </button>
-          {/if}
+          <button
+            onclick={submitPasskeySignup}
+            class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={loading || signup.isPending}
+          >
+            {loading || signup.isPending ? "Signing up..." : "Sign up with passkey"}
+          </button>
 
           {#if !showSshFlow}
             <button
               onclick={() => (showSshFlow = true)}
               class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors"
             >
-              Sign in with SSH signature
+              Sign up with SSH signature
             </button>
           {:else}
             <div class="space-y-4">
@@ -267,22 +299,22 @@ function copyToClipboard(text: string) {
               </div>
 
               <button
-                onclick={submitSshSignIn}
+                onclick={submitSshSignup}
                 class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={signIn.isPending || !response.trim()}
+                disabled={signup.isPending || !response.trim()}
               >
-                {signIn.isPending ? "Signing in..." : "Sign in with SSH signature"}
+                {signup.isPending ? "Signing up..." : "Sign up with SSH signature"}
               </button>
             </div>
           {/if}
 
           <p class="text-center text-gray-500">
-            Don't have an account?
+            Already have an account?
             <a
-              href="/~signup?username={encodeURIComponent(username.trim())}"
+              href="/~signin?username={encodeURIComponent(username.trim())}"
               class="text-orange-600 hover:text-orange-500"
             >
-              Sign up
+              Sign in
             </a>
           </p>
         </div>

@@ -88,7 +88,7 @@ type Mutation {
   createRepository(organization: String!, repository: String!): Repository!
   signup(username: String!, email: String!, proof: JSON!): AuthSuccess!
   updateFullname(fullname: String!): User!
-  addPublicKey(fingerprint: String!): User!
+  addPublicKey(proof: JSON!): User!
   removePublicKey(fingerprint: String!): User!
   signin(username: String!, proof: JSON!): AuthSuccess!
 }

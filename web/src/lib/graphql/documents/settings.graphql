@@ -15,8 +15,8 @@ mutation UpdateFullname($fullname: String!) {
     }
 }
 
-mutation AddPublicKey($fingerprint: String!) {
-    addPublicKey(fingerprint: $fingerprint) {
+mutation AddPublicKey($proof: JSON!) {
+    addPublicKey(proof: $proof) {
         username
         email
         fullname
