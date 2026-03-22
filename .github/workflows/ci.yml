@@ -14,8 +14,34 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: Check & Test
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'flake.nix'
+              - 'flake.lock'
+            web:
+              - 'web/**'
+
+  rust-check:
+    name: Rust Check & Test
+    needs: [changes]
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +60,14 @@ jobs:
       - name: cargo test
         run: nix develop -c cargo test --workspace
 
+  web-check:
+    name: Web Check
+    needs: [changes]
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
       - name: web install
         run: npm ci
         working-directory: web
@@ -51,8 +85,11 @@ jobs:
   # ---------------------------------------------------------------------------
   base-image:
     name: Build base image
-    if: github.ref == 'refs/heads/main'
-    needs: [check]
+    needs: [rust-check]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.rust-check.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -81,8 +118,11 @@ jobs:
 
   service-images:
     name: "Image: skyr-${{ matrix.binary }}"
-    if: github.ref == 'refs/heads/main'
     needs: [base-image]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.base-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -127,8 +167,11 @@ jobs:
   # ---------------------------------------------------------------------------
   web-image:
     name: Build web image
-    if: github.ref == 'refs/heads/main'
-    needs: [check]
+    needs: [web-check]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.web-check.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -160,8 +203,11 @@ jobs:
   # ---------------------------------------------------------------------------
   build-cli:
     name: "CLI: ${{ matrix.target }}"
-    if: github.ref == 'refs/heads/main'
-    needs: [check]
+    needs: [rust-check]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.rust-check.result != 'failure'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -210,8 +256,11 @@ jobs:
   # ---------------------------------------------------------------------------
   build-scoc:
     name: "scoc: ${{ matrix.target }}"
-    if: github.ref == 'refs/heads/main'
-    needs: [check]
+    needs: [rust-check]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.rust-check.result != 'failure'
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -254,8 +303,11 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Create Release
-    if: github.ref == 'refs/heads/main'
     needs: [build-cli, build-scoc, base-image, service-images, web-image]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      !contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     permissions:
       contents: write
