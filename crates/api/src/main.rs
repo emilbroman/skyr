@@ -1,6 +1,7 @@
 use std::{pin::Pin, sync::Arc, time::Duration};
 
 mod challenge;
+mod webauthn;
 
 use axum::{
     Json as AxumJson, Router,
@@ -11,11 +12,13 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
+use base64::Engine;
 use chrono::{TimeZone, Utc};
 use clap::Parser;
 use futures_util::{Stream, StreamExt, TryStreamExt};
 use http::StatusCode;
 use juniper::{FieldResult, InputValue, RootNode, ScalarValue, Value, graphql_scalar};
+use sha2::Digest;
 use tower_http::cors::{Any, CorsLayer};
 
 struct Context {
@@ -25,6 +28,8 @@ struct Context {
     adb_client: adb::Client,
     ldb_brokers: String,
     challenger: Arc<challenge::Challenger>,
+    rp_id: Arc<String>,
+    rp_name: Arc<String>,
     user: Option<udb::UserClient>,
 }
 
@@ -75,12 +80,94 @@ impl Query {
         Ok(User { user })
     }
 
-    async fn auth_challenge(context: &Context, username: String) -> FieldResult<String> {
+    async fn auth_challenge(context: &Context, username: String) -> FieldResult<AuthChallenge> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(field_error("Invalid username"));
         }
 
-        Ok(context.challenger.challenge(Utc::now(), &username))
+        let b64url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let challenge_string = context.challenger.challenge(Utc::now(), &username);
+        let challenge_b64 = b64url.encode(challenge_string.as_bytes());
+
+        let user_id_hash = sha2::Sha256::digest(username.as_bytes());
+        let user_id_b64 = b64url.encode(user_id_hash);
+
+        // Look up existing WebAuthn credentials for excludeCredentials / allowCredentials
+        let mut user_client = context.udb_client.user(&username);
+        let credentials = match user_client.get().await {
+            Ok(_) => user_client
+                .pubkeys()
+                .list_credentials()
+                .await
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+
+        let webauthn_creds: Vec<_> = credentials
+            .iter()
+            .filter_map(|c| c.credential_id.as_ref())
+            .collect();
+
+        let exclude_credentials: Vec<serde_json::Value> = webauthn_creds
+            .iter()
+            .map(|cid| {
+                serde_json::json!({
+                    "type": "public-key",
+                    "id": cid,
+                })
+            })
+            .collect();
+
+        let passkey_registration = JsonValue(serde_json::json!({
+            "rp": {
+                "id": *context.rp_id,
+                "name": *context.rp_name,
+            },
+            "user": {
+                "id": user_id_b64,
+                "name": username,
+                "displayName": username,
+            },
+            "challenge": challenge_b64,
+            "pubKeyCredParams": [
+                { "type": "public-key", "alg": -7 },
+                { "type": "public-key", "alg": -8 },
+            ],
+            "timeout": 60000,
+            "attestation": "none",
+            "authenticatorSelection": {
+                "residentKey": "preferred",
+                "userVerification": "preferred",
+            },
+            "excludeCredentials": exclude_credentials,
+        }));
+
+        let passkey_signin = if !webauthn_creds.is_empty() {
+            let allow_credentials: Vec<serde_json::Value> = webauthn_creds
+                .iter()
+                .map(|cid| {
+                    serde_json::json!({
+                        "type": "public-key",
+                        "id": cid,
+                    })
+                })
+                .collect();
+            Some(JsonValue(serde_json::json!({
+                "challenge": challenge_b64,
+                "rpId": *context.rp_id,
+                "timeout": 60000,
+                "userVerification": "preferred",
+                "allowCredentials": allow_credentials,
+            })))
+        } else {
+            None
+        };
+
+        Ok(AuthChallenge {
+            challenge: challenge_string,
+            passkey_registration,
+            passkey_signin,
+        })
     }
 
     async fn refresh_token(context: &Context) -> FieldResult<AuthSuccess> {
@@ -132,6 +219,29 @@ impl Query {
                 tracing::error!("Failed to read repository row: {}", e);
                 internal_error()
             })
+    }
+}
+
+struct AuthChallenge {
+    challenge: String,
+    passkey_registration: JsonValue,
+    passkey_signin: Option<JsonValue>,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl AuthChallenge {
+    fn challenge(&self) -> &str {
+        &self.challenge
+    }
+
+    #[graphql(name = "passkeyRegistration")]
+    fn passkey_registration(&self) -> &JsonValue {
+        &self.passkey_registration
+    }
+
+    #[graphql(name = "passkeySignin")]
+    fn passkey_signin(&self) -> Option<&JsonValue> {
+        self.passkey_signin.as_ref()
     }
 }
 
@@ -187,8 +297,7 @@ impl Mutation {
         context: &Context,
         username: String,
         email: String,
-        pubkey: String,
-        signature: String,
+        proof: JsonValue,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(field_error("Invalid username"));
@@ -198,54 +307,54 @@ impl Mutation {
             return Err(field_error("Invalid email"));
         }
 
-        let public_key =
-            russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
-                tracing::warn!("Invalid pubkey format: {}", e);
-                field_error("Invalid credentials")
-            })?;
-        context
-            .challenger
-            .check(&public_key, &signature, &username, Utc::now())
-            .map_err(|_| field_error("Invalid credentials"))?;
-        let pubkey_fingerprint = public_key.fingerprint(Default::default()).to_string();
+        let now = Utc::now();
 
-        match context.udb_client.user(&username).register(email).await {
+        let (openssh_key, credential_id, sign_count) = match &proof.0 {
+            serde_json::Value::String(sig_pem) => {
+                // SSH signature flow
+                signup_ssh(context, sig_pem, &username, now)?
+            }
+            serde_json::Value::Object(_) => {
+                // WebAuthn attestation flow
+                signup_webauthn(context, &proof.0, &username, now)?
+            }
+            _ => {
+                return Err(field_error(
+                    "Invalid proof: expected a string (SSH signature) or object (WebAuthn attestation)",
+                ));
+            }
+        };
+
+        let mut user_client = context.udb_client.user(&username);
+        let user = match user_client.register(email).await {
             Err(udb::RegisterUserError::UsernameTaken) => {
-                Err(field_error("Username already taken"))
+                return Err(field_error("Username already taken"));
             }
             Err(e) => {
                 tracing::error!("Failed to register user: {}", e);
-                Err(internal_error())
+                return Err(internal_error());
             }
-            Ok(user) => {
-                context
-                    .udb_client
-                    .user(&username)
-                    .pubkeys()
-                    .add(pubkey_fingerprint)
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Failed to add pubkey fingerprint: {}", e);
-                        internal_error()
-                    })?;
+            Ok(user) => user,
+        };
 
-                let token = context
-                    .udb_client
-                    .user(&username)
-                    .tokens()
-                    .issue()
-                    .await
-                    .map_err(|e| {
-                        tracing::error!("Failed to issue token: {}", e);
-                        internal_error()
-                    })?;
+        user_client
+            .pubkeys()
+            .add_credential(&openssh_key, credential_id.as_deref(), sign_count)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to add credential: {}", e);
+                internal_error()
+            })?;
 
-                Ok(AuthSuccess {
-                    user: User { user },
-                    token,
-                })
-            }
-        }
+        let token = user_client.tokens().issue().await.map_err(|e| {
+            tracing::error!("Failed to issue token: {}", e);
+            internal_error()
+        })?;
+
+        Ok(AuthSuccess {
+            user: User { user },
+            token,
+        })
     }
 
     #[graphql(name = "updateFullname")]
@@ -306,19 +415,13 @@ impl Mutation {
     async fn signin(
         context: &Context,
         username: String,
-        signature: String,
-        pubkey: String,
+        proof: JsonValue,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(field_error("Invalid username"));
         }
 
-        let public_key =
-            russh::keys::ssh_key::PublicKey::from_openssh(pubkey.trim()).map_err(|e| {
-                tracing::warn!("Invalid pubkey format: {}", e);
-                field_error("Invalid credentials")
-            })?;
-        let fingerprint = public_key.fingerprint(Default::default()).to_string();
+        let now = Utc::now();
 
         let mut user_client = context.udb_client.user(&username);
         let user = match user_client.get().await {
@@ -332,37 +435,353 @@ impl Mutation {
             }
         };
 
-        let mut pubkeys = user_client.pubkeys();
-        let has_fingerprint = pubkeys.contains(&fingerprint).await.map_err(|e| {
-            tracing::error!("Failed to check pubkey fingerprint: {}", e);
-            internal_error()
-        })?;
-
-        if !has_fingerprint {
-            return Err(field_error("Invalid credentials"));
+        match &proof.0 {
+            serde_json::Value::String(sig_pem) => {
+                // SSH signature flow
+                signin_ssh(context, &mut user_client, sig_pem, &username, now).await?;
+            }
+            serde_json::Value::Object(_) => {
+                // WebAuthn assertion flow
+                signin_webauthn(context, &mut user_client, &proof.0, &username, now).await?;
+            }
+            _ => {
+                return Err(field_error(
+                    "Invalid proof: expected a string (SSH signature) or object (WebAuthn assertion)",
+                ));
+            }
         }
 
-        context
-            .challenger
-            .check(&public_key, &signature, &username, Utc::now())
-            .map_err(|_| field_error("Invalid credentials"))?;
-
-        let token = context
-            .udb_client
-            .user(&username)
-            .tokens()
-            .issue()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to issue token: {}", e);
-                internal_error()
-            })?;
+        let token = user_client.tokens().issue().await.map_err(|e| {
+            tracing::error!("Failed to issue token: {}", e);
+            internal_error()
+        })?;
 
         Ok(AuthSuccess {
             user: User { user },
             token,
         })
     }
+}
+
+/// SSH signup: parse SshSig from PEM, extract pubkey, verify against challenge frames.
+/// Returns (openssh_key, credential_id=None, sign_count=0).
+fn signup_ssh(
+    context: &Context,
+    sig_pem: &str,
+    username: &str,
+    now: chrono::DateTime<Utc>,
+) -> FieldResult<(String, Option<String>, u32)> {
+    let ssh_sig: ssh_key::SshSig = sig_pem.parse().map_err(|e| {
+        tracing::warn!("Invalid SSH signature PEM: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let public_key = ssh_key::PublicKey::from(ssh_sig.public_key().clone());
+    let openssh_key = public_key.to_openssh().map_err(|e| {
+        tracing::warn!("Failed to serialize public key: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    // Verify against valid challenge frames
+    let valid_challenges = context.challenger.valid_challenges(now, username);
+    let verified = valid_challenges.iter().any(|challenge| {
+        public_key
+            .verify(
+                challenge::CHALLENGE_NAMESPACE,
+                challenge.as_bytes(),
+                &ssh_sig,
+            )
+            .is_ok()
+    });
+    if !verified {
+        return Err(field_error("Invalid credentials"));
+    }
+
+    Ok((openssh_key, None, 0))
+}
+
+/// WebAuthn signup (attestation): parse attestation response, extract COSE key, convert to SSH.
+/// Returns (openssh_key, credential_id, sign_count).
+fn signup_webauthn(
+    context: &Context,
+    proof: &serde_json::Value,
+    username: &str,
+    now: chrono::DateTime<Utc>,
+) -> FieldResult<(String, Option<String>, u32)> {
+    let b64url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let credential_id_b64 = proof
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'id' in WebAuthn attestation"))?;
+
+    let response = proof
+        .get("response")
+        .ok_or_else(|| field_error("Missing 'response' in WebAuthn attestation"))?;
+
+    let client_data_b64 = response
+        .get("clientDataJSON")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'clientDataJSON'"))?;
+
+    let attestation_object_b64 = response
+        .get("attestationObject")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'attestationObject'"))?;
+
+    let client_data_bytes = b64url.decode(client_data_b64).map_err(|e| {
+        tracing::warn!("Invalid base64url in clientDataJSON: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let client_data =
+        webauthn::parse_client_data(&client_data_bytes, "webauthn.create").map_err(|e| {
+            tracing::warn!("Invalid clientDataJSON: {e}");
+            field_error("Invalid credentials")
+        })?;
+
+    // The challenge in clientDataJSON is base64url(challenge_string_bytes).
+    // Decode it and match against valid challenge frames.
+    let challenge_bytes = b64url.decode(&client_data.challenge).map_err(|e| {
+        tracing::warn!("Invalid base64url challenge in clientDataJSON: {e}");
+        field_error("Invalid credentials")
+    })?;
+    let challenge_string = String::from_utf8(challenge_bytes).map_err(|e| {
+        tracing::warn!("Challenge is not valid UTF-8: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let valid_challenges = context.challenger.valid_challenges(now, username);
+    if !valid_challenges.contains(&challenge_string) {
+        return Err(field_error("Invalid credentials"));
+    }
+
+    let attestation_bytes = b64url.decode(attestation_object_b64).map_err(|e| {
+        tracing::warn!("Invalid base64url in attestationObject: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let attestation = webauthn::parse_attestation_object(&attestation_bytes).map_err(|e| {
+        tracing::warn!("Invalid attestation object: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    // Verify UP flag (bit 0)
+    if attestation.flags & 0x01 == 0 {
+        return Err(field_error("User presence flag not set"));
+    }
+
+    let (_fingerprint, openssh_key) = udb::cose_key_to_ssh(&attestation.cose_key).map_err(|e| {
+        tracing::warn!("Failed to convert COSE key to SSH: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    Ok((
+        openssh_key,
+        Some(credential_id_b64.to_owned()),
+        attestation.sign_count,
+    ))
+}
+
+/// SSH signin: parse SshSig, verify against challenge, check fingerprint exists.
+async fn signin_ssh(
+    context: &Context,
+    user_client: &mut udb::UserClient,
+    sig_pem: &str,
+    username: &str,
+    now: chrono::DateTime<Utc>,
+) -> FieldResult<()> {
+    let ssh_sig: ssh_key::SshSig = sig_pem.parse().map_err(|e| {
+        tracing::warn!("Invalid SSH signature PEM: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let public_key = ssh_key::PublicKey::from(ssh_sig.public_key().clone());
+    let fingerprint = public_key
+        .fingerprint(ssh_key::HashAlg::default())
+        .to_string();
+
+    let mut pubkeys = user_client.pubkeys();
+    let has_fingerprint = pubkeys.contains(&fingerprint).await.map_err(|e| {
+        tracing::error!("Failed to check pubkey fingerprint: {e}");
+        internal_error()
+    })?;
+
+    if !has_fingerprint {
+        return Err(field_error("Invalid credentials"));
+    }
+
+    // Verify against valid challenge frames
+    let valid_challenges = context.challenger.valid_challenges(now, username);
+    let verified = valid_challenges.iter().any(|challenge| {
+        public_key
+            .verify(
+                challenge::CHALLENGE_NAMESPACE,
+                challenge.as_bytes(),
+                &ssh_sig,
+            )
+            .is_ok()
+    });
+    if !verified {
+        return Err(field_error("Invalid credentials"));
+    }
+
+    // Store credential record if not present (idempotent migration)
+    let openssh_key = public_key.to_openssh().map_err(|e| {
+        tracing::warn!("Failed to serialize public key: {e}");
+        field_error("Invalid credentials")
+    })?;
+    let _ = pubkeys.add_credential(&openssh_key, None, 0).await;
+
+    Ok(())
+}
+
+/// WebAuthn signin (assertion): verify assertion signature against stored credential.
+async fn signin_webauthn(
+    context: &Context,
+    user_client: &mut udb::UserClient,
+    proof: &serde_json::Value,
+    username: &str,
+    now: chrono::DateTime<Utc>,
+) -> FieldResult<()> {
+    let b64url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let credential_id_b64 = proof
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'id' in WebAuthn assertion"))?;
+
+    let response = proof
+        .get("response")
+        .ok_or_else(|| field_error("Missing 'response' in WebAuthn assertion"))?;
+
+    let auth_data_b64 = response
+        .get("authenticatorData")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'authenticatorData'"))?;
+
+    let client_data_b64 = response
+        .get("clientDataJSON")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'clientDataJSON'"))?;
+
+    let signature_b64 = response
+        .get("signature")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| field_error("Missing 'signature'"))?;
+
+    let auth_data_bytes = b64url.decode(auth_data_b64).map_err(|e| {
+        tracing::warn!("Invalid base64url in authenticatorData: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let client_data_bytes = b64url.decode(client_data_b64).map_err(|e| {
+        tracing::warn!("Invalid base64url in clientDataJSON: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let signature_bytes = b64url.decode(signature_b64).map_err(|e| {
+        tracing::warn!("Invalid base64url in signature: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    // Parse and verify clientDataJSON
+    let client_data =
+        webauthn::parse_client_data(&client_data_bytes, "webauthn.get").map_err(|e| {
+            tracing::warn!("Invalid clientDataJSON: {e}");
+            field_error("Invalid credentials")
+        })?;
+
+    let challenge_bytes = b64url.decode(&client_data.challenge).map_err(|e| {
+        tracing::warn!("Invalid base64url challenge in clientDataJSON: {e}");
+        field_error("Invalid credentials")
+    })?;
+    let challenge_string = String::from_utf8(challenge_bytes).map_err(|e| {
+        tracing::warn!("Challenge is not valid UTF-8: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    let valid_challenges = context.challenger.valid_challenges(now, username);
+    if !valid_challenges.contains(&challenge_string) {
+        return Err(field_error("Invalid credentials"));
+    }
+
+    // Find matching credential
+    let mut pubkeys = user_client.pubkeys();
+    let credentials = pubkeys.list_credentials().await.map_err(|e| {
+        tracing::error!("Failed to list credentials: {e}");
+        internal_error()
+    })?;
+
+    let credential = credentials
+        .iter()
+        .find(|c| c.credential_id.as_deref() == Some(credential_id_b64))
+        .ok_or_else(|| field_error("Invalid credentials"))?;
+
+    // Parse authenticator data
+    let auth_data = webauthn::parse_authenticator_data(&auth_data_bytes).map_err(|e| {
+        tracing::warn!("Invalid authenticatorData: {e}");
+        field_error("Invalid credentials")
+    })?;
+
+    // Verify UP flag
+    if auth_data.flags & 0x01 == 0 {
+        return Err(field_error("User presence flag not set"));
+    }
+
+    // Check sign counter (if non-zero, must be > stored)
+    if (auth_data.sign_count > 0 || credential.sign_count > 0)
+        && auth_data.sign_count <= credential.sign_count
+    {
+        tracing::warn!(
+            "Sign counter regression: got {}, stored {}",
+            auth_data.sign_count,
+            credential.sign_count
+        );
+        return Err(field_error("Invalid credentials"));
+    }
+
+    // Verify signature
+    let message = webauthn::build_assertion_message(&auth_data_bytes, &client_data_bytes);
+
+    // Determine algorithm from stored key
+    let ssh_pubkey = ssh_key::PublicKey::from_openssh(&credential.public_key).map_err(|e| {
+        tracing::error!("Failed to parse stored public key: {e}");
+        internal_error()
+    })?;
+
+    match ssh_pubkey.key_data() {
+        ssh_key::public::KeyData::Ecdsa(_) => {
+            webauthn::verify_es256(&credential.public_key, &message, &signature_bytes).map_err(
+                |e| {
+                    tracing::warn!("ES256 verification failed: {e}");
+                    field_error("Invalid credentials")
+                },
+            )?;
+        }
+        ssh_key::public::KeyData::Ed25519(_) => {
+            webauthn::verify_ed25519(&credential.public_key, &message, &signature_bytes).map_err(
+                |e| {
+                    tracing::warn!("Ed25519 verification failed: {e}");
+                    field_error("Invalid credentials")
+                },
+            )?;
+        }
+        _ => {
+            return Err(field_error("Unsupported key algorithm"));
+        }
+    }
+
+    // Update sign count
+    pubkeys
+        .update_sign_count(&credential.fingerprint, auth_data.sign_count)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to update sign count: {e}");
+            internal_error()
+        })?;
+
+    Ok(())
 }
 
 struct AuthSuccess {
@@ -1720,6 +2139,10 @@ struct Cli {
     adb_region: String,
     #[arg(long)]
     challenge_salt: Option<String>,
+    #[arg(long, default_value = "skyr.cloud")]
+    rp_id: String,
+    #[arg(long, default_value = "Skyr")]
+    rp_name: String,
     #[arg(long)]
     write_schema: bool,
 }
@@ -1771,6 +2194,8 @@ async fn main() -> anyhow::Result<()> {
     let adb_client = adb_builder.build().await?;
     let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
+    let rp_id = Arc::new(cli.rp_id);
+    let rp_name = Arc::new(cli.rp_name);
 
     let schema = Arc::new(schema());
 
@@ -1785,6 +2210,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors)
         .layer(Extension(schema))
         .layer(Extension(challenger))
+        .layer(Extension(rp_id))
+        .layer(Extension(rp_name))
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
@@ -1808,6 +2235,8 @@ async fn main() -> anyhow::Result<()> {
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(rp_id): Extension<Arc<String>>,
+    Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
@@ -1839,6 +2268,8 @@ async fn graphql_handler(
                     adb_client,
                     ldb_brokers,
                     challenger,
+                    rp_id,
+                    rp_name,
                     user: Some(user),
                 };
                 return AxumJson(request.execute(&schema, &ctx).await);
@@ -1853,6 +2284,8 @@ async fn graphql_handler(
         adb_client,
         ldb_brokers,
         challenger,
+        rp_id,
+        rp_name,
         user: None,
     };
     AxumJson(request.execute(&schema, &ctx).await)
@@ -1871,6 +2304,8 @@ async fn graphql_ws_handler(
     ws: WebSocketUpgrade,
     Extension(schema): Extension<Arc<Schema>>,
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
+    Extension(rp_id): Extension<Arc<String>>,
+    Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
@@ -1904,6 +2339,8 @@ async fn graphql_ws_handler(
         adb_client,
         ldb_brokers,
         challenger,
+        rp_id,
+        rp_name,
         user,
     };
 

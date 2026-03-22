@@ -3,13 +3,14 @@ use chrono::{DateTime, Utc};
 use sha2::Digest;
 
 const CHALLENGE_FRAME_SECONDS: i64 = 60;
-const CHALLENGE_NAMESPACE: &str = "skyr-auth-challenge";
+pub(crate) const CHALLENGE_NAMESPACE: &str = "skyr-auth-challenge";
 
 pub(crate) struct Challenger {
     salt: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum CheckSignatureError {
     InvalidSignature,
 }
@@ -23,6 +24,7 @@ impl Challenger {
         self.challenge_for_frame(Self::frame_start(now.timestamp()), username)
     }
 
+    #[allow(dead_code)]
     pub(crate) fn check(
         &self,
         public_key: &russh::keys::ssh_key::PublicKey,
@@ -48,6 +50,15 @@ impl Challenger {
         }
 
         Err(CheckSignatureError::InvalidSignature)
+    }
+
+    pub(crate) fn valid_challenges(&self, now: DateTime<Utc>, username: &str) -> Vec<String> {
+        let frame_start = Self::frame_start(now.timestamp());
+        (-1..=1)
+            .map(|offset| {
+                self.challenge_for_frame(frame_start + (offset * CHALLENGE_FRAME_SECONDS), username)
+            })
+            .collect()
     }
 
     fn frame_start(timestamp: i64) -> i64 {

@@ -32,6 +32,12 @@ type Artifact {
   url: String!
 }
 
+type AuthChallenge {
+  challenge: String!
+  passkeyRegistration: JSON!
+  passkeySignin: JSON
+}
+
 type AuthSuccess {
   user: User!
   token: String!
@@ -80,11 +86,11 @@ type Log {
 
 type Mutation {
   createRepository(organization: String!, repository: String!): Repository!
-  signup(username: String!, email: String!, pubkey: String!, signature: String!): AuthSuccess!
+  signup(username: String!, email: String!, proof: JSON!): AuthSuccess!
   updateFullname(fullname: String!): User!
   addPublicKey(fingerprint: String!): User!
   removePublicKey(fingerprint: String!): User!
-  signin(username: String!, signature: String!, pubkey: String!): AuthSuccess!
+  signin(username: String!, proof: JSON!): AuthSuccess!
 }
 
 type Organization {
@@ -96,7 +102,7 @@ type Organization {
 type Query {
   health: Boolean!
   me: User!
-  authChallenge(username: String!): String!
+  authChallenge(username: String!): AuthChallenge!
   refreshToken: AuthSuccess!
   organizations: [Organization!]!
   organization(name: String!): Organization!
