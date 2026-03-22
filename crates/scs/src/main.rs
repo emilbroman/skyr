@@ -558,7 +558,7 @@ impl<'a> CommandHandler<'a> {
         let refs = self.collect_refs().await?;
 
         self.advertise_refs(
-            b"report-status delete-refs side-band-64k",
+            b"report-status delete-refs side-band-64k ofs-delta",
             futures::stream::iter(refs),
         )
         .await?;
