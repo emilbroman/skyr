@@ -309,21 +309,8 @@ impl Mutation {
 
         let now = Utc::now();
 
-        let (openssh_key, credential_id, sign_count) = match &proof.0 {
-            serde_json::Value::String(sig_pem) => {
-                // SSH signature flow
-                signup_ssh(context, sig_pem, &username, now)?
-            }
-            serde_json::Value::Object(_) => {
-                // WebAuthn attestation flow
-                signup_webauthn(context, &proof.0, &username, now)?
-            }
-            _ => {
-                return Err(field_error(
-                    "Invalid proof: expected a string (SSH signature) or object (WebAuthn attestation)",
-                ));
-            }
-        };
+        let (openssh_key, credential_id, sign_count) =
+            verify_registration_proof(context, &proof, &username, now)?;
 
         let mut user_client = context.udb_client.user(&username);
         let user = match user_client.register(email).await {
@@ -375,13 +362,21 @@ impl Mutation {
     }
 
     #[graphql(name = "addPublicKey")]
-    async fn add_public_key(context: &Context, fingerprint: String) -> FieldResult<User> {
-        let (mut user_client, _) = context.check_auth().await?;
+    async fn add_public_key(context: &Context, proof: JsonValue) -> FieldResult<User> {
+        let (mut user_client, user) = context.check_auth().await?;
+        let now = Utc::now();
 
-        user_client.pubkeys().add(&fingerprint).await.map_err(|e| {
-            tracing::error!("Failed to add public key: {}", e);
-            internal_error()
-        })?;
+        let (openssh_key, credential_id, sign_count) =
+            verify_registration_proof(context, &proof, &user.username, now)?;
+
+        user_client
+            .pubkeys()
+            .add_credential(&openssh_key, credential_id.as_deref(), sign_count)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to add credential: {}", e);
+                internal_error()
+            })?;
 
         let user = user_client.get().await.map_err(|e| {
             tracing::error!("Failed to fetch user after adding public key: {}", e);
@@ -463,9 +458,30 @@ impl Mutation {
     }
 }
 
-/// SSH signup: parse SshSig from PEM, extract pubkey, verify against challenge frames.
+/// Dispatch proof verification: SSH (string) or WebAuthn (object).
+/// Returns (openssh_key, credential_id, sign_count).
+fn verify_registration_proof(
+    context: &Context,
+    proof: &JsonValue,
+    username: &str,
+    now: chrono::DateTime<Utc>,
+) -> FieldResult<(String, Option<String>, u32)> {
+    match &proof.0 {
+        serde_json::Value::String(sig_pem) => {
+            verify_ssh_registration(context, sig_pem, username, now)
+        }
+        serde_json::Value::Object(_) => {
+            verify_webauthn_registration(context, &proof.0, username, now)
+        }
+        _ => Err(field_error(
+            "Invalid proof: expected a string (SSH signature) or object (WebAuthn attestation)",
+        )),
+    }
+}
+
+/// SSH registration: parse SshSig from PEM, extract pubkey, verify against challenge frames.
 /// Returns (openssh_key, credential_id=None, sign_count=0).
-fn signup_ssh(
+fn verify_ssh_registration(
     context: &Context,
     sig_pem: &str,
     username: &str,
@@ -500,9 +516,9 @@ fn signup_ssh(
     Ok((openssh_key, None, 0))
 }
 
-/// WebAuthn signup (attestation): parse attestation response, extract COSE key, convert to SSH.
+/// WebAuthn registration (attestation): parse attestation response, extract COSE key, convert to SSH.
 /// Returns (openssh_key, credential_id, sign_count).
-fn signup_webauthn(
+fn verify_webauthn_registration(
     context: &Context,
     proof: &serde_json::Value,
     username: &str,

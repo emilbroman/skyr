@@ -1,14 +1,19 @@
 <script lang="ts">
+import { onDestroy } from "svelte";
 import { useQueryClient } from "@tanstack/svelte-query";
 import { print } from "graphql";
 import {
     AddPublicKeyDocument,
+    AuthChallengeDocument,
     RemovePublicKeyDocument,
     UpdateFullnameDocument,
     UserSettingsDocument,
 } from "$lib/graphql/generated";
+import type { AuthChallengeQuery } from "$lib/graphql/generated";
+import { query } from "$lib/graphql/client";
 import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
+import { createPasskeyRegistration } from "$lib/webauthn";
 
 const queryClient = useQueryClient();
 
@@ -22,15 +27,23 @@ let fullnameSaving = $state(false);
 let fullnameSuccess = $state(false);
 let fullnameError = $state<string | null>(null);
 
-let newFingerprint = $state("");
+let addKeyMode = $state<"closed" | "choose" | "ssh">("closed");
+let authChallenge = $state<AuthChallengeQuery["authChallenge"] | null>(null);
+let addKeyLoading = $state(false);
 let addKeyError = $state<string | null>(null);
+let sshResponse = $state("");
 let removeKeyError = $state<string | null>(null);
+let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
 $effect(() => {
     if (settings.data && !fullnameLoaded) {
         fullname = settings.data.me.fullname ?? "";
         fullnameLoaded = true;
     }
+});
+
+onDestroy(() => {
+    stopChallengeRefresh();
 });
 
 const updateFullname = graphqlMutation(UpdateFullnameDocument, {
@@ -51,8 +64,11 @@ const updateFullname = graphqlMutation(UpdateFullnameDocument, {
 
 const addPublicKey = graphqlMutation(AddPublicKeyDocument, {
     onSuccess: () => {
-        newFingerprint = "";
+        addKeyMode = "closed";
+        authChallenge = null;
+        sshResponse = "";
         addKeyError = null;
+        stopChallengeRefresh();
         queryClient.invalidateQueries({
             queryKey: [print(UserSettingsDocument)],
         });
@@ -81,16 +97,94 @@ function saveFullname() {
     updateFullname.mutate({ fullname: fullname.trim() });
 }
 
-function addKey() {
-    const fp = newFingerprint.trim();
-    if (!fp) return;
+async function startAddKey() {
+    if (!settings.data) return;
     addKeyError = null;
-    addPublicKey.mutate({ fingerprint: fp });
+    addKeyLoading = true;
+    try {
+        const data = await query(AuthChallengeDocument, {
+            username: settings.data.me.username,
+        });
+        authChallenge = data.authChallenge;
+        addKeyMode = "choose";
+        startChallengeRefresh();
+    } catch (e) {
+        addKeyError = e instanceof Error ? e.message : "Failed to fetch challenge";
+    } finally {
+        addKeyLoading = false;
+    }
+}
+
+async function refreshChallenge() {
+    if (!settings.data) return;
+    try {
+        const data = await query(AuthChallengeDocument, {
+            username: settings.data.me.username,
+        });
+        authChallenge = data.authChallenge;
+    } catch {
+        // Silently ignore
+    }
+}
+
+function startChallengeRefresh() {
+    stopChallengeRefresh();
+    refreshInterval = setInterval(refreshChallenge, 60_000);
+}
+
+function stopChallengeRefresh() {
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
+        refreshInterval = null;
+    }
+}
+
+function cancelAddKey() {
+    addKeyMode = "closed";
+    authChallenge = null;
+    sshResponse = "";
+    addKeyError = null;
+    stopChallengeRefresh();
+}
+
+async function addPasskey() {
+    if (!authChallenge?.passkeyRegistration) return;
+    addKeyError = null;
+    addKeyLoading = true;
+    try {
+        const proof = await createPasskeyRegistration(authChallenge.passkeyRegistration);
+        addPublicKey.mutate({ proof });
+    } catch (e) {
+        addKeyError = e instanceof Error ? e.message : "Passkey registration failed";
+    } finally {
+        addKeyLoading = false;
+    }
+}
+
+function parseSignature(raw: string): string | null {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith("-----BEGIN SSH SIGNATURE-----")) return null;
+    if (!trimmed.endsWith("-----END SSH SIGNATURE-----")) return null;
+    return trimmed;
+}
+
+function addSshKey() {
+    const signature = parseSignature(sshResponse);
+    if (!signature) {
+        addKeyError = "Could not find a valid SSH signature. Make sure you pasted the full output.";
+        return;
+    }
+    addKeyError = null;
+    addPublicKey.mutate({ proof: signature });
 }
 
 function removeKey(fingerprint: string) {
     removeKeyError = null;
     removePublicKey.mutate({ fingerprint });
+}
+
+function copyToClipboard(text: string) {
+    navigator.clipboard.writeText(text);
 }
 </script>
 
@@ -174,14 +268,14 @@ function removeKey(fingerprint: string) {
             </div>
         </section>
 
-        <!-- Public keys section -->
+        <!-- Authentication keys section -->
         <section>
             <h2 class="font-medium text-gray-900 mb-4">
-                SSH Public Keys
+                Authentication Keys
             </h2>
             <div class="bg-white border border-gray-200 rounded-lg p-5">
                 {#if settings.data.me.publicKeys.length === 0}
-                    <p class="text-gray-500 mb-4">No public keys registered.</p>
+                    <p class="text-gray-500 mb-4">No keys registered.</p>
                 {:else}
                     <ul class="space-y-3 mb-4">
                         {#each settings.data.me.publicKeys as fingerprint}
@@ -207,39 +301,101 @@ function removeKey(fingerprint: string) {
                     <p class="mb-3 text-red-600">{removeKeyError}</p>
                 {/if}
 
-                <form
-                    onsubmit={(e) => {
-                        e.preventDefault();
-                        addKey();
-                    }}
-                >
-                    <label
-                        class="block font-medium text-gray-500 mb-1"
-                        for="new-fingerprint"
+                {#if addKeyMode === "closed"}
+                    <button
+                        onclick={startAddKey}
+                        disabled={addKeyLoading}
+                        class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                        Add a public key fingerprint
-                    </label>
-                    <div class="flex gap-3">
-                        <input
-                            id="new-fingerprint"
-                            type="text"
-                            bind:value={newFingerprint}
-                            placeholder="SHA256:..."
-                            class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
-                        />
+                        {addKeyLoading ? "Loading..." : "Add key"}
+                    </button>
+                {:else if addKeyMode === "choose"}
+                    <div class="space-y-3">
+                        {#if addKeyError}
+                            <p class="text-red-600">{addKeyError}</p>
+                        {/if}
+
                         <button
-                            type="submit"
-                            disabled={addPublicKey.isPending ||
-                                !newFingerprint.trim()}
-                            class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            onclick={addPasskey}
+                            disabled={addKeyLoading || addPublicKey.isPending}
+                            class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
-                            {addPublicKey.isPending ? "Adding..." : "Add"}
+                            {addKeyLoading || addPublicKey.isPending
+                                ? "Adding..."
+                                : "Add passkey"}
+                        </button>
+
+                        <button
+                            onclick={() => (addKeyMode = "ssh")}
+                            class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors"
+                        >
+                            Add SSH key
+                        </button>
+
+                        <button
+                            onclick={cancelAddKey}
+                            class="w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
+                        >
+                            Cancel
                         </button>
                     </div>
-                    {#if addKeyError}
-                        <p class="mt-2 text-red-600">{addKeyError}</p>
-                    {/if}
-                </form>
+                {:else if addKeyMode === "ssh"}
+                    <div class="space-y-3">
+                        {#if addKeyError}
+                            <p class="text-red-600">{addKeyError}</p>
+                        {/if}
+
+                        <div>
+                            <p class="text-gray-600 mb-2">
+                                Run this command in your terminal:
+                            </p>
+                            <div class="relative">
+                                <pre
+                                    class="bg-gray-100 border border-gray-300 rounded p-3 text-green-700 overflow-x-auto whitespace-pre-wrap break-all text-xs">echo -n '{authChallenge?.challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
+                                <button
+                                    class="absolute top-2 right-2 text-gray-500 hover:text-gray-900 px-2 py-1 bg-gray-200 rounded"
+                                    onclick={() =>
+                                        copyToClipboard(
+                                            `echo -n '${authChallenge?.challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`,
+                                        )}
+                                >
+                                    Copy
+                                </button>
+                            </div>
+                            <label
+                                class="block mt-2 text-gray-500"
+                                for="ssh-response"
+                            >
+                                Paste the full output:
+                            </label>
+                            <textarea
+                                id="ssh-response"
+                                bind:value={sshResponse}
+                                placeholder="-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
+                                rows={8}
+                                class="w-full mt-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
+                            ></textarea>
+                        </div>
+
+                        <button
+                            onclick={addSshKey}
+                            disabled={addPublicKey.isPending ||
+                                !sshResponse.trim()}
+                            class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            {addPublicKey.isPending
+                                ? "Adding..."
+                                : "Add SSH key"}
+                        </button>
+
+                        <button
+                            onclick={cancelAddKey}
+                            class="w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                {/if}
             </div>
         </section>
     {/if}
