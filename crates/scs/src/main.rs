@@ -313,7 +313,7 @@ impl<'a> CommandHandler<'a> {
         let refs = self.collect_refs().await?;
 
         self.advertise_refs(
-            b"multi_ack_detailed no-done side-band-64k",
+            b"multi_ack_detailed no-done side-band-64k shallow",
             futures::stream::iter(refs),
         )
         .await?;
@@ -325,6 +325,8 @@ impl<'a> CommandHandler<'a> {
         let mut use_sideband = false;
         let mut use_multi_ack_detailed = false;
         let mut use_no_done = false;
+        let mut client_shallow: HashSet<gix_hash::ObjectId> = HashSet::new();
+        let mut deepen: Option<u32> = None;
         let wants = {
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
@@ -372,6 +374,11 @@ impl<'a> CommandHandler<'a> {
                     }
                     let oid = gix_hash::ObjectId::from_hex(hex)?;
                     wants.push(oid);
+                } else if let Some(hex) = data.strip_prefix(b"shallow ") {
+                    let oid = gix_hash::ObjectId::from_hex(hex)?;
+                    client_shallow.insert(oid);
+                } else if let Some(n) = data.strip_prefix(b"deepen ") {
+                    deepen = Some(std::str::from_utf8(n)?.parse::<u32>()?);
                 }
             }
             r = pkt.into_inner().into_inner();
@@ -380,6 +387,66 @@ impl<'a> CommandHandler<'a> {
 
         if wants.is_empty() {
             return Ok(());
+        }
+
+        // Shallow boundary computation: when the client requests a depth limit
+        // (deepen) or reports existing shallow commits, walk the commit graph to
+        // determine which commits become shallow (parents excluded) and which
+        // become unshallowed (parents now included after deepening).
+        if deepen.is_some() || !client_shallow.is_empty() {
+            let max_depth = deepen.unwrap_or(u32::MAX);
+            let mut new_shallow: Vec<gix_hash::ObjectId> = Vec::new();
+            let mut new_unshallow: Vec<gix_hash::ObjectId> = Vec::new();
+            {
+                let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
+                let mut stack: Vec<(gix_hash::ObjectId, u32)> =
+                    wants.iter().copied().map(|oid| (oid, 1)).collect();
+                while let Some((oid, depth)) = stack.pop() {
+                    if !seen.insert(oid) {
+                        continue;
+                    }
+                    let Ok((kind, data)) = self.client.read_raw_object(oid).await else {
+                        continue;
+                    };
+                    if kind != gix_object::Kind::Commit {
+                        continue;
+                    }
+                    if depth >= max_depth {
+                        new_shallow.push(oid);
+                    } else {
+                        if client_shallow.contains(&oid) {
+                            new_unshallow.push(oid);
+                        }
+                        let iter = gix_object::CommitRefIter::from_bytes(&data);
+                        for parent in iter.parent_ids() {
+                            stack.push((parent, depth + 1));
+                        }
+                    }
+                }
+            }
+
+            for oid in &new_shallow {
+                let line = format!("shallow {oid}\n");
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Data(line.as_bytes()),
+                    &mut out,
+                )
+                .await?;
+            }
+            for oid in &new_unshallow {
+                let line = format!("unshallow {oid}\n");
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Data(line.as_bytes()),
+                    &mut out,
+                )
+                .await?;
+            }
+            gix_packetline::async_io::encode::write_packet_line(
+                &gix_packetline::PacketLineRef::Flush,
+                &mut out,
+            )
+            .await?;
+            out.flush().await?;
         }
 
         // Have/done negotiation: collect have OIDs and — when multi_ack_detailed
@@ -499,16 +566,22 @@ impl<'a> CommandHandler<'a> {
         /// Walk the object graph from `wants`, stopping at any OID the client
         /// already has (the `haves` set). This makes incremental fetches send
         /// only new objects instead of the entire repository.
+        ///
+        /// When `max_depth` is `Some(n)`, commit traversal stops at depth `n`
+        /// from the wanted commits (depth 1 = the want itself). Trees and blobs
+        /// reachable from included commits are always sent regardless of depth.
         async fn collect_objects(
             client: &cdb::RepositoryClient,
             wants: Vec<gix_hash::ObjectId>,
             haves: &HashSet<gix_hash::ObjectId>,
+            max_depth: Option<u32>,
         ) -> anyhow::Result<Vec<PackObject>> {
-            let mut stack = wants;
+            let mut stack: Vec<(gix_hash::ObjectId, u32)> =
+                wants.into_iter().map(|oid| (oid, 1)).collect();
             let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
             let mut out = Vec::new();
 
-            while let Some(oid) = stack.pop() {
+            while let Some((oid, depth)) = stack.pop() {
                 if !seen.insert(oid) {
                     continue;
                 }
@@ -521,20 +594,22 @@ impl<'a> CommandHandler<'a> {
                     gix_object::Kind::Commit => {
                         let mut iter = gix_object::CommitRefIter::from_bytes(&data);
                         let tree = iter.tree_id()?;
-                        stack.push(tree);
-                        for parent in iter.parent_ids() {
-                            stack.push(parent);
+                        stack.push((tree, depth));
+                        if max_depth.is_none() || depth < max_depth.unwrap() {
+                            for parent in iter.parent_ids() {
+                                stack.push((parent, depth + 1));
+                            }
                         }
                     }
                     gix_object::Kind::Tree => {
                         for entry in gix_object::TreeRefIter::from_bytes(&data) {
                             let entry = entry?;
-                            stack.push(entry.oid.to_owned());
+                            stack.push((entry.oid.to_owned(), depth));
                         }
                     }
                     gix_object::Kind::Tag => {
                         let target = gix_object::TagRefIter::from_bytes(&data).target_id()?;
-                        stack.push(target);
+                        stack.push((target, depth));
                     }
                     gix_object::Kind::Blob => {}
                 }
@@ -545,7 +620,7 @@ impl<'a> CommandHandler<'a> {
             Ok(out)
         }
 
-        let objects = collect_objects(&self.client, wants, &haves).await?;
+        let objects = collect_objects(&self.client, wants, &haves, deepen).await?;
 
         let mut pack = Vec::new();
         pack.extend_from_slice(b"PACK");
