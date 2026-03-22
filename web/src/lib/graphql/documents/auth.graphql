@@ -1,9 +1,11 @@
 query AuthChallenge($username: String!) {
-  authChallenge(username: $username)
+  authChallenge(username: $username) {
+    challenge
+  }
 }
 
-mutation SignIn($username: String!, $signature: String!, $pubkey: String!) {
-  signin(username: $username, signature: $signature, pubkey: $pubkey) {
+mutation SignIn($username: String!, $proof: JSON!) {
+  signin(username: $username, proof: $proof) {
     user {
       username
       email

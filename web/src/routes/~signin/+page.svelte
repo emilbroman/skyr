@@ -32,7 +32,7 @@ async function fetchChallenge() {
         const data = await query(AuthChallengeDocument, {
             username: username.trim(),
         });
-        challenge = data.authChallenge;
+        challenge = data.authChallenge.challenge;
         step = "sign";
         startChallengeRefresh();
     } catch (e) {
@@ -48,7 +48,7 @@ async function refreshChallenge() {
         const data = await query(AuthChallengeDocument, {
             username: username.trim(),
         });
-        challenge = data.authChallenge;
+        challenge = data.authChallenge.challenge;
     } catch {
         // Silently ignore refresh errors — the user can still try with the current challenge
     }
@@ -68,28 +68,23 @@ function stopChallengeRefresh() {
 
 onDestroy(stopChallengeRefresh);
 
-function parseResponse(raw: string): { pubkey: string; signature: string } | null {
-    const marker = "-----BEGIN SSH SIGNATURE-----";
-    const idx = raw.indexOf(marker);
-    if (idx === -1) return null;
-    const pubkey = raw.slice(0, idx).trim();
-    const signature = raw.slice(idx).trim();
-    if (!pubkey || !signature) return null;
-    return { pubkey, signature };
+function parseSignature(raw: string): string | null {
+    const trimmed = raw.trim();
+    if (!trimmed.startsWith("-----BEGIN SSH SIGNATURE-----")) return null;
+    if (!trimmed.endsWith("-----END SSH SIGNATURE-----")) return null;
+    return trimmed;
 }
 
 function submitSignIn() {
-    const parsed = parseResponse(response);
-    if (!parsed) {
-        error =
-            "Could not find both a public key and an SSH signature in the output. Make sure you pasted the full output.";
+    const signature = parseSignature(response);
+    if (!signature) {
+        error = "Could not find a valid SSH signature. Make sure you pasted the full output.";
         return;
     }
     error = null;
     signIn.mutate({
         username: username.trim(),
-        signature: parsed.signature,
-        pubkey: parsed.pubkey,
+        proof: signature,
     });
 }
 
@@ -170,12 +165,12 @@ function copyToClipboard(text: string) {
             </p>
             <div class="relative">
               <pre
-                class="bg-gray-100 border border-gray-300 rounded p-3 text-green-700 overflow-x-auto whitespace-pre-wrap break-all">cat ~/.ssh/id_ed25519.pub; echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
+                class="bg-gray-100 border border-gray-300 rounded p-3 text-green-700 overflow-x-auto whitespace-pre-wrap break-all">echo -n '{challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
               <button
                 class="absolute top-2 right-2 text-gray-500 hover:text-gray-900 px-2 py-1 bg-gray-200 rounded"
                 onclick={() =>
                   copyToClipboard(
-                    `cat ~/.ssh/id_ed25519.pub; echo -n '${challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`,
+                    `echo -n '${challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`,
                   )}
               >
                 Copy
@@ -187,7 +182,7 @@ function copyToClipboard(text: string) {
             <textarea
               id="response"
               bind:value={response}
-              placeholder="ssh-ed25519 AAAA...&#10;-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
+              placeholder="-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
               rows={8}
               class="w-full mt-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
             ></textarea>
