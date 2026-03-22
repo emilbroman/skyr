@@ -110,7 +110,7 @@ async function submitPasskeySignup() {
         signup.mutate({
             username: username.trim(),
             email: email.trim(),
-            proof,
+            proof: JSON.stringify(proof),
         });
     } catch (e) {
         error = e instanceof Error ? e.message : "Passkey registration failed";
