@@ -1,3 +1,9 @@
+mutation CreateRepository($organization: String!, $repository: String!) {
+    createRepository(organization: $organization, repository: $repository) {
+        name
+    }
+}
+
 query RepositoryDetail($org: String!, $repo: String!) {
   organization(name: $org) {
     repository(name: $repo) {

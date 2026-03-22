@@ -3,7 +3,7 @@ import { page } from "$app/stores";
 import { OrganizationDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import Spinner from "$lib/components/Spinner.svelte";
-import { repoHref } from "$lib/paths";
+import { newRepoHref, repoHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 
@@ -14,7 +14,15 @@ const orgDetail = graphqlQuery(() => ({
 </script>
 
 <div class="p-6">
-  <h1 class="font-bold text-gray-900 mb-6">{orgName}</h1>
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="font-bold text-gray-900">{orgName}</h1>
+    <a
+      href={newRepoHref(orgName)}
+      class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors"
+    >
+      New repository
+    </a>
+  </div>
 
   {#if orgDetail.isPending}
     <Spinner />
