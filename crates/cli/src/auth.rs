@@ -6,6 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SIGNATURE_NAMESPACE: &str = "skyr-auth-challenge";
 
+#[allow(clippy::upper_case_acronyms)]
+type JSON = serde_json::Value;
+
 #[derive(GraphQLQuery)]
 #[graphql(
     schema_path = "../api/schema.graphql",
@@ -26,12 +29,6 @@ struct Signin;
 struct UserConfig {
     username: String,
     key: String,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct AuthProof {
-    pub(crate) pubkey: String,
-    pub(crate) signature: String,
 }
 
 pub(crate) async fn acquire_token(
@@ -60,8 +57,7 @@ pub(crate) async fn signin_with_key(
     let proof = build_auth_proof(client, endpoint, username, key_path).await?;
     let body = Signin::build_query(signin::Variables {
         username: username.to_owned(),
-        signature: proof.signature,
-        pubkey: proof.pubkey,
+        proof: serde_json::Value::String(proof),
     });
 
     let response = client
@@ -83,16 +79,12 @@ pub(crate) async fn build_auth_proof(
     endpoint: &str,
     username: &str,
     key_path: &Path,
-) -> anyhow::Result<AuthProof> {
+) -> anyhow::Result<String> {
     let key = tokio::fs::read_to_string(key_path)
         .await
         .with_context(|| format!("failed to read private key at {}", key_path.display()))?;
     let private_key = russh::keys::ssh_key::PrivateKey::from_openssh(&key)
         .context("failed to parse private key")?;
-    let public_key = private_key
-        .public_key()
-        .to_openssh()
-        .context("failed to encode derived public key in OpenSSH format")?;
 
     let challenge = query_auth_challenge(client, endpoint, username).await?;
     let signature = private_key
@@ -104,10 +96,7 @@ pub(crate) async fn build_auth_proof(
         .context("failed to sign auth challenge")?
         .to_string();
 
-    Ok(AuthProof {
-        pubkey: public_key,
-        signature,
-    })
+    Ok(signature)
 }
 
 async fn query_auth_challenge(
@@ -131,7 +120,7 @@ async fn query_auth_challenge(
         .await
         .context("failed to decode auth challenge response")?;
     let data = graphql_response_data(response, "auth challenge")?;
-    Ok(data.auth_challenge)
+    Ok(data.auth_challenge.challenge)
 }
 
 pub(crate) async fn persist_auth_state(

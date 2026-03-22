@@ -5,6 +5,9 @@ use serde::Serialize;
 
 use crate::{auth, output::OutputFormat};
 
+#[allow(clippy::upper_case_acronyms)]
+type JSON = serde_json::Value;
+
 #[derive(Args, Debug)]
 pub struct SignupArgs {
     #[arg(long)]
@@ -35,8 +38,7 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
     let body = Signup::build_query(signup::Variables {
         username: args.username.clone(),
         email: args.email.clone(),
-        pubkey: proof.pubkey,
-        signature: proof.signature,
+        proof: serde_json::Value::String(proof),
     });
 
     let response = client

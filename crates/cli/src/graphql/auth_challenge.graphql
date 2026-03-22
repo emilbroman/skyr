@@ -1,3 +1,5 @@
 query AuthChallenge($username: String!) {
-  authChallenge(username: $username)
+  authChallenge(username: $username) {
+    challenge
+  }
 }

@@ -1,5 +1,5 @@
-mutation Signin($username: String!, $signature: String!, $pubkey: String!) {
-  signin(username: $username, signature: $signature, pubkey: $pubkey) {
+mutation Signin($username: String!, $proof: JSON!) {
+  signin(username: $username, proof: $proof) {
     user {
       username
       email

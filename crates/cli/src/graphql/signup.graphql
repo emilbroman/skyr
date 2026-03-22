@@ -1,15 +1,5 @@
-mutation Signup(
-  $username: String!
-  $email: String!
-  $pubkey: String!
-  $signature: String!
-) {
-  signup(
-    username: $username
-    email: $email
-    pubkey: $pubkey
-    signature: $signature
-  ) {
+mutation Signup($username: String!, $email: String!, $proof: JSON!) {
+  signup(username: $username, email: $email, proof: $proof) {
     user {
       username
       email
