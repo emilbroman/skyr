@@ -1989,7 +1989,17 @@ mod json_scalar {
     }
 
     pub(super) fn from_input<S: ScalarValue>(value: &InputValue<S>) -> Result<JsonValue, String> {
-        Ok(JsonValue(input_to_json(value)?))
+        let json = input_to_json(value)?;
+        // Juniper rejects object/list variable values for custom scalars before
+        // `from_input` is called, so clients must JSON-encode complex values as
+        // strings. Transparently unwrap them here.
+        if let serde_json::Value::String(s) = &json
+            && let Ok(parsed @ (serde_json::Value::Object(_) | serde_json::Value::Array(_))) =
+                serde_json::from_str::<serde_json::Value>(s)
+        {
+            return Ok(JsonValue(parsed));
+        }
+        Ok(JsonValue(json))
     }
 }
 

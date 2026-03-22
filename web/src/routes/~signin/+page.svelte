@@ -107,7 +107,7 @@ async function submitPasskeySignIn() {
         const proof = await createPasskeyAssertion(authChallenge.passkeySignin);
         signIn.mutate({
             username: username.trim(),
-            proof,
+            proof: JSON.stringify(proof),
         });
     } catch (e) {
         error = e instanceof Error ? e.message : "Passkey authentication failed";

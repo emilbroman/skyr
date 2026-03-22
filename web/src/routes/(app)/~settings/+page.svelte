@@ -153,7 +153,7 @@ async function addPasskey() {
     addKeyLoading = true;
     try {
         const proof = await createPasskeyRegistration(authChallenge.passkeyRegistration);
-        addPublicKey.mutate({ proof });
+        addPublicKey.mutate({ proof: JSON.stringify(proof) });
     } catch (e) {
         addKeyError = e instanceof Error ? e.message : "Passkey registration failed";
     } finally {
