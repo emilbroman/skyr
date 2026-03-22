@@ -28,3 +28,6 @@ members = [
 [workspace.lints.clippy]
 large_enum_variant = "allow"
 result_large_err = "allow"
+
+[patch.crates-io]
+juniper = { path = "patches/juniper" }
