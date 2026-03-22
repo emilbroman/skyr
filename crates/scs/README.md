@@ -49,8 +49,8 @@ SCS implements Git pack protocol v1. The table below summarizes all capabilities
 | `ref-delta` | No | No | N/A (pack encoding) | Yes | Pack object type 7 is fully parsed and resolved. Base objects are looked up by SHA-1 from CDB, with graceful retry when bases arrive later in the pack. Not advertised as a capability. |
 | `shallow` / `deepen` | No | No | Shallow lines skipped | No | `shallow` and `unshallow` lines from the client are recognized and silently discarded during receive-pack command parsing (line 617). No shallow clone support is implemented. |
 | `thin-pack` | No | No | No | No | Not advertised or handled. Thin packs (packs with delta bases outside the pack) may partially work via ref-delta resolution against CDB, but there is no explicit thin-pack support. |
-| `no-done` | No | No | No | No | Not supported. The upload-pack path waits for an explicit `done` line from the client before sending the packfile. |
-| `multi_ack` / `multi_ack_detailed` | No | No | No | No | Not implemented. The server does support base-protocol `have` negotiation (collecting `have` OIDs and using them to generate incremental packfiles), but does not send per-`have` `ACK` lines — it always responds with `NAK` after each batch flush. |
+| `no-done` | Yes | No | Yes | Yes | When negotiated together with `multi_ack_detailed`, the client may omit the `done` line once the server has sent `ACK <oid> ready`. This saves one round-trip during fetch negotiation. |
+| `multi_ack_detailed` | Yes | No | Yes | Yes | During have/done negotiation, the server sends `ACK <oid> common` for each `have` OID it recognizes, and `ACK <oid> ready` after a flush when common objects have been found. After `done` (or when `no-done` applies), a final `ACK <oid>` (no suffix) is sent for the last common object. Falls back to plain `NAK`-only negotiation if the client does not request this capability. |
 | `allow-tip-sha1-in-want` | No | No | No | No | Not implemented. |
 | `allow-reachable-sha1-in-want` | No | No | No | No | Not implemented. |
 | `agent` | No | No | No | No | Not parsed or sent. |
@@ -58,7 +58,7 @@ SCS implements Git pack protocol v1. The table below summarizes all capabilities
 ### Additional protocol details
 
 - **Ref advertisement** (`advertise_refs`): Capabilities are appended after a NUL byte on the first ref line. If no refs exist, a zero-id `capabilities^{}` pseudo-ref is sent instead.
-- **Upload-pack negotiation**: The server reads `want` lines, then processes `have`/`done` negotiation. During negotiation, the server collects `have` OIDs from the client and responds with `NAK` after each batch flush (no `multi_ack` support). When generating the packfile, the server walks the object graph from wanted commits and stops traversal at any `have` OID, producing an incremental pack that only contains objects the client does not already have.
+- **Upload-pack negotiation**: The server reads `want` lines, then processes `have`/`done` negotiation. When `multi_ack_detailed` is negotiated, the server sends `ACK <oid> common` for each `have` OID it recognizes and `ACK <oid> ready` after a flush once common objects exist, allowing the client to converge on the minimal set of objects to transfer. When `no-done` is also negotiated, the client may skip the `done` line after receiving `ready`, saving a round-trip. Without `multi_ack_detailed`, the server falls back to responding with `NAK` after each batch flush. When generating the packfile, the server walks the object graph from wanted commits and stops traversal at any `have` OID, producing an incremental pack that only contains objects the client does not already have.
 - **Receive-pack command parsing**: The first command line's NUL-separated capabilities are parsed for `side-band-64k` and `report-status`. All other capabilities sent by the client are ignored.
 
 ## Related Crates

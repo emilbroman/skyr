@@ -312,14 +312,19 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"side-band-64k", futures::stream::iter(refs))
-            .await?;
+        self.advertise_refs(
+            b"multi_ack_detailed no-done side-band-64k",
+            futures::stream::iter(refs),
+        )
+        .await?;
 
         // Create writer before reader: make_writer returns a 'static handle (clones the
         // internal sender), so it can coexist with the reader's &mut borrow on the channel.
         let mut out = self.channel.make_writer().compat_write();
         let mut r = self.channel.make_reader();
         let mut use_sideband = false;
+        let mut use_multi_ack_detailed = false;
+        let mut use_no_done = false;
         let wants = {
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
@@ -340,8 +345,13 @@ impl<'a> CommandHandler<'a> {
                 if let Some(nul_pos) = data.iter().position(|&b| b == 0) {
                     if first_want {
                         let caps = &data[nul_pos + 1..];
-                        if caps.split(|b| *b == b' ').any(|c| c == b"side-band-64k") {
-                            use_sideband = true;
+                        for cap in caps.split(|b| *b == b' ') {
+                            match cap {
+                                b"side-band-64k" => use_sideband = true,
+                                b"multi_ack_detailed" => use_multi_ack_detailed = true,
+                                b"no-done" => use_no_done = true,
+                                _ => {}
+                            }
                         }
                     }
                     data = &data[..nul_pos];
@@ -350,8 +360,13 @@ impl<'a> CommandHandler<'a> {
                     let mut parts = data[5..].split(|b| *b == b' ');
                     let hex = parts.next().unwrap_or_default();
                     if first_want {
-                        if parts.any(|p| p == b"side-band-64k") {
-                            use_sideband = true;
+                        for cap in parts {
+                            match cap {
+                                b"side-band-64k" => use_sideband = true,
+                                b"multi_ack_detailed" => use_multi_ack_detailed = true,
+                                b"no-done" => use_no_done = true,
+                                _ => {}
+                            }
                         }
                         first_want = false;
                     }
@@ -367,10 +382,13 @@ impl<'a> CommandHandler<'a> {
             return Ok(());
         }
 
-        // Have/done negotiation: collect have OIDs and respond with NAK after
-        // each flush so the client can continue sending more haves.
-        let haves: HashSet<gix_hash::ObjectId> = {
+        // Have/done negotiation: collect have OIDs and — when multi_ack_detailed
+        // is active — tell the client which objects we share so it can send an
+        // optimal set of haves and know when to stop.
+        let (haves, last_common) = {
             let mut haves = HashSet::new();
+            let mut last_common: Option<gix_hash::ObjectId> = None;
+            let mut sent_ready = false;
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
                 &[gix_packetline::PacketLineRef::Flush],
@@ -378,6 +396,7 @@ impl<'a> CommandHandler<'a> {
             );
             loop {
                 let mut got_done = false;
+                let mut acked_in_batch = false;
                 while let Some(line) = pkt.read_line().await {
                     let line = line??;
                     if let gix_packetline::PacketLineRef::Data(data) = line {
@@ -390,23 +409,61 @@ impl<'a> CommandHandler<'a> {
                             && let Ok(oid) = gix_hash::ObjectId::from_hex(hex)
                         {
                             haves.insert(oid);
+                            if use_multi_ack_detailed
+                                && self.client.read_raw_object(oid).await.is_ok()
+                            {
+                                last_common = Some(oid);
+                                acked_in_batch = true;
+                                let ack = format!("ACK {oid} common\n");
+                                gix_packetline::async_io::encode::write_packet_line(
+                                    &gix_packetline::PacketLineRef::Data(ack.as_bytes()),
+                                    &mut out,
+                                )
+                                .await?;
+                            }
                         }
                     }
                 }
                 if got_done {
                     break;
                 }
-                // Client sent a flush after a batch of haves — respond with NAK
-                // so it knows to continue sending more haves (or send done).
-                gix_packetline::async_io::encode::write_packet_line(
-                    &gix_packetline::PacketLineRef::Data(b"NAK\n"),
-                    &mut out,
-                )
-                .await?;
+                // After a flush: if multi_ack_detailed and we found common
+                // objects, signal readiness; otherwise send NAK.
+                if use_multi_ack_detailed {
+                    if let Some(common) = last_common
+                        && !sent_ready
+                    {
+                        sent_ready = true;
+                        let ack = format!("ACK {common} ready\n");
+                        gix_packetline::async_io::encode::write_packet_line(
+                            &gix_packetline::PacketLineRef::Data(ack.as_bytes()),
+                            &mut out,
+                        )
+                        .await?;
+                    }
+                    if !acked_in_batch {
+                        gix_packetline::async_io::encode::write_packet_line(
+                            &gix_packetline::PacketLineRef::Data(b"NAK\n"),
+                            &mut out,
+                        )
+                        .await?;
+                    }
+                } else {
+                    gix_packetline::async_io::encode::write_packet_line(
+                        &gix_packetline::PacketLineRef::Data(b"NAK\n"),
+                        &mut out,
+                    )
+                    .await?;
+                }
                 out.flush().await?;
+                // If no-done is negotiated and we've sent ready, the client
+                // will not send "done" — proceed to packfile generation.
+                if use_no_done && sent_ready {
+                    break;
+                }
                 pkt.reset();
             }
-            haves
+            (haves, last_common)
         };
 
         struct PackObject {
@@ -510,11 +567,20 @@ impl<'a> CommandHandler<'a> {
         let digest = hasher.try_finalize()?;
         pack.extend_from_slice(digest.as_slice());
 
-        gix_packetline::async_io::encode::write_packet_line(
-            &gix_packetline::PacketLineRef::Data(b"NAK\n"),
-            &mut out,
-        )
-        .await?;
+        if let Some(common) = last_common {
+            let ack = format!("ACK {common}\n");
+            gix_packetline::async_io::encode::write_packet_line(
+                &gix_packetline::PacketLineRef::Data(ack.as_bytes()),
+                &mut out,
+            )
+            .await?;
+        } else {
+            gix_packetline::async_io::encode::write_packet_line(
+                &gix_packetline::PacketLineRef::Data(b"NAK\n"),
+                &mut out,
+            )
+            .await?;
+        }
         if use_sideband {
             for chunk in pack.chunks(65515) {
                 let mut sb = vec![1u8];
