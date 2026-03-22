@@ -23,6 +23,10 @@ export function orgHref(orgName: string): string {
     return `/${encodeURIComponent(orgName)}`;
 }
 
+export function newRepoHref(orgName: string): string {
+    return `/${encodeURIComponent(orgName)}/~new-repo`;
+}
+
 export function repoHref(orgName: string, repoName: string): string {
     return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}`;
 }
