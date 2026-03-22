@@ -50,7 +50,7 @@ SCS implements Git pack protocol v1. The table below summarizes all capabilities
 | `shallow` / `deepen` | No | No | Shallow lines skipped | No | `shallow` and `unshallow` lines from the client are recognized and silently discarded during receive-pack command parsing (line 617). No shallow clone support is implemented. |
 | `thin-pack` | No | No | No | No | Not advertised or handled. Thin packs (packs with delta bases outside the pack) may partially work via ref-delta resolution against CDB, but there is no explicit thin-pack support. |
 | `no-done` | No | No | No | No | Not supported. The upload-pack path waits for an explicit `done` line from the client before sending the packfile. |
-| `multi_ack` / `multi_ack_detailed` | No | No | No | No | Not implemented. The server sends a single `NAK` after receiving wants and the `done` line, with no `have` negotiation. |
+| `multi_ack` / `multi_ack_detailed` | No | No | No | No | Not implemented. The server does support base-protocol `have` negotiation (collecting `have` OIDs and using them to generate incremental packfiles), but does not send per-`have` `ACK` lines — it always responds with `NAK` after each batch flush. |
 | `allow-tip-sha1-in-want` | No | No | No | No | Not implemented. |
 | `allow-reachable-sha1-in-want` | No | No | No | No | Not implemented. |
 | `agent` | No | No | No | No | Not parsed or sent. |
@@ -58,7 +58,7 @@ SCS implements Git pack protocol v1. The table below summarizes all capabilities
 ### Additional protocol details
 
 - **Ref advertisement** (`advertise_refs`): Capabilities are appended after a NUL byte on the first ref line. If no refs exist, a zero-id `capabilities^{}` pseudo-ref is sent instead.
-- **Upload-pack negotiation**: The server reads `want` lines, then reads through to a `done` line (ignoring `have` lines), responds with `NAK`, and streams the full packfile. There is no common-ancestor negotiation — every fetch sends all reachable objects.
+- **Upload-pack negotiation**: The server reads `want` lines, then processes `have`/`done` negotiation. During negotiation, the server collects `have` OIDs from the client and responds with `NAK` after each batch flush (no `multi_ack` support). When generating the packfile, the server walks the object graph from wanted commits and stops traversal at any `have` OID, producing an incremental pack that only contains objects the client does not already have.
 - **Receive-pack command parsing**: The first command line's NUL-separated capabilities are parsed for `side-band-64k` and `report-status`. All other capabilities sent by the client are ignored.
 
 ## Related Crates

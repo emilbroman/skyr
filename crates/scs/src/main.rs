@@ -315,6 +315,9 @@ impl<'a> CommandHandler<'a> {
         self.advertise_refs(b"side-band-64k", futures::stream::iter(refs))
             .await?;
 
+        // Create writer before reader: make_writer returns a 'static handle (clones the
+        // internal sender), so it can coexist with the reader's &mut borrow on the channel.
+        let mut out = self.channel.make_writer().compat_write();
         let mut r = self.channel.make_reader();
         let mut use_sideband = false;
         let wants = {
@@ -364,26 +367,47 @@ impl<'a> CommandHandler<'a> {
             return Ok(());
         }
 
-        {
+        // Have/done negotiation: collect have OIDs and respond with NAK after
+        // each flush so the client can continue sending more haves.
+        let haves: HashSet<gix_hash::ObjectId> = {
+            let mut haves = HashSet::new();
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
                 &[gix_packetline::PacketLineRef::Flush],
                 false,
             );
-            while let Some(line) = pkt.read_line().await {
-                let line = line??;
-                if let gix_packetline::PacketLineRef::Data(data) = line {
-                    let mut data: &[u8] = data;
-                    if let Some(trimmed) = data.strip_suffix(b"\n") {
-                        data = trimmed;
-                    }
-                    if data == b"done" {
-                        break;
+            loop {
+                let mut got_done = false;
+                while let Some(line) = pkt.read_line().await {
+                    let line = line??;
+                    if let gix_packetline::PacketLineRef::Data(data) = line {
+                        let data = data.strip_suffix(b"\n").unwrap_or(data);
+                        if data == b"done" {
+                            got_done = true;
+                            break;
+                        }
+                        if let Some(hex) = data.strip_prefix(b"have ")
+                            && let Ok(oid) = gix_hash::ObjectId::from_hex(hex)
+                        {
+                            haves.insert(oid);
+                        }
                     }
                 }
+                if got_done {
+                    break;
+                }
+                // Client sent a flush after a batch of haves — respond with NAK
+                // so it knows to continue sending more haves (or send done).
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Data(b"NAK\n"),
+                    &mut out,
+                )
+                .await?;
+                out.flush().await?;
+                pkt.reset();
             }
-            r = pkt.into_inner().into_inner();
-        }
+            haves
+        };
 
         struct PackObject {
             kind: gix_object::Kind,
@@ -415,9 +439,13 @@ impl<'a> CommandHandler<'a> {
             out
         }
 
+        /// Walk the object graph from `wants`, stopping at any OID the client
+        /// already has (the `haves` set). This makes incremental fetches send
+        /// only new objects instead of the entire repository.
         async fn collect_objects(
             client: &cdb::RepositoryClient,
             wants: Vec<gix_hash::ObjectId>,
+            haves: &HashSet<gix_hash::ObjectId>,
         ) -> anyhow::Result<Vec<PackObject>> {
             let mut stack = wants;
             let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
@@ -425,6 +453,9 @@ impl<'a> CommandHandler<'a> {
 
             while let Some(oid) = stack.pop() {
                 if !seen.insert(oid) {
+                    continue;
+                }
+                if haves.contains(&oid) {
                     continue;
                 }
                 let (kind, data) = client.read_raw_object(oid).await?;
@@ -457,7 +488,7 @@ impl<'a> CommandHandler<'a> {
             Ok(out)
         }
 
-        let objects = collect_objects(&self.client, wants).await?;
+        let objects = collect_objects(&self.client, wants, &haves).await?;
 
         let mut pack = Vec::new();
         pack.extend_from_slice(b"PACK");
@@ -479,9 +510,6 @@ impl<'a> CommandHandler<'a> {
         let digest = hasher.try_finalize()?;
         pack.extend_from_slice(digest.as_slice());
 
-        drop(r);
-
-        let mut out = self.channel.make_writer().compat_write();
         gix_packetline::async_io::encode::write_packet_line(
             &gix_packetline::PacketLineRef::Data(b"NAK\n"),
             &mut out,
