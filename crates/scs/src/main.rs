@@ -312,10 +312,11 @@ impl<'a> CommandHandler<'a> {
     async fn upload_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"", futures::stream::iter(refs))
+        self.advertise_refs(b"side-band-64k", futures::stream::iter(refs))
             .await?;
 
         let mut r = self.channel.make_reader();
+        let mut use_sideband = false;
         let wants = {
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
@@ -323,6 +324,7 @@ impl<'a> CommandHandler<'a> {
                 false,
             );
             let mut wants = Vec::new();
+            let mut first_want = true;
             while let Some(line) = pkt.read_line().await {
                 let line = line??;
                 let gix_packetline::PacketLineRef::Data(data) = line else {
@@ -333,10 +335,23 @@ impl<'a> CommandHandler<'a> {
                     data = trimmed;
                 }
                 if let Some(nul_pos) = data.iter().position(|&b| b == 0) {
+                    if first_want {
+                        let caps = &data[nul_pos + 1..];
+                        if caps.split(|b| *b == b' ').any(|c| c == b"side-band-64k") {
+                            use_sideband = true;
+                        }
+                    }
                     data = &data[..nul_pos];
                 }
                 if data.starts_with(b"want ") {
-                    let hex = data[5..].split(|b| *b == b' ').next().unwrap_or_default();
+                    let mut parts = data[5..].split(|b| *b == b' ');
+                    let hex = parts.next().unwrap_or_default();
+                    if first_want {
+                        if parts.any(|p| p == b"side-band-64k") {
+                            use_sideband = true;
+                        }
+                        first_want = false;
+                    }
                     let oid = gix_hash::ObjectId::from_hex(hex)?;
                     wants.push(oid);
                 }
@@ -472,7 +487,24 @@ impl<'a> CommandHandler<'a> {
             &mut out,
         )
         .await?;
-        out.write_all(&pack).await?;
+        if use_sideband {
+            for chunk in pack.chunks(65515) {
+                let mut sb = vec![1u8];
+                sb.extend_from_slice(chunk);
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Data(&sb),
+                    &mut out,
+                )
+                .await?;
+            }
+            gix_packetline::async_io::encode::write_packet_line(
+                &gix_packetline::PacketLineRef::Flush,
+                &mut out,
+            )
+            .await?;
+        } else {
+            out.write_all(&pack).await?;
+        }
         out.flush().await?;
 
         Ok(())
@@ -525,8 +557,11 @@ impl<'a> CommandHandler<'a> {
     async fn receive_pack(self) -> anyhow::Result<()> {
         let refs = self.collect_refs().await?;
 
-        self.advertise_refs(b"report-status delete-refs", futures::stream::iter(refs))
-            .await?;
+        self.advertise_refs(
+            b"report-status delete-refs side-band-64k",
+            futures::stream::iter(refs),
+        )
+        .await?;
 
         let mut r = self.channel.make_reader();
 
@@ -539,6 +574,8 @@ impl<'a> CommandHandler<'a> {
         let null_oid = gix_hash::Kind::Sha1.null();
         let mut updates = Vec::new();
 
+        let mut use_sideband = false;
+        let mut client_wants_report = false;
         {
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
@@ -546,6 +583,7 @@ impl<'a> CommandHandler<'a> {
                 false,
             );
 
+            let mut first_command = true;
             while let Some(line) = pkt.read_line().await {
                 let line = line??;
                 let gix_packetline::PacketLineRef::Data(data) = line else {
@@ -558,6 +596,17 @@ impl<'a> CommandHandler<'a> {
                 }
 
                 if let Some(nul_pos) = data.iter().position(|&b| b == 0) {
+                    if first_command {
+                        let caps = &data[nul_pos + 1..];
+                        for cap in caps.split(|b| *b == b' ') {
+                            if cap == b"side-band-64k" {
+                                use_sideband = true;
+                            } else if cap == b"report-status" {
+                                client_wants_report = true;
+                            }
+                        }
+                        first_command = false;
+                    }
                     data = &data[..nul_pos];
                 }
 
@@ -971,19 +1020,56 @@ impl<'a> CommandHandler<'a> {
 
         drop(r);
 
-        let mut pkt =
-            gix_packetline::async_io::Writer::new(self.channel.make_writer().compat_write());
-        pkt.write_all(b"unpack ok\n").await?;
-        for name in &results {
-            let line = format!("ok {name}\n");
-            pkt.write_all(line.as_bytes()).await?;
+        if client_wants_report {
+            if use_sideband {
+                let mut out = self.channel.make_writer().compat_write();
+                // Build report-status as pkt-line encoded bytes
+                let mut report = Vec::new();
+                {
+                    use std::io::Write as _;
+                    let line = b"unpack ok\n";
+                    write!(report, "{:04x}", 4 + line.len())?;
+                    report.extend_from_slice(line);
+                    for name in &results {
+                        let line = format!("ok {name}\n");
+                        write!(report, "{:04x}", 4 + line.len())?;
+                        report.extend_from_slice(line.as_bytes());
+                    }
+                    report.extend_from_slice(b"0000");
+                }
+                // Send report through side-band channel 1
+                for chunk in report.chunks(65515) {
+                    let mut sb = vec![1u8];
+                    sb.extend_from_slice(chunk);
+                    gix_packetline::async_io::encode::write_packet_line(
+                        &gix_packetline::PacketLineRef::Data(&sb),
+                        &mut out,
+                    )
+                    .await?;
+                }
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Flush,
+                    &mut out,
+                )
+                .await?;
+                out.flush().await?;
+            } else {
+                let mut pkt = gix_packetline::async_io::Writer::new(
+                    self.channel.make_writer().compat_write(),
+                );
+                pkt.write_all(b"unpack ok\n").await?;
+                for name in &results {
+                    let line = format!("ok {name}\n");
+                    pkt.write_all(line.as_bytes()).await?;
+                }
+                gix_packetline::async_io::encode::write_packet_line(
+                    &gix_packetline::PacketLineRef::Flush,
+                    pkt.inner_mut(),
+                )
+                .await?;
+                pkt.flush().await?;
+            }
         }
-        gix_packetline::async_io::encode::write_packet_line(
-            &gix_packetline::PacketLineRef::Flush,
-            pkt.inner_mut(),
-        )
-        .await?;
-        pkt.flush().await?;
 
         Ok(())
     }
