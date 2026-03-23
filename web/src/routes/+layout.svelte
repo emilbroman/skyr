@@ -3,6 +3,7 @@ import "../app.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
 import { onDestroy, onMount } from "svelte";
 import { goto } from "$app/navigation";
+import { page } from "$app/state";
 import {
     clearAuth,
     isAuthenticated,
@@ -56,7 +57,7 @@ function closeDropdown() {
         <a href="/" class="font-bold text-gray-900">Skyr</a>
         <a
           href="/~docs/"
-          class="text-gray-500 hover:text-gray-800 transition-colors"
+          class="relative {page.url.pathname.startsWith('/~docs/') ? 'text-gray-900 font-medium after:absolute after:left-0 after:right-0 after:mt-1 after:top-full after:h-0.5 after:bg-orange-500' : 'text-gray-500'} hover:text-gray-800 transition-colors"
         >
           Docs
         </a>
@@ -68,7 +69,14 @@ function closeDropdown() {
             onclick={toggleDropdown}
             class="flex items-center gap-1 text-gray-500 hover:text-gray-800 transition-colors cursor-pointer"
           >
-            {$user?.username ?? ""}
+            {#if $user?.fullname}
+              <div class="flex flex-col items-end leading-tight">
+                <span class="text-gray-800 font-semibold text-xs">{$user.fullname}</span>
+                <span class="text-gray-400 text-xs">@{$user.username}</span>
+              </div>
+            {:else}
+              <span class="text-gray-800 font-semibold">@{$user?.username ?? ""}</span>
+            {/if}
             <ChevronDown class="w-4 h-4" />
           </button>
 

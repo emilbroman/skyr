@@ -24,7 +24,6 @@ function isActive(path: string): boolean {
 
 <div class="flex-1 bg-white flex">
     <nav class="w-56 shrink-0 border-r border-gray-200 p-4 text-sm">
-        <a href="/~docs/" class="font-bold text-gray-900 block mb-4">Docs</a>
         <ul class="space-y-1">
             {#each nav as item}
                 <li>
