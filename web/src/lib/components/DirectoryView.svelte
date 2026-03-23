@@ -2,6 +2,7 @@
 import { CommitTreeEntryDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref } from "$lib/paths";
+import { ArrowLeft, FileText, Folder } from "lucide-svelte";
 import FileView from "./FileView.svelte";
 import Spinner from "./Spinner.svelte";
 
@@ -80,19 +81,7 @@ let readmeContent = $derived.by(() => {
         href={parentHref()}
         class="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-gray-100 transition-colors"
       >
-        <svg
-          class="w-4 h-4 text-gray-400"
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M11 17l-5-5m0 0l5-5m-5 5h12"
-          />
-        </svg>
+        <ArrowLeft class="w-4 h-4 text-gray-400" />
         <span class="text-gray-500">..</span>
       </a>
     {/if}
@@ -102,34 +91,10 @@ let readmeContent = $derived.by(() => {
         class="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-gray-100 transition-colors"
       >
         {#if entry.__typename === "Tree"}
-          <svg
-            class="w-4 h-4 text-orange-600 shrink-0"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-            />
-          </svg>
+          <Folder class="w-4 h-4 text-orange-600 shrink-0" />
           <span class="text-gray-700">{entry.name}</span>
         {:else}
-          <svg
-            class="w-4 h-4 text-gray-400 shrink-0"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              stroke-width="2"
-              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-            />
-          </svg>
+          <FileText class="w-4 h-4 text-gray-400 shrink-0" />
           <span class="text-gray-600">{entry.name}</span>
           <span class="ml-auto text-gray-400"
             >{formatSize(entry.size)}</span

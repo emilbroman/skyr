@@ -6,6 +6,17 @@ import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlQuery } from "$lib/graphql/query";
 import { decodeSegment, envDeploymentsHref, envHref, envLogsHref, resourcesHref } from "$lib/paths";
 import { user } from "$lib/stores/auth";
+import {
+    AlignJustify,
+    Box,
+    Check,
+    ChevronDown,
+    Copy,
+    Download,
+    Folder,
+    GitBranch,
+    RefreshCw,
+} from "lucide-svelte";
 
 let { children } = $props();
 
@@ -81,22 +92,7 @@ function switchEnv(newEnv: string) {
 <div>
   <nav class="mb-2 flex items-center">
     <div class="inline-flex items-center relative">
-      <svg
-        class="w-4 h-4 text-gray-400 absolute left-2.5 pointer-events-none"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-      >
-        <line x1="6" y1="3" x2="6" y2="15" stroke-width="2" stroke-linecap="round" />
-        <circle cx="6" cy="18" r="3" stroke-width="2" />
-        <circle cx="18" cy="6" r="3" stroke-width="2" />
-        <path
-          stroke-linecap="round"
-          stroke-width="2"
-          fill="none"
-          d="M18 9c0 6-12 6-12 6"
-        />
-      </svg>
+      <GitBranch class="w-4 h-4 text-gray-400 absolute left-2.5 pointer-events-none" />
       <select
         class="appearance-none bg-white border border-gray-200 rounded-lg pl-8 py-1.5 pr-8 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
         value={envName}
@@ -107,19 +103,7 @@ function switchEnv(newEnv: string) {
           <option value={name}>{name}</option>
         {/each}
       </select>
-      <svg
-        class="w-3.5 h-3.5 text-gray-400 absolute right-2.5 pointer-events-none"
-        fill="none"
-        viewBox="0 0 24 24"
-        stroke="currentColor"
-      >
-        <path
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          stroke-width="2"
-          d="M19 9l-7 7-7-7"
-        />
-      </svg>
+      <ChevronDown class="w-3.5 h-3.5 text-gray-400 absolute right-2.5 pointer-events-none" />
     </div>
 
     <div class="clone-dropdown relative inline-block ml-auto">
@@ -127,23 +111,9 @@ function switchEnv(newEnv: string) {
         class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
         onclick={() => (cloneDropdownOpen = !cloneDropdownOpen)}
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-          />
-        </svg>
+        <Download class="w-4 h-4" />
         Clone
-        <svg class="w-3.5 h-3.5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M19 9l-7 7-7-7"
-          />
-        </svg>
+        <ChevronDown class="w-3.5 h-3.5 text-gray-400" />
       </button>
 
       {#if cloneDropdownOpen}
@@ -163,18 +133,9 @@ function switchEnv(newEnv: string) {
               onclick={copyCloneUrl}
             >
               {#if copied}
-                <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                </svg>
+                <Check class="w-4 h-4 text-green-500" />
               {:else}
-                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2"
-                    d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
-                  />
-                </svg>
+                <Copy class="w-4 h-4" />
               {/if}
             </button>
           </div>
@@ -199,14 +160,7 @@ function switchEnv(newEnv: string) {
           ? 'border-orange-500 text-gray-900'
           : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"
-          />
-        </svg>
+        <Folder class="w-4 h-4" />
         Files
       </a>
       <a
@@ -216,20 +170,7 @@ function switchEnv(newEnv: string) {
           ? 'border-orange-500 text-gray-900'
           : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        <svg class="w-4 h-4 -scale-x-100" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 4v5h5M20 20v-5h-5"
-          />
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M19.79 9A8 8 0 006.22 6.22L4 9m16 6l-2.22 2.78A8 8 0 014.21 15"
-          />
-        </svg>
+        <RefreshCw class="w-4 h-4" />
         Deployments <span class="text-gray-400 ml-1"
           >({env.deployments.length})</span
         >
@@ -241,14 +182,7 @@ function switchEnv(newEnv: string) {
           ? 'border-orange-500 text-gray-900'
           : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"
-          />
-        </svg>
+        <Box class="w-4 h-4" />
         Resources <span class="text-gray-400 ml-1"
           >({env.resources.length})</span
         >
@@ -260,14 +194,7 @@ function switchEnv(newEnv: string) {
           ? 'border-orange-500 text-gray-900'
           : 'border-transparent text-gray-500 hover:text-gray-800'}"
       >
-        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            stroke-width="2"
-            d="M4 6h16M4 10h16M4 14h16M4 18h16"
-          />
-        </svg>
+        <AlignJustify class="w-4 h-4" />
         Logs
       </a>
     </div>

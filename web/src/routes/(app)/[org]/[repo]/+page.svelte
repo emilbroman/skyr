@@ -6,6 +6,7 @@ import { RepositoryDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { envHref } from "$lib/paths";
 import { user } from "$lib/stores/auth";
+import { Check, Copy } from "lucide-svelte";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -70,13 +71,9 @@ $effect(() => {
                         onclick={() => copyText(`git clone ${cloneUrl}`, "clone")}
                     >
                         {#if copiedClone}
-                            <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                            </svg>
+                            <Check class="w-4 h-4 text-green-500" />
                         {:else}
-                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
+                            <Copy class="w-4 h-4" />
                         {/if}
                     </button>
                 </div>
@@ -102,13 +99,9 @@ $effect(() => {
                         onclick={() => copyText(`git remote add origin ${cloneUrl}`, "remote")}
                     >
                         {#if copiedRemote}
-                            <svg class="w-4 h-4 text-green-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
-                            </svg>
+                            <Check class="w-4 h-4 text-green-500" />
                         {:else}
-                            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
+                            <Copy class="w-4 h-4" />
                         {/if}
                     </button>
                 </div>
