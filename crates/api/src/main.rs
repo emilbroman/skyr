@@ -94,13 +94,16 @@ impl Query {
 
         // Look up existing WebAuthn credentials for excludeCredentials / allowCredentials
         let mut user_client = context.udb_client.user(&username);
-        let credentials = match user_client.get().await {
-            Ok(_) => user_client
-                .pubkeys()
-                .list_credentials()
-                .await
-                .unwrap_or_default(),
-            Err(_) => Vec::new(),
+        let (taken, credentials) = match user_client.get().await {
+            Ok(_) => (
+                true,
+                user_client
+                    .pubkeys()
+                    .list_credentials()
+                    .await
+                    .unwrap_or_default(),
+            ),
+            Err(_) => (false, Vec::new()),
         };
 
         let webauthn_creds: Vec<_> = credentials
@@ -165,6 +168,7 @@ impl Query {
 
         Ok(AuthChallenge {
             challenge: challenge_string,
+            taken,
             passkey_registration,
             passkey_signin,
         })
@@ -224,6 +228,7 @@ impl Query {
 
 struct AuthChallenge {
     challenge: String,
+    taken: bool,
     passkey_registration: JsonValue,
     passkey_signin: Option<JsonValue>,
 }
@@ -232,6 +237,10 @@ struct AuthChallenge {
 impl AuthChallenge {
     fn challenge(&self) -> &str {
         &self.challenge
+    }
+
+    fn taken(&self) -> bool {
+        self.taken
     }
 
     #[graphql(name = "passkeyRegistration")]
