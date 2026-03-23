@@ -1,3 +1,4 @@
+import { browser } from "$app/environment";
 import { derived, get, writable } from "svelte/store";
 import { query } from "$lib/graphql/client";
 import type { User } from "$lib/graphql/generated";
@@ -7,12 +8,12 @@ const TOKEN_KEY = "skyr_token";
 const USER_KEY = "skyr_user";
 
 function loadToken(): string | null {
-    if (typeof localStorage === "undefined") return null;
+    if (!browser) return null;
     return localStorage.getItem(TOKEN_KEY);
 }
 
 function loadUser(): User | null {
-    if (typeof localStorage === "undefined") return null;
+    if (!browser) return null;
     const raw = localStorage.getItem(USER_KEY);
     if (!raw) return null;
     try {
