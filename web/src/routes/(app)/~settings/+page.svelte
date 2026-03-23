@@ -14,6 +14,7 @@ import { query } from "$lib/graphql/client";
 import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { createPasskeyRegistration } from "$lib/webauthn";
+import SshSignatureInput from "$lib/components/SshSignatureInput.svelte";
 
 const queryClient = useQueryClient();
 
@@ -31,7 +32,6 @@ let addKeyMode = $state<"closed" | "choose" | "ssh">("closed");
 let authChallenge = $state<AuthChallengeQuery["authChallenge"] | null>(null);
 let addKeyLoading = $state(false);
 let addKeyError = $state<string | null>(null);
-let sshResponse = $state("");
 let removeKeyError = $state<string | null>(null);
 let refreshInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -66,7 +66,6 @@ const addPublicKey = graphqlMutation(AddPublicKeyDocument, {
     onSuccess: () => {
         addKeyMode = "closed";
         authChallenge = null;
-        sshResponse = "";
         addKeyError = null;
         stopChallengeRefresh();
         queryClient.invalidateQueries({
@@ -142,7 +141,6 @@ function stopChallengeRefresh() {
 function cancelAddKey() {
     addKeyMode = "closed";
     authChallenge = null;
-    sshResponse = "";
     addKeyError = null;
     stopChallengeRefresh();
 }
@@ -161,19 +159,7 @@ async function addPasskey() {
     }
 }
 
-function parseSignature(raw: string): string | null {
-    const trimmed = raw.trim();
-    if (!trimmed.startsWith("-----BEGIN SSH SIGNATURE-----")) return null;
-    if (!trimmed.endsWith("-----END SSH SIGNATURE-----")) return null;
-    return trimmed;
-}
-
-function addSshKey() {
-    const signature = parseSignature(sshResponse);
-    if (!signature) {
-        addKeyError = "Could not find a valid SSH signature. Make sure you pasted the full output.";
-        return;
-    }
+function addSshKey(signature: string) {
     addKeyError = null;
     addPublicKey.mutate({ proof: signature });
 }
@@ -181,10 +167,6 @@ function addSshKey() {
 function removeKey(fingerprint: string) {
     removeKeyError = null;
     removePublicKey.mutate({ fingerprint });
-}
-
-function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
 }
 </script>
 
@@ -345,48 +327,13 @@ function copyToClipboard(text: string) {
                             <p class="text-red-600">{addKeyError}</p>
                         {/if}
 
-                        <div>
-                            <p class="text-gray-600 mb-2">
-                                Run this command in your terminal:
-                            </p>
-                            <div class="relative">
-                                <pre
-                                    class="bg-gray-100 border border-gray-300 rounded p-3 text-green-700 overflow-x-auto whitespace-pre-wrap break-all text-xs">echo -n '{authChallenge?.challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge</pre>
-                                <button
-                                    class="absolute top-2 right-2 text-gray-500 hover:text-gray-900 px-2 py-1 bg-gray-200 rounded"
-                                    onclick={() =>
-                                        copyToClipboard(
-                                            `echo -n '${authChallenge?.challenge}' | ssh-keygen -Y sign -f ~/.ssh/id_ed25519 -n skyr-auth-challenge`,
-                                        )}
-                                >
-                                    Copy
-                                </button>
-                            </div>
-                            <label
-                                class="block mt-2 text-gray-500"
-                                for="ssh-response"
-                            >
-                                Paste the full output:
-                            </label>
-                            <textarea
-                                id="ssh-response"
-                                bind:value={sshResponse}
-                                placeholder="-----BEGIN SSH SIGNATURE-----&#10;...&#10;-----END SSH SIGNATURE-----"
-                                rows={8}
-                                class="w-full mt-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500 font-mono text-xs"
-                            ></textarea>
-                        </div>
-
-                        <button
-                            onclick={addSshKey}
-                            disabled={addPublicKey.isPending ||
-                                !sshResponse.trim()}
-                            class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {addPublicKey.isPending
-                                ? "Adding..."
-                                : "Add SSH key"}
-                        </button>
+                        <SshSignatureInput
+                            challenge={authChallenge?.challenge ?? ""}
+                            onsubmit={addSshKey}
+                            submitLabel="Add SSH key"
+                            pendingLabel="Adding..."
+                            pending={addPublicKey.isPending}
+                        />
 
                         <button
                             onclick={cancelAddKey}
