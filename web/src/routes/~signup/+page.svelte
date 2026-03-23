@@ -14,6 +14,7 @@ let fullname = $state("");
 let authChallenge = $state<AuthChallengeQuery["authChallenge"] | null>(null);
 let response = $state("");
 let error = $state<string | null>(null);
+let usernameError = $state<string | null>(null);
 let loading = $state(false);
 let step = $state<"form" | "sign">("form");
 let showSshFlow = $state(false);
@@ -38,11 +39,16 @@ const signup = graphqlMutation(SignupDocument, {
 async function fetchChallenge() {
     if (!username.trim() || !email.trim()) return;
     error = null;
+    usernameError = null;
     loading = true;
     try {
         const data = await query(AuthChallengeDocument, {
             username: username.trim(),
         });
+        if (data.authChallenge.taken) {
+            usernameError = "This username is already taken.";
+            return;
+        }
         authChallenge = data.authChallenge;
         step = "sign";
         showSshFlow = false;
@@ -157,10 +163,14 @@ function copyToClipboard(text: string) {
             id="username"
             type="text"
             bind:value={username}
+            oninput={() => (usernameError = null)}
             placeholder="Choose a username"
             class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
             disabled={loading}
           />
+          {#if usernameError}
+            <p class="mt-1 text-sm text-red-600">{usernameError}</p>
+          {/if}
 
           <label
             class="block mt-4 mb-2 font-medium text-gray-600"
