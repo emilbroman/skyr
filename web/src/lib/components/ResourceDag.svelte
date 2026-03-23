@@ -215,6 +215,13 @@ $effect(() => {
     }
 });
 
+// Attach wheel listener with { passive: false } so preventDefault() works for pinch-to-zoom
+$effect(() => {
+    if (!svgEl) return;
+    svgEl.addEventListener("wheel", onWheel, { passive: false });
+    return () => svgEl!.removeEventListener("wheel", onWheel);
+});
+
 function onMouseDown(e: MouseEvent) {
     if (e.button !== 0) return;
     isPanning = true;
@@ -240,9 +247,13 @@ function zoomAt(cx: number, cy: number, factor: number) {
 }
 
 function onWheel(e: WheelEvent) {
+    // Only handle pinch-to-zoom (reported as ctrl+wheel by browsers)
+    if (!e.ctrlKey) return;
     e.preventDefault();
     const rect = svgEl!.getBoundingClientRect();
-    zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY > 0 ? 0.9 : 1.1);
+    // Use a gentle factor so pinch-to-zoom isn't too jumpy
+    const factor = 1 - e.deltaY * 0.01;
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.max(0.85, Math.min(1.15, factor)));
 }
 
 function zoomInCenter() {
@@ -289,7 +300,6 @@ function typeParts(type: string): { prefix: string; last: string } {
       bind:this={svgEl}
       class="w-full h-full"
       onmousedown={onMouseDown}
-      onwheel={onWheel}
       style="cursor: {isPanning ? 'grabbing' : 'grab'};"
     >
       <defs>
