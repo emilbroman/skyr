@@ -75,7 +75,7 @@ let dag = $derived.by(() => {
                     name: dep.name,
                     markers: [],
                     isShadow: true,
-        
+
                     layer: 0,
                     x: 0,
                     y: 0,
@@ -227,12 +227,12 @@ let dag = $derived.by(() => {
             const layerNodes = layers.get(l) ?? [];
             // Interpolate where the edge naturally wants to be at this layer
             const t = (l - fromNode.layer) / span;
-            const naturalY = fromNode.y + NODE_H / 2 + t * (toNode.y + NODE_H / 2 - (fromNode.y + NODE_H / 2));
+            const naturalY =
+                fromNode.y + NODE_H / 2 + t * (toNode.y + NODE_H / 2 - (fromNode.y + NODE_H / 2));
 
             // Check if any real node at this layer overlaps the natural Y
             let blocked = false;
             for (const n of layerNodes) {
-
                 if (naturalY >= n.y - MARGIN && naturalY <= n.y + NODE_H + MARGIN) {
                     blocked = true;
                     break;
@@ -241,9 +241,7 @@ let dag = $derived.by(() => {
 
             if (blocked) {
                 // Find the nearest gap (above or below the blocking nodes)
-                const sortedNodes = layerNodes
-
-                    .sort((a, b) => a.y - b.y);
+                const sortedNodes = layerNodes.sort((a, b) => a.y - b.y);
 
                 // Candidate positions: above topmost, below bottommost, or
                 // between consecutive nodes
@@ -295,9 +293,7 @@ function edgePath(edge: DagEdge): string {
     const waypoints = dag.waypointMap.get(edgeKey);
 
     // Build the list of points the edge passes through
-    const points: { x: number; y: number }[] = [
-        { x: from.x + NODE_W, y: from.y + NODE_H / 2 },
-    ];
+    const points: { x: number; y: number }[] = [{ x: from.x + NODE_W, y: from.y + NODE_H / 2 }];
     if (waypoints) {
         // Dummy nodes occupy a full node slot; route through the center of that slot
         for (const wp of waypoints) {

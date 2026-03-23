@@ -35,8 +35,7 @@ export async function execute<TData>(
 
     if (json.errors?.length) {
         const hasInvalidToken = json.errors.some(
-            (e: { extensions?: { code?: string } }) =>
-                e.extensions?.code === "INVALID_TOKEN",
+            (e: { extensions?: { code?: string } }) => e.extensions?.code === "INVALID_TOKEN",
         );
         if (hasInvalidToken) {
             clearAuth();
