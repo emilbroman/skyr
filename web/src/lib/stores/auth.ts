@@ -1,5 +1,5 @@
-import { browser } from "$app/environment";
 import { derived, get, writable } from "svelte/store";
+import { browser } from "$app/environment";
 import { query } from "$lib/graphql/client";
 import type { User } from "$lib/graphql/generated";
 import { RefreshTokenDocument } from "$lib/graphql/generated";
