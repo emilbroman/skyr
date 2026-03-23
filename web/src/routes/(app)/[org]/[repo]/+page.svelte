@@ -9,9 +9,7 @@ import { user } from "$lib/stores/auth";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
-let cloneUrl = $derived(
-    `${$user?.username ?? "git"}@${$page.url.hostname}:${orgName}/${repoName}`,
-);
+let cloneUrl = $derived(`${$user?.username ?? "git"}@${$page.url.hostname}:${orgName}/${repoName}`);
 let copiedClone = $state(false);
 let copiedRemote = $state(false);
 
