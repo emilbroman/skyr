@@ -793,7 +793,10 @@ impl Worker {
                                         "effect touch resource adopt",
                                     );
                                 } else if volatile_resource_ids.contains(&id) {
-                                    had_effect = true;
+                                    // Volatile checks verify resource health but do not
+                                    // count as effects that block completeness. This
+                                    // allows supersession of prior deployments even when
+                                    // volatile resources are present.
                                     let message = rtq::Message::Check(rtq::CheckMessage {
                                         resource: resource_ref(&namespace_id, &id),
                                         deployment_id: deployment_id.clone(),
