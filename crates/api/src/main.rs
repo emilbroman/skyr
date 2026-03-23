@@ -2286,7 +2286,10 @@ async fn graphql_handler(
         match udb_client.lookup_token(token).await {
             Err(udb::LookupTokenError::InvalidToken) => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
-                    "Invalid token".into(),
+                    juniper::FieldError::new(
+                        "Invalid token",
+                        juniper::graphql_value!({ "code": "INVALID_TOKEN" }),
+                    ),
                 ));
             }
             Err(e) => {

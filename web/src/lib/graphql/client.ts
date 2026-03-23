@@ -1,6 +1,6 @@
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { print } from "graphql";
-import { getToken } from "$lib/stores/auth";
+import { clearAuth, getToken } from "$lib/stores/auth";
 
 function getApiUrl(): string {
     return "/graphql";
@@ -34,6 +34,15 @@ export async function execute<TData>(
     const json = await response.json();
 
     if (json.errors?.length) {
+        const hasInvalidToken = json.errors.some(
+            (e: { extensions?: { code?: string } }) =>
+                e.extensions?.code === "INVALID_TOKEN",
+        );
+        if (hasInvalidToken) {
+            clearAuth();
+            window.location.href = "/~signin";
+            throw new Error("Invalid token");
+        }
         throw new Error(json.errors.map((e: { message: string }) => e.message).join("; "));
     }
 
