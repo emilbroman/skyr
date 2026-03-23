@@ -43,14 +43,14 @@ function submit() {
             id="repo-name"
             type="text"
             bind:value={repoName}
-            placeholder="my-project"
-            pattern="[a-zA-Z0-9_-]{'{'}3,20{'}'}"
-            title="3-20 characters, letters, numbers, hyphens, and underscores"
+            placeholder="MyProject"
+            pattern="[a-zA-Z_][a-zA-Z0-9_]*"
+            title="Must start with a letter or underscore, followed by letters, numbers, or underscores"
             required
             class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
         />
         <p class="mt-1 text-gray-400">
-            3-20 characters. Letters, numbers, hyphens, and underscores.
+            Must start with a letter or underscore, followed by letters, numbers, or underscores.
         </p>
 
         {#if error}
