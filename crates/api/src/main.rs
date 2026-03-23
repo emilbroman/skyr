@@ -26,7 +26,7 @@ struct Context {
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
     adb_client: adb::Client,
-    ldb_brokers: String,
+    ldb_consumer: ldb::Consumer,
     challenger: Arc<challenge::Challenger>,
     rp_id: Arc<String>,
     rp_name: Arc<String>,
@@ -1714,19 +1714,14 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let consumer = ldb::ClientBuilder::new()
-            .brokers(context.ldb_brokers.clone())
-            .build_consumer()
+        let namespace = context
+            .ldb_consumer
+            .namespace(deployment_id)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to build ldb consumer for subscription: {}", e);
+                tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
                 field_error("failed to tail logs")
             })?;
-
-        let namespace = consumer.namespace(deployment_id).await.map_err(|e| {
-            tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
-            field_error("failed to tail logs")
-        })?;
         let mut inner = namespace
             .tail(ldb::TailConfig {
                 follow: true,
@@ -1780,17 +1775,7 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let consumer = ldb::ClientBuilder::new()
-            .brokers(context.ldb_brokers.clone())
-            .build_consumer()
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to build ldb consumer for environment logs subscription: {e}"
-                );
-                field_error("failed to tail logs")
-            })?;
-
+        let consumer = context.ldb_consumer.clone();
         let cdb_client = context.cdb_client.clone();
 
         Ok(Box::pin(async_stream::stream! {
@@ -1901,16 +1886,8 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let consumer = ldb::ClientBuilder::new()
-            .brokers(context.ldb_brokers.clone())
-            .build_consumer()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to build ldb consumer for resource logs subscription: {e}");
-                field_error("failed to tail logs")
-            })?;
-
-        let namespace = consumer
+        let namespace = context
+            .ldb_consumer
             .namespace(resource_qid.clone())
             .await
             .map_err(|e| {
@@ -1953,11 +1930,7 @@ impl Subscription {
 }
 
 async fn load_logs(context: &Context, namespace: String, amount: u64) -> anyhow::Result<Vec<Log>> {
-    let consumer = ldb::ClientBuilder::new()
-        .brokers(context.ldb_brokers.clone())
-        .build_consumer()
-        .await?;
-    let namespace = consumer.namespace(namespace).await?;
+    let namespace = context.ldb_consumer.namespace(namespace).await?;
     let mut stream = namespace
         .tail(ldb::TailConfig {
             follow: false,
@@ -2228,6 +2201,10 @@ async fn main() -> anyhow::Result<()> {
     }
     let adb_client = adb_builder.build().await?;
     let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
+    let ldb_consumer = ldb::ClientBuilder::new()
+        .brokers(ldb_brokers)
+        .build_consumer()
+        .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
     let rp_id = Arc::new(cli.rp_id);
     let rp_name = Arc::new(cli.rp_name);
@@ -2250,7 +2227,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
-        .layer(Extension(ldb_brokers))
+        .layer(Extension(ldb_consumer))
         .layer(Extension(udb_client));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
@@ -2275,7 +2252,7 @@ async fn graphql_handler(
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(ldb_brokers): Extension<String>,
+    Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
@@ -2304,7 +2281,7 @@ async fn graphql_handler(
                     cdb_client,
                     rdb_client,
                     adb_client,
-                    ldb_brokers,
+                    ldb_consumer,
                     challenger,
                     rp_id,
                     rp_name,
@@ -2320,7 +2297,7 @@ async fn graphql_handler(
         cdb_client,
         rdb_client,
         adb_client,
-        ldb_brokers,
+        ldb_consumer,
         challenger,
         rp_id,
         rp_name,
@@ -2347,7 +2324,7 @@ async fn graphql_ws_handler(
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(ldb_brokers): Extension<String>,
+    Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(mut udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
 ) -> Response {
@@ -2375,7 +2352,7 @@ async fn graphql_ws_handler(
         cdb_client,
         rdb_client,
         adb_client,
-        ldb_brokers,
+        ldb_consumer,
         challenger,
         rp_id,
         rp_name,

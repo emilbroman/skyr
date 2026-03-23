@@ -5,6 +5,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use tokio::sync::Mutex;
+
 use async_stream::try_stream;
 use base64::Engine as _;
 use chrono::Utc;
@@ -176,6 +178,7 @@ impl Publisher {
         Ok(NamespacePublisher {
             client: self.client.clone(),
             topic,
+            partition_client: Arc::new(Mutex::new(None)),
         })
     }
 }
@@ -184,6 +187,7 @@ impl Publisher {
 pub struct NamespacePublisher {
     client: Arc<rskafka::client::Client>,
     topic: String,
+    partition_client: Arc<Mutex<Option<Arc<rskafka::client::partition::PartitionClient>>>>,
 }
 
 impl NamespacePublisher {
@@ -210,13 +214,7 @@ impl NamespacePublisher {
         payload.push(severity.as_byte());
         payload.extend_from_slice(message.as_bytes());
 
-        let partition_client = tokio::time::timeout(
-            PRODUCE_TIMEOUT,
-            self.client
-                .partition_client(&self.topic, 0, UnknownTopicHandling::Retry),
-        )
-        .await
-        .map_err(|_| PublishError::ProduceTimeout)??;
+        let partition_client = self.get_or_create_partition_client().await?;
 
         tokio::time::timeout(
             PRODUCE_TIMEOUT,
@@ -235,8 +233,28 @@ impl NamespacePublisher {
 
         Ok(())
     }
+
+    async fn get_or_create_partition_client(
+        &self,
+    ) -> Result<Arc<rskafka::client::partition::PartitionClient>, PublishError> {
+        let mut guard = self.partition_client.lock().await;
+        if let Some(client) = guard.as_ref() {
+            return Ok(Arc::clone(client));
+        }
+        let client = tokio::time::timeout(
+            PRODUCE_TIMEOUT,
+            self.client
+                .partition_client(&self.topic, 0, UnknownTopicHandling::Retry),
+        )
+        .await
+        .map_err(|_| PublishError::ProduceTimeout)??;
+        let client = Arc::new(client);
+        *guard = Some(Arc::clone(&client));
+        Ok(client)
+    }
 }
 
+#[derive(Clone)]
 pub struct Consumer {
     client: Arc<rskafka::client::Client>,
 }

@@ -10,7 +10,7 @@ chrono = { version = "0.4.43", features = ["clock"] }
 futures-util = "0.3.31"
 rskafka = "0.5.0"
 thiserror = "2.0.18"
-tokio = { version = "1.49.0", features = ["time"] }
+tokio = { version = "1.49.0", features = ["sync", "time"] }
 
 [lints]
 workspace = true
