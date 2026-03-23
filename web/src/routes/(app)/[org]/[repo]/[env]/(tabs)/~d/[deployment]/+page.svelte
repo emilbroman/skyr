@@ -10,7 +10,7 @@ import {
     DeploymentState,
 } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { commitTreeHref, decodeSegment, envHref } from "$lib/paths";
+import { commitTreeHref, decodeSegment } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -41,16 +41,6 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
 </script>
 
 <div>
-  <nav class="text-gray-400 mb-4">
-    <a href={envHref(orgName, repoName, envName)} class="hover:text-gray-700"
-      >{envName}</a
-    >
-    <span class="mx-2">/</span>
-    <span class="text-gray-600 font-mono text-xs"
-      >{commitHash.substring(0, 8)}</span
-    >
-  </nav>
-
   {#if deploymentDetail.isPending}
     <Spinner />
   {:else if deploymentDetail.error}
