@@ -90,9 +90,9 @@ fn handle_query(query: &[u8], records: &DnsRecords, upstream_dns: &[String]) -> 
 
     // Only handle A record queries for *.internal names
     if qtype == DNS_TYPE_A && qclass == DNS_CLASS_IN && name.ends_with(".internal") {
-        let records = records
-            .read()
-            .map_err(|e| anyhow::anyhow!("lock poisoned: {e}"))?;
+        // Use unwrap_or_else to recover from a poisoned lock rather than
+        // permanently failing DNS resolution.
+        let records = records.read().unwrap_or_else(|e| e.into_inner());
 
         if let Some(&ip) = records.get(&name) {
             debug!(name = %name, ip = %ip, "DNS: resolved from records");
@@ -216,6 +216,13 @@ fn build_error_response(query: &[u8], rcode: u16) -> Option<Vec<u8>> {
 /// Forward a DNS query to upstream servers and return the response.
 fn forward_query(query: &[u8], upstream_dns: &[String]) -> Result<Vec<u8>> {
     for upstream in upstream_dns {
+        // Validate upstream is a well-formed IP address before using it
+        if upstream.parse::<Ipv4Addr>().is_err() && upstream.parse::<std::net::Ipv6Addr>().is_err()
+        {
+            warn!(upstream = %upstream, "skipping invalid upstream DNS address");
+            continue;
+        }
+
         let upstream_addr: SocketAddr = format!("{upstream}:53")
             .parse()
             .with_context(|| format!("invalid upstream DNS address: {upstream}"))?;

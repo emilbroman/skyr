@@ -157,6 +157,31 @@ impl CriConduit {
         }
     }
 
+    /// Clean up a partially-created pod on failure.
+    ///
+    /// Stops and removes any containers that were already started, tears down
+    /// pod networking, releases the IPAM allocation, and removes the CRI sandbox.
+    /// All errors during cleanup are logged but do not propagate.
+    async fn cleanup_failed_pod(
+        &self,
+        cri: &mut CriClient,
+        cri_pod_id: &str,
+        container_ids: &[String],
+        network_setup: bool,
+    ) {
+        for cid in container_ids {
+            let _ = cri.stop_container(cid, 10).await;
+            let _ = cri.remove_container(cid).await;
+        }
+        if network_setup {
+            let _ = net::teardown_pod_network(cri_pod_id);
+        }
+        let mut ipam = self.ipam.lock().await;
+        ipam.release(cri_pod_id);
+        let _ = cri.stop_pod_sandbox(cri_pod_id).await;
+        let _ = cri.remove_pod_sandbox(cri_pod_id).await;
+    }
+
     /// Convert SCOP PodConfig to CRI PodSandboxConfig.
     fn to_cri_pod_config(&self, config: &scop::PodConfig) -> k8s_cri::v1::PodSandboxConfig {
         cri::pod_sandbox_config(&config.name, &config.environment_qid, &self.dns_servers)
@@ -288,8 +313,8 @@ impl scop::Conduit for CriConduit {
             match ipam.allocate(&cri_pod_id) {
                 Ok(ip) => ip,
                 Err(e) => {
-                    let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-                    let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                    self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
+                        .await;
                     return Err(scop::tonic::Status::internal(format!(
                         "IPAM allocation failed: {e}"
                     )));
@@ -301,10 +326,8 @@ impl scop::Conduit for CriConduit {
         let netns_path = match cri.pod_network_namespace(&cri_pod_id).await {
             Ok(path) => path,
             Err(e) => {
-                let mut ipam = self.ipam.lock().await;
-                ipam.release(&cri_pod_id);
-                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
+                    .await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to get network namespace: {e}"
                 )));
@@ -320,10 +343,8 @@ impl scop::Conduit for CriConduit {
             self.cluster_cidr.as_deref(),
             self.service_cidr.as_deref(),
         ) {
-            let mut ipam = self.ipam.lock().await;
-            ipam.release(&cri_pod_id);
-            let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-            let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+            self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
+                .await;
             return Err(scop::tonic::Status::internal(format!(
                 "pod network setup failed: {e:#}"
             )));
@@ -346,16 +367,8 @@ impl scop::Conduit for CriConduit {
 
             // Pull the image
             if let Err(e) = cri.pull_image(&container_config.image, None).await {
-                // Clean up on failure
-                for cid in &container_ids {
-                    let _ = cri.stop_container(cid, 10).await;
-                    let _ = cri.remove_container(cid).await;
-                }
-                let _ = net::teardown_pod_network(&cri_pod_id);
-                let mut ipam = self.ipam.lock().await;
-                ipam.release(&cri_pod_id);
-                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
+                    .await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to pull image for container {i}: {e}"
                 )));
@@ -368,15 +381,8 @@ impl scop::Conduit for CriConduit {
             {
                 Ok(id) => id,
                 Err(e) => {
-                    for cid in &container_ids {
-                        let _ = cri.stop_container(cid, 10).await;
-                        let _ = cri.remove_container(cid).await;
-                    }
-                    let _ = net::teardown_pod_network(&cri_pod_id);
-                    let mut ipam = self.ipam.lock().await;
-                    ipam.release(&cri_pod_id);
-                    let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-                    let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                    self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
+                        .await;
                     return Err(scop::tonic::Status::internal(format!(
                         "failed to create container {i}: {e}"
                     )));
@@ -386,15 +392,8 @@ impl scop::Conduit for CriConduit {
             // Start the container
             if let Err(e) = cri.start_container(&container_id).await {
                 let _ = cri.remove_container(&container_id).await;
-                for cid in &container_ids {
-                    let _ = cri.stop_container(cid, 10).await;
-                    let _ = cri.remove_container(cid).await;
-                }
-                let _ = net::teardown_pod_network(&cri_pod_id);
-                let mut ipam = self.ipam.lock().await;
-                ipam.release(&cri_pod_id);
-                let _ = cri.stop_pod_sandbox(&cri_pod_id).await;
-                let _ = cri.remove_pod_sandbox(&cri_pod_id).await;
+                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
+                    .await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to start container {i}: {e}"
                 )));
@@ -651,10 +650,8 @@ impl scop::Conduit for CriConduit {
             .parse()
             .map_err(|e| scop::tonic::Status::invalid_argument(format!("invalid IP: {e}")))?;
 
-        let mut records = self
-            .dns_records
-            .write()
-            .map_err(|e| scop::tonic::Status::internal(format!("DNS lock poisoned: {e}")))?;
+        // Recover from a poisoned lock rather than permanently failing.
+        let mut records = self.dns_records.write().unwrap_or_else(|e| e.into_inner());
         records.insert(request.hostname.clone(), ip);
         tracing::info!(
             hostname = %request.hostname,
@@ -668,10 +665,8 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::RemoveDnsRecordRequest,
     ) -> Result<scop::RemoveDnsRecordResponse, scop::tonic::Status> {
-        let mut records = self
-            .dns_records
-            .write()
-            .map_err(|e| scop::tonic::Status::internal(format!("DNS lock poisoned: {e}")))?;
+        // Recover from a poisoned lock rather than permanently failing.
+        let mut records = self.dns_records.write().unwrap_or_else(|e| e.into_inner());
         records.remove(&request.hostname);
         tracing::info!(
             hostname = %request.hostname,
@@ -1053,12 +1048,23 @@ fn extract_host_from_address(addr: &str) -> String {
 ///
 /// If the input is already an IP address, it is returned as-is.
 /// Otherwise, DNS resolution is performed to get the IP.
+///
+/// The input is validated to only contain safe characters (alphanumeric, hyphens,
+/// dots, colons for IPv6) to prevent injection attacks.
 fn resolve_hostname_to_ip(hostname: &str) -> Result<String> {
+    anyhow::ensure!(!hostname.is_empty(), "hostname must not be empty");
+    anyhow::ensure!(
+        hostname
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == ':'),
+        "hostname contains invalid characters: {hostname:?}"
+    );
+
     // Add a dummy port for ToSocketAddrs (it requires host:port format)
-    let addr_with_port = format!("{}:0", hostname);
+    let addr_with_port = format!("{hostname}:0");
     let resolved = addr_with_port
         .to_socket_addrs()?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("could not resolve hostname: {}", hostname))?;
+        .ok_or_else(|| anyhow::anyhow!("could not resolve hostname: {hostname}"))?;
     Ok(resolved.ip().to_string())
 }
