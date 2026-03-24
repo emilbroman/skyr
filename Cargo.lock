@@ -4279,6 +4279,7 @@ dependencies = [
  "rtp",
  "sclc",
  "tokio",
+ "tracing",
  "tracing-subscriber",
 ]
 

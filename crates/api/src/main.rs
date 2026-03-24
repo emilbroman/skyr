@@ -1449,32 +1449,32 @@ struct Artifact {
 #[juniper::graphql_object(Context = Context)]
 impl Artifact {
     fn namespace(&self) -> &str {
-        &self.header.namespace
+        self.header.namespace()
     }
 
     fn name(&self) -> &str {
-        &self.header.name
+        self.header.name()
     }
 
     #[graphql(name = "mediaType")]
     fn media_type(&self) -> &str {
-        &self.header.media_type
+        self.header.media_type()
     }
 
     async fn url(&self, context: &Context) -> FieldResult<String> {
         context
             .adb_client
             .presign_read_url(
-                &self.header.namespace,
-                &self.header.name,
+                self.header.namespace(),
+                self.header.name(),
                 Duration::from_secs(900),
             )
             .await
             .map_err(|error| {
                 tracing::error!(
                     "Failed to presign artifact URL for {}/{}: {}",
-                    self.header.namespace,
-                    self.header.name,
+                    self.header.namespace(),
+                    self.header.name(),
                     error
                 );
                 internal_error()
