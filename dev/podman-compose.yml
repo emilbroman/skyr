@@ -219,6 +219,7 @@ services:
         "tcp://buildkit:1234",
         "--registry-url",
         "http://oci-registry:5000",
+        "--insecure-registry",
         "--ldb-hostname",
         "redpanda",
       ]
