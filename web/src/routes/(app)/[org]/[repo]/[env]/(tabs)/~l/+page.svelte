@@ -18,6 +18,10 @@ const envDetail = graphqlQuery(() => ({
 let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 </script>
 
+<svelte:head>
+    <title>Logs · {orgName}/{repoName} ({envName}) - Skyr</title>
+</svelte:head>
+
 {#if env}
   <div
     class="h-[calc(100vh-16rem)] bg-white border border-gray-200 rounded-lg overflow-hidden"

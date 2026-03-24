@@ -61,6 +61,10 @@ function sortIndicator(column: SortColumn): string {
 }
 </script>
 
+<svelte:head>
+    <title>Deployments · {orgName}/{repoName} ({envName}) - Skyr</title>
+</svelte:head>
+
 {#if env}
   {#if env.deployments.length === 0}
     <p class="text-gray-500">No deployments.</p>

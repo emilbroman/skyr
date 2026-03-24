@@ -18,6 +18,10 @@ const envDetail = graphqlQuery(() => ({
 let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 </script>
 
+<svelte:head>
+    <title>Resources · {orgName}/{repoName} ({envName}) - Skyr</title>
+</svelte:head>
+
 {#if env}
   <ResourceDag
     resources={env.resources}

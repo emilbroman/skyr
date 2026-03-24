@@ -105,6 +105,10 @@ async function submitPasskeySignIn() {
 }
 </script>
 
+<svelte:head>
+    <title>Sign In - Skyr</title>
+</svelte:head>
+
 <div class="flex-1 flex items-center justify-center p-4">
   <div class="w-full max-w-lg">
     <div class="text-center mb-8">

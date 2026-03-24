@@ -135,6 +135,10 @@ let highlightLine = $derived.by(() => {
 });
 </script>
 
+<svelte:head>
+    <title>{pathParam || "/"} · {commitHash.substring(0, 8)} · {orgName}/{repoName} - Skyr</title>
+</svelte:head>
+
 <div>
   <!-- Commit message -->
   {#if commitMessage}

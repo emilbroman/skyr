@@ -9,6 +9,10 @@ const organizations = graphqlQuery(() => ({
 }));
 </script>
 
+<svelte:head>
+    <title>Organizations - Skyr</title>
+</svelte:head>
+
 <div class="p-6">
   <h1 class="font-bold text-gray-900 mb-6">Organizations</h1>
 

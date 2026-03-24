@@ -13,6 +13,10 @@ const orgDetail = graphqlQuery(() => ({
 }));
 </script>
 
+<svelte:head>
+    <title>{orgName} - Skyr</title>
+</svelte:head>
+
 <div class="p-6">
   <div class="flex items-center justify-between mb-6">
     <h1 class="font-bold text-gray-900">{orgName}</h1>

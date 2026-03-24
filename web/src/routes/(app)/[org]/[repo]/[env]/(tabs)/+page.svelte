@@ -24,6 +24,10 @@ let desiredDeployment = $derived(
 );
 </script>
 
+<svelte:head>
+    <title>{orgName}/{repoName} ({envName}) - Skyr</title>
+</svelte:head>
+
 {#if desiredDeployment}
   <RootTree {orgName} {repoName} commitHash={desiredDeployment.commit.hash} />
 {/if}

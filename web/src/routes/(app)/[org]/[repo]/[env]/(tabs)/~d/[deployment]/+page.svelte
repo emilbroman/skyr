@@ -40,6 +40,10 @@ const liveStates: DeploymentState[] = [
 let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 </script>
 
+<svelte:head>
+    <title>{commitHash.substring(0, 8)} · {orgName}/{repoName} ({envName}) - Skyr</title>
+</svelte:head>
+
 <div>
   {#if deploymentDetail.isPending}
     <Spinner />

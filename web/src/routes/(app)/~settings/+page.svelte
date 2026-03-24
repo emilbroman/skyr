@@ -170,6 +170,10 @@ function removeKey(fingerprint: string) {
 }
 </script>
 
+<svelte:head>
+    <title>Settings - Skyr</title>
+</svelte:head>
+
 <div class="p-6 max-w-2xl mx-auto">
     <h1 class="font-bold text-gray-900 mb-8">Settings</h1>
 

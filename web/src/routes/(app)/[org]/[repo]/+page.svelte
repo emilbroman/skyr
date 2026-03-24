@@ -43,6 +43,10 @@ $effect(() => {
 });
 </script>
 
+<svelte:head>
+    <title>{orgName}/{repoName} - Skyr</title>
+</svelte:head>
+
 {#if repoDetail.isPending}
     <Spinner />
 {:else if repoDetail.error}
