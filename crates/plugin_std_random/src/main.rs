@@ -1,6 +1,8 @@
+use anyhow::Context;
 use clap::Parser;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use sclc::ValueAssertions;
+use tracing::debug;
 
 const INT_RESOURCE_TYPE: &str = "Std/Random.Int";
 
@@ -33,9 +35,23 @@ impl RandomPlugin {
     }
 
     fn gen_int_resource(&mut self, inputs: sclc::Record) -> anyhow::Result<sclc::Resource> {
-        let min = *inputs.get("min").assert_int_ref()?;
-        let max = *inputs.get("max").assert_int_ref()?;
+        let min = *inputs
+            .get("min")
+            .assert_int_ref()
+            .context("missing or invalid 'min' input")?;
+        let max = *inputs
+            .get("max")
+            .assert_int_ref()
+            .context("missing or invalid 'max' input")?;
+
+        anyhow::ensure!(
+            min <= max,
+            "min ({min}) must not be greater than max ({max})"
+        );
+
+        debug!(min, max, "generating random integer");
         let result = self.rng.random_range(min..=max);
+        debug!(result, "generated random integer");
 
         let mut outputs = sclc::Record::default();
         outputs.insert(String::from("result"), sclc::Value::Int(result));
@@ -57,6 +73,7 @@ impl rtp::Plugin for RandomPlugin {
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        debug!(resource_type = %id.typ, "creating random resource");
         self.dispatch(&id, inputs)
     }
 
@@ -69,6 +86,7 @@ impl rtp::Plugin for RandomPlugin {
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        debug!(resource_type = %id.typ, "updating random resource");
         self.dispatch(&id, inputs)
     }
 }
