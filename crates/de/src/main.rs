@@ -15,21 +15,22 @@ use tokio::{
 };
 use tracing::Instrument;
 
-fn map_dependencies(namespace: &str, deps: Vec<ids::ResourceId>) -> Vec<rtq::ResourceRef> {
+fn map_dependencies(
+    environment_qid: &ids::EnvironmentQid,
+    deps: Vec<ids::ResourceId>,
+) -> Vec<rtq::ResourceRef> {
     deps.into_iter()
         .map(|dep| rtq::ResourceRef {
-            environment_qid: namespace.to_owned(),
-            resource_type: dep.typ,
-            resource_name: dep.name,
+            environment_qid: environment_qid.clone(),
+            resource_id: dep,
         })
         .collect()
 }
 
-fn resource_ref(namespace: &str, id: &ids::ResourceId) -> rtq::ResourceRef {
+fn resource_ref(environment_qid: &ids::EnvironmentQid, id: &ids::ResourceId) -> rtq::ResourceRef {
     rtq::ResourceRef {
-        environment_qid: namespace.to_owned(),
-        resource_type: id.typ.clone(),
-        resource_name: id.name.clone(),
+        environment_qid: environment_qid.clone(),
+        resource_id: id.clone(),
     }
 }
 
@@ -52,11 +53,14 @@ fn serialize_inputs(
     }
 }
 
-fn extract_deployment_id(owner_qid: String) -> String {
-    owner_qid
+fn extract_deployment_id(owner_qid: String) -> ids::DeploymentId {
+    let id_str = owner_qid
         .rsplit_once('@')
-        .map(|(_, id)| id.to_string())
-        .unwrap_or(owner_qid)
+        .map(|(_, id)| id)
+        .unwrap_or(&owner_qid);
+    id_str
+        .parse()
+        .unwrap_or_else(|_| ids::DeploymentId::new_unchecked(id_str))
 }
 
 fn diag_severity(level: sclc::DiagLevel) -> ldb::Severity {
@@ -181,11 +185,13 @@ async fn process(
                 }
             };
 
+            let env_qid = deployment.environment_qid();
             let worker = Worker {
                 client: client.repo(deployment.repo.clone()).deployment(
                     deployment.environment.clone(),
                     deployment.deployment.clone(),
                 ),
+                environment_qid: env_qid.clone(),
                 namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
@@ -208,6 +214,7 @@ async fn process(
 
 struct Worker {
     client: DeploymentClient,
+    environment_qid: ids::EnvironmentQid,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
     log_publisher: ldb::NamespacePublisher,
@@ -254,8 +261,8 @@ impl Worker {
 
     async fn work(&mut self) -> anyhow::Result<()> {
         let deployment = self.client.get().await?;
-        let deployment_id = deployment.deployment.to_string();
-        let short_id = &deployment_id[..8];
+        let deployment_id = deployment.deployment.clone();
+        let short_id = &deployment_id.as_str()[..8];
 
         match deployment.state {
             DeploymentState::Down => {
@@ -386,8 +393,8 @@ impl Worker {
                     }
 
                     let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                        resource: resource_ref(self.namespace.namespace(), &resource_id),
-                        deployment_id: deployment.deployment.to_string(),
+                        resource: resource_ref(&self.environment_qid, &resource_id),
+                        deployment_id: deployment.deployment.clone(),
                     });
                     self.rtq_publisher.enqueue(&message).await?;
                     emitted += 1;
@@ -481,7 +488,7 @@ impl Worker {
     async fn destroy_untouched_resources(
         &self,
         owner_deployment_qid: &str,
-        deployment_id: &str,
+        deployment_id: &ids::DeploymentId,
         touched_resource_ids: &HashSet<ids::ResourceId>,
     ) -> anyhow::Result<()> {
         let mut all_resources = Vec::new();
@@ -548,8 +555,8 @@ impl Worker {
             }
 
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                resource: resource_ref(self.namespace.namespace(), &resource_id),
-                deployment_id: deployment_id.to_string(),
+                resource: resource_ref(&self.environment_qid, &resource_id),
+                deployment_id: deployment_id.clone(),
             });
             self.rtq_publisher.enqueue(&message).await?;
 
@@ -608,7 +615,7 @@ impl Worker {
             .collect::<sclc::ModuleId>();
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
-        let deployment_id = full_deployment_qid.deployment.to_string();
+        let deployment_id = full_deployment_qid.deployment.clone();
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let mut eval =
@@ -643,7 +650,7 @@ impl Worker {
         drop(resources);
 
         let log_publisher = self.log_publisher.clone();
-        let namespace_id = self.namespace.namespace().to_owned();
+        let env_qid = self.environment_qid.clone();
         let rtq_publisher = self.rtq_publisher.clone();
         let effects_task = task::spawn(
             {
@@ -667,10 +674,10 @@ impl Worker {
                                     continue;
                                 };
                                 let message = rtq::Message::Create(rtq::CreateMessage {
-                                    resource: resource_ref(&namespace_id, &id),
+                                    resource: resource_ref(&env_qid, &id),
                                     deployment_id: deployment_id.clone(),
                                     inputs: inputs_value,
-                                    dependencies: map_dependencies(&namespace_id, dependencies),
+                                    dependencies: map_dependencies(&env_qid, dependencies),
                                     source_trace,
                                 });
                                 if let Err(error) = rtq_publisher.enqueue(&message).await {
@@ -706,12 +713,12 @@ impl Worker {
                                 else {
                                     continue;
                                 };
-                                let dependencies = map_dependencies(&namespace_id, dependencies);
+                                let dependencies = map_dependencies(&env_qid, dependencies);
                                 let message = if let Some(from_owner_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
                                     rtq::Message::Adopt(rtq::AdoptMessage {
-                                        resource: resource_ref(&namespace_id, &id),
+                                        resource: resource_ref(&env_qid, &id),
                                         from_deployment_id: extract_deployment_id(from_owner_qid),
                                         to_deployment_id: deployment_id.clone(),
                                         desired_inputs,
@@ -720,7 +727,7 @@ impl Worker {
                                     })
                                 } else {
                                     rtq::Message::Restore(rtq::RestoreMessage {
-                                        resource: resource_ref(&namespace_id, &id),
+                                        resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
                                         desired_inputs,
                                         dependencies,
@@ -763,13 +770,13 @@ impl Worker {
                                         continue;
                                     };
                                     let message = rtq::Message::Adopt(rtq::AdoptMessage {
-                                        resource: resource_ref(&namespace_id, &id),
+                                        resource: resource_ref(&env_qid, &id),
                                         from_deployment_id: extract_deployment_id(
                                             from_owner_deployment_qid,
                                         ),
                                         to_deployment_id: deployment_id.clone(),
                                         desired_inputs,
-                                        dependencies: map_dependencies(&namespace_id, dependencies),
+                                        dependencies: map_dependencies(&env_qid, dependencies),
                                         source_trace,
                                     });
                                     if let Err(error) = rtq_publisher.enqueue(&message).await {
@@ -798,7 +805,7 @@ impl Worker {
                                     // allows supersession of prior deployments even when
                                     // volatile resources are present.
                                     let message = rtq::Message::Check(rtq::CheckMessage {
-                                        resource: resource_ref(&namespace_id, &id),
+                                        resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
                                     });
                                     if let Err(error) = rtq_publisher.enqueue(&message).await {
