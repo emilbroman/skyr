@@ -37,7 +37,7 @@ impl Context {
     async fn check_auth(&self) -> FieldResult<(udb::UserClient, udb::User)> {
         let err = field_error("Not authenticated");
 
-        let Some(mut client) = self.user.clone() else {
+        let Some(client) = self.user.clone() else {
             return Err(err);
         };
 
@@ -119,7 +119,7 @@ impl Query {
         let user_id_b64 = b64url.encode(user_id_hash);
 
         // Look up existing WebAuthn credentials for excludeCredentials / allowCredentials
-        let mut user_client = context.udb_client.user(&username);
+        let user_client = context.udb_client.user(&username);
         let (taken, credentials) = match user_client.get().await {
             Ok(_) => (
                 true,
@@ -353,13 +353,16 @@ impl Mutation {
         let (openssh_key, credential_id, sign_count) =
             verify_registration_proof(context, &proof, &username, now)?;
 
-        let mut user_client = context.udb_client.user(&username);
+        let user_client = context.udb_client.user(&username);
         let user = match user_client.register(email, fullname).await {
             Err(udb::RegisterUserError::UsernameTaken) => {
                 return Err(field_error("Username already taken"));
             }
             Err(udb::RegisterUserError::InvalidUsername(msg)) => {
                 return Err(field_error(&format!("Invalid username: {msg}")));
+            }
+            Err(udb::RegisterUserError::InvalidEmail(msg)) => {
+                return Err(field_error(&format!("Invalid email: {msg}")));
             }
             Err(e) => {
                 tracing::error!("Failed to register user: {}", e);
@@ -390,7 +393,7 @@ impl Mutation {
 
     #[graphql(name = "updateFullname")]
     async fn update_fullname(context: &Context, fullname: String) -> FieldResult<User> {
-        let (mut user_client, _) = context.check_auth().await?;
+        let (user_client, _) = context.check_auth().await?;
 
         user_client.set_fullname(&fullname).await.map_err(|e| {
             tracing::error!("Failed to update fullname: {}", e);
@@ -407,7 +410,7 @@ impl Mutation {
 
     #[graphql(name = "addPublicKey")]
     async fn add_public_key(context: &Context, proof: JsonValue) -> FieldResult<User> {
-        let (mut user_client, user) = context.check_auth().await?;
+        let (user_client, user) = context.check_auth().await?;
         let now = Utc::now();
 
         let (openssh_key, credential_id, sign_count) =
@@ -432,7 +435,7 @@ impl Mutation {
 
     #[graphql(name = "removePublicKey")]
     async fn remove_public_key(context: &Context, fingerprint: String) -> FieldResult<User> {
-        let (mut user_client, _) = context.check_auth().await?;
+        let (user_client, _) = context.check_auth().await?;
 
         user_client
             .pubkeys()
@@ -462,7 +465,7 @@ impl Mutation {
 
         let now = Utc::now();
 
-        let mut user_client = context.udb_client.user(&username);
+        let user_client = context.udb_client.user(&username);
         let user = match user_client.get().await {
             Ok(user) => user,
             Err(udb::UserQueryError::NotFound) => {
@@ -477,11 +480,11 @@ impl Mutation {
         match &proof.0 {
             serde_json::Value::String(sig_pem) => {
                 // SSH signature flow
-                signin_ssh(context, &mut user_client, sig_pem, &username, now).await?;
+                signin_ssh(context, &user_client, sig_pem, &username, now).await?;
             }
             serde_json::Value::Object(_) => {
                 // WebAuthn assertion flow
-                signin_webauthn(context, &mut user_client, &proof.0, &username, now).await?;
+                signin_webauthn(context, &user_client, &proof.0, &username, now).await?;
             }
             _ => {
                 return Err(field_error(
@@ -646,7 +649,7 @@ fn verify_webauthn_registration(
 /// SSH signin: parse SshSig, verify against challenge, check fingerprint exists.
 async fn signin_ssh(
     context: &Context,
-    user_client: &mut udb::UserClient,
+    user_client: &udb::UserClient,
     sig_pem: &str,
     username: &str,
     now: chrono::DateTime<Utc>,
@@ -661,7 +664,7 @@ async fn signin_ssh(
         .fingerprint(ssh_key::HashAlg::default())
         .to_string();
 
-    let mut pubkeys = user_client.pubkeys();
+    let pubkeys = user_client.pubkeys();
     let has_fingerprint = pubkeys.contains(&fingerprint).await.map_err(|e| {
         tracing::error!("Failed to check pubkey fingerprint: {e}");
         internal_error()
@@ -699,7 +702,7 @@ async fn signin_ssh(
 /// WebAuthn signin (assertion): verify assertion signature against stored credential.
 async fn signin_webauthn(
     context: &Context,
-    user_client: &mut udb::UserClient,
+    user_client: &udb::UserClient,
     proof: &serde_json::Value,
     username: &str,
     now: chrono::DateTime<Utc>,
@@ -767,7 +770,7 @@ async fn signin_webauthn(
     }
 
     // Find matching credential
-    let mut pubkeys = user_client.pubkeys();
+    let pubkeys = user_client.pubkeys();
     let credentials = pubkeys.list_credentials().await.map_err(|e| {
         tracing::error!("Failed to list credentials: {e}");
         internal_error()
@@ -2304,7 +2307,7 @@ async fn graphql_handler(
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
-    Extension(mut udb_client): Extension<udb::Client>,
+    Extension(udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
@@ -2376,7 +2379,7 @@ async fn graphql_ws_handler(
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
-    Extension(mut udb_client): Extension<udb::Client>,
+    Extension(udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
 ) -> Response {
     let auth_header = extract_bearer_token(&headers);
@@ -2418,7 +2421,7 @@ async fn graphql_ws_connection(
     mut socket: WebSocket,
     schema: Arc<Schema>,
     mut context: Context,
-    mut udb_client: udb::Client,
+    udb_client: udb::Client,
 ) {
     let mut initialized = false;
 
