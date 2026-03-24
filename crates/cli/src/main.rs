@@ -14,6 +14,7 @@ mod run;
 mod signin;
 mod signup;
 mod whoami;
+mod ws;
 
 #[derive(Parser)]
 struct Program {

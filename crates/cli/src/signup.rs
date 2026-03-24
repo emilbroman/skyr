@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::{auth, output::OutputFormat};
 
+/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
 #[allow(clippy::upper_case_acronyms)]
 type JSON = serde_json::Value;
 
@@ -68,7 +69,6 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
     #[derive(Serialize)]
     struct SignupOutput {
         user: SignupUserOutput,
-        token: String,
     }
 
     let output = SignupOutput {
@@ -77,7 +77,6 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
             email: data.signup.user.email,
             fullname: data.signup.user.fullname,
         },
-        token: data.signup.token,
     };
 
     match format {
@@ -100,10 +99,7 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
                 String::from("fullname"),
                 output.user.fullname.unwrap_or_default(),
             ]));
-            table.add_row(crate::output::row(vec![
-                String::from("token"),
-                output.token,
-            ]));
+            println!("Token saved to credentials file.");
             print!("{table}");
         }
     }

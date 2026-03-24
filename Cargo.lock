@@ -1237,6 +1237,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing-subscriber",
+ "zeroize",
 ]
 
 [[package]]
