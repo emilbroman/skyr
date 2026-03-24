@@ -636,7 +636,9 @@ fn hex_digit(b: u8) -> u8 {
     match b {
         b'0'..=b'9' => b - b'0',
         b'a'..=b'f' => b - b'a' + 10,
-        _ => 0, // Should not happen with validated input
+        _ => unreachable!(
+            "hex_digit called with non-hex byte 0x{b:02x}; DeploymentId is always validated before use"
+        ),
     }
 }
 
@@ -753,10 +755,15 @@ impl FromStr for ResourceId {
         if sep == 0 || sep == s.len() - 1 {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         }
-        Ok(Self {
-            typ: s[..sep].to_string(),
-            name: s[sep + 1..].to_string(),
-        })
+        let typ = s[..sep].to_string();
+        let name = s[sep + 1..].to_string();
+        // Disallow ':' in the name segment. A colon in the name would produce '::' in the
+        // formatted ResourceId (e.g. "Type::name"), which breaks ResourceQid parsing since
+        // it uses rsplit_once("::") to separate the environment QID from the resource ID.
+        if name.contains(':') {
+            return Err(ParseIdError::InvalidResourceId(s.to_string()));
+        }
+        Ok(Self { typ, name })
     }
 }
 
@@ -1138,6 +1145,9 @@ mod tests {
         assert!(":no_type".parse::<ResourceId>().is_err());
         assert!("no_name:".parse::<ResourceId>().is_err());
         assert!("".parse::<ResourceId>().is_err());
+        // Colon in name would produce "::" in formatted output, breaking ResourceQid parsing
+        assert!("Std/Random.Int::seed".parse::<ResourceId>().is_err());
+        assert!("Type:na:me".parse::<ResourceId>().is_err());
     }
 
     #[test]
@@ -1170,6 +1180,12 @@ mod tests {
         // Invalid resource (no `:` separator within resource)
         assert!(
             "MyOrg/MyRepo::main::nocolon"
+                .parse::<ResourceQid>()
+                .is_err()
+        );
+        // ResourceId with "::" in name would parse ambiguously — must be rejected
+        assert!(
+            "MyOrg/MyRepo::main::Std/Random.Int::seed"
                 .parse::<ResourceQid>()
                 .is_err()
         );
