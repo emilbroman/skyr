@@ -9,12 +9,6 @@ pub(crate) struct Challenger {
     salt: Vec<u8>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub(crate) enum CheckSignatureError {
-    InvalidSignature,
-}
-
 impl Challenger {
     pub(crate) fn new(salt: Vec<u8>) -> Self {
         Self { salt }
@@ -22,34 +16,6 @@ impl Challenger {
 
     pub(crate) fn challenge(&self, now: DateTime<Utc>, username: &str) -> String {
         self.challenge_for_frame(Self::frame_start(now.timestamp()), username)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn check(
-        &self,
-        public_key: &russh::keys::ssh_key::PublicKey,
-        signature: &str,
-        username: &str,
-        now: DateTime<Utc>,
-    ) -> Result<(), CheckSignatureError> {
-        let signature = signature
-            .parse::<russh::keys::ssh_key::SshSig>()
-            .map_err(|_| CheckSignatureError::InvalidSignature)?;
-
-        let frame_start = Self::frame_start(now.timestamp());
-        for frame_offset in [-1_i64, 0, 1] {
-            let frame = frame_start + (frame_offset * CHALLENGE_FRAME_SECONDS);
-            let challenge = self.challenge_for_frame(frame, username);
-
-            if public_key
-                .verify(CHALLENGE_NAMESPACE, challenge.as_bytes(), &signature)
-                .is_ok()
-            {
-                return Ok(());
-            }
-        }
-
-        Err(CheckSignatureError::InvalidSignature)
     }
 
     pub(crate) fn valid_challenges(&self, now: DateTime<Utc>, username: &str) -> Vec<String> {
