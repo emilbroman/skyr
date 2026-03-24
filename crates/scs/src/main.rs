@@ -141,7 +141,7 @@ impl Handler for ConfigHandler {
     ) -> Result<Auth, Self::Error> {
         let _guard = self.span.enter();
         let fingerprint = public_key.fingerprint(Default::default()).to_string();
-        let mut user_client = self.udb_client.user(username);
+        let user_client = self.udb_client.user(username);
         let user = match user_client.get().await {
             Ok(user) => Some(user),
             Err(udb::UserQueryError::NotFound) => None,
@@ -160,7 +160,7 @@ impl Handler for ConfigHandler {
             });
         };
 
-        let mut pubkeys = user_client.pubkeys();
+        let pubkeys = user_client.pubkeys();
         let fingerprint_allowed = pubkeys
             .contains(&fingerprint)
             .await
