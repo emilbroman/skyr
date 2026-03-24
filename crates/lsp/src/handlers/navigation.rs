@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::analysis::{self, uri_to_path};
+use crate::analysis::{self, module_id_from_path, uri_to_path};
 use crate::convert;
 use crate::document::DocumentCache;
 use crate::server::{LspProgram, OutgoingMessage, RequestId};
@@ -41,7 +41,10 @@ pub fn goto_definition(
                 uri: uri.clone(),
                 range: convert::to_lsp_range(decl_span),
             };
-            serde_json::to_value(location).unwrap()
+            serde_json::to_value(location).unwrap_or_else(|err| {
+                eprintln!("lsp: failed to serialize definition result: {err}");
+                serde_json::Value::Null
+            })
         }
         None => serde_json::Value::Null,
     };
@@ -105,7 +108,10 @@ pub fn references(
     let result = if locations.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::to_value(locations).unwrap()
+        serde_json::to_value(locations).unwrap_or_else(|err| {
+            eprintln!("lsp: failed to serialize references result: {err}");
+            serde_json::Value::Null
+        })
     };
 
     vec![OutgoingMessage::response(id, result)]
@@ -134,19 +140,9 @@ pub fn document_symbol(
     let module_id = module_id_from_path(&path);
     let symbols = analysis::document_symbols(&source, &module_id);
 
-    let result = serde_json::to_value(symbols).unwrap();
+    let result = serde_json::to_value(symbols).unwrap_or_else(|err| {
+        eprintln!("lsp: failed to serialize document symbols: {err}");
+        serde_json::Value::Null
+    });
     vec![OutgoingMessage::response(id, result)]
-}
-
-fn module_id_from_path(path: &std::path::Path) -> sclc::ModuleId {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let parent_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Local".to_string());
-    sclc::ModuleId::from([parent_name, stem])
 }

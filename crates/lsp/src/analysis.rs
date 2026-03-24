@@ -7,6 +7,23 @@ use lsp_types as lsp;
 use crate::convert;
 use crate::document::DocumentCache;
 
+/// Derive a module ID from a file path.
+///
+/// Uses the parent directory name as the package and file stem as the module.
+/// Falls back to "Local" if the parent directory name cannot be determined.
+pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Main".to_string());
+    let parent_name = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Local".to_string());
+    sclc::ModuleId::from([parent_name, stem])
+}
+
 /// Overlay source that checks the document cache before delegating to an inner source.
 pub struct OverlaySource<S> {
     inner: S,
@@ -60,12 +77,26 @@ pub async fn analyze<S: sclc::SourceRepo>(
             // Duplicates can arise from the type checker processing the same
             // module multiple times (e.g. two-pass type def resolution and
             // type_level_exports re-checking imported modules).
-            let mut seen: HashMap<String, HashSet<(lsp::Range, String)>> = HashMap::new();
+            // Dedup key includes range, message, and severity. We encode
+            // severity as a string because DiagnosticSeverity does not
+            // implement Hash.
+            let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
             for diag in diagnosed.diags().iter() {
                 let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
                 let path = module_id_to_path(root, &module_id, package_id);
                 let uri = path_to_uri_string(&path);
-                let key = (lsp_diag.range, lsp_diag.message.clone());
+                let severity_str = match lsp_diag.severity {
+                    Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
+                    Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
+                    Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
+                    Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
+                    _ => "unknown",
+                };
+                let key = (
+                    lsp_diag.range,
+                    lsp_diag.message.clone(),
+                    severity_str.to_string(),
+                );
                 if seen.entry(uri.clone()).or_default().insert(key) {
                     file_diagnostics.entry(uri).or_default().push(lsp_diag);
                 }
@@ -251,15 +282,21 @@ pub fn parse_uri(s: &str) -> lsp::Uri {
                 })
                 .map(|b| b as char)
                 .collect();
-            format!("file://{encoded}")
-                .parse()
-                .unwrap_or_else(|_| "file:///".parse().unwrap())
+            format!("file://{encoded}").parse().unwrap_or_else(|_| {
+                eprintln!("lsp: failed to parse URI after encoding: {s}");
+                "file:///".parse().unwrap()
+            })
         } else {
+            eprintln!("lsp: non-file URI, falling back to file:///: {s}");
             "file:///".parse().unwrap()
         }
     })
 }
 
 pub fn uri_to_path(uri: &lsp::Uri) -> Option<PathBuf> {
-    uri.as_str().strip_prefix("file://").map(PathBuf::from)
+    let path = uri.as_str().strip_prefix("file://")?;
+    if path.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(path))
 }

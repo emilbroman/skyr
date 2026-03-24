@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::analysis::uri_to_path;
+use crate::analysis::{module_id_from_path, uri_to_path};
 use crate::document::DocumentCache;
 use crate::server::{OutgoingMessage, RequestId};
 
@@ -39,10 +39,11 @@ pub fn formatting(
 
     // If the formatted output is the same, return an empty edit list
     if formatted == source {
-        return vec![OutgoingMessage::response(
-            id,
-            serde_json::to_value(Vec::<lsp::TextEdit>::new()).unwrap(),
-        )];
+        let empty_edits = serde_json::to_value(Vec::<lsp::TextEdit>::new()).unwrap_or_else(|err| {
+            eprintln!("lsp: failed to serialize empty edits: {err}");
+            serde_json::Value::Null
+        });
+        return vec![OutgoingMessage::response(id, empty_edits)];
     }
 
     // Replace the entire document with the formatted text
@@ -63,21 +64,9 @@ pub fn formatting(
         new_text: formatted,
     };
 
-    vec![OutgoingMessage::response(
-        id,
-        serde_json::to_value(vec![edit]).unwrap(),
-    )]
-}
-
-fn module_id_from_path(path: &std::path::Path) -> sclc::ModuleId {
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let parent_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Local".to_string());
-    sclc::ModuleId::from([parent_name, stem])
+    let result = serde_json::to_value(vec![edit]).unwrap_or_else(|err| {
+        eprintln!("lsp: failed to serialize formatting edits: {err}");
+        serde_json::Value::Null
+    });
+    vec![OutgoingMessage::response(id, result)]
 }

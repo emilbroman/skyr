@@ -114,6 +114,14 @@ impl OutgoingMessage {
     }
 }
 
+/// Serialize a value to JSON, logging and returning Null on failure.
+fn to_json_value(value: &impl Serialize) -> serde_json::Value {
+    serde_json::to_value(value).unwrap_or_else(|err| {
+        eprintln!("lsp: failed to serialize value: {err}");
+        serde_json::Value::Null
+    })
+}
+
 type SourceFactory =
     Box<dyn Fn(&sclc::ModuleId, DocumentCache, &PathBuf) -> OverlaySource<FsLike> + Send>;
 
@@ -132,6 +140,9 @@ pub struct LanguageServer {
     package_id: sclc::ModuleId,
     /// Whether shutdown has been requested.
     shutdown_requested: bool,
+    /// Exit code set when the "exit" notification is received.
+    /// The caller should check `exit_code()` after each `handle()` call.
+    exit_code: Option<i32>,
     /// URI strings that had diagnostics published (for clearing stale diagnostics).
     published_uris: HashSet<String>,
 }
@@ -183,8 +194,17 @@ impl LanguageServer {
             root: None,
             package_id: sclc::ModuleId::default(),
             shutdown_requested: false,
+            exit_code: None,
             published_uris: HashSet::new(),
         }
+    }
+
+    /// Returns the exit code if the server received an "exit" notification.
+    ///
+    /// The caller should check this after each `handle()` call and terminate
+    /// the event loop when `Some` is returned.
+    pub fn exit_code(&self) -> Option<i32> {
+        self.exit_code
     }
 
     /// Handle an incoming message, returning any outgoing messages.
@@ -266,7 +286,8 @@ impl LanguageServer {
                 vec![]
             }
             "exit" => {
-                std::process::exit(if self.shutdown_requested { 0 } else { 1 });
+                self.exit_code = Some(if self.shutdown_requested { 0 } else { 1 });
+                vec![]
             }
             "textDocument/didOpen" => self.handle_did_open(params).await,
             "textDocument/didChange" => self.handle_did_change(params).await,
@@ -334,12 +355,11 @@ impl LanguageServer {
         // Clear diagnostics for the closed document
         let mut result = vec![OutgoingMessage::notification(
             "textDocument/publishDiagnostics",
-            serde_json::to_value(lsp::PublishDiagnosticsParams {
+            to_json_value(&lsp::PublishDiagnosticsParams {
                 uri: params.text_document.uri,
                 diagnostics: vec![],
                 version: None,
-            })
-            .unwrap(),
+            }),
         )];
 
         // Re-publish diagnostics for remaining documents
@@ -359,10 +379,23 @@ impl LanguageServer {
         if let Some(path) = uri_to_path(uri)
             && let Some(parent) = path.parent()
         {
-            self.root = Some(parent.to_path_buf());
+            // Canonicalize the path to resolve symlinks and ".." components,
+            // preventing path traversal from influencing the package ID.
+            let canonical = parent
+                .canonicalize()
+                .unwrap_or_else(|_| parent.to_path_buf());
+            self.root = Some(canonical.clone());
             // Derive package ID from directory name
-            if let Some(name) = parent.file_name() {
-                self.package_id = sclc::ModuleId::from([name.to_string_lossy().as_ref()]);
+            if let Some(name) = canonical.file_name() {
+                let name_str = name.to_string_lossy();
+                // Validate that the directory name is a reasonable identifier
+                if !name_str.is_empty()
+                    && name_str
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                {
+                    self.package_id = sclc::ModuleId::from([name_str.as_ref()]);
+                }
             }
         }
     }
@@ -384,12 +417,11 @@ impl LanguageServer {
             if !new_uris.contains(old_uri) {
                 messages.push(OutgoingMessage::notification(
                     "textDocument/publishDiagnostics",
-                    serde_json::to_value(lsp::PublishDiagnosticsParams {
+                    to_json_value(&lsp::PublishDiagnosticsParams {
                         uri: parse_uri(old_uri),
                         diagnostics: vec![],
                         version: None,
-                    })
-                    .unwrap(),
+                    }),
                 ));
             }
         }
@@ -400,12 +432,11 @@ impl LanguageServer {
             let version = uri_to_path(&uri).and_then(|p| self.documents.version(&p));
             messages.push(OutgoingMessage::notification(
                 "textDocument/publishDiagnostics",
-                serde_json::to_value(lsp::PublishDiagnosticsParams {
+                to_json_value(&lsp::PublishDiagnosticsParams {
                     uri,
                     diagnostics: diagnostics.clone(),
                     version,
-                })
-                .unwrap(),
+                }),
             ));
         }
 

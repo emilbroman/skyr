@@ -47,10 +47,11 @@ pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessa
         }),
     };
 
-    vec![OutgoingMessage::response(
-        id,
-        serde_json::to_value(result).unwrap(),
-    )]
+    let value = serde_json::to_value(result).unwrap_or_else(|err| {
+        eprintln!("lsp: failed to serialize initialize result: {err}");
+        serde_json::Value::Null
+    });
+    vec![OutgoingMessage::response(id, value)]
 }
 
 pub fn shutdown(id: RequestId) -> Vec<OutgoingMessage> {
