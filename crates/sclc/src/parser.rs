@@ -15,6 +15,28 @@ use crate::{
     UnaryExpr, UnaryOp, Var,
 };
 
+/// Maximum allowed source file size in bytes. Files larger than this are
+/// rejected early to prevent excessive memory use and parse time. The limit
+/// is generous enough for any reasonable SCL source file.
+pub const MAX_SOURCE_SIZE: usize = 1_024 * 1_024; // 1 MiB
+
+#[derive(Error, Debug)]
+#[error("source file too large ({size} bytes, limit {limit} bytes)")]
+pub struct SourceTooLarge {
+    pub module_id: ModuleId,
+    pub size: usize,
+    pub limit: usize,
+}
+
+impl Diag for SourceTooLarge {
+    fn locate(&self) -> (ModuleId, Span) {
+        (
+            self.module_id.clone(),
+            Span::new(Position::default(), Position::default()),
+        )
+    }
+}
+
 #[derive(Error, Debug)]
 #[error("duplicate record field: {name}")]
 pub struct DuplicateRecordField {
@@ -78,30 +100,7 @@ enum TypeExprSuffix {
 }
 
 fn decode_string(raw: &str) -> String {
-    let mut out = String::new();
-    let mut chars = raw.chars();
-
-    while let Some(c) = chars.next() {
-        if c != '\\' {
-            out.push(c);
-            continue;
-        }
-
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('r') => out.push('\r'),
-            Some('t') => out.push('\t'),
-            Some('\\') => out.push('\\'),
-            Some('{') => out.push('{'),
-            Some(other) => {
-                out.push('\\');
-                out.push(other);
-            }
-            None => out.push('\\'),
-        }
-    }
-
-    out
+    crate::string_escape::decode_string(raw)
 }
 
 pub struct TokenStream<'a> {
@@ -1206,6 +1205,16 @@ pub fn parse_file_mod_with_cursor(
     cursor: Option<crate::Cursor>,
 ) -> Diagnosed<FileMod> {
     let mut diags = DiagList::new();
+
+    if source.len() > MAX_SOURCE_SIZE {
+        diags.push(SourceTooLarge {
+            module_id: module_id.clone(),
+            size: source.len(),
+            limit: MAX_SOURCE_SIZE,
+        });
+        return Diagnosed::new(FileMod::default(), diags);
+    }
+
     let mut exception_id = 0u64;
     let mut skip_span = None;
     let token_stream = match &cursor {
@@ -1243,6 +1252,16 @@ pub fn parse_repl_line_with_cursor(
     cursor: Option<crate::Cursor>,
 ) -> Diagnosed<Option<ReplLine>> {
     let mut diags = DiagList::new();
+
+    if source.len() > MAX_SOURCE_SIZE {
+        diags.push(SourceTooLarge {
+            module_id: module_id.clone(),
+            size: source.len(),
+            limit: MAX_SOURCE_SIZE,
+        });
+        return Diagnosed::new(None, diags);
+    }
+
     let mut exception_id = 0u64;
     let mut skip_span = None;
     let token_stream = match &cursor {

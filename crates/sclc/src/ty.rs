@@ -6,6 +6,15 @@ thread_local! {
     /// function type is formatted, its type-parameter IDs are pushed here so
     /// that nested `Type::Var` nodes can look up their index and print a
     /// friendly name (`A`, `B`, …) instead of a raw numeric ID.
+    ///
+    /// # Note for embedders
+    ///
+    /// This state is thread-local and only accessed during `Display::fmt`
+    /// calls on [`Type`] / [`FnType`]. It is cleaned up after each
+    /// formatting call completes, so it is safe to format types from any
+    /// thread. However, formatting a `Type` inside a `Display` impl for
+    /// another `Type` on the same thread is intentional — it is how nested
+    /// generic types resolve their parameter names.
     static DISPLAY_TYPE_PARAMS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
 }
 

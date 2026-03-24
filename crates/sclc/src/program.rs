@@ -146,11 +146,15 @@ impl<S: SourceRepo> Program<S> {
             return Ok(Diagnosed::new(None, DiagList::new()));
         }
 
-        let module_path = module_segments
-            .iter()
-            .cloned()
-            .collect::<ModuleId>()
-            .to_path_buf_with_extension("scl");
+        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
+
+        // Reject module paths containing traversal components (e.g. "..")
+        // to prevent escaping the package directory.
+        if !module_id_from_segments.is_safe_path() {
+            return Ok(Diagnosed::new(None, DiagList::new()));
+        }
+
+        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
 
         let Some(package) = self.packages.get_mut(&package_name) else {
             return Ok(Diagnosed::new(None, DiagList::new()));
@@ -194,11 +198,13 @@ impl<S: SourceRepo> Program<S> {
             return Err(EvaluateError::MissingModulePath(module_id.clone()));
         }
 
-        let module_path = module_segments
-            .iter()
-            .cloned()
-            .collect::<ModuleId>()
-            .to_path_buf_with_extension("scl");
+        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
+
+        if !module_id_from_segments.is_safe_path() {
+            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
+        }
+
+        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
 
         let file_mod = {
             let Some(package) = self.packages.get_mut(&package_name) else {
@@ -262,11 +268,11 @@ impl<S: SourceRepo> Program<S> {
         if module_segments.is_empty() {
             return None;
         }
-        let module_path = module_segments
-            .iter()
-            .cloned()
-            .collect::<ModuleId>()
-            .to_path_buf_with_extension("scl");
+        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
+        if !module_id_from_segments.is_safe_path() {
+            return None;
+        }
+        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
         package
             .modules()
             .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))

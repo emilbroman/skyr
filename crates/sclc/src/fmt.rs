@@ -20,22 +20,8 @@ fn collect_comments(source: &str) -> Vec<Comment> {
         .collect()
 }
 
-/// Encode a string value back to its source representation (without quotes).
-/// This is the inverse of `decode_string` in the parser.
 fn encode_string(s: &str) -> String {
-    let mut out = String::new();
-    for c in s.chars() {
-        match c {
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\\' => out.push_str("\\\\"),
-            '{' => out.push_str("\\{"),
-            '"' => out.push_str("\\\""),
-            other => out.push(other),
-        }
-    }
-    out
+    crate::string_escape::encode_string(s)
 }
 
 pub struct Formatter {

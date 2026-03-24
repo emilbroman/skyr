@@ -14,6 +14,7 @@ mod program;
 mod resource;
 mod source_repo;
 mod std;
+pub mod string_escape;
 mod ty;
 mod value;
 
