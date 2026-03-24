@@ -87,7 +87,7 @@ type Log {
 
 type Mutation {
   createRepository(organization: String!, repository: String!): Repository!
-  signup(username: String!, email: String!, proof: JSON!): AuthSuccess!
+  signup(username: String!, email: String!, proof: JSON!, fullname: String): AuthSuccess!
   updateFullname(fullname: String!): User!
   addPublicKey(proof: JSON!): User!
   removePublicKey(fingerprint: String!): User!

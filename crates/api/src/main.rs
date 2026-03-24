@@ -307,6 +307,7 @@ impl Mutation {
         username: String,
         email: String,
         proof: JsonValue,
+        fullname: Option<String>,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(field_error("Invalid username"));
@@ -316,13 +317,15 @@ impl Mutation {
             return Err(field_error("Invalid email"));
         }
 
+        let fullname = fullname.filter(|s| !s.is_empty());
+
         let now = Utc::now();
 
         let (openssh_key, credential_id, sign_count) =
             verify_registration_proof(context, &proof, &username, now)?;
 
         let mut user_client = context.udb_client.user(&username);
-        let user = match user_client.register(email).await {
+        let user = match user_client.register(email, fullname).await {
             Err(udb::RegisterUserError::UsernameTaken) => {
                 return Err(field_error("Username already taken"));
             }
