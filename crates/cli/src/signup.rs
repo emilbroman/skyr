@@ -14,6 +14,8 @@ pub struct SignupArgs {
     username: String,
     #[arg(long)]
     email: String,
+    #[arg(long)]
+    fullname: Option<String>,
     #[arg(long, default_value = "~/.ssh/id_ed25519")]
     key: String,
     #[arg(long, default_value = "https://skyr.cloud")]
@@ -39,6 +41,7 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
         username: args.username.clone(),
         email: args.email.clone(),
         proof: serde_json::Value::String(proof),
+        fullname: args.fullname.clone(),
     });
 
     let response = client
