@@ -92,6 +92,7 @@ function submitSshSignup(signature: string) {
         username: username.trim(),
         email: email.trim(),
         proof: signature,
+        fullname: fullname.trim() || null,
     });
 }
 
@@ -105,6 +106,7 @@ async function submitPasskeySignup() {
             username: username.trim(),
             email: email.trim(),
             proof: JSON.stringify(proof),
+            fullname: fullname.trim() || null,
         });
     } catch (e) {
         error = e instanceof Error ? e.message : "Passkey registration failed";
