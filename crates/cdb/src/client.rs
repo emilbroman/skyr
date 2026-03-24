@@ -10,7 +10,7 @@ use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use gix_hash::ObjectId;
 use gix_object::{Blob, Commit, Kind, Object, Tree, WriteTo};
-use ids::{DeploymentId, EnvironmentId, RepoQid};
+use ids::{DeploymentId, EnvironmentId, ParseIdError, RepoQid};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
@@ -339,12 +339,12 @@ fn deployment_from_row(
 ) -> Result<Deployment, DeploymentQueryError> {
     let deploy_id =
         DeploymentId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
+    let org: ids::OrgId = organization.parse()?;
+    let repo: ids::RepoId = repository.parse()?;
+    let environment: EnvironmentId = environment_id.parse()?;
     Ok(Deployment {
-        repo: RepoQid::new(
-            ids::OrgId::new_unchecked(organization),
-            ids::RepoId::new_unchecked(repository),
-        ),
-        environment: EnvironmentId::new_unchecked(environment_id),
+        repo: RepoQid::new(org, repo),
+        environment,
         deployment: deploy_id,
         created_at,
         state: state.parse()?,
@@ -423,11 +423,14 @@ impl Client {
             .rows_stream::<(String, DateTime<Utc>)>()?
             .map(move |row| {
                 let (repository, created_at) = row?;
+                let org: ids::OrgId = organization
+                    .parse()
+                    .map_err(RepositoryQueryError::InvalidId)?;
+                let repo: ids::RepoId = repository
+                    .parse()
+                    .map_err(RepositoryQueryError::InvalidId)?;
                 Ok::<_, RepositoryQueryError>(Repository {
-                    name: RepoQid::new(
-                        ids::OrgId::new_unchecked(organization.clone()),
-                        ids::RepoId::new_unchecked(repository),
-                    ),
+                    name: RepoQid::new(org, repo),
                     created_at,
                 })
             }))
@@ -788,9 +791,10 @@ impl RepositoryClient {
                 let (created_at, environment_id, commit_hash, state) = r?;
                 let deploy_id = DeploymentId::from_bytes(&commit_hash)
                     .map_err(|_| DeploymentQueryError::NotFound)?;
+                let environment: EnvironmentId = environment_id.parse()?;
                 Ok::<_, DeploymentQueryError>(Deployment {
                     repo: repo.clone(),
-                    environment: EnvironmentId::new_unchecked(environment_id),
+                    environment,
                     deployment: deploy_id,
                     created_at,
                     state: state.parse()?,
@@ -881,7 +885,6 @@ impl DeploymentClient {
 
         let mut result_buf = PathBuf::new();
 
-        let mut ancestors = vec![];
         if let Some(path) = path {
             for segment in path.as_ref() {
                 if segment == "." {
@@ -889,7 +892,7 @@ impl DeploymentClient {
                 }
 
                 if segment == ".." {
-                    tree = ancestors.pop().unwrap_or(tree);
+                    return Err(FileError::NotFound(path.as_ref().to_path_buf()));
                 }
 
                 result_buf.push(segment);
@@ -905,7 +908,6 @@ impl DeploymentClient {
                             return Err(FileError::NotADirectory(result_buf));
                         }
 
-                        ancestors.push(tree.clone());
                         tree = self.repo.read_tree(entry.oid).await?;
                     }
                 }
@@ -1081,6 +1083,9 @@ pub enum RepositoryQueryError {
     #[error("failed to load row: {0}")]
     ScyllaNextRow(#[from] NextRowError),
 
+    #[error("invalid ID in database: {0}")]
+    InvalidId(ParseIdError),
+
     #[error("repository not found")]
     NotFound,
 }
@@ -1119,6 +1124,9 @@ pub enum DeploymentQueryError {
 
     #[error("{0}")]
     InvalidState(#[from] InvalidDeploymentState),
+
+    #[error("invalid ID in database: {0}")]
+    InvalidId(#[from] ParseIdError),
 
     #[error("deployment not found")]
     NotFound,
