@@ -19,8 +19,8 @@ mutation SignIn($username: String!, $proof: JSON!) {
   }
 }
 
-mutation Signup($username: String!, $email: String!, $proof: JSON!) {
-  signup(username: $username, email: $email, proof: $proof) {
+mutation Signup($username: String!, $email: String!, $proof: JSON!, $fullname: String) {
+  signup(username: $username, email: $email, proof: $proof, fullname: $fullname) {
     user {
       username
       email
