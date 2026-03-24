@@ -16,6 +16,9 @@ pub enum OpenError {
     #[error("module not found: {0}")]
     NotFound(PathBuf),
 
+    #[error("path traversal rejected: {0}")]
+    PathTraversal(PathBuf),
+
     #[error("failed to load source file: {0}")]
     Source(Box<dyn std::error::Error + Send + Sync>),
 
@@ -62,6 +65,16 @@ impl<S: SourceRepo> Package<S> {
         path: impl AsRef<Path>,
     ) -> Result<Diagnosed<Option<&FileMod>>, OpenError> {
         let path = path.as_ref().to_path_buf();
+
+        // Reject paths that contain traversal components (e.g. ".." or
+        // absolute prefixes) to prevent escaping the package directory.
+        for component in path.components() {
+            match component {
+                Component::Normal(_) => {}
+                _ => return Err(OpenError::PathTraversal(path)),
+            }
+        }
+
         if self.files.contains_key(&path) {
             return Ok(Diagnosed::new(
                 Some(

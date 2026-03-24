@@ -11,6 +11,16 @@ impl ModuleId {
         Self { segments }
     }
 
+    /// Returns `true` if every segment is a safe identifier (non-empty, no `.`,
+    /// no `/`, no `\`, and not `..`). This prevents path-traversal when the
+    /// module id is converted to a filesystem path via
+    /// [`to_path_buf_with_extension`](Self::to_path_buf_with_extension).
+    pub fn is_safe_path(&self) -> bool {
+        self.segments.iter().all(|s| {
+            !s.is_empty() && s != ".." && s != "." && !s.contains('/') && !s.contains('\\')
+        })
+    }
+
     pub fn len(&self) -> usize {
         self.segments.len()
     }
@@ -88,5 +98,46 @@ impl FromStr for ModuleId {
                 .map(str::to_owned)
                 .collect(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_path_accepts_normal_segments() {
+        let id = ModuleId::from(["Std", "Time"]);
+        assert!(id.is_safe_path());
+    }
+
+    #[test]
+    fn safe_path_rejects_dot_dot() {
+        let id = ModuleId::from(["Std", "..", "etc"]);
+        assert!(!id.is_safe_path());
+    }
+
+    #[test]
+    fn safe_path_rejects_single_dot() {
+        let id = ModuleId::from([".", "Foo"]);
+        assert!(!id.is_safe_path());
+    }
+
+    #[test]
+    fn safe_path_rejects_slash_in_segment() {
+        let id = ModuleId::from(["Std/../../etc"]);
+        assert!(!id.is_safe_path());
+    }
+
+    #[test]
+    fn safe_path_rejects_empty_segment() {
+        let id = ModuleId::from(["Std", "", "Foo"]);
+        assert!(!id.is_safe_path());
+    }
+
+    #[test]
+    fn safe_path_rejects_backslash_in_segment() {
+        let id = ModuleId::from(["Std\\..\\etc"]);
+        assert!(!id.is_safe_path());
     }
 }

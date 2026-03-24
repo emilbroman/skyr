@@ -230,6 +230,18 @@ pub struct Eval {
     externs: HashMap<String, Value>,
 }
 
+/// Resource effects emitted during evaluation.
+///
+/// Effects are sent through an unbounded MPSC channel to the caller. Because
+/// evaluation is single-threaded and the channel is unbounded, sends never
+/// block or fail unless the receiver is dropped.
+///
+/// **Atomicity:** effects are emitted one at a time as the evaluator
+/// encounters resources. If evaluation fails partway through (e.g. due to a
+/// runtime error or exception), the caller will have received a partial set
+/// of effects. The caller is responsible for discarding or rolling back
+/// partial effects on failure — the evaluator itself does not provide
+/// transactional guarantees.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     CreateResource {
@@ -539,8 +551,19 @@ impl Eval {
         eval
     }
 
+    /// Register an extern value under the given name.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `name` is empty or contains whitespace, which would make it
+    /// unreachable from SCL source code.
     pub fn add_extern(&mut self, name: impl Into<String>, value: Value) {
-        self.externs.insert(name.into(), value);
+        let name = name.into();
+        assert!(
+            !name.is_empty() && !name.contains(char::is_whitespace),
+            "extern name must be non-empty and contain no whitespace, got: {name:?}"
+        );
+        self.externs.insert(name, value);
     }
 
     pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {

@@ -370,6 +370,16 @@ pub struct TypeChecker<'p, S> {
     program: &'p Program<S>,
 }
 
+/// Global monotonic counter for unique type variable IDs.
+///
+/// # Thread safety
+///
+/// The counter is process-global and atomic, so IDs are unique across threads.
+/// However, the counter is never reset between compilations, meaning type IDs
+/// will grow monotonically across invocations within the same process. This is
+/// harmless in practice — IDs are only used for identity comparison during a
+/// single type-checking pass — but embedders should be aware that IDs are not
+/// stable or reproducible across runs.
 static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(0);
 
 fn next_type_id() -> usize {
