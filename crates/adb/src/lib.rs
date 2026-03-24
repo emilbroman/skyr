@@ -19,13 +19,30 @@ use url::Url;
 const DEFAULT_REGION: &str = "us-east-1";
 const DEFAULT_MEDIA_TYPE: &str = "application/octet-stream";
 
+/// Maximum allowed presigned URL expiration (1 hour).
+const MAX_PRESIGN_EXPIRATION: Duration = Duration::from_secs(3600);
+
 pub use aws_sdk_s3::primitives::ByteStream as ArtifactBody;
 
 #[derive(Debug, Clone)]
 pub struct ArtifactHeader {
-    pub namespace: String,
-    pub name: String,
-    pub media_type: String,
+    namespace: String,
+    name: String,
+    media_type: String,
+}
+
+impl ArtifactHeader {
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn media_type(&self) -> &str {
+        &self.media_type
+    }
 }
 
 #[derive(Debug)]
@@ -182,6 +199,19 @@ fn build_s3_client(
     S3Client::from_conf(builder.build())
 }
 
+/// Validate that a media type string does not contain control characters
+/// (newlines, carriage returns, null bytes, etc.) that could enable header
+/// injection when passed to S3 `content_type()`.
+fn validate_media_type(media_type: &str) -> Result<(), WriteError> {
+    if media_type
+        .bytes()
+        .any(|b| b.is_ascii_control() && b != b'\t')
+    {
+        return Err(WriteError::InvalidMediaType(media_type.to_owned()));
+    }
+    Ok(())
+}
+
 impl Client {
     pub async fn create_bucket_if_missing(&self) -> Result<(), ConnectError> {
         let result = self.s3.head_bucket().bucket(&self.bucket).send().await;
@@ -221,6 +251,7 @@ impl Client {
         let namespace = namespace.as_ref();
         let name = name.as_ref();
         let media_type = media_type.unwrap_or(DEFAULT_MEDIA_TYPE);
+        validate_media_type(media_type)?;
         let key = key(namespace, name);
 
         let result = self
@@ -394,12 +425,19 @@ impl Client {
 
         let mut headers = Vec::with_capacity(names.len());
         for name in names {
-            if let Some(header) = self
-                .read_header(namespace, name.as_str())
-                .await
-                .map_err(ListError::Head)?
-            {
-                headers.push(header);
+            match self.read_header(namespace, name.as_str()).await {
+                Ok(Some(header)) => headers.push(header),
+                Ok(None) => {
+                    // Artifact was deleted between list and head; skip it.
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        namespace,
+                        name,
+                        %error,
+                        "skipping artifact: failed to read header during list",
+                    );
+                }
             }
         }
 
@@ -412,6 +450,12 @@ impl Client {
         name: impl AsRef<str>,
         expires_in: Duration,
     ) -> Result<String, PresignError> {
+        if expires_in > MAX_PRESIGN_EXPIRATION {
+            return Err(PresignError::ExpirationTooLong {
+                requested: expires_in,
+                max: MAX_PRESIGN_EXPIRATION,
+            });
+        }
         let key = key(namespace.as_ref(), name.as_ref());
         let config = PresigningConfig::expires_in(expires_in)?;
         let request = self
@@ -476,6 +520,9 @@ pub enum WriteError {
     #[error("artifact already exists: {namespace}/{name}")]
     AlreadyExists { namespace: String, name: String },
 
+    #[error("invalid media type (contains control characters): {0:?}")]
+    InvalidMediaType(String),
+
     #[error("failed to write artifact object: {0}")]
     PutObject(#[from] Box<SdkError<PutObjectError>>),
 }
@@ -499,15 +546,15 @@ pub enum HeadError {
 pub enum ListError {
     #[error("failed to list artifact objects: {0}")]
     ListObjects(#[from] Box<SdkError<ListObjectsV2Error>>),
-
-    #[error("failed to read artifact metadata while listing: {0}")]
-    Head(#[from] HeadError),
 }
 
 #[derive(Debug, Error)]
 pub enum PresignError {
     #[error("invalid presign expiration: {0}")]
     InvalidExpiry(#[from] PresigningConfigError),
+
+    #[error("presign expiration too long: requested {requested:?}, maximum allowed is {max:?}")]
+    ExpirationTooLong { requested: Duration, max: Duration },
 
     #[error("failed to create presigned URL: {0}")]
     Presign(#[source] SdkError<GetObjectError>),
