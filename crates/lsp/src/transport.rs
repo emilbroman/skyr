@@ -4,6 +4,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 use crate::server::{IncomingMessage, OutgoingMessage};
 
+/// Maximum allowed Content-Length value (64 MiB).
+const MAX_MESSAGE_SIZE: usize = 64 * 1024 * 1024;
+
+/// Maximum length of a single header line (8 KiB).
+const MAX_HEADER_LINE_LENGTH: usize = 8 * 1024;
+
 /// JSON-RPC over stdio transport with LSP Content-Length framing.
 pub struct LspTransport<R, W> {
     reader: BufReader<R>,
@@ -65,19 +71,43 @@ impl<R: tokio::io::AsyncRead + Unpin, W: tokio::io::AsyncWrite + Unpin> LspTrans
                 ));
             }
 
+            if line.len() > MAX_HEADER_LINE_LENGTH {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Header line too long ({} bytes, max {})",
+                        line.len(),
+                        MAX_HEADER_LINE_LENGTH
+                    ),
+                ));
+            }
+
             let line = line.trim();
             if line.is_empty() {
                 // End of headers
                 break;
             }
 
-            if let Some(value) = line.strip_prefix("Content-Length: ") {
-                content_length = Some(value.trim().parse().map_err(|_| {
+            // Case-insensitive header matching per HTTP/LSP spec
+            if let Some((key, value)) = line.split_once(':')
+                && key.trim().eq_ignore_ascii_case("content-length")
+            {
+                let length: usize = value.trim().parse().map_err(|_| {
                     io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("Invalid Content-Length: {value}"),
+                        format!("Invalid Content-Length: {}", value.trim()),
                     )
-                })?);
+                })?;
+                if length > MAX_MESSAGE_SIZE {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "Content-Length {length} exceeds maximum allowed size \
+                             ({MAX_MESSAGE_SIZE})"
+                        ),
+                    ));
+                }
+                content_length = Some(length);
             }
             // Ignore other headers (e.g., Content-Type)
         }

@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::analysis::{self, uri_to_path};
+use crate::analysis::{self, module_id_from_path, uri_to_path};
 use crate::convert;
 use crate::document::DocumentCache;
 use crate::server::{LspProgram, OutgoingMessage, RequestId};
@@ -40,24 +40,13 @@ pub fn hover(
                 contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(ty.to_string())),
                 range: None,
             };
-            serde_json::to_value(hover).unwrap()
+            serde_json::to_value(hover).unwrap_or_else(|err| {
+                eprintln!("lsp: failed to serialize hover result: {err}");
+                serde_json::Value::Null
+            })
         }
         None => serde_json::Value::Null,
     };
 
     vec![OutgoingMessage::response(id, result)]
-}
-
-fn module_id_from_path(path: &std::path::Path) -> sclc::ModuleId {
-    // Use the file stem as the module id
-    let stem = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_default();
-    let parent_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Local".to_string());
-    sclc::ModuleId::from([parent_name, stem])
 }
