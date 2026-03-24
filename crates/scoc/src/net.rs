@@ -14,6 +14,48 @@ use anyhow::{Context, Result, bail};
 use ipnet::Ipv4Net;
 use tracing::{debug, info, warn};
 
+// ============================================================================
+// Input validation helpers
+// ============================================================================
+
+/// Validate that a string is a valid IPv4 address.
+fn validate_ipv4(s: &str) -> Result<Ipv4Addr> {
+    s.parse::<Ipv4Addr>()
+        .with_context(|| format!("invalid IPv4 address: {s:?}"))
+}
+
+/// Validate that a string is a valid CIDR notation (e.g., "10.0.0.0/24").
+fn validate_cidr(s: &str) -> Result<Ipv4Net> {
+    s.parse::<Ipv4Net>()
+        .with_context(|| format!("invalid CIDR notation: {s:?}"))
+}
+
+/// Validate that a port number is in the valid range (1-65535).
+fn validate_port(port: i32) -> Result<u16> {
+    if !(1..=65535).contains(&port) {
+        bail!("port number out of range (1-65535): {port}");
+    }
+    Ok(port as u16)
+}
+
+/// Validate that a protocol string is one of the allowed values.
+fn validate_protocol(protocol: &str) -> Result<&str> {
+    match protocol {
+        "tcp" | "udp" => Ok(protocol),
+        _ => bail!("invalid protocol (expected \"tcp\" or \"udp\"): {protocol:?}"),
+    }
+}
+
+/// Validate that a network namespace path looks legitimate.
+///
+/// Must be an absolute path under `/proc/` to prevent path traversal.
+fn validate_netns_path(path: &str) -> Result<()> {
+    if !path.starts_with("/proc/") || path.contains("..") {
+        bail!("invalid network namespace path (must be under /proc/ with no ..): {path:?}");
+    }
+    Ok(())
+}
+
 /// Bridge interface name used for pod networking.
 const BRIDGE_NAME: &str = "skyr0";
 
@@ -250,6 +292,13 @@ pub(crate) fn setup_pod_network(
     cluster_cidr: Option<&str>,
     service_cidr: Option<&str>,
 ) -> Result<()> {
+    validate_netns_path(netns_path)?;
+    if let Some(cidr) = cluster_cidr {
+        validate_cidr(cidr)?;
+    }
+    if let Some(cidr) = service_cidr {
+        validate_cidr(cidr)?;
+    }
     let gateway = Ipv4Addr::from(u32::from(subnet.network()) + 1);
     let ip_cidr = format!("{}/{}", ip, subnet.prefix_len());
     let host_veth = veth_host_name(pod_id);
@@ -426,6 +475,10 @@ fn setup_pod_egress_rules(
     cluster_cidr: &str,
     service_cidr: Option<&str>,
 ) -> Result<()> {
+    validate_cidr(cluster_cidr)?;
+    if let Some(cidr) = service_cidr {
+        validate_cidr(cidr)?;
+    }
     debug!(
         netns = %netns_path,
         cluster_cidr = %cluster_cidr,
@@ -498,6 +551,10 @@ pub(crate) fn open_egress_port(
     port: i32,
     protocol: &str,
 ) -> Result<()> {
+    validate_netns_path(netns_path)?;
+    validate_ipv4(dest_address)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -535,6 +592,10 @@ pub(crate) fn close_egress_port(
     port: i32,
     protocol: &str,
 ) -> Result<()> {
+    validate_netns_path(netns_path)?;
+    validate_ipv4(dest_address)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -572,6 +633,7 @@ pub(crate) fn close_egress_port(
 /// L2 learning for MAC-to-VTEP resolution after BUM traffic is flooded
 /// to all peers via FDB entries.
 pub(crate) fn setup_vxlan(local_ip: &str) -> Result<()> {
+    validate_ipv4(local_ip)?;
     let vni = VXLAN_VNI.to_string();
     let port = VXLAN_PORT.to_string();
 
@@ -623,6 +685,7 @@ pub(crate) fn teardown_vxlan() -> Result<()> {
 /// Adds an FDB entry that directs BUM (broadcast, unknown-unicast, multicast)
 /// traffic to the peer's underlay IP. This enables ARP resolution across nodes.
 pub(crate) fn add_overlay_peer(peer_ip: &str) -> Result<()> {
+    validate_ipv4(peer_ip)?;
     info!(peer_ip = %peer_ip, "adding overlay peer");
     run_cmd(
         "bridge",
@@ -641,6 +704,7 @@ pub(crate) fn add_overlay_peer(peer_ip: &str) -> Result<()> {
 
 /// Remove a VXLAN overlay peer.
 pub(crate) fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
+    validate_ipv4(peer_ip)?;
     info!(peer_ip = %peer_ip, "removing overlay peer");
     run_cmd(
         "bridge",
@@ -666,6 +730,9 @@ pub(crate) fn remove_overlay_peer(peer_ip: &str) -> Result<()> {
 /// Appends an iptables INPUT ACCEPT rule for the specified port/protocol
 /// in the pod's network namespace.
 pub(crate) fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+    validate_netns_path(netns_path)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -688,6 +755,9 @@ pub(crate) fn open_port(netns_path: &str, port: i32, protocol: &str) -> Result<(
 /// Deletes the matching iptables INPUT ACCEPT rule from the pod's
 /// network namespace.
 pub(crate) fn close_port(netns_path: &str, port: i32, protocol: &str) -> Result<()> {
+    validate_netns_path(netns_path)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
     let port_str = port.to_string();
     info!(
         netns = %netns_path,
@@ -799,7 +869,7 @@ pub(crate) fn teardown_services_chain() -> Result<()> {
 /// instead of dots/colons to satisfy iptables naming constraints.
 ///
 /// Example: VIP `10.43.0.1`, port 80, protocol `tcp` → `SKYR_SVC_10_43_0_1_80_tcp`
-fn service_chain_name(vip: &str, port: i32, protocol: &str) -> String {
+fn service_chain_name(vip: &str, port: u16, protocol: &str) -> String {
     let vip_clean = vip.replace('.', "_");
     format!("SKYR_SVC_{vip_clean}_{port}_{protocol}")
 }
@@ -825,6 +895,16 @@ pub(crate) fn add_service_route(
     backends: &[scop::ServiceBackend],
     service_cidr: &str,
 ) -> Result<()> {
+    validate_ipv4(vip)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
+    // Validate each backend address
+    for backend in backends {
+        validate_ipv4(&backend.address)?;
+        validate_port(backend.port)?;
+        validate_protocol(&backend.protocol)?;
+    }
+
     if backends.is_empty() {
         warn!(vip = %vip, port = %port, "no backends for service route, skipping");
         return Ok(());
@@ -886,7 +966,8 @@ pub(crate) fn add_service_route(
         let backend_chain;
         let dest;
         if is_vip {
-            backend_chain = service_chain_name(&backend.address, backend.port, &backend.protocol);
+            backend_chain =
+                service_chain_name(&backend.address, backend.port as u16, &backend.protocol);
             args.extend_from_slice(&["-j", &backend_chain]);
         } else {
             dest = format!("{}:{}", backend.address, backend.port);
@@ -929,6 +1010,9 @@ pub(crate) fn add_service_route(
 /// Removes the dispatch rule from SKYR-SERVICES and flushes/deletes the
 /// per-service chain.
 pub(crate) fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Result<()> {
+    validate_ipv4(vip)?;
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
     let port_str = port.to_string();
     let chain = service_chain_name(vip, port, protocol);
 
@@ -980,6 +1064,7 @@ pub(crate) fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Resu
 /// Allows forwarding of traffic destined to the service CIDR through the bridge,
 /// so DNAT'd packets can reach their backend pods.
 pub(crate) fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
+    validate_cidr(service_cidr)?;
     info!(
         service_cidr = %service_cidr,
         "configuring service CIDR forwarding"
@@ -1023,7 +1108,14 @@ pub(crate) fn host_nameservers() -> Vec<String> {
         .filter_map(|line| {
             let line = line.trim();
             if line.starts_with("nameserver") {
-                line.split_whitespace().nth(1).map(String::from)
+                let addr = line.split_whitespace().nth(1)?;
+                // Validate that the nameserver is a well-formed IP address
+                if addr.parse::<Ipv4Addr>().is_ok() || addr.parse::<std::net::Ipv6Addr>().is_ok() {
+                    Some(addr.to_string())
+                } else {
+                    warn!(addr = %addr, "skipping invalid nameserver from resolv.conf");
+                    None
+                }
             } else {
                 None
             }
