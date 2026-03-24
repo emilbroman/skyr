@@ -58,6 +58,9 @@ pub enum RegisterUserError {
 
     #[error("username already taken")]
     UsernameTaken,
+
+    #[error("invalid username: {0}")]
+    InvalidUsername(String),
 }
 
 #[derive(Error, Debug)]
@@ -73,6 +76,15 @@ pub enum UserQueryError {
 
     #[error("token expiry cannot be represented as u32 epoch seconds")]
     InvalidTokenExpiry,
+
+    #[error("invalid SSH public key: {0}")]
+    InvalidPublicKey(#[from] ssh_key::Error),
+
+    #[error("invalid username: {0}")]
+    InvalidUsername(String),
+
+    #[error("corrupted data: {0}")]
+    DataCorruption(String),
 }
 
 #[derive(Error, Debug)]
@@ -82,6 +94,12 @@ pub enum LookupTokenError {
 
     #[error("invalid token")]
     InvalidToken,
+
+    #[error("token has expired")]
+    Expired,
+
+    #[error("system clock error: {0}")]
+    Clock(#[from] std::time::SystemTimeError),
 }
 
 #[derive(Error, Debug)]
@@ -135,6 +153,18 @@ fn credential_key(username: &str, fingerprint: &str) -> String {
     format!("c:{username}:{fingerprint}")
 }
 
+/// Validates that a username is safe for use in Redis key construction.
+/// Returns the validation error message if invalid, or Ok(()) if valid.
+fn validate_username(username: &str) -> Result<(), String> {
+    if username.is_empty() {
+        return Err("username must not be empty".into());
+    }
+    if username.contains(':') {
+        return Err("username must not contain ':'".into());
+    }
+    Ok(())
+}
+
 impl Client {
     pub fn user(&self, username: impl Into<String>) -> UserClient {
         UserClient {
@@ -148,6 +178,29 @@ impl Client {
         token: impl Into<String>,
     ) -> Result<UserClient, LookupTokenError> {
         let token = token.into();
+
+        // Validate embedded expiry before hitting Redis (defense-in-depth
+        // beyond Redis TTL). Token format: "{expiry_hex}.{raw_token}".
+        if let Some(dot_pos) = token.find('.') {
+            let expiry_hex = &token[..dot_pos];
+            if let Ok(expiry_bytes) = hex::decode(expiry_hex)
+                && expiry_bytes.len() == 4
+            {
+                let expiry = u32::from_be_bytes([
+                    expiry_bytes[0],
+                    expiry_bytes[1],
+                    expiry_bytes[2],
+                    expiry_bytes[3],
+                ]);
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)?
+                    .as_secs();
+                if u64::from(expiry) < now {
+                    return Err(LookupTokenError::Expired);
+                }
+            }
+        }
+
         let username: Option<String> = self.conn.get(token_key(&token)).await?;
 
         match username {
@@ -177,6 +230,7 @@ impl UserClient {
         email: impl Into<String>,
         fullname: Option<String>,
     ) -> Result<User, RegisterUserError> {
+        validate_username(&self.username).map_err(RegisterUserError::InvalidUsername)?;
         let email = email.into();
 
         let result: i32 = self
@@ -272,14 +326,25 @@ impl TokensClient {
     pub async fn revoke(&mut self, token: impl Into<String>) -> Result<(), LookupTokenError> {
         let token = token.into();
 
-        let deleted: bool = redis::cmd("DELEX")
-            .arg(token_key(&token))
-            .arg("IFEQ")
+        // Atomically delete the key only if its value matches the expected
+        // username. This replaces the non-standard DELEX command with a
+        // standard Lua script that works on all Redis versions.
+        let script = redis::Script::new(
+            r#"
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            else
+                return 0
+            end
+            "#,
+        );
+        let deleted: i32 = script
+            .key(token_key(&token))
             .arg(&self.user.username)
-            .query_async(&mut self.user.client.conn)
+            .invoke_async(&mut self.user.client.conn)
             .await?;
 
-        if !deleted {
+        if deleted == 0 {
             return Err(LookupTokenError::InvalidToken);
         }
 
@@ -356,9 +421,7 @@ impl PubkeysClient {
         credential_id: Option<&str>,
         sign_count: u32,
     ) -> Result<Credential, UserQueryError> {
-        let parsed = PublicKey::from_openssh(public_key).map_err(|e| {
-            UserQueryError::Redis(redis::RedisError::from(std::io::Error::other(e)))
-        })?;
+        let parsed = PublicKey::from_openssh(public_key)?;
         let fingerprint = parsed.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
         let _: () = self
@@ -407,11 +470,12 @@ impl PubkeysClient {
         };
 
         let credential_id = credential_id.filter(|s| !s.is_empty());
-        let sign_count = sign_count_str
-            .as_deref()
-            .unwrap_or("0")
-            .parse::<u32>()
-            .unwrap_or(0);
+        let sign_count_raw = sign_count_str.as_deref().unwrap_or("0");
+        let sign_count = sign_count_raw.parse::<u32>().map_err(|_| {
+            UserQueryError::DataCorruption(format!(
+                "sign_count is not a valid u32: {sign_count_raw:?}"
+            ))
+        })?;
 
         Ok(Credential {
             fingerprint: fingerprint.to_owned(),

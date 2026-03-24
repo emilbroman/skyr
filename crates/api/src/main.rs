@@ -329,6 +329,9 @@ impl Mutation {
             Err(udb::RegisterUserError::UsernameTaken) => {
                 return Err(field_error("Username already taken"));
             }
+            Err(udb::RegisterUserError::InvalidUsername(msg)) => {
+                return Err(field_error(&format!("Invalid username: {msg}")));
+            }
             Err(e) => {
                 tracing::error!("Failed to register user: {}", e);
                 return Err(internal_error());
@@ -2264,7 +2267,7 @@ async fn graphql_handler(
 
     if let Some(token) = auth_header {
         match udb_client.lookup_token(token).await {
-            Err(udb::LookupTokenError::InvalidToken) => {
+            Err(udb::LookupTokenError::InvalidToken | udb::LookupTokenError::Expired) => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
                     juniper::FieldError::new(
                         "Invalid token",
@@ -2335,7 +2338,7 @@ async fn graphql_ws_handler(
 
     let user = if let Some(token) = auth_header {
         match udb_client.lookup_token(token).await {
-            Err(udb::LookupTokenError::InvalidToken) => {
+            Err(udb::LookupTokenError::InvalidToken | udb::LookupTokenError::Expired) => {
                 return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
             }
             Err(e) => {
@@ -2441,7 +2444,10 @@ async fn graphql_ws_connection(
                                 Ok(user) => {
                                     context.user = Some(user);
                                 }
-                                Err(udb::LookupTokenError::InvalidToken) => {
+                                Err(
+                                    udb::LookupTokenError::InvalidToken
+                                    | udb::LookupTokenError::Expired,
+                                ) => {
                                     tracing::debug!("Invalid token in connection_init payload");
                                 }
                                 Err(e) => {
