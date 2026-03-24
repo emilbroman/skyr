@@ -41,9 +41,15 @@ impl CryptoPlugin {
                 generate_ecdsa(curve)?
             }
             RSA_RESOURCE_TYPE => {
-                let size = *inputs.get("size").assert_int_ref()? as usize;
+                let size_i64 = *inputs.get("size").assert_int_ref()?;
+                let size: usize = size_i64.try_into().map_err(|_| {
+                    anyhow::anyhow!("RSA key size must be a positive integer, got {size_i64}")
+                })?;
                 if size < 2048 {
                     anyhow::bail!("RSA key size must be at least 2048, got {size}");
+                }
+                if size > 16384 {
+                    anyhow::bail!("RSA key size must be at most 16384, got {size}");
                 }
                 tokio::task::spawn_blocking(move || generate_rsa(size)).await??
             }
@@ -262,6 +268,9 @@ fn generate_csr(inputs: &sclc::Record) -> anyhow::Result<String> {
 fn epoch_millis_to_x509_time(epoch_millis: i64) -> anyhow::Result<x509_cert::time::Time> {
     use std::time::{Duration, UNIX_EPOCH};
 
+    if epoch_millis < 0 {
+        anyhow::bail!("epoch milliseconds must be non-negative, got {epoch_millis}");
+    }
     let duration = Duration::from_millis(epoch_millis as u64);
     let system_time = UNIX_EPOCH + duration;
 
@@ -290,14 +299,26 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
     let not_after_millis = *before_record.get("epochMillis").assert_int_ref()?;
     let not_after = epoch_millis_to_x509_time(not_after_millis)?;
 
-    let not_before = match validity_record.get("after") {
-        sclc::Value::Nil => x509_cert::time::Time::try_from(std::time::SystemTime::now())
-            .map_err(|e| anyhow::anyhow!("failed to get current time: {e}"))?,
+    let not_before_millis = match validity_record.get("after") {
+        sclc::Value::Nil => None,
         other => {
             let after_record = other.assert_record_ref()?;
-            let millis = *after_record.get("epochMillis").assert_int_ref()?;
-            epoch_millis_to_x509_time(millis)?
+            Some(*after_record.get("epochMillis").assert_int_ref()?)
         }
+    };
+
+    if let Some(nb_millis) = not_before_millis
+        && nb_millis > not_after_millis
+    {
+        anyhow::bail!(
+            "certificate validity period is invalid: notBefore must not be after notAfter"
+        );
+    }
+
+    let not_before = match not_before_millis {
+        Some(millis) => epoch_millis_to_x509_time(millis)?,
+        None => x509_cert::time::Time::try_from(std::time::SystemTime::now())
+            .map_err(|e| anyhow::anyhow!("failed to get current time: {e}"))?,
     };
 
     let validity = x509_cert::time::Validity {
@@ -343,17 +364,19 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
     };
 
     let csr_spki_der = subject_pub_key_info.to_der()?;
+    let ca_spki_der = ca_cert
+        .as_ref()
+        .map(|cert| cert.tbs_certificate.subject_public_key_info.to_der())
+        .transpose()?;
 
     // Try Ed25519
     if let Ok(signing_key) = ed25519_dalek::SigningKey::from_pkcs8_pem(private_key_pem) {
-        if ca_cert.is_none() {
-            let pub_key_der = signing_key.verifying_key().to_public_key_der()?;
-            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
-                anyhow::bail!(
-                    "self-signed certificate requested but CSR public key does not match the provided private key"
-                );
-            }
-        }
+        let pub_key_der = signing_key.verifying_key().to_public_key_der()?;
+        verify_signing_key_match(
+            pub_key_der.as_bytes(),
+            &csr_spki_der,
+            ca_spki_der.as_deref(),
+        )?;
         return build_and_sign_cert_ed25519(
             &signing_key,
             profile,
@@ -366,14 +389,12 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
 
     // Try ECDSA P-256
     if let Ok(secret_key) = p256::SecretKey::from_pkcs8_pem(private_key_pem) {
-        if ca_cert.is_none() {
-            let pub_key_der = secret_key.public_key().to_public_key_der()?;
-            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
-                anyhow::bail!(
-                    "self-signed certificate requested but CSR public key does not match the provided private key"
-                );
-            }
-        }
+        let pub_key_der = secret_key.public_key().to_public_key_der()?;
+        verify_signing_key_match(
+            pub_key_der.as_bytes(),
+            &csr_spki_der,
+            ca_spki_der.as_deref(),
+        )?;
         let signing_key = p256::ecdsa::SigningKey::from(secret_key);
         return build_and_sign_cert::<_, p256::ecdsa::DerSignature>(
             &signing_key,
@@ -387,14 +408,12 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
 
     // Try ECDSA P-384
     if let Ok(secret_key) = p384::SecretKey::from_pkcs8_pem(private_key_pem) {
-        if ca_cert.is_none() {
-            let pub_key_der = secret_key.public_key().to_public_key_der()?;
-            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
-                anyhow::bail!(
-                    "self-signed certificate requested but CSR public key does not match the provided private key"
-                );
-            }
-        }
+        let pub_key_der = secret_key.public_key().to_public_key_der()?;
+        verify_signing_key_match(
+            pub_key_der.as_bytes(),
+            &csr_spki_der,
+            ca_spki_der.as_deref(),
+        )?;
         let signing_key = p384::ecdsa::SigningKey::from(secret_key);
         return build_and_sign_cert::<_, p384::ecdsa::DerSignature>(
             &signing_key,
@@ -413,14 +432,12 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
 
     // Try RSA
     if let Ok(private_key) = rsa::RsaPrivateKey::from_pkcs8_pem(private_key_pem) {
-        if ca_cert.is_none() {
-            let pub_key_der = private_key.to_public_key().to_public_key_der()?;
-            if pub_key_der.as_bytes() != csr_spki_der.as_slice() {
-                anyhow::bail!(
-                    "self-signed certificate requested but CSR public key does not match the provided private key"
-                );
-            }
-        }
+        let pub_key_der = private_key.to_public_key().to_public_key_der()?;
+        verify_signing_key_match(
+            pub_key_der.as_bytes(),
+            &csr_spki_der,
+            ca_spki_der.as_deref(),
+        )?;
         let signing_key = rsa::pkcs1v15::SigningKey::<sha2::Sha256>::new(private_key);
         return build_and_sign_cert::<_, rsa::pkcs1v15::Signature>(
             &signing_key,
@@ -433,6 +450,32 @@ fn sign_certificate(inputs: &sclc::Record) -> anyhow::Result<String> {
     }
 
     anyhow::bail!("unsupported private key type in PEM")
+}
+
+/// Verify that the signing private key matches either the CSR's public key (self-signed)
+/// or the CA certificate's public key (CA-signed).
+fn verify_signing_key_match(
+    signing_pub_der: &[u8],
+    csr_spki_der: &[u8],
+    ca_spki_der: Option<&[u8]>,
+) -> anyhow::Result<()> {
+    match ca_spki_der {
+        Some(ca_der) => {
+            if signing_pub_der != ca_der {
+                anyhow::bail!(
+                    "CA-signed certificate requested but the signing private key does not match the CA certificate's public key"
+                );
+            }
+        }
+        None => {
+            if signing_pub_der != csr_spki_der {
+                anyhow::bail!(
+                    "self-signed certificate requested but CSR public key does not match the provided private key"
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Build and sign a certificate using a signer whose signature type implements
@@ -524,6 +567,8 @@ fn build_subject_name(subject: &sclc::Record) -> anyhow::Result<x509_cert::name:
 }
 
 fn rfc4514_escape(s: &str) -> String {
+    use std::fmt::Write;
+
     let mut out = String::with_capacity(s.len());
     for (i, c) in s.chars().enumerate() {
         match c {
@@ -538,6 +583,11 @@ fn rfc4514_escape(s: &str) -> String {
             ' ' if i == 0 || i == s.len() - 1 => {
                 out.push('\\');
                 out.push(c);
+            }
+            // Escape NUL and control characters as hex pairs per RFC 4514 section 2.4
+            '\0' => out.push_str("\\00"),
+            c if c.is_ascii_control() => {
+                let _ = write!(out, "\\{:02X}", c as u32);
             }
             _ => out.push(c),
         }
@@ -624,6 +674,10 @@ where
 fn parse_san(san: &str) -> anyhow::Result<x509_cert::ext::pkix::name::GeneralName> {
     use x509_cert::ext::pkix::name::GeneralName;
 
+    if san.is_empty() {
+        anyhow::bail!("SAN value must not be empty");
+    }
+
     // Try parsing as IP address
     if let Ok(ip) = san.parse::<std::net::IpAddr>() {
         let bytes = match ip {
@@ -635,11 +689,50 @@ fn parse_san(san: &str) -> anyhow::Result<x509_cert::ext::pkix::name::GeneralNam
 
     // Check for email (contains @)
     if san.contains('@') {
+        validate_email_san(san)?;
         return Ok(GeneralName::Rfc822Name(der::asn1::Ia5String::new(san)?));
     }
 
     // Default: DNS name
+    validate_dns_san(san)?;
     Ok(GeneralName::DnsName(der::asn1::Ia5String::new(san)?))
+}
+
+/// Validate an email SAN has a minimal valid structure: local@domain with non-empty parts.
+fn validate_email_san(email: &str) -> anyhow::Result<()> {
+    let parts: Vec<&str> = email.splitn(2, '@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        anyhow::bail!("invalid email SAN: expected local@domain, got {email:?}");
+    }
+    let domain = parts[1];
+    if !domain.contains('.') {
+        anyhow::bail!("invalid email SAN: domain must contain at least one dot, got {email:?}");
+    }
+    Ok(())
+}
+
+/// Validate a DNS SAN has valid hostname structure.
+fn validate_dns_san(name: &str) -> anyhow::Result<()> {
+    // Allow wildcard prefix
+    let name = name.strip_prefix("*.").unwrap_or(name);
+    if name.is_empty() {
+        anyhow::bail!("invalid DNS SAN: name must not be empty");
+    }
+    for label in name.split('.') {
+        if label.is_empty() {
+            anyhow::bail!("invalid DNS SAN: labels must not be empty in {name:?}");
+        }
+        if label.len() > 63 {
+            anyhow::bail!("invalid DNS SAN: label exceeds 63 characters in {name:?}");
+        }
+        if !label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            anyhow::bail!("invalid DNS SAN: label contains invalid characters in {name:?}");
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            anyhow::bail!("invalid DNS SAN: label must not start or end with a hyphen in {name:?}");
+        }
+    }
+    Ok(())
 }
 
 #[async_trait::async_trait]
