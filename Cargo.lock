@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "aws-sdk-s3",
  "thiserror 2.0.18",
+ "tracing",
  "url",
  "urlencoding",
 ]
