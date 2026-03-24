@@ -40,6 +40,12 @@ variable "redpanda_hostname" {
   default     = null
 }
 
+variable "redpanda_advertise_host" {
+  type        = string
+  description = "External hostname to advertise for the Redpanda Kafka listener. When set, a second listener is added on port 19092 that advertises as this host with the NodePort. Requires ldb_service_type = NodePort."
+  default     = null
+}
+
 variable "minio_endpoint_url" {
   type        = string
   description = "External MinIO/S3 endpoint URL (e.g. https://s3.amazonaws.com). When null, deploys MinIO internally."
@@ -139,5 +145,23 @@ variable "scs_service_type" {
 variable "web_service_type" {
   type        = string
   description = "Kubernetes Service type for the web frontend (ClusterIP, LoadBalancer, or NodePort)."
+  default     = "ClusterIP"
+}
+
+variable "orchestrator_service_type" {
+  type        = string
+  description = "Kubernetes Service type for the container orchestrator plugin (ClusterIP, LoadBalancer, or NodePort)."
+  default     = "ClusterIP"
+}
+
+variable "ldb_service_type" {
+  type        = string
+  description = "Kubernetes Service type for the LDB broker / Redpanda (ClusterIP, LoadBalancer, or NodePort)."
+  default     = "ClusterIP"
+}
+
+variable "oci_registry_service_type" {
+  type        = string
+  description = "Kubernetes Service type for the OCI registry (ClusterIP, LoadBalancer, or NodePort)."
   default     = "ClusterIP"
 }

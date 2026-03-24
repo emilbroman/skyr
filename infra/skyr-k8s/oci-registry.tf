@@ -44,6 +44,7 @@ resource "kubernetes_service" "oci_registry" {
   }
 
   spec {
+    type     = var.oci_registry_service_type
     selector = { "app.kubernetes.io/name" = "oci-registry" }
 
     port {

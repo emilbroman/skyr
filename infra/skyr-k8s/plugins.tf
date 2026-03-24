@@ -73,6 +73,7 @@ resource "kubernetes_service" "plugin_std_container" {
   }
 
   spec {
+    type     = var.orchestrator_service_type
     selector = { "app.kubernetes.io/name" = "plugin-std-container" }
 
     port {

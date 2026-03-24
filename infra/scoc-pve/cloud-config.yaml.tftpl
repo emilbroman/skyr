@@ -1,0 +1,171 @@
+#cloud-config
+
+write_files:
+  # DNS must be configured before package installation
+  - path: /etc/resolv.conf
+    content: |
+      nameserver ${nameserver}
+
+  # Containerd configuration
+  - path: /etc/containerd/config.toml
+    content: |
+      version = 3
+
+      [plugins."io.containerd.cri.v1.images"]
+        snapshotter = "overlayfs"
+
+        [plugins."io.containerd.cri.v1.images".registry]
+          config_path = "/etc/containerd/certs.d"
+
+      [plugins."io.containerd.cri.v1.runtime"]
+        [plugins."io.containerd.cri.v1.runtime".containerd]
+          default_runtime_name = "crun"
+
+          [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.crun]
+            runtime_type = "io.containerd.runc.v2"
+            [plugins."io.containerd.cri.v1.runtime".containerd.runtimes.crun.options]
+              BinaryName = "/usr/bin/crun"
+              SystemdCgroup = false
+
+        [plugins."io.containerd.cri.v1.runtime".cni]
+          bin_dir = "/usr/libexec/cni"
+          conf_dir = "/etc/cni/net.d"
+
+  # OCI registry host configuration
+  - path: /etc/containerd/certs.d/${oci_registry}/hosts.toml
+    content: |
+      server = "https://${oci_registry}"
+
+      [host."https://${oci_registry}"]
+        capabilities = ["pull", "resolve"]
+
+  # Minimal CNI config (loopback only — SCOC handles real networking)
+  - path: /etc/cni/net.d/10-dummy.conflist
+    content: |
+      {
+        "cniVersion": "1.0.0",
+        "name": "dummy-net",
+        "plugins": [
+          {
+            "type": "dummy",
+            "ipam": {
+              "type": "static",
+              "addresses": [
+                {"address": "169.254.1.1/32"}
+              ]
+            }
+          },
+          {
+            "type": "loopback"
+          }
+        ]
+      }
+
+  # OpenRC init script for containerd
+  - path: /etc/init.d/containerd
+    permissions: "0755"
+    content: |
+      #!/sbin/openrc-run
+
+      description="containerd container runtime"
+      command="/usr/bin/containerd"
+      command_args="--config /etc/containerd/config.toml"
+      command_background=true
+      pidfile="/run/$${RC_SVCNAME}.pid"
+      output_log="/dev/console"
+      error_log="/dev/console"
+
+  # OpenRC init script for SCOC
+  - path: /etc/init.d/scoc
+    permissions: "0755"
+    content: |
+      #!/sbin/openrc-run
+
+      description="Skyr Container Orchestrator Conduit"
+      command="/usr/bin/scoc"
+      command_args="daemon \
+        --node-name ${node_name} \
+        --bind ${scoc_bind} \
+        --conduit-address ${conduit_address} \
+        --orchestrator-address ${orchestrator_address} \
+        --containerd-socket /run/containerd/containerd.sock \
+        --cpu-millis ${cpu_millis} \
+        --memory-bytes ${memory_bytes} \
+        --max-pods ${max_pods} \
+        --ldb-brokers ${ldb_brokers}"
+      command_background=true
+      pidfile="/run/$${RC_SVCNAME}.pid"
+      output_log="/dev/console"
+      error_log="/dev/console"
+
+      depend() {
+        after containerd net
+      }
+
+      start_pre() {
+        # Setup cgroup delegation for cgroupv2
+        if [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+          mkdir -p /sys/fs/cgroup/init.scope
+          echo $$$$ > /sys/fs/cgroup/init.scope/cgroup.procs 2>/dev/null || true
+
+          for controller in $(cat /sys/fs/cgroup/cgroup.controllers); do
+            echo "+$${controller}" > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null || true
+          done
+
+          mkdir -p /sys/fs/cgroup/k8s.io
+          for controller in $(cat /sys/fs/cgroup/k8s.io/cgroup.controllers); do
+            echo "+$${controller}" > /sys/fs/cgroup/k8s.io/cgroup.subtree_control 2>/dev/null || true
+          done
+        fi
+
+        # Wait for containerd socket
+        local i=0
+        while [ ! -S /run/containerd/containerd.sock ] && [ $i -lt 50 ]; do
+          sleep 0.1
+          i=$((i + 1))
+        done
+
+        # Wait for containerd to accept connections
+        until ctr version > /dev/null 2>&1; do
+          sleep 0.2
+        done
+      }
+
+  # SCOC environment variables
+  - path: /etc/conf.d/scoc
+    content: |
+      SCOC_NODE_NAME="${node_name}"
+      SCOC_BIND="${scoc_bind}"
+      SCOC_CONDUIT_ADDRESS="${conduit_address}"
+      SCOC_ORCHESTRATOR_ADDRESS="${orchestrator_address}"
+      SCOC_CPU_MILLIS="${cpu_millis}"
+      SCOC_MEMORY_BYTES="${memory_bytes}"
+      SCOC_MAX_PODS="${max_pods}"
+      SCOC_LDB_BROKERS="${ldb_brokers}"
+
+packages:
+  - containerd
+  - containerd-ctr
+  - crun
+  - iptables
+  - cni-plugins
+  - iproute2
+  - util-linux
+  - curl
+
+runcmd:
+  # Download SCOC binary from latest GitHub release
+  - curl -fsSL -o /usr/bin/scoc ${scoc_binary_url}
+  - chmod +x /usr/bin/scoc
+  # Create pod log directory
+  - mkdir -p /var/log/pods
+  # Enable cgroup v2 (unified hierarchy) and mount cgroups
+  - sed -i 's/^#*rc_cgroup_mode=.*/rc_cgroup_mode="unified"/' /etc/rc.conf
+  - rc-update add cgroups boot
+  - rc-service cgroups start
+  # Enable containerd and SCOC at boot
+  - rc-update add containerd default
+  - rc-update add scoc default
+  # Start services (containerd first, then SCOC)
+  - rc-service containerd start
+  - rc-service scoc start

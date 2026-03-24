@@ -7,8 +7,69 @@ terraform {
 }
 
 inputs = {
-  namespace         = "skyr"
-  image_pull_policy = "Always"
+  namespace                 = "skyr"
+  image_pull_policy         = "Always"
+  orchestrator_service_type = "NodePort"
+  ldb_service_type          = "NodePort"
+  oci_registry_service_type = "NodePort"
+  redpanda_advertise_host   = "node1.vm.bb3.internal"
+}
+
+generate "proxmox_provider" {
+  path      = "proxmox_versions_override.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-EOF
+    terraform {
+      required_providers {
+        proxmox = {
+          source  = "bpg/proxmox"
+          version = "~> 0.78"
+        }
+      }
+    }
+  EOF
+}
+
+generate "scoc_pve" {
+  path      = "scoc-pve.tf"
+  if_exists = "overwrite_terragrunt"
+  contents  = <<-EOF
+    variable "proxmox_api_token" {
+      type        = string
+      sensitive   = true
+      description = "Proxmox VE API token (e.g. token-name=secret-value)."
+    }
+
+    provider "proxmox" {
+      endpoint  = "https://pve.bb3.internal"
+      api_token = "root@pam!$${var.proxmox_api_token}"
+
+      ssh {
+        agent    = true
+        username = "root"
+      }
+    }
+
+    module "scoc_pve" {
+      count = 3
+
+      source = "${get_repo_root()}/infra/scoc-pve"
+
+      proxmox_node = "tc$${count.index + 1}"
+      vm_name      = "scoc-$${count.index + 1}"
+      node_name    = "scoc-$${count.index + 1}"
+
+      vm_id   = count.index + 171
+      vm_ip   = "10.20.1.$${count.index + 171}/16"
+      gateway = "10.20.0.1"
+      nameserver = "10.20.0.1"
+      vlan_id = 4
+
+      orchestrator_address = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.plugin_std_container.spec[0].port[0].node_port}"
+      ldb_brokers          = "node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.redpanda[0].spec[0].port[1].node_port}"
+      oci_registry         = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.oci_registry[0].spec[0].port[0].node_port}"
+    }
+  EOF
 }
 
 generate "ingress" {
