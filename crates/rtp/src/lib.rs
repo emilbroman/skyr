@@ -22,6 +22,11 @@ use proto::{
 type ResourceTransitionPluginClient =
     proto::resource_transition_plugin_client::ResourceTransitionPluginClient<Channel>;
 
+/// Maximum allowed byte length for any single JSON string field in an RTP request.
+/// Proto3 strings can be arbitrarily large; this limit prevents excessive memory use
+/// during deserialization.
+const MAX_JSON_FIELD_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
+
 #[tonic::async_trait]
 pub trait Plugin: Send + Sync + 'static {
     async fn create_resource(
@@ -151,6 +156,61 @@ pub enum DialError {
     },
 }
 
+// ---------------------------------------------------------------------------
+// Helpers — JSON parsing & ResourceId validation
+// ---------------------------------------------------------------------------
+
+/// Deserialize a JSON string field into `T`, enforcing [`MAX_JSON_FIELD_BYTES`] and
+/// logging on failure. Returns a gRPC `InvalidArgument` status on error.
+fn parse_json_field<T: serde::de::DeserializeOwned>(
+    json: &str,
+    field_name: &str,
+    resource_type: &str,
+    resource_name: &str,
+    rpc_name: &str,
+) -> Result<T, tonic::Status> {
+    if json.len() > MAX_JSON_FIELD_BYTES {
+        warn!(
+            resource_type,
+            resource_name,
+            field_name,
+            rpc_name,
+            len = json.len(),
+            max = MAX_JSON_FIELD_BYTES,
+            "JSON field exceeds size limit"
+        );
+        return Err(tonic::Status::invalid_argument(format!(
+            "{field_name} exceeds maximum size of {MAX_JSON_FIELD_BYTES} bytes"
+        )));
+    }
+    serde_json::from_str(json).map_err(|error| {
+        warn!(
+            resource_type,
+            resource_name,
+            err = %error,
+            "invalid {rpc_name} {field_name} payload"
+        );
+        tonic::Status::invalid_argument(format!("invalid {field_name}"))
+    })
+}
+
+/// Build a validated [`ids::ResourceId`] from untrusted `type` and `name` strings.
+fn validated_resource_id(typ: &str, name: &str) -> Result<ids::ResourceId, tonic::Status> {
+    let composite = format!("{typ}:{name}");
+    composite.parse::<ids::ResourceId>().map_err(|_| {
+        warn!(
+            resource_type = typ,
+            resource_name = name,
+            "invalid resource ID in request"
+        );
+        tonic::Status::invalid_argument("invalid resource type/name")
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Server implementation
+// ---------------------------------------------------------------------------
+
 struct PluginFactory<P, F>
 where
     P: Plugin,
@@ -253,20 +313,14 @@ where
             deployment_id = request.deployment_id.as_str(),
             "received create_resource RPC"
         );
-        let inputs: sclc::Record =
-            serde_json::from_str(&request.resource_inputs_json).map_err(|error| {
-                warn!(
-                    resource_type = request.resource_type.as_str(),
-                    resource_name = request.resource_name.as_str(),
-                    err = %error,
-                    "invalid create_resource input payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid resource_inputs_json: {error}"))
-            })?;
-        let resource_id = ids::ResourceId {
-            typ: request.resource_type.clone(),
-            name: request.resource_name.clone(),
-        };
+        let inputs: sclc::Record = parse_json_field(
+            &request.resource_inputs_json,
+            "resource_inputs_json",
+            &request.resource_type,
+            &request.resource_name,
+            "create_resource",
+        )?;
+        let resource_id = validated_resource_id(&request.resource_type, &request.resource_name)?;
 
         let resource = {
             let mut plugin = self.plugin.write().await;
@@ -285,7 +339,7 @@ where
                         err = %error,
                         "plugin create_resource failed"
                     );
-                    tonic::Status::internal(error.to_string())
+                    tonic::Status::internal("create_resource failed")
                 })?
         };
         info!(
@@ -308,10 +362,7 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = ids::ResourceId {
-            typ: current.r#type.clone(),
-            name: current.name.clone(),
-        };
+        let resource_id = validated_resource_id(&current.r#type, &current.name)?;
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
@@ -319,35 +370,27 @@ where
             deployment_id = request.deployment_id.as_str(),
             "received update_resource RPC"
         );
-        let prev_inputs: sclc::Record =
-            serde_json::from_str(&current.inputs_json).map_err(|error| {
-                warn!(
-                    resource_type = resource_id.typ.as_str(),
-                    resource_name = resource_id.name.as_str(),
-                    err = %error,
-                    "invalid update_resource prev input payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
-            })?;
-        let prev_outputs: sclc::Record =
-            serde_json::from_str(&current.outputs_json).map_err(|error| {
-                warn!(
-                    resource_type = resource_id.typ.as_str(),
-                    resource_name = resource_id.name.as_str(),
-                    err = %error,
-                    "invalid update_resource prev output payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid resource.outputs_json: {error}"))
-            })?;
-        let inputs: sclc::Record = serde_json::from_str(&request.inputs_json).map_err(|error| {
-            warn!(
-                resource_type = resource_id.typ.as_str(),
-                resource_name = resource_id.name.as_str(),
-                err = %error,
-                "invalid update_resource input payload"
-            );
-            tonic::Status::invalid_argument(format!("invalid inputs_json: {error}"))
-        })?;
+        let prev_inputs: sclc::Record = parse_json_field(
+            &current.inputs_json,
+            "resource.inputs_json",
+            &resource_id.typ,
+            &resource_id.name,
+            "update_resource",
+        )?;
+        let prev_outputs: sclc::Record = parse_json_field(
+            &current.outputs_json,
+            "resource.outputs_json",
+            &resource_id.typ,
+            &resource_id.name,
+            "update_resource",
+        )?;
+        let inputs: sclc::Record = parse_json_field(
+            &request.inputs_json,
+            "inputs_json",
+            &resource_id.typ,
+            &resource_id.name,
+            "update_resource",
+        )?;
 
         let resource = {
             let mut plugin = self.plugin.write().await;
@@ -368,7 +411,7 @@ where
                         err = %error,
                         "plugin update_resource failed"
                     );
-                    tonic::Status::internal(error.to_string())
+                    tonic::Status::internal("update_resource failed")
                 })?
         };
         info!(
@@ -391,10 +434,7 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = ids::ResourceId {
-            typ: current.r#type.clone(),
-            name: current.name.clone(),
-        };
+        let resource_id = validated_resource_id(&current.r#type, &current.name)?;
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
@@ -402,25 +442,20 @@ where
             deployment_id = request.deployment_id.as_str(),
             "received delete_resource RPC"
         );
-        let inputs: sclc::Record = serde_json::from_str(&current.inputs_json).map_err(|error| {
-            warn!(
-                resource_type = resource_id.typ.as_str(),
-                resource_name = resource_id.name.as_str(),
-                err = %error,
-                "invalid delete_resource input payload"
-            );
-            tonic::Status::invalid_argument(format!("invalid resource.inputs_json: {error}"))
-        })?;
-        let outputs: sclc::Record =
-            serde_json::from_str(&current.outputs_json).map_err(|error| {
-                warn!(
-                    resource_type = resource_id.typ.as_str(),
-                    resource_name = resource_id.name.as_str(),
-                    err = %error,
-                    "invalid delete_resource output payload"
-                );
-                tonic::Status::invalid_argument(format!("invalid resource.outputs_json: {error}"))
-            })?;
+        let inputs: sclc::Record = parse_json_field(
+            &current.inputs_json,
+            "resource.inputs_json",
+            &resource_id.typ,
+            &resource_id.name,
+            "delete_resource",
+        )?;
+        let outputs: sclc::Record = parse_json_field(
+            &current.outputs_json,
+            "resource.outputs_json",
+            &resource_id.typ,
+            &resource_id.name,
+            "delete_resource",
+        )?;
 
         {
             let mut plugin = self.plugin.write().await;
@@ -428,18 +463,27 @@ where
                 .delete_resource(
                     &request.environment_qid,
                     &request.deployment_id,
-                    resource_id,
+                    resource_id.clone(),
                     inputs,
                     outputs,
                 )
                 .await
                 .map_err(|error| {
-                    error!(err = %error, "plugin delete_resource failed");
-                    tonic::Status::internal(error.to_string())
+                    error!(
+                        resource_type = resource_id.typ.as_str(),
+                        resource_name = resource_id.name.as_str(),
+                        err = %error,
+                        "plugin delete_resource failed"
+                    );
+                    tonic::Status::internal("delete_resource failed")
                 })?;
         }
 
-        info!("completed delete_resource RPC");
+        info!(
+            resource_type = resource_id.typ.as_str(),
+            resource_name = resource_id.name.as_str(),
+            "completed delete_resource RPC"
+        );
         Ok(tonic::Response::new(()))
     }
 
@@ -453,10 +497,7 @@ where
         let resource = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing check resource"))?;
-        let id = ids::ResourceId {
-            typ: resource.r#type.clone(),
-            name: resource.name.clone(),
-        };
+        let id = validated_resource_id(&resource.r#type, &resource.name)?;
         let parsed = decode_resource(resource)?;
 
         let plugin = self.plugin.read().await;
@@ -475,7 +516,7 @@ where
                     err = %error,
                     "plugin check failed"
                 );
-                tonic::Status::internal(error.to_string())
+                tonic::Status::internal("check failed")
             })?;
 
         Ok(tonic::Response::new(CheckResponse {
@@ -657,7 +698,10 @@ fn decode_marker(value: i32) -> Option<sclc::Marker> {
     match proto::Marker::try_from(value) {
         Ok(proto::Marker::Volatile) => Some(sclc::Marker::Volatile),
         Ok(proto::Marker::Sticky) => Some(sclc::Marker::Sticky),
-        Err(_) => None,
+        Err(_) => {
+            warn!(marker_value = value, "unknown marker value; dropping");
+            None
+        }
     }
 }
 
@@ -692,6 +736,8 @@ fn decode_resource(resource: Resource) -> Result<sclc::Resource, tonic::Status> 
     Ok(sclc::Resource {
         inputs,
         outputs,
+        // Dependencies are not transmitted over RTP — they are tracked by the
+        // deployment engine (DE) locally and are not relevant to plugin logic.
         dependencies: vec![],
         markers,
     })
@@ -718,8 +764,14 @@ where
             Server::builder().add_service(service).serve(addr).await?;
         }
         Target::Unix(path) => {
-            if path.exists() {
-                tokio::fs::remove_file(&path).await?;
+            // Remove any stale socket unconditionally. This avoids a TOCTOU race
+            // between the exists-check and the remove (the previous code checked
+            // `path.exists()` before removing). If no file exists the error is
+            // harmless and we ignore it.
+            match tokio::fs::remove_file(&path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(ServeError::Io(e)),
             }
             info!(path = %path.display(), "serving RTP over Unix socket");
             let listener = tokio::net::UnixListener::bind(path)?;
@@ -794,7 +846,7 @@ pub async fn dial(target: Target) -> Result<PluginClient, DialError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Target, resolve_tcp_authority};
+    use super::*;
 
     #[tokio::test]
     async fn tcp_target_with_hostname_resolves() {
@@ -806,5 +858,73 @@ mod tests {
         resolve_tcp_authority(&authority)
             .await
             .expect("localhost should resolve");
+    }
+
+    #[test]
+    fn target_parse_tcp() {
+        let target: Target = "tcp://127.0.0.1:8080".parse().unwrap();
+        assert!(matches!(target, Target::Tcp(ref a) if a == "127.0.0.1:8080"));
+    }
+
+    #[test]
+    fn target_parse_http() {
+        let target: Target = "http://example.com:50051".parse().unwrap();
+        assert!(matches!(target, Target::Tcp(ref a) if a == "example.com:50051"));
+    }
+
+    #[test]
+    fn target_parse_unix() {
+        // The http::Uri parser requires a dummy authority after "unix://".
+        let target: Target = "unix://_/var/run/plugin.sock".parse().unwrap();
+        assert!(
+            matches!(target, Target::Unix(ref p) if p.to_str() == Some("/var/run/plugin.sock"))
+        );
+    }
+
+    #[test]
+    fn target_parse_missing_scheme() {
+        let err = "no-scheme".parse::<Target>().unwrap_err();
+        assert!(matches!(err, TargetParseError::MissingScheme));
+    }
+
+    #[test]
+    fn target_parse_unsupported_scheme() {
+        let err = "ftp://host:21".parse::<Target>().unwrap_err();
+        assert!(matches!(err, TargetParseError::UnsupportedScheme(_)));
+    }
+
+    #[test]
+    fn validated_resource_id_accepts_valid() {
+        let id = validated_resource_id("Std/Random.Int", "seed").unwrap();
+        assert_eq!(id.typ, "Std/Random.Int");
+        assert_eq!(id.name, "seed");
+    }
+
+    #[test]
+    fn validated_resource_id_rejects_empty_type() {
+        assert!(validated_resource_id("", "seed").is_err());
+    }
+
+    #[test]
+    fn validated_resource_id_rejects_empty_name() {
+        assert!(validated_resource_id("Std/Random.Int", "").is_err());
+    }
+
+    #[test]
+    fn parse_json_field_rejects_oversized_input() {
+        let big = "x".repeat(MAX_JSON_FIELD_BYTES + 1);
+        let result = parse_json_field::<sclc::Record>(&big, "test", "T", "n", "rpc");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn decode_marker_unknown_value_returns_none() {
+        assert!(decode_marker(999).is_none());
+    }
+
+    #[test]
+    fn decode_marker_known_values() {
+        assert_eq!(decode_marker(0), Some(sclc::Marker::Volatile));
+        assert_eq!(decode_marker(1), Some(sclc::Marker::Sticky));
     }
 }
