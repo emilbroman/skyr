@@ -61,6 +61,9 @@ pub enum RegisterUserError {
 
     #[error("invalid username: {0}")]
     InvalidUsername(String),
+
+    #[error("invalid email: {0}")]
+    InvalidEmail(String),
 }
 
 #[derive(Error, Debug)]
@@ -165,6 +168,21 @@ fn validate_username(username: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates that an email address has a basic valid format (non-empty local
+/// part, `@`, and non-empty domain with at least one dot).
+fn validate_email(email: &str) -> Result<(), String> {
+    let Some((local, domain)) = email.split_once('@') else {
+        return Err("email must contain '@'".into());
+    };
+    if local.is_empty() {
+        return Err("email local part must not be empty".into());
+    }
+    if domain.is_empty() || !domain.contains('.') {
+        return Err("email domain must contain at least one '.'".into());
+    }
+    Ok(())
+}
+
 impl Client {
     pub fn user(&self, username: impl Into<String>) -> UserClient {
         UserClient {
@@ -174,7 +192,7 @@ impl Client {
     }
 
     pub async fn lookup_token(
-        &mut self,
+        &self,
         token: impl Into<String>,
     ) -> Result<UserClient, LookupTokenError> {
         let token = token.into();
@@ -201,7 +219,8 @@ impl Client {
             }
         }
 
-        let username: Option<String> = self.conn.get(token_key(&token)).await?;
+        let mut conn = self.conn.clone();
+        let username: Option<String> = conn.get(token_key(&token)).await?;
 
         match username {
             Some(username) => Ok(self.user(username)),
@@ -226,16 +245,17 @@ impl UserClient {
     }
 
     pub async fn register(
-        &mut self,
+        &self,
         email: impl Into<String>,
         fullname: Option<String>,
     ) -> Result<User, RegisterUserError> {
         validate_username(&self.username).map_err(RegisterUserError::InvalidUsername)?;
         let email = email.into();
+        validate_email(&email).map_err(RegisterUserError::InvalidEmail)?;
 
-        let result: i32 = self
-            .client
-            .conn
+        let mut conn = self.client.conn.clone();
+
+        let result: i32 = conn
             .hset_nx(user_key(&self.username), "email", &email)
             .await?;
 
@@ -244,9 +264,7 @@ impl UserClient {
         }
 
         if let Some(ref fullname) = fullname {
-            let _: () = self
-                .client
-                .conn
+            let _: () = conn
                 .hset(user_key(&self.username), "fullname", fullname)
                 .await?;
         }
@@ -258,26 +276,23 @@ impl UserClient {
         })
     }
 
-    pub async fn set_fullname(
-        &mut self,
-        fullname: impl Into<String>,
-    ) -> Result<(), UserQueryError> {
+    pub async fn set_fullname(&self, fullname: impl Into<String>) -> Result<(), UserQueryError> {
         let fullname = fullname.into();
         let key = user_key(&self.username);
+        let mut conn = self.client.conn.clone();
 
         if fullname.is_empty() {
-            let _: () = self.client.conn.hdel(&key, "fullname").await?;
+            let _: () = conn.hdel(&key, "fullname").await?;
         } else {
-            let _: () = self.client.conn.hset(&key, "fullname", &fullname).await?;
+            let _: () = conn.hset(&key, "fullname", &fullname).await?;
         }
 
         Ok(())
     }
 
-    pub async fn get(&mut self) -> Result<User, UserQueryError> {
-        let (email, fullname): (Option<String>, Option<String>) = self
-            .client
-            .conn
+    pub async fn get(&self) -> Result<User, UserQueryError> {
+        let mut conn = self.client.conn.clone();
+        let (email, fullname): (Option<String>, Option<String>) = conn
             .hmget(user_key(&self.username), &["email", "fullname"])
             .await?;
 
@@ -299,11 +314,13 @@ pub struct TokensClient {
 }
 
 impl TokensClient {
-    pub async fn issue(&mut self) -> Result<String, UserQueryError> {
+    pub async fn issue(&self) -> Result<String, UserQueryError> {
         let mut raw_token = String::new();
 
-        base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode_string(self.user.client.rng.random::<[u8; 32]>(), &mut raw_token);
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(
+            self.user.client.rng.clone().random::<[u8; 32]>(),
+            &mut raw_token,
+        );
 
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)?
@@ -313,17 +330,15 @@ impl TokensClient {
         let expiry_hex = hex::encode(expiry_u32.to_be_bytes());
         let token = format!("{expiry_hex}.{raw_token}");
 
-        let _: () = self
-            .user
-            .client
-            .conn
+        let mut conn = self.user.client.conn.clone();
+        let _: () = conn
             .set_ex(token_key(&token), &self.user.username, TOKEN_TTL_SECONDS)
             .await?;
 
         Ok(token)
     }
 
-    pub async fn revoke(&mut self, token: impl Into<String>) -> Result<(), LookupTokenError> {
+    pub async fn revoke(&self, token: impl Into<String>) -> Result<(), LookupTokenError> {
         let token = token.into();
 
         // Atomically delete the key only if its value matches the expected
@@ -338,10 +353,11 @@ impl TokensClient {
             end
             "#,
         );
+        let mut conn = self.user.client.conn.clone();
         let deleted: i32 = script
             .key(token_key(&token))
             .arg(&self.user.username)
-            .invoke_async(&mut self.user.client.conn)
+            .invoke_async(&mut conn)
             .await?;
 
         if deleted == 0 {
@@ -358,57 +374,40 @@ pub struct PubkeysClient {
 }
 
 impl PubkeysClient {
-    pub async fn list(&mut self) -> Result<Vec<String>, UserQueryError> {
-        let members: Vec<String> = self
-            .user
-            .client
-            .conn
-            .smembers(pubkey_key(&self.user.username))
-            .await?;
+    pub async fn list(&self) -> Result<Vec<String>, UserQueryError> {
+        let mut conn = self.user.client.conn.clone();
+        let members: Vec<String> = conn.smembers(pubkey_key(&self.user.username)).await?;
 
         Ok(members)
     }
 
-    pub async fn add(&mut self, pubkey: impl Into<String>) -> Result<(), UserQueryError> {
+    pub async fn add(&self, pubkey: impl Into<String>) -> Result<(), UserQueryError> {
         let pubkey = pubkey.into();
 
-        let _: () = self
-            .user
-            .client
-            .conn
-            .sadd(pubkey_key(&self.user.username), &pubkey)
-            .await?;
+        let mut conn = self.user.client.conn.clone();
+        let _: () = conn.sadd(pubkey_key(&self.user.username), &pubkey).await?;
 
         Ok(())
     }
 
-    pub async fn contains(&mut self, pubkey: impl Into<String>) -> Result<bool, UserQueryError> {
+    pub async fn contains(&self, pubkey: impl Into<String>) -> Result<bool, UserQueryError> {
         let pubkey = pubkey.into();
 
-        let contains: bool = self
-            .user
-            .client
-            .conn
+        let mut conn = self.user.client.conn.clone();
+        let contains: bool = conn
             .sismember(pubkey_key(&self.user.username), &pubkey)
             .await?;
 
         Ok(contains)
     }
 
-    pub async fn remove(&mut self, pubkey: impl Into<String>) -> Result<(), UserQueryError> {
+    pub async fn remove(&self, pubkey: impl Into<String>) -> Result<(), UserQueryError> {
         let pubkey = pubkey.into();
 
-        let _: () = self
-            .user
-            .client
-            .conn
-            .srem(pubkey_key(&self.user.username), &pubkey)
-            .await?;
+        let mut conn = self.user.client.conn.clone();
+        let _: () = conn.srem(pubkey_key(&self.user.username), &pubkey).await?;
 
-        let _: () = self
-            .user
-            .client
-            .conn
+        let _: () = conn
             .del(credential_key(&self.user.username, &pubkey))
             .await?;
 
@@ -416,7 +415,7 @@ impl PubkeysClient {
     }
 
     pub async fn add_credential(
-        &mut self,
+        &self,
         public_key: &str,
         credential_id: Option<&str>,
         sign_count: u32,
@@ -424,10 +423,8 @@ impl PubkeysClient {
         let parsed = PublicKey::from_openssh(public_key)?;
         let fingerprint = parsed.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
-        let _: () = self
-            .user
-            .client
-            .conn
+        let mut conn = self.user.client.conn.clone();
+        let _: () = conn
             .sadd(pubkey_key(&self.user.username), &fingerprint)
             .await?;
 
@@ -438,7 +435,7 @@ impl PubkeysClient {
             .hset(&cred_key, "public_key", public_key)
             .hset(&cred_key, "credential_id", cred_id_str)
             .hset(&cred_key, "sign_count", sign_count.to_string())
-            .exec_async(&mut self.user.client.conn)
+            .exec_async(&mut conn)
             .await?;
 
         Ok(Credential {
@@ -449,19 +446,14 @@ impl PubkeysClient {
         })
     }
 
-    pub async fn get_credential(
-        &mut self,
-        fingerprint: &str,
-    ) -> Result<Credential, UserQueryError> {
+    pub async fn get_credential(&self, fingerprint: &str) -> Result<Credential, UserQueryError> {
         let cred_key = credential_key(&self.user.username, fingerprint);
+        let mut conn = self.user.client.conn.clone();
         let (public_key, credential_id, sign_count_str): (
             Option<String>,
             Option<String>,
             Option<String>,
-        ) = self
-            .user
-            .client
-            .conn
+        ) = conn
             .hget(&cred_key, &["public_key", "credential_id", "sign_count"])
             .await?;
 
@@ -485,13 +477,9 @@ impl PubkeysClient {
         })
     }
 
-    pub async fn list_credentials(&mut self) -> Result<Vec<Credential>, UserQueryError> {
-        let fingerprints: Vec<String> = self
-            .user
-            .client
-            .conn
-            .smembers(pubkey_key(&self.user.username))
-            .await?;
+    pub async fn list_credentials(&self) -> Result<Vec<Credential>, UserQueryError> {
+        let mut conn = self.user.client.conn.clone();
+        let fingerprints: Vec<String> = conn.smembers(pubkey_key(&self.user.username)).await?;
 
         let mut credentials = Vec::with_capacity(fingerprints.len());
         for fp in &fingerprints {
@@ -510,15 +498,13 @@ impl PubkeysClient {
     }
 
     pub async fn update_sign_count(
-        &mut self,
+        &self,
         fingerprint: &str,
         sign_count: u32,
     ) -> Result<(), UserQueryError> {
         let cred_key = credential_key(&self.user.username, fingerprint);
-        let _: () = self
-            .user
-            .client
-            .conn
+        let mut conn = self.user.client.conn.clone();
+        let _: () = conn
             .hset(&cred_key, "sign_count", sign_count.to_string())
             .await?;
 
@@ -577,11 +563,25 @@ pub fn cose_key_to_ssh(cose_key_bytes: &[u8]) -> Result<(String, String), CoseKe
         })
     };
 
+    let kty = get_int(1).ok_or(CoseKeyError::MissingParameter("kty (1)"))?;
     let alg = get_int(3).ok_or(CoseKeyError::MissingParameter("alg (3)"))?;
 
     match alg {
         -7 => {
-            // ES256 / ECDSA P-256
+            // ES256 / ECDSA P-256 — kty must be 2 (EC2)
+            if kty != 2 {
+                return Err(CoseKeyError::InvalidKeyData(format!(
+                    "ES256 key must have kty=2 (EC2), got {kty}"
+                )));
+            }
+            // Validate curve parameter: crv must be 1 (P-256)
+            let crv = get_int(-1).ok_or(CoseKeyError::MissingParameter("crv (-1)"))?;
+            if crv != 1 {
+                return Err(CoseKeyError::InvalidKeyData(format!(
+                    "ES256 key must have crv=1 (P-256), got {crv}"
+                )));
+            }
+
             let x = get_bytes(-2).ok_or(CoseKeyError::MissingParameter("x (-2)"))?;
             let y = get_bytes(-3).ok_or(CoseKeyError::MissingParameter("y (-3)"))?;
 
@@ -619,7 +619,20 @@ pub fn cose_key_to_ssh(cose_key_bytes: &[u8]) -> Result<(String, String), CoseKe
             Ok((fingerprint, openssh))
         }
         -8 => {
-            // EdDSA / Ed25519
+            // EdDSA / Ed25519 — kty must be 1 (OKP)
+            if kty != 1 {
+                return Err(CoseKeyError::InvalidKeyData(format!(
+                    "EdDSA key must have kty=1 (OKP), got {kty}"
+                )));
+            }
+            // Validate curve parameter: crv must be 6 (Ed25519)
+            let crv = get_int(-1).ok_or(CoseKeyError::MissingParameter("crv (-1)"))?;
+            if crv != 6 {
+                return Err(CoseKeyError::InvalidKeyData(format!(
+                    "EdDSA key must have crv=6 (Ed25519), got {crv}"
+                )));
+            }
+
             let x = get_bytes(-2).ok_or(CoseKeyError::MissingParameter("x (-2)"))?;
 
             if x.len() != 32 {
