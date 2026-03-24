@@ -5063,6 +5063,7 @@ dependencies = [
  "prost 0.13.5",
  "protoc-bin-vendored",
  "sclc",
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
