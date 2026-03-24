@@ -3,5 +3,8 @@ export let File = extern "Std/Artifact.File": fn({
     mediaType: Str?,
     contents: Str,
 }) {
-    url: Str
+    namespace: Str,
+    name: Str,
+    mediaType: Str,
+    url: Str,
 }

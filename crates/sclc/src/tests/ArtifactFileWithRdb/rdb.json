@@ -3,7 +3,7 @@
     "Std/Artifact.File": {
       "readme": {
         "inputs": { "contents": "hello world", "mediaType": null, "name": "readme", "namespace": "test" },
-        "outputs": { "url": "https://example.com/readme" }
+        "outputs": { "mediaType": "application/octet-stream", "name": "readme", "namespace": "test", "url": "https://example.com/readme" }
       }
     }
   }

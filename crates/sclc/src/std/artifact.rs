@@ -57,6 +57,21 @@ pub fn register_extern(eval: &mut crate::Eval) {
         };
 
         let mut out = crate::Record::default();
+        let namespace_out = outputs.get("namespace").assert_str_ref()?;
+        out.insert(
+            String::from("namespace"),
+            crate::Value::Str(namespace_out.to_owned()),
+        );
+        let name_out = outputs.get("name").assert_str_ref()?;
+        out.insert(
+            String::from("name"),
+            crate::Value::Str(name_out.to_owned()),
+        );
+        let media_type_out = outputs.get("mediaType").assert_str_ref()?;
+        out.insert(
+            String::from("mediaType"),
+            crate::Value::Str(media_type_out.to_owned()),
+        );
         let url = outputs.get("url").assert_str_ref()?;
         out.insert(String::from("url"), crate::Value::Str(url.to_owned()));
 
