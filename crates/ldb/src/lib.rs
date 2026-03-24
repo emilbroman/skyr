@@ -32,6 +32,16 @@ const TOPIC_CREATE_TIMEOUT: Duration = Duration::from_secs(5);
 const TOPIC_PARTITIONS: i32 = 1;
 const TOPIC_REPLICATION_FACTOR: i16 = 1;
 
+/// Current payload format version. Stored as the first byte of every record
+/// so that future changes can be decoded without ambiguity.
+const PAYLOAD_VERSION: u8 = 1;
+
+/// Minimum payload size: 1 (version) + 8 (timestamp) + 1 (severity).
+const MIN_PAYLOAD_LEN: usize = 10;
+
+/// Kafka enforces a maximum topic name length of 249 characters.
+const MAX_TOPIC_NAME_LEN: usize = 249;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
     Info,
@@ -75,7 +85,12 @@ impl Default for TailConfig {
 
 #[derive(Debug, Clone, Copy)]
 pub enum StartFrom {
+    /// Start reading from `n` records before the end of the log.
+    /// `StartFrom::End(0)` means start at the current tail (only new records).
     End(u64),
+
+    /// Start reading from the beginning, skipping `n` records.
+    /// `StartFrom::Beginning(0)` means start at the very first record.
     Beginning(u64),
 }
 
@@ -105,14 +120,14 @@ pub enum TailError {
     #[error("timed out while preparing log tail")]
     SetupTimeout,
 
-    #[error("log payload shorter than required 9 bytes")]
+    #[error("log payload shorter than required {MIN_PAYLOAD_LEN} bytes")]
     InvalidPayload,
 
     #[error("invalid severity byte: {0}")]
     InvalidSeverity(u8),
 
-    #[error("invalid utf8 log message: {0}")]
-    Utf8(#[from] std::string::FromUtf8Error),
+    #[error("unsupported payload version: {0}")]
+    UnsupportedVersion(u8),
 }
 
 #[derive(Debug, Error)]
@@ -122,8 +137,19 @@ pub enum NamespaceError {
 
     #[error("timed out while ensuring namespace topic")]
     EnsureTimeout,
+
+    #[error("invalid namespace: {0}")]
+    InvalidNamespace(String),
 }
 
+/// Builder for LDB Kafka clients.
+///
+/// # Kafka authentication
+///
+/// The current implementation connects to Kafka without TLS or SASL
+/// authentication. In production, place Kafka behind a network boundary
+/// (e.g. a private VPC) and use network-level access control. Adding
+/// TLS/SASL support is tracked separately.
 pub struct ClientBuilder {
     brokers: String,
 }
@@ -173,7 +199,7 @@ pub struct Publisher {
 
 impl Publisher {
     pub async fn namespace(&self, namespace: String) -> Result<NamespacePublisher, NamespaceError> {
-        let topic = topic_for_namespace(&namespace);
+        let topic = topic_for_namespace(&namespace)?;
         ensure_topic(&self.client, &topic).await?;
         Ok(NamespacePublisher {
             client: self.client.clone(),
@@ -191,28 +217,32 @@ pub struct NamespacePublisher {
 }
 
 impl NamespacePublisher {
+    /// Log an informational message. This is a best-effort convenience method:
+    /// errors are silently discarded. Use [`log`](Self::log) if you need error
+    /// propagation.
     pub async fn info(&self, message: String) {
-        self.log(Severity::Info, message).await.unwrap_or_default();
+        let _ = self.log(Severity::Info, message).await;
     }
 
+    /// Log a warning message. This is a best-effort convenience method:
+    /// errors are silently discarded. Use [`log`](Self::log) if you need error
+    /// propagation.
     pub async fn warn(&self, message: String) {
-        self.log(Severity::Warning, message)
-            .await
-            .unwrap_or_default();
+        let _ = self.log(Severity::Warning, message).await;
     }
 
+    /// Log an error message. This is a best-effort convenience method:
+    /// errors are silently discarded. Use [`log`](Self::log) if you need error
+    /// propagation.
     pub async fn error(&self, message: String) {
-        self.log(Severity::Error, message).await.unwrap_or_default();
+        let _ = self.log(Severity::Error, message).await;
     }
 
     pub async fn log(&self, severity: Severity, message: String) -> Result<(), PublishError> {
         let now = SystemTime::now().duration_since(UNIX_EPOCH)?;
         let millis = now.as_millis() as u64;
 
-        let mut payload = Vec::with_capacity(9 + message.len());
-        payload.extend_from_slice(&millis.to_be_bytes());
-        payload.push(severity.as_byte());
-        payload.extend_from_slice(message.as_bytes());
+        let payload = encode_payload(millis, severity, &message);
 
         let partition_client = self.get_or_create_partition_client().await?;
 
@@ -261,7 +291,7 @@ pub struct Consumer {
 
 impl Consumer {
     pub async fn namespace(&self, namespace: String) -> Result<NamespaceConsumer, NamespaceError> {
-        let topic = topic_for_namespace(&namespace);
+        let topic = topic_for_namespace(&namespace)?;
         ensure_topic(&self.client, &topic).await?;
         Ok(NamespaceConsumer {
             client: self.client.clone(),
@@ -379,6 +409,22 @@ async fn compute_offsets(
     Ok((start, high))
 }
 
+/// Encode a log entry into the versioned binary payload format.
+///
+/// Layout (version 1):
+///   byte 0:     version (0x01)
+///   bytes 1-8:  timestamp in milliseconds since epoch (big-endian u64)
+///   byte 9:     severity (ASCII: 'i', 'w', 'e')
+///   bytes 10..: UTF-8 message
+fn encode_payload(timestamp_millis: u64, severity: Severity, message: &str) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(MIN_PAYLOAD_LEN + message.len());
+    payload.push(PAYLOAD_VERSION);
+    payload.extend_from_slice(&timestamp_millis.to_be_bytes());
+    payload.push(severity.as_byte());
+    payload.extend_from_slice(message.as_bytes());
+    payload
+}
+
 fn decode_payload(record: &RecordAndOffset) -> Result<(u64, Severity, String), TailError> {
     let payload = record
         .record
@@ -386,19 +432,219 @@ fn decode_payload(record: &RecordAndOffset) -> Result<(u64, Severity, String), T
         .as_deref()
         .ok_or(TailError::InvalidPayload)?;
 
-    if payload.len() < 9 {
+    if payload.len() < MIN_PAYLOAD_LEN {
         return Err(TailError::InvalidPayload);
     }
 
-    let timestamp = u64::from_be_bytes(payload[..8].try_into().unwrap());
+    let version = payload[0];
+    if version != PAYLOAD_VERSION {
+        return Err(TailError::UnsupportedVersion(version));
+    }
 
-    let severity = Severity::from_byte(payload[8]).ok_or(TailError::InvalidSeverity(payload[8]))?;
-    let message = String::from_utf8(payload[9..].to_vec())?;
+    let timestamp = u64::from_be_bytes(payload[1..9].try_into().unwrap());
+    let severity = Severity::from_byte(payload[9]).ok_or(TailError::InvalidSeverity(payload[9]))?;
+    let message = String::from_utf8_lossy(&payload[10..]).into_owned();
 
     Ok((timestamp, severity, message))
 }
 
-fn topic_for_namespace(namespace: &str) -> String {
+/// Validate a namespace string and derive its Kafka topic name.
+///
+/// Namespaces must be non-empty and the resulting topic name must not exceed
+/// Kafka's 249-character limit.
+fn topic_for_namespace(namespace: &str) -> Result<String, NamespaceError> {
+    if namespace.is_empty() {
+        return Err(NamespaceError::InvalidNamespace(
+            "namespace must not be empty".to_string(),
+        ));
+    }
+
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(namespace.as_bytes());
-    format!("{TOPIC_PREFIX}{encoded}")
+    let topic = format!("{TOPIC_PREFIX}{encoded}");
+
+    if topic.len() > MAX_TOPIC_NAME_LEN {
+        return Err(NamespaceError::InvalidNamespace(format!(
+            "resulting topic name exceeds Kafka's {MAX_TOPIC_NAME_LEN}-character limit \
+             (namespace is {} bytes)",
+            namespace.len()
+        )));
+    }
+
+    Ok(topic)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- Severity --
+
+    #[test]
+    fn severity_roundtrip() {
+        for sev in [Severity::Info, Severity::Warning, Severity::Error] {
+            assert_eq!(Severity::from_byte(sev.as_byte()), Some(sev));
+        }
+    }
+
+    #[test]
+    fn severity_from_unknown_byte_is_none() {
+        assert_eq!(Severity::from_byte(b'x'), None);
+        assert_eq!(Severity::from_byte(0), None);
+    }
+
+    // -- Payload encoding/decoding --
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let ts: u64 = 1_700_000_000_000;
+        let sev = Severity::Warning;
+        let msg = "hello world";
+
+        let payload = encode_payload(ts, sev, msg);
+        assert_eq!(payload.len(), MIN_PAYLOAD_LEN + msg.len());
+
+        // Wrap in RecordAndOffset for decode
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(payload),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+
+        let (decoded_ts, decoded_sev, decoded_msg) = decode_payload(&record).unwrap();
+        assert_eq!(decoded_ts, ts);
+        assert_eq!(decoded_sev, sev);
+        assert_eq!(decoded_msg, msg);
+    }
+
+    #[test]
+    fn decode_rejects_short_payload() {
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(vec![0; 5]),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+        assert!(matches!(
+            decode_payload(&record),
+            Err(TailError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_missing_payload() {
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: None,
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+        assert!(matches!(
+            decode_payload(&record),
+            Err(TailError::InvalidPayload)
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_unknown_version() {
+        let mut payload = vec![0xFF]; // bad version
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        payload.push(b'i');
+
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(payload),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+        assert!(matches!(
+            decode_payload(&record),
+            Err(TailError::UnsupportedVersion(0xFF))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_severity() {
+        let mut payload = vec![PAYLOAD_VERSION];
+        payload.extend_from_slice(&0u64.to_be_bytes());
+        payload.push(b'z'); // bad severity
+
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(payload),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+        assert!(matches!(
+            decode_payload(&record),
+            Err(TailError::InvalidSeverity(b'z'))
+        ));
+    }
+
+    #[test]
+    fn decode_handles_invalid_utf8_lossily() {
+        let mut payload = vec![PAYLOAD_VERSION];
+        payload.extend_from_slice(&1000u64.to_be_bytes());
+        payload.push(b'e');
+        payload.extend_from_slice(&[0xFF, 0xFE]); // invalid UTF-8
+
+        let record = RecordAndOffset {
+            record: Record {
+                key: None,
+                value: Some(payload),
+                headers: BTreeMap::new(),
+                timestamp: Utc::now(),
+            },
+            offset: 0,
+        };
+        let (_, _, msg) = decode_payload(&record).unwrap();
+        assert!(msg.contains('\u{FFFD}')); // replacement character
+    }
+
+    // -- Topic naming --
+
+    #[test]
+    fn topic_for_namespace_basic() {
+        let topic = topic_for_namespace("org/repo/env/deploy").unwrap();
+        assert!(topic.starts_with(TOPIC_PREFIX));
+        // base64url encoding of "org/repo/env/deploy"
+        let expected_encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("org/repo/env/deploy");
+        assert_eq!(topic, format!("{TOPIC_PREFIX}{expected_encoded}"));
+    }
+
+    #[test]
+    fn topic_for_namespace_rejects_empty() {
+        assert!(topic_for_namespace("").is_err());
+    }
+
+    #[test]
+    fn topic_for_namespace_rejects_too_long() {
+        // A namespace of 200 bytes base64-encodes to ~268 chars + 3-char prefix = 271
+        let long_ns = "x".repeat(200);
+        assert!(topic_for_namespace(&long_ns).is_err());
+    }
+
+    // -- StartFrom doc coverage (compile-time check via doc examples) --
+
+    #[test]
+    fn start_from_variants() {
+        let _end = StartFrom::End(10);
+        let _begin = StartFrom::Beginning(0);
+    }
 }
