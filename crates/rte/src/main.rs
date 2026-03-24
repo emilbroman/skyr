@@ -176,8 +176,8 @@ async fn worker_loop_iteration(
     tracing::info!(
         message_type,
         environment_qid = %resource.environment_qid,
-        resource_type = %resource.resource_type,
-        resource_name = %resource.resource_name,
+        resource_type = %resource.resource_type(),
+        resource_name = %resource.resource_name(),
         redelivered = delivery.redelivered(),
         "received rtq message",
     );
@@ -205,23 +205,28 @@ async fn worker_loop_iteration(
     tracing::info!(
         message_type,
         environment_qid = %resource.environment_qid,
-        resource_type = %resource.resource_type,
-        resource_name = %resource.resource_name,
+        resource_type = %resource.resource_type(),
+        resource_name = %resource.resource_name(),
         "acknowledged rtq message",
     );
     Ok(true)
 }
 
-fn deployment_qid(environment_qid: &str, deployment_id: &str) -> String {
-    format!("{environment_qid}@{deployment_id}")
+fn deployment_qid(
+    environment_qid: &ids::EnvironmentQid,
+    deployment_id: &ids::DeploymentId,
+) -> String {
+    environment_qid
+        .deployment(deployment_id.clone())
+        .to_string()
 }
 
 fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
-    let resource_id = ids::ResourceId::new(&resource.resource_type, &resource.resource_name);
-    match resource.environment_qid.parse::<ids::EnvironmentQid>() {
-        Ok(env_qid) => ids::ResourceQid::new(env_qid, resource_id).to_string(),
-        Err(_) => format!("{}::{}", resource.environment_qid, resource_id),
-    }
+    ids::ResourceQid::new(
+        resource.environment_qid.clone(),
+        resource.resource_id.clone(),
+    )
+    .to_string()
 }
 
 fn resolve_plugin<'a>(
@@ -234,10 +239,7 @@ fn resolve_plugin<'a>(
 }
 
 fn resource_id_from_ref(resource: &rtq::ResourceRef) -> ids::ResourceId {
-    ids::ResourceId {
-        typ: resource.resource_type.clone(),
-        name: resource.resource_name.clone(),
-    }
+    resource.resource_id.clone()
 }
 
 async fn handle_create(
@@ -247,17 +249,17 @@ async fn handle_create(
 ) -> anyhow::Result<()> {
     let resource_client = ctx
         .rdb_client
-        .namespace(message.resource.environment_qid.clone())
+        .namespace(message.resource.environment_qid.to_string())
         .resource(
-            message.resource.resource_type.clone(),
-            message.resource.resource_name.clone(),
+            message.resource.resource_type().to_owned(),
+            message.resource.resource_name().to_owned(),
         );
     match resource_client.get().await {
         Ok(Some(_)) => {
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "dropping idempotent create for existing resource",
             );
             delivery.ack().await?;
@@ -267,8 +269,8 @@ async fn handle_create(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "failed to read resource state before create",
             );
@@ -278,11 +280,11 @@ async fn handle_create(
     }
 
     let Some((plugin_name, mut plugin)) =
-        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+        resolve_plugin(message.resource.resource_type(), &ctx.plugins)
     else {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
+            resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on create",
         );
         delivery.nack(false).await?;
@@ -294,8 +296,8 @@ async fn handle_create(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "invalid create inputs json",
             );
@@ -307,13 +309,13 @@ async fn handle_create(
     let id = resource_id_from_ref(&message.resource);
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id[..8];
+    let dep_short = &message.deployment_id.as_str()[..8];
 
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "calling plugin create_resource",
     );
     log_event(
@@ -326,21 +328,17 @@ async fn handle_create(
     )
     .await;
 
+    let env_qid_str = message.resource.environment_qid.to_string();
     let resource = match plugin
-        .create_resource(
-            &message.resource.environment_qid,
-            &message.deployment_id,
-            id,
-            inputs,
-        )
+        .create_resource(&env_qid_str, message.deployment_id.as_str(), id, inputs)
         .await
     {
         Ok(resource) => resource,
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "create_resource plugin call failed",
             );
@@ -355,8 +353,8 @@ async fn handle_create(
     {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist created resource inputs",
         );
@@ -368,8 +366,8 @@ async fn handle_create(
     if let Err(error) = resource_client.set_dependencies(&dependencies).await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist created resource dependencies",
         );
@@ -380,8 +378,8 @@ async fn handle_create(
     if let Err(error) = resource_client.set_output(resource.outputs).await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist created resource outputs",
         );
@@ -392,8 +390,8 @@ async fn handle_create(
     if let Err(error) = resource_client.set_markers(&resource.markers).await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist created resource markers",
         );
@@ -407,8 +405,8 @@ async fn handle_create(
     {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist created resource source trace",
         );
@@ -418,8 +416,8 @@ async fn handle_create(
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "created resource",
     );
     log_event(
@@ -429,10 +427,7 @@ async fn handle_create(
         Severity::Info,
         format!(
             "Created {} for {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
+            message.resource.resource_id.clone(),
             dep_short,
         ),
         format!("Created for {}", dep_short),
@@ -448,10 +443,10 @@ async fn handle_destroy(
 ) -> anyhow::Result<()> {
     let resource_client = ctx
         .rdb_client
-        .namespace(message.resource.environment_qid.clone())
+        .namespace(message.resource.environment_qid.to_string())
         .resource(
-            message.resource.resource_type.clone(),
-            message.resource.resource_name.clone(),
+            message.resource.resource_type().to_owned(),
+            message.resource.resource_name().to_owned(),
         );
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
 
@@ -460,8 +455,8 @@ async fn handle_destroy(
             if resource.owner.as_deref() != Some(dep_qid.as_str()) {
                 tracing::info!(
                     environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_name = %message.resource.resource_name,
+                    resource_type = %message.resource.resource_type(),
+                    resource_name = %message.resource.resource_name(),
                     message_owner = %dep_qid,
                     current_owner = ?resource.owner,
                     "dropping delete for non-matching owner",
@@ -474,8 +469,8 @@ async fn handle_destroy(
         Ok(None) => {
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "dropping idempotent delete for missing resource",
             );
             delivery.ack().await?;
@@ -484,8 +479,8 @@ async fn handle_destroy(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "failed to read resource state before delete",
             );
@@ -499,8 +494,8 @@ async fn handle_destroy(
         None => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "missing current inputs for delete",
             );
             delivery.nack(false).await?;
@@ -512,8 +507,8 @@ async fn handle_destroy(
         None => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "missing current outputs for delete",
             );
             delivery.nack(false).await?;
@@ -522,11 +517,11 @@ async fn handle_destroy(
     };
 
     let Some((plugin_name, mut plugin)) =
-        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+        resolve_plugin(message.resource.resource_type(), &ctx.plugins)
     else {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
+            resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on delete",
         );
         delivery.nack(false).await?;
@@ -535,13 +530,13 @@ async fn handle_destroy(
 
     let id = resource_id_from_ref(&message.resource);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id[..8];
+    let dep_short = &message.deployment_id.as_str()[..8];
 
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "calling plugin delete_resource",
     );
     log_event(
@@ -554,10 +549,11 @@ async fn handle_destroy(
     )
     .await;
 
+    let env_qid_str = message.resource.environment_qid.to_string();
     if let Err(error) = plugin
         .delete_resource(
-            &message.resource.environment_qid,
-            &message.deployment_id,
+            &env_qid_str,
+            message.deployment_id.as_str(),
             id,
             inputs,
             outputs,
@@ -566,8 +562,8 @@ async fn handle_destroy(
     {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "delete_resource plugin call failed",
         );
@@ -578,8 +574,8 @@ async fn handle_destroy(
     if let Err(error) = resource_client.delete().await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to delete resource from rdb",
         );
@@ -589,8 +585,8 @@ async fn handle_destroy(
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "deleted resource",
     );
     log_event(
@@ -600,10 +596,7 @@ async fn handle_destroy(
         Severity::Info,
         format!(
             "Destroyed {} for {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
+            message.resource.resource_id.clone(),
             dep_short
         ),
         format!("Destroyed for {}", dep_short),
@@ -615,7 +608,7 @@ async fn handle_destroy(
 struct UpdateParams<'a> {
     resource: &'a rtq::ResourceRef,
     owner_deployment_qid: &'a str,
-    target_deployment_id: &'a str,
+    target_deployment_id: &'a ids::DeploymentId,
     desired_inputs: serde_json::Value,
     dependencies: &'a [rtq::ResourceRef],
     operation: &'a str,
@@ -635,18 +628,18 @@ async fn handle_update_inputs(
     let operation = params.operation;
     let resource_client = ctx
         .rdb_client
-        .namespace(resource.environment_qid.clone())
+        .namespace(resource.environment_qid.to_string())
         .resource(
-            resource.resource_type.clone(),
-            resource.resource_name.clone(),
+            resource.resource_type().to_owned(),
+            resource.resource_name().to_owned(),
         );
     let current = match resource_client.get().await {
         Ok(Some(r)) => r,
         Ok(None) => {
             tracing::info!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 "dropping {operation} for missing resource",
             );
             delivery.ack().await?;
@@ -655,8 +648,8 @@ async fn handle_update_inputs(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 error = %error,
                 "failed to read resource state before {operation}",
             );
@@ -668,8 +661,8 @@ async fn handle_update_inputs(
     if current.owner.as_deref() != Some(owner_deployment_qid) {
         tracing::info!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             message_owner = %owner_deployment_qid,
             current_owner = ?current.owner,
             "dropping {operation} for non-matching owner",
@@ -683,8 +676,8 @@ async fn handle_update_inputs(
         None => {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 "missing current inputs for {operation}",
             );
             delivery.nack(false).await?;
@@ -696,8 +689,8 @@ async fn handle_update_inputs(
         None => {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 "missing current outputs for {operation}",
             );
             delivery.nack(false).await?;
@@ -709,8 +702,8 @@ async fn handle_update_inputs(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 error = %error,
                 "invalid {operation} desired_inputs json",
             );
@@ -724,11 +717,12 @@ async fn handle_update_inputs(
     let mut markers_to_persist = None;
 
     if prev_inputs != desired_inputs {
-        let Some((plugin_name, mut plugin)) = resolve_plugin(&resource.resource_type, &ctx.plugins)
+        let Some((plugin_name, mut plugin)) =
+            resolve_plugin(resource.resource_type(), &ctx.plugins)
         else {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
+                resource_type = %resource.resource_type(),
                 "no plugin available for resource type on {operation}",
             );
             delivery.nack(false).await?;
@@ -739,7 +733,7 @@ async fn handle_update_inputs(
         let res_qid = resource_qid_string(resource);
         let target_dep_qid_for_log =
             deployment_qid(&resource.environment_qid, target_deployment_id);
-        let dep_short = &target_deployment_id[..8];
+        let dep_short = &target_deployment_id.as_str()[..8];
         let verb = match operation {
             "adopt" => "Adopting",
             "restore" => "Restoring",
@@ -748,8 +742,8 @@ async fn handle_update_inputs(
         tracing::info!(
             plugin = plugin_name,
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             "calling plugin update_resource for {operation}",
         );
         log_event(
@@ -762,10 +756,11 @@ async fn handle_update_inputs(
         )
         .await;
 
+        let env_qid_str = resource.environment_qid.to_string();
         let updated = match plugin
             .update_resource(
-                &resource.environment_qid,
-                target_deployment_id,
+                &env_qid_str,
+                target_deployment_id.as_str(),
                 id,
                 prev_inputs,
                 prev_outputs,
@@ -777,8 +772,8 @@ async fn handle_update_inputs(
             Err(error) => {
                 tracing::warn!(
                     environment_qid = %resource.environment_qid,
-                    resource_type = %resource.resource_type,
-                    resource_name = %resource.resource_name,
+                    resource_type = %resource.resource_type(),
+                    resource_name = %resource.resource_name(),
                     error = %error,
                     "update_resource plugin call failed for {operation}",
                 );
@@ -792,8 +787,8 @@ async fn handle_update_inputs(
     } else {
         tracing::info!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             "skipping plugin update_resource for {operation} with unchanged inputs",
         );
     }
@@ -806,8 +801,8 @@ async fn handle_update_inputs(
     {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             error = %error,
             "failed to persist {operation} resource inputs",
         );
@@ -818,8 +813,8 @@ async fn handle_update_inputs(
     if let Err(error) = resource_client.set_dependencies(&deps).await {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             error = %error,
             "failed to persist {operation} resource dependencies",
         );
@@ -830,8 +825,8 @@ async fn handle_update_inputs(
         if let Err(error) = resource_client.set_output(outputs).await {
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type,
-                resource_name = %resource.resource_name,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
                 error = %error,
                 "failed to persist {operation} resource outputs",
             );
@@ -841,8 +836,8 @@ async fn handle_update_inputs(
     } else {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             "{operation} resource has no outputs to persist",
         );
     }
@@ -851,8 +846,8 @@ async fn handle_update_inputs(
     {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             error = %error,
             "failed to persist {operation} resource markers",
         );
@@ -862,8 +857,8 @@ async fn handle_update_inputs(
     if let Err(error) = resource_client.set_source_trace(params.source_trace).await {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type,
-            resource_name = %resource.resource_name,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
             error = %error,
             "failed to persist {operation} resource source trace",
         );
@@ -902,17 +897,14 @@ async fn handle_adopt(
     };
 
     let res_qid = resource_qid_string(&message.resource);
-    let resource_id = ids::ResourceId::new(
-        &message.resource.resource_type,
-        &message.resource.resource_name,
-    );
-    let to_short = &message.to_deployment_id[..8];
-    let from_short = &message.from_deployment_id[..8];
+    let resource_id = message.resource.resource_id.clone();
+    let to_short = &message.to_deployment_id.as_str()[..8];
+    let from_short = &message.from_deployment_id.as_str()[..8];
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         from_owner = %from_dep_qid,
         to_owner = %to_dep_qid,
         "adopted resource",
@@ -963,12 +955,12 @@ async fn handle_restore(
     };
 
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id[..8];
+    let dep_short = &message.deployment_id.as_str()[..8];
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         owner = %dep_qid,
         "restored resource",
     );
@@ -979,10 +971,7 @@ async fn handle_restore(
         Severity::Info,
         format!(
             "Restored {} for {}",
-            ids::ResourceId::new(
-                &message.resource.resource_type,
-                &message.resource.resource_name
-            ),
+            message.resource.resource_id.clone(),
             dep_short,
         ),
         format!("Restored for {}", dep_short),
@@ -998,10 +987,10 @@ async fn handle_check(
 ) -> anyhow::Result<()> {
     let resource_client = ctx
         .rdb_client
-        .namespace(message.resource.environment_qid.clone())
+        .namespace(message.resource.environment_qid.to_string())
         .resource(
-            message.resource.resource_type.clone(),
-            message.resource.resource_name.clone(),
+            message.resource.resource_type().to_owned(),
+            message.resource.resource_name().to_owned(),
         );
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
 
@@ -1010,8 +999,8 @@ async fn handle_check(
             if resource.owner.as_deref() != Some(dep_qid.as_str()) {
                 tracing::info!(
                     environment_qid = %message.resource.environment_qid,
-                    resource_type = %message.resource.resource_type,
-                    resource_name = %message.resource.resource_name,
+                    resource_type = %message.resource.resource_type(),
+                    resource_name = %message.resource.resource_name(),
                     message_owner = %dep_qid,
                     current_owner = ?resource.owner,
                     "dropping check for non-matching owner",
@@ -1024,8 +1013,8 @@ async fn handle_check(
         Ok(None) => {
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "dropping check for missing resource",
             );
             delivery.ack().await?;
@@ -1034,8 +1023,8 @@ async fn handle_check(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "failed to read resource state before check",
             );
@@ -1049,8 +1038,8 @@ async fn handle_check(
         None => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "missing current inputs for check",
             );
             delivery.nack(false).await?;
@@ -1062,8 +1051,8 @@ async fn handle_check(
         None => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 "missing current outputs for check",
             );
             delivery.nack(false).await?;
@@ -1072,11 +1061,11 @@ async fn handle_check(
     };
 
     let Some((plugin_name, mut plugin)) =
-        resolve_plugin(&message.resource.resource_type, &ctx.plugins)
+        resolve_plugin(message.resource.resource_type(), &ctx.plugins)
     else {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
+            resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on check",
         );
         delivery.nack(false).await?;
@@ -1101,14 +1090,15 @@ async fn handle_check(
     tracing::info!(
         plugin = plugin_name,
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "calling plugin check",
     );
+    let env_qid_str = message.resource.environment_qid.to_string();
     let checked = match plugin
         .check(
-            &message.resource.environment_qid,
-            &message.deployment_id,
+            &env_qid_str,
+            message.deployment_id.as_str(),
             id.clone(),
             resource,
         )
@@ -1118,8 +1108,8 @@ async fn handle_check(
         Err(error) => {
             tracing::warn!(
                 environment_qid = %message.resource.environment_qid,
-                resource_type = %message.resource.resource_type,
-                resource_name = %message.resource.resource_name,
+                resource_type = %message.resource.resource_type(),
+                resource_name = %message.resource.resource_name(),
                 error = %error,
                 "check plugin call failed",
             );
@@ -1131,8 +1121,8 @@ async fn handle_check(
     if let Err(error) = resource_client.set_output(checked.outputs).await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type,
-            resource_name = %message.resource.resource_name,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
             error = %error,
             "failed to persist checked resource outputs",
         );
@@ -1142,8 +1132,8 @@ async fn handle_check(
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
-        resource_type = %message.resource.resource_type,
-        resource_name = %message.resource.resource_name,
+        resource_type = %message.resource.resource_type(),
+        resource_name = %message.resource.resource_name(),
         "checked resource",
     );
     Ok(())
@@ -1182,10 +1172,7 @@ fn plugin_name_for_resource_type(resource_type: &str) -> Option<&str> {
 fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<ids::ResourceId> {
     dependencies
         .iter()
-        .map(|dependency| ids::ResourceId {
-            typ: dependency.resource_type.clone(),
-            name: dependency.resource_name.clone(),
-        })
+        .map(|dependency| dependency.resource_id.clone())
         .collect()
 }
 
