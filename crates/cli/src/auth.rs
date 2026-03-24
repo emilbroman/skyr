@@ -3,11 +3,19 @@ use graphql_client::GraphQLQuery;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
+
+/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
+#[allow(clippy::upper_case_acronyms)]
+type JSON = serde_json::Value;
 
 const SIGNATURE_NAMESPACE: &str = "skyr-auth-challenge";
 
-#[allow(clippy::upper_case_acronyms)]
-type JSON = serde_json::Value;
+/// Expected minimum length for a valid token (8 hex chars + separator + payload).
+const MIN_TOKEN_LENGTH: usize = 10;
+
+/// Maximum token length to prevent abuse when constructing HTTP headers.
+const MAX_TOKEN_LENGTH: usize = 4096;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -80,10 +88,12 @@ pub(crate) async fn build_auth_proof(
     username: &str,
     key_path: &Path,
 ) -> anyhow::Result<String> {
-    let key = tokio::fs::read_to_string(key_path)
-        .await
-        .with_context(|| format!("failed to read private key at {}", key_path.display()))?;
-    let private_key = russh::keys::ssh_key::PrivateKey::from_openssh(&key)
+    let key = Zeroizing::new(
+        tokio::fs::read_to_string(key_path)
+            .await
+            .with_context(|| format!("failed to read private key at {}", key_path.display()))?,
+    );
+    let private_key = russh::keys::ssh_key::PrivateKey::from_openssh(key.as_str())
         .context("failed to parse private key")?;
 
     let challenge = query_auth_challenge(client, endpoint, username).await?;
@@ -142,18 +152,31 @@ pub(crate) async fn persist_auth_state(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
 
-    tokio::fs::write(&token_path, token)
-        .await
-        .with_context(|| format!("failed to write {}", token_path.display()))?;
+    write_file_restricted(&token_path, token.as_bytes()).await?;
 
     let user_config = UserConfig {
         username: username.to_owned(),
         key: key_path.display().to_string(),
     };
     let user_config_json = serde_json::to_string_pretty(&user_config)?;
-    tokio::fs::write(&user_config_path, user_config_json)
+    write_file_restricted(&user_config_path, user_config_json.as_bytes()).await?;
+
+    Ok(())
+}
+
+/// Write `data` to `path` with mode 0o600 (owner read/write only).
+async fn write_file_restricted(path: &Path, data: &[u8]) -> anyhow::Result<()> {
+    tokio::fs::write(path, data)
         .await
-        .with_context(|| format!("failed to write {}", user_config_path.display()))?;
+        .with_context(|| format!("failed to write {}", path.display()))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .await
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    }
 
     Ok(())
 }
@@ -163,18 +186,51 @@ pub(crate) fn graphql_response_data<T>(
     operation: &str,
 ) -> anyhow::Result<T> {
     if let Some(errors) = response.errors {
+        let messages: Vec<String> = errors
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let mut msg = format!("  {}. {}", i + 1, e.message);
+                if let Some(ref locations) = e.locations
+                    && !locations.is_empty()
+                {
+                    let locs: Vec<String> = locations
+                        .iter()
+                        .map(|loc| format!("line {}:{}", loc.line, loc.column))
+                        .collect();
+                    msg.push_str(&format!(" (at {})", locs.join(", ")));
+                }
+                if let Some(ref path) = e.path
+                    && !path.is_empty()
+                {
+                    let path_strs: Vec<String> = path.iter().map(|p| format!("{p}")).collect();
+                    msg.push_str(&format!(" [path: {}]", path_strs.join(".")));
+                }
+                msg
+            })
+            .collect();
         return Err(anyhow!(
-            "{operation} failed: {}",
-            errors
-                .iter()
-                .map(|e| e.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
+            "{operation} failed with {} error(s):\n{}",
+            messages.len(),
+            messages.join("\n")
         ));
     }
     response
         .data
         .ok_or_else(|| anyhow!("{operation} response did not include data"))
+}
+
+/// Construct an `Authorization: Bearer {token}` header value, validating the
+/// token length to prevent header injection or unreasonably large values.
+pub(crate) fn bearer_header_value(token: &str) -> anyhow::Result<reqwest::header::HeaderValue> {
+    if token.len() < MIN_TOKEN_LENGTH {
+        return Err(anyhow!("token is too short to be valid"));
+    }
+    if token.len() > MAX_TOKEN_LENGTH {
+        return Err(anyhow!("token exceeds maximum allowed length"));
+    }
+    reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        .context("token contains invalid header characters")
 }
 
 pub(crate) fn graphql_endpoint(api_url: &str) -> String {
@@ -219,10 +275,7 @@ async fn write_token(token: &str) -> anyhow::Result<()> {
             .await
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
-    tokio::fs::write(&token_path, token)
-        .await
-        .with_context(|| format!("failed to write {}", token_path.display()))?;
-    Ok(())
+    write_file_restricted(&token_path, token.as_bytes()).await
 }
 
 async fn read_user_config() -> anyhow::Result<UserConfig> {
@@ -234,25 +287,40 @@ async fn read_user_config() -> anyhow::Result<UserConfig> {
         .with_context(|| format!("failed to parse {}", user_config_path.display()))
 }
 
-fn is_expired_token(token: &str) -> anyhow::Result<bool> {
-    let expiry_hex = token
-        .get(0..8)
-        .ok_or_else(|| anyhow!("token is missing expiry prefix"))?;
-    let separator = token
-        .as_bytes()
-        .get(8)
-        .copied()
-        .ok_or_else(|| anyhow!("token is missing separator"))?;
-    if separator != b'.' {
-        return Err(anyhow!("token has invalid separator"));
+/// Parse the expiry prefix from a token.
+///
+/// Token format: `<8 hex digits for expiry>.<payload>`
+struct TokenExpiry {
+    expiry_epoch: u32,
+}
+
+impl TokenExpiry {
+    fn parse(token: &str) -> anyhow::Result<Self> {
+        if token.len() < MIN_TOKEN_LENGTH {
+            return Err(anyhow!("token is too short to contain expiry prefix"));
+        }
+        let (expiry_hex, rest) = token.split_at(8);
+        if !rest.starts_with('.') {
+            return Err(anyhow!(
+                "token has invalid separator (expected '.' at position 8)"
+            ));
+        }
+        let expiry_epoch =
+            u32::from_str_radix(expiry_hex, 16).context("token expiry is not valid hex")?;
+        Ok(Self { expiry_epoch })
     }
 
-    let expiry = u32::from_str_radix(expiry_hex, 16).context("token expiry is not valid hex")?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock before unix epoch")?
-        .as_secs();
-    Ok(now >= u64::from(expiry))
+    fn is_expired(&self) -> anyhow::Result<bool> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock before unix epoch")?
+            .as_secs();
+        Ok(now >= u64::from(self.expiry_epoch))
+    }
+}
+
+fn is_expired_token(token: &str) -> anyhow::Result<bool> {
+    TokenExpiry::parse(token)?.is_expired()
 }
 
 fn token_cache_path() -> anyhow::Result<PathBuf> {

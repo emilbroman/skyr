@@ -1,13 +1,12 @@
 use anyhow::{Context, anyhow};
 use clap::{Args, Subcommand};
-use futures_util::{SinkExt, StreamExt};
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
 use serde_json::json;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::{auth, deployment, output::OutputFormat, repo};
+use crate::{auth, output::OutputFormat, repo, ws};
 
+/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
 #[allow(clippy::upper_case_acronyms)]
 type JSON = serde_json::Value;
 
@@ -125,7 +124,10 @@ async fn list_resources(
     let body = ListRepositoryResources::build_query(list_repository_resources::Variables {});
     let response = client
         .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(token)?,
+        )
         .json(&body)
         .send()
         .await
@@ -242,7 +244,10 @@ async fn print_resource_last_logs(
     });
     let response = client
         .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(token)?,
+        )
         .json(&body)
         .send()
         .await
@@ -313,7 +318,7 @@ async fn stream_resource_logs(
     resource_qids: &[String],
     initial_amount: i64,
 ) -> anyhow::Result<()> {
-    let ws_endpoint = deployment::graphql_ws_endpoint(endpoint)?;
+    let ws_endpoint = ws::graphql_ws_endpoint(endpoint)?;
     let (task_events_tx, mut task_events_rx) =
         tokio::sync::mpsc::unbounded_channel::<(String, anyhow::Result<()>)>();
 
@@ -323,9 +328,28 @@ async fn stream_resource_logs(
         let resource_qid = resource_qid.clone();
         let task_events_tx = task_events_tx.clone();
         tokio::spawn(async move {
-            let result =
-                stream_single_resource(&ws_endpoint, &token, resource_qid.clone(), initial_amount)
-                    .await;
+            let qid = resource_qid.clone();
+            let result = ws::stream_subscription(
+                &ws_endpoint,
+                &token,
+                ws::SubscriptionParams {
+                    subscription_id: &resource_qid,
+                    query: include_str!("graphql/resource_logs_subscription.graphql"),
+                    operation_name: "ResourceLogs",
+                    variables: json!({
+                        "resourceQid": resource_qid,
+                        "initialAmount": initial_amount
+                    }),
+                    log_field_name: "resourceLogs",
+                },
+                |log| {
+                    println!(
+                        "[{}] [{}] [{}] {}",
+                        qid, log.timestamp, log.severity, log.message
+                    );
+                },
+            )
+            .await;
             let _ = task_events_tx.send((resource_qid, result));
         });
     }
@@ -344,95 +368,4 @@ async fn stream_resource_logs(
             }
         }
     }
-}
-
-async fn stream_single_resource(
-    ws_endpoint: &str,
-    token: &str,
-    resource_qid: String,
-    initial_amount: i64,
-) -> anyhow::Result<()> {
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
-    let mut request = ws_endpoint
-        .into_client_request()
-        .context("failed to build websocket request")?;
-    request.headers_mut().insert(
-        reqwest::header::AUTHORIZATION,
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-            .context("failed to format authorization header")?,
-    );
-    request.headers_mut().insert(
-        reqwest::header::SEC_WEBSOCKET_PROTOCOL,
-        reqwest::header::HeaderValue::from_static("graphql-transport-ws"),
-    );
-
-    let (ws_stream, _) = connect_async(request)
-        .await
-        .with_context(|| format!("failed to connect websocket at {ws_endpoint}"))?;
-    let (mut write, mut read) = ws_stream.split();
-
-    write
-        .send(Message::Text(
-            json!({
-                "type": "connection_init"
-            })
-            .to_string(),
-        ))
-        .await
-        .with_context(|| {
-            format!(
-                "failed to send graphql websocket connection init for resource {}",
-                resource_qid
-            )
-        })?;
-
-    deployment::wait_for_connection_ack(&mut read, &mut write).await?;
-
-    write
-        .send(Message::Text(
-            json!({
-                "id": resource_qid,
-                "type": "subscribe",
-                "payload": {
-                    "query": include_str!("graphql/resource_logs_subscription.graphql"),
-                    "variables": {
-                        "resourceQid": resource_qid,
-                        "initialAmount": initial_amount
-                    },
-                    "operationName": "ResourceLogs"
-                }
-            })
-            .to_string(),
-        ))
-        .await
-        .context("failed to send resource logs subscription")?;
-
-    while let Some(message) = read.next().await {
-        let message = message.context("failed to read websocket message")?;
-        match message {
-            Message::Text(text) => {
-                if let Some(log) = deployment::decode_subscription_log(&text, "resourceLogs")? {
-                    println!(
-                        "[{}] [{}] [{}] {}",
-                        resource_qid, log.timestamp, log.severity, log.message
-                    );
-                }
-            }
-            Message::Binary(_) => {}
-            Message::Ping(payload) => {
-                write
-                    .send(Message::Pong(payload))
-                    .await
-                    .context("failed to send websocket pong")?;
-            }
-            Message::Pong(_) => {}
-            Message::Close(_) => {
-                break;
-            }
-            Message::Frame(_) => {}
-        }
-    }
-
-    Ok(())
 }

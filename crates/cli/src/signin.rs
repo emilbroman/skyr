@@ -24,12 +24,10 @@ pub async fn run_signin(args: SigninArgs, format: OutputFormat) -> anyhow::Resul
     #[derive(Serialize)]
     struct SigninOutput {
         username: String,
-        token: String,
     }
 
     let output = SigninOutput {
         username: args.username,
-        token,
     };
 
     match format {
@@ -44,10 +42,7 @@ pub async fn run_signin(args: SigninArgs, format: OutputFormat) -> anyhow::Resul
                 String::from("username"),
                 output.username,
             ]));
-            table.add_row(crate::output::row(vec![
-                String::from("token"),
-                output.token,
-            ]));
+            println!("Token saved to credentials file.");
             print!("{table}");
         }
     }

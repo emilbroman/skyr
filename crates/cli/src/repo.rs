@@ -64,7 +64,10 @@ async fn create_repository(
     });
     let response = client
         .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(token)?,
+        )
         .json(&body)
         .send()
         .await
@@ -101,7 +104,10 @@ async fn list_repositories(
     let body = ListRepositories::build_query(list_repositories::Variables {});
     let response = client
         .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(token)?,
+        )
         .json(&body)
         .send()
         .await
@@ -137,13 +143,22 @@ async fn list_repositories(
     Ok(())
 }
 
+/// Validate that a segment (organization or repository name) contains only
+/// allowed characters: alphanumeric, hyphens, and underscores.
+fn is_valid_path_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 pub(crate) fn parse_repository_path(repository: &str) -> anyhow::Result<(&str, &str)> {
     let (organization, repository_name) = repository
         .split_once('/')
         .ok_or_else(|| anyhow!("repository must be in <organization>/<repository> format"))?;
-    if organization.is_empty() || repository_name.is_empty() || repository_name.contains('/') {
+    if !is_valid_path_segment(organization) || !is_valid_path_segment(repository_name) {
         return Err(anyhow!(
-            "repository must be in <organization>/<repository> format"
+            "repository path segments must be non-empty and contain only \
+             alphanumeric characters, hyphens, or underscores"
         ));
     }
     Ok((organization, repository_name))

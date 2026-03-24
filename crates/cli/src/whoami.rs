@@ -27,7 +27,10 @@ pub async fn run_whoami(args: WhoamiArgs, format: OutputFormat) -> anyhow::Resul
     let body = Me::build_query(me::Variables {});
     let response = client
         .post(endpoint)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(&token)?,
+        )
         .json(&body)
         .send()
         .await
