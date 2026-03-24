@@ -27,6 +27,29 @@ pub(crate) struct BuildResult {
     pub(crate) digest: String,
 }
 
+/// Validate that a containerfile path is safe (relative, no path traversal).
+fn validate_containerfile_path(containerfile: &str) -> Result<(), PluginError> {
+    let path = Path::new(containerfile);
+
+    // Must be relative
+    if path.is_absolute() {
+        return Err(PluginError::InvalidInput(format!(
+            "containerfile must be a relative path, got: {containerfile}"
+        )));
+    }
+
+    // Must not contain ".." components
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(PluginError::InvalidInput(format!(
+                "containerfile path must not contain '..': {containerfile}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Build a container image and push it to the registry.
 ///
 /// # Arguments
@@ -36,19 +59,25 @@ pub(crate) struct BuildResult {
 /// * `containerfile` - Path to the Containerfile/Dockerfile relative to context
 /// * `image_name` - Image name (without registry prefix)
 /// * `registry_url` - Container registry URL (e.g., "http://registry:5000")
+/// * `insecure_registry` - Whether to use insecure (HTTP) registry connections
 ///
 /// # Returns
 ///
 /// A `BuildResult` containing the full image reference and digest.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build_and_push(
     buildkit_addr: &str,
     context_path: &Path,
     containerfile: &str,
     image_name: &str,
     registry_url: &str,
+    insecure_registry: bool,
     log: &ldb::NamespacePublisher,
     resource_log: &ldb::NamespacePublisher,
 ) -> Result<BuildResult, PluginError> {
+    // Validate containerfile path to prevent path traversal
+    validate_containerfile_path(containerfile)?;
+
     // Parse the registry URL to extract the host:port
     let registry_host = parse_registry_host(registry_url)?;
 
@@ -86,10 +115,14 @@ pub(crate) async fn build_and_push(
         .arg("--opt")
         .arg(format!("filename={}", containerfile))
         .arg("--output")
-        .arg(format!(
-            "type=image,name={},push=true,registry.insecure=true",
-            image_ref
-        ))
+        .arg(if insecure_registry {
+            format!(
+                "type=image,name={},push=true,registry.insecure=true",
+                image_ref
+            )
+        } else {
+            format!("type=image,name={},push=true", image_ref)
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -260,5 +293,22 @@ mod tests {
 
         assert!(try_extract_digest("no digest here").is_none());
         assert!(try_extract_digest("sha256:tooshort").is_none());
+    }
+
+    #[test]
+    fn test_validate_containerfile_path() {
+        // Valid paths
+        assert!(validate_containerfile_path("Dockerfile").is_ok());
+        assert!(validate_containerfile_path("build/Dockerfile").is_ok());
+        assert!(validate_containerfile_path("./Dockerfile").is_ok());
+
+        // Invalid: absolute paths
+        assert!(validate_containerfile_path("/etc/passwd").is_err());
+        assert!(validate_containerfile_path("/Dockerfile").is_err());
+
+        // Invalid: path traversal
+        assert!(validate_containerfile_path("../../../etc/passwd").is_err());
+        assert!(validate_containerfile_path("foo/../../../etc/passwd").is_err());
+        assert!(validate_containerfile_path("..").is_err());
     }
 }

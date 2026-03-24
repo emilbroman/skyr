@@ -70,10 +70,17 @@ struct Args {
     /// Each Host resource gets a VIP from this range.
     #[arg(long, default_value = "10.43.0.0/16")]
     service_cidr: String,
+
+    /// Allow insecure (HTTP) connections to the container registry.
+    /// Default is false (HTTPS required).
+    #[arg(long, default_value_t = false)]
+    insecure_registry: bool,
 }
 
 // Resource type constants
 const IMAGE_RESOURCE_TYPE: &str = "Std/Container.Image";
+// Maximum number of concurrent broadcast connections to nodes.
+const MAX_BROADCAST_CONCURRENCY: usize = 10;
 const POD_RESOURCE_TYPE: &str = "Std/Container.Pod";
 const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
 const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
@@ -90,6 +97,8 @@ struct ContainerPluginInner {
     buildkit_addr: String,
     /// Container registry URL.
     registry_url: String,
+    /// Whether to allow insecure (HTTP) registry connections.
+    insecure_registry: bool,
     /// LDB publisher for deployment log streaming.
     ldb_publisher: ldb::Publisher,
     /// Allocates per-node subnets from the cluster CIDR.
@@ -117,6 +126,7 @@ impl ContainerPlugin {
         cdb: cdb::Client,
         buildkit_addr: String,
         registry_url: String,
+        insecure_registry: bool,
         ldb_publisher: ldb::Publisher,
         subnet_allocator: subnet_allocator::SubnetAllocator,
         cluster_cidr: String,
@@ -129,6 +139,7 @@ impl ContainerPlugin {
                 cdb,
                 buildkit_addr,
                 registry_url,
+                insecure_registry,
                 ldb_publisher,
                 subnet_allocator: RwLock::new(subnet_allocator),
                 cluster_cidr,
@@ -151,6 +162,9 @@ impl ContainerPlugin {
                 .await
                 .map_err(|e| PluginError::NodeLookup(e.to_string()))?
         };
+
+        // Validate the address looks like a valid endpoint before connecting
+        validate_node_address(&node.address)?;
 
         // Connect to the node's conduit service
         info!(node_name = %node_name, address = %node.address, "connecting to conduit");
@@ -285,6 +299,7 @@ impl ContainerPlugin {
             &containerfile,
             &name,
             &self.inner.registry_url,
+            self.inner.insecure_registry,
             &log_publisher,
             &resource_log_publisher,
         )
@@ -1148,8 +1163,8 @@ impl ContainerPlugin {
 
     async fn broadcast_to_nodes<F, Fut>(&self, operation: &str, f: F)
     where
-        F: Fn(scop::ConduitClient<scop::tonic::transport::Channel>, String) -> Fut,
-        Fut: std::future::Future<Output = Result<(), scop::tonic::Status>>,
+        F: Fn(scop::ConduitClient<scop::tonic::transport::Channel>, String) -> Fut + Send + Sync,
+        Fut: std::future::Future<Output = Result<(), scop::tonic::Status>> + Send,
     {
         let nodes = match self.list_nodes().await {
             Ok(nodes) => nodes,
@@ -1159,26 +1174,54 @@ impl ContainerPlugin {
             }
         };
 
+        // Limit concurrent broadcast connections to avoid overwhelming the network
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_BROADCAST_CONCURRENCY));
+        let mut handles = Vec::with_capacity(nodes.len());
+
         for node in &nodes {
-            match scop::ConduitClient::connect(node.address.clone()).await {
-                Ok(client) => {
-                    if let Err(e) = f(client, node.name.clone()).await {
+            // Validate the address before connecting
+            if let Err(e) = validate_node_address(&node.address) {
+                warn!(
+                    node = %node.name,
+                    operation = %operation,
+                    error = %e,
+                    "skipping node with invalid address in broadcast"
+                );
+                continue;
+            }
+
+            let semaphore = semaphore.clone();
+            let address = node.address.clone();
+            let node_name = node.name.clone();
+            let operation = operation.to_string();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = semaphore.acquire().await;
+                match scop::ConduitClient::connect(address).await {
+                    Ok(client) => (node_name, Some(client)),
+                    Err(e) => {
                         warn!(
-                            node = %node.name,
+                            node = %node_name,
                             operation = %operation,
                             error = %e,
-                            "broadcast operation failed on node"
+                            "failed to connect to node for broadcast"
                         );
+                        (node_name, None)
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        operation = %operation,
-                        error = %e,
-                        "failed to connect to node for broadcast"
-                    );
-                }
+            }));
+        }
+
+        for handle in handles {
+            if let Ok((node_name, Some(client))) = handle.await
+                && let Err(e) = f(client, node_name.clone()).await
+            {
+                warn!(
+                    node = %node_name,
+                    operation = %operation,
+                    error = %e,
+                    "broadcast operation failed on node"
+                );
             }
         }
     }
@@ -1267,6 +1310,54 @@ impl ContainerPlugin {
 // Helper Functions
 // =============================================================================
 
+/// Validate that a node address looks like a legitimate gRPC endpoint.
+///
+/// This guards against connecting to arbitrary addresses from compromised Redis data.
+/// Expects addresses in the form `http://host:port` or `https://host:port`.
+fn validate_node_address(address: &str) -> Result<(), PluginError> {
+    // Must start with http:// or https://
+    let without_scheme = if let Some(rest) = address.strip_prefix("http://") {
+        rest
+    } else if let Some(rest) = address.strip_prefix("https://") {
+        rest
+    } else {
+        return Err(PluginError::InvalidInput(format!(
+            "node address must start with http:// or https://, got: {address}"
+        )));
+    };
+
+    // Must have a host:port part with no path traversal or suspicious characters
+    let authority = without_scheme.split('/').next().unwrap_or("");
+    if authority.is_empty() {
+        return Err(PluginError::InvalidInput(format!(
+            "node address has empty authority: {address}"
+        )));
+    }
+
+    // Must contain a port
+    let has_port = if authority.starts_with('[') {
+        // IPv6: [::1]:port
+        authority.contains("]:")
+    } else {
+        authority.contains(':')
+    };
+
+    if !has_port {
+        return Err(PluginError::InvalidInput(format!(
+            "node address must include a port: {address}"
+        )));
+    }
+
+    // Reject addresses containing whitespace or control characters
+    if address.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(PluginError::InvalidInput(format!(
+            "node address contains invalid characters: {address}"
+        )));
+    }
+
+    Ok(())
+}
+
 /// Extract container configs from the `containers` input value.
 ///
 /// The containers list is a `Value::List` of records, each with an `image` field.
@@ -1341,30 +1432,40 @@ fn extract_service_backends(value: &Value) -> Result<Vec<scop::ServiceBackend>, 
 }
 
 /// Extract the host IP from a conduit address like "http://192.168.1.10:50054".
+///
+/// Validates that the extracted host is a valid IP address to prevent injection
+/// of malformed overlay endpoints.
 fn extract_overlay_endpoint(addr: &str) -> Option<String> {
     let without_scheme = addr.split("://").nth(1).unwrap_or(addr);
     let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
-    if authority.starts_with('[') {
-        // IPv6
-        Some(
-            authority
-                .split(']')
-                .next()
-                .unwrap_or(authority)
-                .trim_start_matches('[')
-                .to_owned(),
-        )
+    let host = if authority.starts_with('[') {
+        // IPv6: [::1]:port
+        authority
+            .split(']')
+            .next()
+            .unwrap_or(authority)
+            .trim_start_matches('[')
     } else {
-        let host = authority
+        authority
             .rsplit_once(':')
             .map(|(h, _)| h)
-            .unwrap_or(authority);
-        if host.is_empty() {
-            None
-        } else {
-            Some(host.to_owned())
-        }
+            .unwrap_or(authority)
+    };
+
+    if host.is_empty() {
+        return None;
     }
+
+    // Validate that the host is a valid IP address
+    if host.parse::<std::net::IpAddr>().is_err() {
+        warn!(
+            address = %addr,
+            host = %host,
+            "overlay endpoint is not a valid IP address, using as hostname"
+        );
+    }
+
+    Some(host.to_owned())
 }
 
 /// Check if any inputs have changed between two records.
@@ -1398,18 +1499,30 @@ async fn extract_context(
         .await
         .map_err(|e| PluginError::Internal(format!("failed to read context dir: {e}")))?;
 
+    // Canonicalize the destination to use as the root for symlink validation
+    let context_root = dest.canonicalize().map_err(|e| {
+        PluginError::Internal(format!(
+            "failed to canonicalize dest {}: {e}",
+            dest.display()
+        ))
+    })?;
+
     // Extract the tree recursively
-    extract_tree_recursive(client, &tree, Path::new(context_path), dest).await?;
+    extract_tree_recursive(client, &tree, Path::new(context_path), dest, &context_root).await?;
 
     Ok(())
 }
 
 /// Recursively extract a Git tree to the filesystem.
+///
+/// `context_root` is the canonicalized root directory used to validate that
+/// symlink targets do not escape the build context.
 async fn extract_tree_recursive(
     client: &cdb::DeploymentClient,
     tree: &gix_object::Tree,
     tree_path: &Path,
     dest: &Path,
+    context_root: &Path,
 ) -> Result<(), PluginError> {
     // Create destination directory
     std::fs::create_dir_all(dest).map_err(|e| {
@@ -1463,6 +1576,7 @@ async fn extract_tree_recursive(
                     &subtree,
                     &entry_src,
                     &entry_dest,
+                    context_root,
                 ))
                 .await?;
             }
@@ -1477,6 +1591,42 @@ async fn extract_tree_recursive(
 
                 let target = std::str::from_utf8(&target_data)
                     .map_err(|e| PluginError::Internal(format!("invalid utf8 in symlink: {e}")))?;
+
+                // Validate that the symlink target resolves within the context root.
+                // Resolve the target relative to the symlink's parent directory.
+                let target_path = std::path::Path::new(target);
+                let resolved = if target_path.is_absolute() {
+                    // Absolute symlinks are never allowed — they escape the context
+                    return Err(PluginError::InvalidInput(format!(
+                        "symlink {} has absolute target '{}' which escapes the build context",
+                        entry_src.display(),
+                        target
+                    )));
+                } else {
+                    // Resolve relative to the symlink's parent directory
+                    dest.join(target)
+                };
+
+                // Normalize by resolving ".." components lexically
+                let mut normalized = std::path::PathBuf::new();
+                for component in resolved.components() {
+                    match component {
+                        std::path::Component::ParentDir => {
+                            if !normalized.pop() {
+                                normalized.push(component);
+                            }
+                        }
+                        _ => normalized.push(component),
+                    }
+                }
+
+                if !normalized.starts_with(context_root) {
+                    return Err(PluginError::InvalidInput(format!(
+                        "symlink {} has target '{}' which escapes the build context",
+                        entry_src.display(),
+                        target
+                    )));
+                }
 
                 #[cfg(unix)]
                 std::os::unix::fs::symlink(target, &entry_dest)
@@ -1954,6 +2104,7 @@ async fn main() -> Result<()> {
     info!("  ldb_hostname: {}", args.ldb_hostname);
     info!("  cluster_cidr: {}", args.cluster_cidr);
     info!("  service_cidr: {}", args.service_cidr);
+    info!("  insecure_registry: {}", args.insecure_registry);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -2000,6 +2151,7 @@ async fn main() -> Result<()> {
         cdb,
         args.buildkit_addr.clone(),
         args.registry_url.clone(),
+        args.insecure_registry,
         ldb_publisher,
         subnet_allocator,
         cluster_cidr.to_string(),
