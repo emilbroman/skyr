@@ -16,6 +16,7 @@ ids = { path = "../ids" }
 rtp = { path = "../rtp" }
 sclc = { path = "../sclc" }
 tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [lints]
