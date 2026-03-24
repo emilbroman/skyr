@@ -5,6 +5,14 @@ use std::str::FromStr;
 use tokio::task;
 use tracing::Instrument;
 
+/// Maximum byte size for JSON input values before deserialization.
+/// Prevents resource exhaustion from oversized messages.
+const MAX_INPUT_SIZE_BYTES: usize = 1_048_576; // 1 MiB
+
+/// Maximum byte size for plugin output values before persistence.
+/// Prevents a compromised plugin from exhausting RDB storage.
+const MAX_OUTPUT_SIZE_BYTES: usize = 1_048_576; // 1 MiB
+
 #[derive(Parser)]
 enum Program {
     Daemon {
@@ -144,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
 struct WorkerContext {
     rdb_client: rdb::Client,
     ldb_publisher: ldb::Publisher,
-    plugins: HashMap<String, rtp::PluginClient>,
+    plugins: HashMap<sclc::ModuleId, rtp::PluginClient>,
 }
 
 async fn worker_loop(mut consumer: rtq::Consumer, ctx: WorkerContext) {
@@ -221,6 +229,18 @@ fn deployment_qid(
         .to_string()
 }
 
+/// Safely truncate a deployment ID to at most 8 characters for display (3.6).
+fn deployment_short(deployment_id: &ids::DeploymentId) -> &str {
+    let s = deployment_id.as_str();
+    let end = s.char_indices().nth(8).map_or(s.len(), |(i, _)| i);
+    &s[..end]
+}
+
+/// Check that a JSON value's serialized size is within the given limit.
+fn check_json_size(value: &serde_json::Value, limit: usize) -> bool {
+    value.to_string().len() <= limit
+}
+
 fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
     ids::ResourceQid::new(
         resource.environment_qid.clone(),
@@ -229,17 +249,41 @@ fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
     .to_string()
 }
 
-fn resolve_plugin<'a>(
-    resource_type: &'a str,
-    plugins: &'a HashMap<String, rtp::PluginClient>,
-) -> Option<(&'a str, rtp::PluginClient)> {
+fn resolve_plugin(
+    resource_type: &str,
+    plugins: &HashMap<sclc::ModuleId, rtp::PluginClient>,
+) -> Option<(sclc::ModuleId, rtp::PluginClient)> {
     let plugin_name = plugin_name_for_resource_type(resource_type)?;
-    let client = plugins.get(plugin_name)?;
-    Some((plugin_name, client.clone()))
+    let module_id: sclc::ModuleId = plugin_name.parse().ok()?;
+    let client = plugins.get(&module_id)?;
+    Some((module_id, client.clone()))
 }
 
 fn resource_id_from_ref(resource: &rtq::ResourceRef) -> ids::ResourceId {
     resource.resource_id.clone()
+}
+
+/// Persist resource state to RDB in a single helper, reducing duplication
+/// across create/update handlers (1.2).
+async fn persist_resource_state(
+    resource_client: &rdb::ResourceClient,
+    inputs: &sclc::Record,
+    owner_qid: &str,
+    outputs: &sclc::Record,
+    markers: Option<&std::collections::BTreeSet<sclc::Marker>>,
+    dependencies: &[ids::ResourceId],
+    source_trace: &ids::SourceTrace,
+) -> Result<(), anyhow::Error> {
+    resource_client
+        .set_input(inputs.clone(), owner_qid.to_string())
+        .await?;
+    resource_client.set_dependencies(dependencies).await?;
+    resource_client.set_output(outputs.clone()).await?;
+    if let Some(markers) = markers {
+        resource_client.set_markers(markers).await?;
+    }
+    resource_client.set_source_trace(source_trace).await?;
+    Ok(())
 }
 
 async fn handle_create(
@@ -291,6 +335,18 @@ async fn handle_create(
         return Ok(());
     };
 
+    // Validate input size before deserialization (3.4).
+    if !check_json_size(&message.inputs, MAX_INPUT_SIZE_BYTES) {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
+            "create inputs exceed size limit",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
     let inputs: sclc::Record = match serde_json::from_value(message.inputs.clone()) {
         Ok(inputs) => inputs,
         Err(error) => {
@@ -309,10 +365,10 @@ async fn handle_create(
     let id = resource_id_from_ref(&message.resource);
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id.as_str()[..8];
+    let dep_short = deployment_short(&message.deployment_id);
 
     tracing::info!(
-        plugin = plugin_name,
+        plugin = %plugin_name,
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type(),
         resource_name = %message.resource.resource_name(),
@@ -347,68 +403,37 @@ async fn handle_create(
         }
     };
 
-    if let Err(error) = resource_client
-        .set_input(resource.inputs.clone(), dep_qid.clone())
-        .await
+    // Validate plugin output size before persistence (3.3).
+    if let Ok(output_json) = serde_json::to_value(&resource.outputs)
+        && !check_json_size(&output_json, MAX_OUTPUT_SIZE_BYTES)
+    {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
+            "plugin create output exceeds size limit",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
+
+    if let Err(error) = persist_resource_state(
+        &resource_client,
+        &resource.inputs,
+        &dep_qid,
+        &resource.outputs,
+        Some(&resource.markers),
+        &dependencies_from_refs(&message.dependencies),
+        &message.source_trace,
+    )
+    .await
     {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
             resource_type = %message.resource.resource_type(),
             resource_name = %message.resource.resource_name(),
             error = %error,
-            "failed to persist created resource inputs",
-        );
-        delivery.nack(false).await?;
-        return Ok(());
-    }
-
-    let dependencies = dependencies_from_refs(&message.dependencies);
-    if let Err(error) = resource_client.set_dependencies(&dependencies).await {
-        tracing::warn!(
-            environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type(),
-            resource_name = %message.resource.resource_name(),
-            error = %error,
-            "failed to persist created resource dependencies",
-        );
-        delivery.nack(false).await?;
-        return Ok(());
-    }
-
-    if let Err(error) = resource_client.set_output(resource.outputs).await {
-        tracing::warn!(
-            environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type(),
-            resource_name = %message.resource.resource_name(),
-            error = %error,
-            "failed to persist created resource outputs",
-        );
-        delivery.nack(false).await?;
-        return Ok(());
-    }
-
-    if let Err(error) = resource_client.set_markers(&resource.markers).await {
-        tracing::warn!(
-            environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type(),
-            resource_name = %message.resource.resource_name(),
-            error = %error,
-            "failed to persist created resource markers",
-        );
-        delivery.nack(false).await?;
-        return Ok(());
-    }
-
-    if let Err(error) = resource_client
-        .set_source_trace(&message.source_trace)
-        .await
-    {
-        tracing::warn!(
-            environment_qid = %message.resource.environment_qid,
-            resource_type = %message.resource.resource_type(),
-            resource_name = %message.resource.resource_name(),
-            error = %error,
-            "failed to persist created resource source trace",
+            "failed to persist created resource state",
         );
         delivery.nack(false).await?;
         return Ok(());
@@ -530,10 +555,10 @@ async fn handle_destroy(
 
     let id = resource_id_from_ref(&message.resource);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id.as_str()[..8];
+    let dep_short = deployment_short(&message.deployment_id);
 
     tracing::info!(
-        plugin = plugin_name,
+        plugin = %plugin_name,
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type(),
         resource_name = %message.resource.resource_name(),
@@ -640,7 +665,8 @@ async fn handle_update_inputs(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
                 resource_name = %resource.resource_name(),
-                "dropping {operation} for missing resource",
+                operation,
+                "dropping operation for missing resource",
             );
             delivery.ack().await?;
             return Ok(None);
@@ -650,8 +676,9 @@ async fn handle_update_inputs(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
                 resource_name = %resource.resource_name(),
+                operation,
                 error = %error,
-                "failed to read resource state before {operation}",
+                "failed to read resource state before operation",
             );
             delivery.nack(false).await?;
             return Ok(None);
@@ -663,9 +690,10 @@ async fn handle_update_inputs(
             environment_qid = %resource.environment_qid,
             resource_type = %resource.resource_type(),
             resource_name = %resource.resource_name(),
+            operation,
             message_owner = %owner_deployment_qid,
             current_owner = ?current.owner,
-            "dropping {operation} for non-matching owner",
+            "dropping operation for non-matching owner",
         );
         delivery.ack().await?;
         return Ok(None);
@@ -678,7 +706,8 @@ async fn handle_update_inputs(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
                 resource_name = %resource.resource_name(),
-                "missing current inputs for {operation}",
+                operation,
+                "missing current inputs for operation",
             );
             delivery.nack(false).await?;
             return Ok(None);
@@ -691,12 +720,27 @@ async fn handle_update_inputs(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
                 resource_name = %resource.resource_name(),
-                "missing current outputs for {operation}",
+                operation,
+                "missing current outputs for operation",
             );
             delivery.nack(false).await?;
             return Ok(None);
         }
     };
+
+    // Validate input size before deserialization (3.4).
+    if !check_json_size(&desired_inputs, MAX_INPUT_SIZE_BYTES) {
+        tracing::warn!(
+            environment_qid = %resource.environment_qid,
+            resource_type = %resource.resource_type(),
+            resource_name = %resource.resource_name(),
+            operation,
+            "desired inputs exceed size limit",
+        );
+        delivery.nack(false).await?;
+        return Ok(None);
+    }
+
     let desired_inputs: sclc::Record = match serde_json::from_value(desired_inputs) {
         Ok(inputs) => inputs,
         Err(error) => {
@@ -704,8 +748,9 @@ async fn handle_update_inputs(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
                 resource_name = %resource.resource_name(),
+                operation,
                 error = %error,
-                "invalid {operation} desired_inputs json",
+                "invalid desired_inputs json",
             );
             delivery.nack(false).await?;
             return Ok(None);
@@ -723,7 +768,8 @@ async fn handle_update_inputs(
             tracing::warn!(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
-                "no plugin available for resource type on {operation}",
+                operation,
+                "no plugin available for resource type",
             );
             delivery.nack(false).await?;
             return Ok(None);
@@ -733,18 +779,19 @@ async fn handle_update_inputs(
         let res_qid = resource_qid_string(resource);
         let target_dep_qid_for_log =
             deployment_qid(&resource.environment_qid, target_deployment_id);
-        let dep_short = &target_deployment_id.as_str()[..8];
+        let dep_short = deployment_short(target_deployment_id);
         let verb = match operation {
             "adopt" => "Adopting",
             "restore" => "Restoring",
             _ => "Updating",
         };
         tracing::info!(
-            plugin = plugin_name,
+            plugin = %plugin_name,
             environment_qid = %resource.environment_qid,
             resource_type = %resource.resource_type(),
             resource_name = %resource.resource_name(),
-            "calling plugin update_resource for {operation}",
+            operation,
+            "calling plugin update_resource",
         );
         log_event(
             &ctx.ldb_publisher,
@@ -774,13 +821,30 @@ async fn handle_update_inputs(
                     environment_qid = %resource.environment_qid,
                     resource_type = %resource.resource_type(),
                     resource_name = %resource.resource_name(),
+                    operation,
                     error = %error,
-                    "update_resource plugin call failed for {operation}",
+                    "update_resource plugin call failed",
                 );
                 delivery.nack(false).await?;
                 return Ok(None);
             }
         };
+
+        // Validate plugin output size before persistence (3.3).
+        if let Ok(output_json) = serde_json::to_value(&updated.outputs)
+            && !check_json_size(&output_json, MAX_OUTPUT_SIZE_BYTES)
+        {
+            tracing::warn!(
+                environment_qid = %resource.environment_qid,
+                resource_type = %resource.resource_type(),
+                resource_name = %resource.resource_name(),
+                operation,
+                "plugin update output exceeds size limit",
+            );
+            delivery.nack(false).await?;
+            return Ok(None);
+        }
+
         inputs_to_persist = updated.inputs;
         outputs_to_persist = Some(updated.outputs);
         markers_to_persist = Some(updated.markers);
@@ -789,78 +853,32 @@ async fn handle_update_inputs(
             environment_qid = %resource.environment_qid,
             resource_type = %resource.resource_type(),
             resource_name = %resource.resource_name(),
-            "skipping plugin update_resource for {operation} with unchanged inputs",
+            operation,
+            "skipping plugin update_resource with unchanged inputs",
         );
     }
 
     let target_dep_qid = deployment_qid(&resource.environment_qid, target_deployment_id);
 
-    if let Err(error) = resource_client
-        .set_input(inputs_to_persist, target_dep_qid.clone())
-        .await
+    let outputs = outputs_to_persist.unwrap_or_default();
+    if let Err(error) = persist_resource_state(
+        &resource_client,
+        &inputs_to_persist,
+        &target_dep_qid,
+        &outputs,
+        markers_to_persist.as_ref(),
+        &dependencies_from_refs(dependencies),
+        params.source_trace,
+    )
+    .await
     {
         tracing::warn!(
             environment_qid = %resource.environment_qid,
             resource_type = %resource.resource_type(),
             resource_name = %resource.resource_name(),
+            operation,
             error = %error,
-            "failed to persist {operation} resource inputs",
-        );
-        delivery.nack(false).await?;
-        return Ok(None);
-    }
-    let deps = dependencies_from_refs(dependencies);
-    if let Err(error) = resource_client.set_dependencies(&deps).await {
-        tracing::warn!(
-            environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type(),
-            resource_name = %resource.resource_name(),
-            error = %error,
-            "failed to persist {operation} resource dependencies",
-        );
-        delivery.nack(false).await?;
-        return Ok(None);
-    }
-    if let Some(outputs) = outputs_to_persist {
-        if let Err(error) = resource_client.set_output(outputs).await {
-            tracing::warn!(
-                environment_qid = %resource.environment_qid,
-                resource_type = %resource.resource_type(),
-                resource_name = %resource.resource_name(),
-                error = %error,
-                "failed to persist {operation} resource outputs",
-            );
-            delivery.nack(false).await?;
-            return Ok(None);
-        }
-    } else {
-        tracing::warn!(
-            environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type(),
-            resource_name = %resource.resource_name(),
-            "{operation} resource has no outputs to persist",
-        );
-    }
-    if let Some(markers) = markers_to_persist
-        && let Err(error) = resource_client.set_markers(&markers).await
-    {
-        tracing::warn!(
-            environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type(),
-            resource_name = %resource.resource_name(),
-            error = %error,
-            "failed to persist {operation} resource markers",
-        );
-        delivery.nack(false).await?;
-        return Ok(None);
-    }
-    if let Err(error) = resource_client.set_source_trace(params.source_trace).await {
-        tracing::warn!(
-            environment_qid = %resource.environment_qid,
-            resource_type = %resource.resource_type(),
-            resource_name = %resource.resource_name(),
-            error = %error,
-            "failed to persist {operation} resource source trace",
+            "failed to persist resource state",
         );
         delivery.nack(false).await?;
         return Ok(None);
@@ -898,8 +916,8 @@ async fn handle_adopt(
 
     let res_qid = resource_qid_string(&message.resource);
     let resource_id = message.resource.resource_id.clone();
-    let to_short = &message.to_deployment_id.as_str()[..8];
-    let from_short = &message.from_deployment_id.as_str()[..8];
+    let to_short = deployment_short(&message.to_deployment_id);
+    let from_short = deployment_short(&message.from_deployment_id);
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
@@ -955,7 +973,7 @@ async fn handle_restore(
     };
 
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = &message.deployment_id.as_str()[..8];
+    let dep_short = deployment_short(&message.deployment_id);
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
@@ -1088,7 +1106,7 @@ async fn handle_check(
     };
 
     tracing::info!(
-        plugin = plugin_name,
+        plugin = %plugin_name,
         environment_qid = %message.resource.environment_qid,
         resource_type = %message.resource.resource_type(),
         resource_name = %message.resource.resource_name(),
@@ -1117,6 +1135,20 @@ async fn handle_check(
             return Ok(());
         }
     };
+
+    // Validate plugin output size before persistence (3.3).
+    if let Ok(output_json) = serde_json::to_value(&checked.outputs)
+        && !check_json_size(&output_json, MAX_OUTPUT_SIZE_BYTES)
+    {
+        tracing::warn!(
+            environment_qid = %message.resource.environment_qid,
+            resource_type = %message.resource.resource_type(),
+            resource_name = %message.resource.resource_name(),
+            "plugin check output exceeds size limit",
+        );
+        delivery.nack(false).await?;
+        return Ok(());
+    }
 
     if let Err(error) = resource_client.set_output(checked.outputs).await {
         tracing::warn!(
@@ -1151,7 +1183,7 @@ fn message_meta(message: &rtq::Message) -> (&'static str, &rtq::ResourceRef) {
 
 async fn dial_plugins(
     plugin_specs: &[PluginSpec],
-) -> anyhow::Result<HashMap<String, rtp::PluginClient>> {
+) -> anyhow::Result<HashMap<sclc::ModuleId, rtp::PluginClient>> {
     let mut plugins = HashMap::new();
     for spec in plugin_specs {
         let client = rtp::dial(spec.target.clone()).await?;
@@ -1160,7 +1192,7 @@ async fn dial_plugins(
             target = ?spec.target,
             "dialed plugin",
         );
-        plugins.insert(spec.name.to_string(), client);
+        plugins.insert(spec.name.clone(), client);
     }
     Ok(plugins)
 }
