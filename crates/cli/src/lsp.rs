@@ -29,5 +29,9 @@ pub async fn run_lsp() -> anyhow::Result<()> {
                 return Err(err.into());
             }
         }
+
+        if let Some(code) = server.exit_code() {
+            std::process::exit(code);
+        }
     }
 }
