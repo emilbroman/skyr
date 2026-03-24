@@ -60,6 +60,32 @@ fn internal_error() -> juniper::FieldError {
     field_error("Internal server error")
 }
 
+/// Basic email validation: requires exactly one `@`, non-empty local and domain
+/// parts, a dot in the domain, and no whitespace.
+fn is_valid_email(email: &str) -> bool {
+    let Some((local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    if local.is_empty() || domain.is_empty() {
+        return false;
+    }
+    if email.contains(char::is_whitespace) {
+        return false;
+    }
+    // Domain must contain at least one dot with non-empty parts on each side
+    let Some((domain_name, tld)) = domain.rsplit_once('.') else {
+        return false;
+    };
+    if domain_name.is_empty() || tld.is_empty() {
+        return false;
+    }
+    // Reject multiple @ signs
+    if domain.contains('@') {
+        return false;
+    }
+    true
+}
+
 struct Query;
 
 #[juniper::graphql_object(Context = Context)]
@@ -199,10 +225,13 @@ impl Query {
     }
 
     async fn organization(context: &Context, name: String) -> FieldResult<Organization> {
-        let (_, _user) = context.check_auth().await?;
+        let (_, user) = context.check_auth().await?;
         let org: ids::OrgId = name
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
+        if org.as_str() != user.username {
+            return Err(field_error("Permission denied"));
+        }
         Ok(Organization { name: org })
     }
 
@@ -313,7 +342,7 @@ impl Mutation {
             return Err(field_error("Invalid username"));
         }
 
-        if email.split('@').take(3).count() != 2 {
+        if !is_valid_email(&email) {
             return Err(field_error("Invalid email"));
         }
 
@@ -959,7 +988,10 @@ impl Repository {
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_client = context.cdb_client.repo(self.repository.name.clone());
-        let oid = gix_hash::ObjectId::from_bytes_or_panic(&deployment_id.to_bytes());
+        let oid = gix_hash::ObjectId::from_hex(deployment_id.as_str().as_bytes()).map_err(|e| {
+            tracing::error!("Invalid object ID hex for commit {deployment_id}: {e}");
+            internal_error()
+        })?;
         let commit = repo_client.read_commit(oid).await.map_err(|e| {
             tracing::error!("Failed to read commit {oid}: {e}");
             internal_error()
@@ -1327,7 +1359,14 @@ impl Deployment {
 
     async fn commit(&self, context: &Context) -> FieldResult<Commit> {
         let repo_client = context.cdb_client.repo(self.deployment.repo.clone());
-        let hash = gix_hash::ObjectId::from_bytes_or_panic(&self.deployment.deployment.to_bytes());
+        let hash = gix_hash::ObjectId::from_hex(self.deployment.deployment.as_str().as_bytes())
+            .map_err(|e| {
+                tracing::error!(
+                    "Invalid object ID hex for deployment {}: {e}",
+                    self.deployment.deployment
+                );
+                internal_error()
+            })?;
         let commit = repo_client.read_commit(hash).await.map_err(|e| {
             tracing::error!("Failed to read commit {hash}: {e}");
             internal_error()
@@ -1958,11 +1997,17 @@ async fn load_logs(context: &Context, namespace: String, amount: u64) -> anyhow:
 }
 
 fn format_timestamp(timestamp_millis: u64) -> String {
-    let timestamp_millis = i64::try_from(timestamp_millis).unwrap_or(i64::MAX);
-    Utc.timestamp_millis_opt(timestamp_millis)
-        .single()
-        .map(|timestamp| timestamp.to_rfc3339())
-        .unwrap_or_else(|| String::from("9999-12-31T23:59:59.999+00:00"))
+    let Ok(millis) = i64::try_from(timestamp_millis) else {
+        tracing::warn!("Timestamp overflow: {timestamp_millis} exceeds i64 range");
+        return format!("<invalid timestamp: {timestamp_millis}>");
+    };
+    match Utc.timestamp_millis_opt(millis) {
+        chrono::LocalResult::Single(timestamp) => timestamp.to_rfc3339(),
+        _ => {
+            tracing::warn!("Timestamp out of representable range: {millis}ms");
+            format!("<invalid timestamp: {millis}ms>")
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2145,13 +2190,13 @@ struct Cli {
     adb_presign_endpoint_url: Option<String>,
     #[arg(long, default_value = "skyr-artifacts")]
     adb_bucket: String,
-    #[arg(long, default_value = "minioadmin")]
+    #[arg(long, env = "SKYR_ADB_ACCESS_KEY_ID")]
     adb_access_key_id: String,
-    #[arg(long, default_value = "minioadmin")]
+    #[arg(long, env = "SKYR_ADB_SECRET_ACCESS_KEY")]
     adb_secret_access_key: String,
     #[arg(long, default_value = "us-east-1")]
     adb_region: String,
-    #[arg(long)]
+    #[arg(long, env = "SKYR_CHALLENGE_SALT")]
     challenge_salt: Option<String>,
     #[arg(long, default_value = "skyr.cloud")]
     rp_id: String,
