@@ -50,13 +50,21 @@
 //! let mut client = ConduitClient::connect("http://node:50054").await?;
 //! client.create_pod(request).await?;
 //! ```
+//!
+//! ## Transport Security
+//!
+//! SCOP does not enforce TLS at the protocol level. In production deployments,
+//! transport encryption **must** be provided by the infrastructure layer (e.g.,
+//! a service mesh, encrypted overlay network, or Unix domain sockets). TCP
+//! listeners should never be exposed on untrusted networks without TLS
+//! termination in front.
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 
 use thiserror::Error;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::transport::{Server, server::Router};
-use tracing::info;
+use tracing::{info, warn};
 
 // Re-export tonic for the async_trait macro
 pub use tonic;
@@ -65,22 +73,177 @@ pub mod proto {
     tonic::include_proto!("scop.v1");
 }
 
-// Re-export commonly used types
+// ---------------------------------------------------------------------------
+// Re-exports grouped by domain
+// ---------------------------------------------------------------------------
+
+// --- Node registration (Orchestrator) ---
 pub use proto::{
-    AddAttachmentRequest, AddAttachmentResponse, AddOverlayPeerRequest, AddOverlayPeerResponse,
-    AddServiceRouteRequest, AddServiceRouteResponse, ClosePortRequest, ClosePortResponse,
-    ConfigureServiceCidrRequest, ConfigureServiceCidrResponse, ContainerConfig, CreatePodRequest,
-    CreatePodResponse, HeartbeatRequest, HeartbeatResponse, KeyValue, NodeCapacity, NodeUsage,
-    OpenPortRequest, OpenPortResponse, PodConfig, RegisterNodeRequest, RegisterNodeResponse,
-    RemoveAttachmentRequest, RemoveAttachmentResponse, RemoveDnsRecordRequest,
-    RemoveDnsRecordResponse, RemoveOverlayPeerRequest, RemoveOverlayPeerResponse, RemovePodRequest,
-    RemovePodResponse, RemoveServiceRouteRequest, RemoveServiceRouteResponse, ServiceBackend,
-    SetDnsRecordRequest, SetDnsRecordResponse, UnregisterNodeRequest, UnregisterNodeResponse,
+    HeartbeatRequest, HeartbeatResponse, NodeCapacity, NodeUsage, RegisterNodeRequest,
+    RegisterNodeResponse, UnregisterNodeRequest, UnregisterNodeResponse,
+};
+
+// --- Pod lifecycle (Conduit) ---
+pub use proto::{
+    ContainerConfig, CreatePodRequest, CreatePodResponse, KeyValue, PodConfig, RemovePodRequest,
+    RemovePodResponse,
+};
+
+// --- Attachment / firewall ---
+pub use proto::{
+    AddAttachmentRequest, AddAttachmentResponse, ClosePortRequest, ClosePortResponse,
+    OpenPortRequest, OpenPortResponse, RemoveAttachmentRequest, RemoveAttachmentResponse,
+};
+
+// --- Overlay networking ---
+pub use proto::{
+    AddOverlayPeerRequest, AddOverlayPeerResponse, RemoveOverlayPeerRequest,
+    RemoveOverlayPeerResponse,
+};
+
+// --- Service routing & DNS ---
+pub use proto::{
+    AddServiceRouteRequest, AddServiceRouteResponse, ConfigureServiceCidrRequest,
+    ConfigureServiceCidrResponse, RemoveDnsRecordRequest, RemoveDnsRecordResponse,
+    RemoveServiceRouteRequest, RemoveServiceRouteResponse, ServiceBackend, SetDnsRecordRequest,
+    SetDnsRecordResponse,
 };
 
 // Re-export the generated clients
 pub use proto::conduit_client::ConduitClient;
 pub use proto::orchestrator_client::OrchestratorClient;
+
+// ============================================================================
+// Validation helpers
+// ============================================================================
+
+/// Validation helpers for protocol message fields.
+///
+/// These functions return a [`tonic::Status`] with code `InvalidArgument`
+/// when validation fails, making them convenient to use inside service
+/// implementations with the `?` operator.
+pub mod validate {
+    use std::net::{IpAddr, Ipv4Addr};
+    use tonic::Status;
+
+    /// Maximum length for node names and pod names.
+    const MAX_NAME_LEN: usize = 253;
+
+    /// Validate a port number is within the valid TCP/UDP range (1..=65535).
+    pub fn port(value: i32, field: &str) -> Result<u16, Status> {
+        u16::try_from(value).ok().filter(|&p| p > 0).ok_or_else(|| {
+            Status::invalid_argument(format!("{field}: port must be 1..=65535, got {value}"))
+        })
+    }
+
+    /// Validate that a protocol string is `"tcp"` or `"udp"`.
+    pub fn protocol(value: &str, field: &str) -> Result<(), Status> {
+        match value {
+            "tcp" | "udp" => Ok(()),
+            other => Err(Status::invalid_argument(format!(
+                "{field}: protocol must be \"tcp\" or \"udp\", got \"{other}\""
+            ))),
+        }
+    }
+
+    /// Validate a CIDR string (e.g. `"10.42.0.0/16"`).
+    ///
+    /// Checks that the string parses as `<IPv4>/<prefix>` with a prefix
+    /// length between 0 and 32.
+    pub fn cidr(value: &str, field: &str) -> Result<(Ipv4Addr, u8), Status> {
+        let (ip_str, prefix_str) = value.split_once('/').ok_or_else(|| {
+            Status::invalid_argument(format!("{field}: expected CIDR notation (IP/prefix)"))
+        })?;
+        let ip: Ipv4Addr = ip_str.parse().map_err(|_| {
+            Status::invalid_argument(format!("{field}: invalid IPv4 address \"{ip_str}\""))
+        })?;
+        let prefix: u8 = prefix_str.parse().map_err(|_| {
+            Status::invalid_argument(format!("{field}: invalid prefix length \"{prefix_str}\""))
+        })?;
+        if prefix > 32 {
+            return Err(Status::invalid_argument(format!(
+                "{field}: prefix length must be 0..=32, got {prefix}"
+            )));
+        }
+        Ok((ip, prefix))
+    }
+
+    /// Validate an IP address string.
+    pub fn ip_address(value: &str, field: &str) -> Result<IpAddr, Status> {
+        value.parse::<IpAddr>().map_err(|_| {
+            Status::invalid_argument(format!("{field}: invalid IP address \"{value}\""))
+        })
+    }
+
+    /// Validate a node or pod name.
+    ///
+    /// Names must be non-empty, at most 253 characters, and contain only
+    /// alphanumerics, hyphens, underscores, dots, colons, or slashes.
+    pub fn name(value: &str, field: &str) -> Result<(), Status> {
+        if value.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{field}: name must not be empty"
+            )));
+        }
+        if value.len() > MAX_NAME_LEN {
+            return Err(Status::invalid_argument(format!(
+                "{field}: name must be at most {MAX_NAME_LEN} characters"
+            )));
+        }
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':' | '/'))
+        {
+            return Err(Status::invalid_argument(format!(
+                "{field}: name contains invalid characters (allowed: alphanumeric, -, _, ., :, /)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate a container image reference.
+    ///
+    /// Must be non-empty and contain only printable ASCII (no control chars).
+    pub fn image(value: &str, field: &str) -> Result<(), Status> {
+        if value.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{field}: image must not be empty"
+            )));
+        }
+        if !value.chars().all(|c| c.is_ascii_graphic()) {
+            return Err(Status::invalid_argument(format!(
+                "{field}: image contains invalid characters"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Validate a hostname (e.g. for DNS records).
+    ///
+    /// Must be non-empty, at most 253 characters, and contain only
+    /// alphanumerics, hyphens, and dots.
+    pub fn hostname(value: &str, field: &str) -> Result<(), Status> {
+        if value.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{field}: hostname must not be empty"
+            )));
+        }
+        if value.len() > MAX_NAME_LEN {
+            return Err(Status::invalid_argument(format!(
+                "{field}: hostname must be at most {MAX_NAME_LEN} characters"
+            )));
+        }
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.'))
+        {
+            return Err(Status::invalid_argument(format!(
+                "{field}: hostname contains invalid characters (allowed: alphanumeric, -, .)"
+            )));
+        }
+        Ok(())
+    }
+}
 
 // ============================================================================
 // Common Types
@@ -217,6 +380,34 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
     }
 }
 
+/// Clean up a Unix socket path safely, checking for symlinks to prevent
+/// symlink-following attacks (TOCTOU-hardened).
+async fn cleanup_unix_socket(path: &std::path::Path) -> Result<(), std::io::Error> {
+    // Use symlink_metadata (lstat) to inspect the path without following symlinks.
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                // Refuse to remove symlinks — a symlink here could point to an
+                // arbitrary file and we must not follow it.
+                warn!(
+                    path = %path.display(),
+                    "refusing to remove Unix socket: path is a symlink"
+                );
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "Unix socket path is a symlink",
+                ));
+            }
+            tokio::fs::remove_file(path).await?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Path does not exist — nothing to clean up.
+        }
+        Err(e) => return Err(e),
+    }
+    Ok(())
+}
+
 async fn serve(target: Target, name: &str, router: Router) -> Result<(), ServeError> {
     match target {
         Target::Tcp(addr) => {
@@ -227,9 +418,7 @@ async fn serve(target: Target, name: &str, router: Router) -> Result<(), ServeEr
             router.serve(addr).await?;
         }
         Target::Unix(path) => {
-            if path.exists() {
-                tokio::fs::remove_file(&path).await?;
-            }
+            cleanup_unix_socket(&path).await?;
             info!(path = %path.display(), "serving {name} over Unix socket");
             let listener = tokio::net::UnixListener::bind(path)?;
             let incoming = UnixListenerStream::new(listener);
@@ -323,7 +512,7 @@ pub trait Conduit: Send + Sync + 'static {
         request: RemoveServiceRouteRequest,
     ) -> Result<RemoveServiceRouteResponse, tonic::Status>;
 
-    /// Set a DNS record (hostname → VIP).
+    /// Set a DNS record (hostname -> VIP).
     async fn set_dns_record(
         &self,
         request: SetDnsRecordRequest,
