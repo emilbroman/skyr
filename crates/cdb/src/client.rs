@@ -78,13 +78,6 @@ macro_rules! prepared_statements {
 }
 
 prepared_statements! {
-    KeyspaceStatements {
-        create_keyspace = r#"
-            CREATE KEYSPACE IF NOT EXISTS cdb
-            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
-        "#,
-    }
-
     TableStatements {
         create_repositories_table = r#"
             CREATE TABLE IF NOT EXISTS cdb.repositories (
@@ -250,12 +243,13 @@ prepared_statements! {
         "#,
 
         create_supersession = r#"
-            UPDATE cdb.supersessions
-            SET superseding_commit_hash = ?
-            WHERE organization = ?
-            AND repository = ?
-            AND environment_id = ?
-            AND superseded_commit_hash = ?
+            INSERT INTO cdb.supersessions (
+                superseding_commit_hash,
+                organization,
+                repository,
+                environment_id,
+                superseded_commit_hash
+            ) VALUES (?, ?, ?, ?, ?)
         "#,
 
         get_superseded_commits = r#"
@@ -279,9 +273,18 @@ prepared_statements! {
     }
 }
 
-#[derive(Default)]
 pub struct ClientBuilder {
     inner: SessionBuilder,
+    replication_factor: u8,
+}
+
+impl Default for ClientBuilder {
+    fn default() -> Self {
+        Self {
+            inner: SessionBuilder::default(),
+            replication_factor: 1,
+        }
+    }
 }
 
 impl ClientBuilder {
@@ -294,14 +297,22 @@ impl ClientBuilder {
         self
     }
 
+    pub fn replication_factor(mut self, factor: u8) -> Self {
+        self.replication_factor = factor;
+        self
+    }
+
     pub async fn build(&self) -> Result<Client, ConnectError> {
         let session = Arc::new(self.inner.build().await?);
 
-        let statements = KeyspaceStatements::new(&session).await?;
+        let create_keyspace_cql = format!(
+            "CREATE KEYSPACE IF NOT EXISTS cdb \
+             WITH replication = {{'class': 'SimpleStrategy', 'replication_factor': {}}}",
+            self.replication_factor,
+        );
+        let create_keyspace = session.prepare(create_keyspace_cql).await?;
 
-        session
-            .execute_unpaged(&statements.create_keyspace, ())
-            .await?;
+        session.execute_unpaged(&create_keyspace, ()).await?;
 
         let statements = TableStatements::new(&session).await?;
 
@@ -716,7 +727,8 @@ impl RepositoryClient {
 
     pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
         let (_, data) = self.read_object(hash).await?;
-        let blob = gix_object::BlobRef::from_bytes(&data).unwrap(); // infallible
+        // BlobRef::from_bytes is infallible (returns Result<_, Infallible>).
+        let Ok(blob) = gix_object::BlobRef::from_bytes(&data);
         Ok(blob.into_owned())
     }
 
@@ -789,16 +801,14 @@ impl RepositoryClient {
             .rows_stream::<(DateTime<Utc>, String, Vec<u8>, String)>()?
             .map(move |r| {
                 let (created_at, environment_id, commit_hash, state) = r?;
-                let deploy_id = DeploymentId::from_bytes(&commit_hash)
-                    .map_err(|_| DeploymentQueryError::NotFound)?;
-                let environment: EnvironmentId = environment_id.parse()?;
-                Ok::<_, DeploymentQueryError>(Deployment {
-                    repo: repo.clone(),
-                    environment,
-                    deployment: deploy_id,
+                deployment_from_row(
+                    repo.org.to_string(),
+                    repo.repo.to_string(),
+                    environment_id,
+                    commit_hash,
                     created_at,
-                    state: state.parse()?,
-                })
+                    state,
+                )
             }))
     }
 }
@@ -1029,22 +1039,22 @@ pub enum LoadObjectError {
     #[error("not found")]
     NotFound,
 
-    #[error("failed to execute: {0}")]
+    #[error("database query failed")]
     ScyllaPager(#[from] PagerExecutionError),
 
-    #[error("failed to parse row: {0}")]
+    #[error("database query failed")]
     ScyllaTypeCheck(#[from] TypeCheckError),
 
-    #[error("failed to load row: {0}")]
+    #[error("database query failed")]
     ScyllaNextRow(#[from] NextRowError),
 }
 
 #[derive(Error, Debug)]
 pub enum ReadObjectError {
-    #[error("read failed: {0}")]
+    #[error("failed to read object")]
     Read(#[from] LoadObjectError),
 
-    #[error("decode failed: {0}")]
+    #[error("failed to decode object")]
     Decode(#[from] gix_object::decode::Error),
 }
 
@@ -1062,13 +1072,13 @@ pub enum FileError {
     #[error("failed to read")]
     Read(#[from] ReadObjectError),
 
-    #[error("not found: {0}")]
+    #[error("not found")]
     NotFound(PathBuf),
 
-    #[error("not a directory: {0}")]
+    #[error("not a directory")]
     NotADirectory(PathBuf),
 
-    #[error("not a file: {0}")]
+    #[error("not a file")]
     NotAFile(PathBuf),
 }
 
