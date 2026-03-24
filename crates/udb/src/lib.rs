@@ -172,7 +172,11 @@ impl UserClient {
         TokensClient { user: self.clone() }
     }
 
-    pub async fn register(&mut self, email: impl Into<String>) -> Result<User, RegisterUserError> {
+    pub async fn register(
+        &mut self,
+        email: impl Into<String>,
+        fullname: Option<String>,
+    ) -> Result<User, RegisterUserError> {
         let email = email.into();
 
         let result: i32 = self
@@ -185,10 +189,18 @@ impl UserClient {
             return Err(RegisterUserError::UsernameTaken);
         }
 
+        if let Some(ref fullname) = fullname {
+            let _: () = self
+                .client
+                .conn
+                .hset(user_key(&self.username), "fullname", fullname)
+                .await?;
+        }
+
         Ok(User {
             username: self.username.clone(),
             email,
-            fullname: None,
+            fullname,
         })
     }
 
@@ -197,18 +209,19 @@ impl UserClient {
         fullname: impl Into<String>,
     ) -> Result<(), UserQueryError> {
         let fullname = fullname.into();
+        let key = user_key(&self.username);
 
-        let _: () = self
-            .client
-            .conn
-            .hset(user_key(&self.username), "fullname", &fullname)
-            .await?;
+        if fullname.is_empty() {
+            let _: () = self.client.conn.hdel(&key, "fullname").await?;
+        } else {
+            let _: () = self.client.conn.hset(&key, "fullname", &fullname).await?;
+        }
 
         Ok(())
     }
 
     pub async fn get(&mut self) -> Result<User, UserQueryError> {
-        let (email, fullname) = self
+        let (email, fullname): (Option<String>, Option<String>) = self
             .client
             .conn
             .hmget(user_key(&self.username), &["email", "fullname"])
@@ -221,7 +234,7 @@ impl UserClient {
         Ok(User {
             username: self.username.clone(),
             email,
-            fullname,
+            fullname: fullname.filter(|s: &String| !s.is_empty()),
         })
     }
 }
