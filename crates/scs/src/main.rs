@@ -89,6 +89,18 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+/// Error type for messages that are safe to show to the SSH client.
+#[derive(Debug)]
+struct UserFacingError(String);
+
+impl std::fmt::Display for UserFacingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UserFacingError {}
+
 struct ConfigServer {
     client: cdb::Client,
     udb_client: udb::Client,
@@ -195,7 +207,7 @@ impl Handler for ConfigHandler {
                 loop {
                     let client = client.clone();
                     let result: anyhow::Result<()> = match (&user, rx.recv().await) {
-                        (None, _) => Err(anyhow!("not authenticated")),
+                        (None, _) => Err(UserFacingError("not authenticated".to_string()).into()),
                         (Some(user), Some(Ok(cmd))) => {
                             let repo = match &cmd {
                                 ChannelCommand::ReceivePack { repo }
@@ -221,7 +233,7 @@ impl Handler for ConfigHandler {
                                 }
                             }
                         }
-                        (_, Some(Err(e))) => Err(e.into()),
+                        (_, Some(Err(e))) => Err(UserFacingError(format!("{e}")).into()),
                         (_, None) => break,
                     };
 
@@ -230,8 +242,18 @@ impl Handler for ConfigHandler {
                             channel.exit_status(0).await.unwrap_or_default();
                         }
                         Err(e) => {
+                            tracing::error!("command failed: {e:#}");
+                            // Send a generic message to avoid leaking internal details.
+                            // User-facing errors (permission denied, repo not found) are
+                            // already surfaced by ensure_repo_access / ensure_repo_exists
+                            // before the handler runs, so those get their own messages.
+                            let client_msg = if e.downcast_ref::<UserFacingError>().is_some() {
+                                format!("{e}\n")
+                            } else {
+                                "internal server error\n".to_string()
+                            };
                             channel
-                                .extended_data(1, format!("{e}\n").as_bytes())
+                                .extended_data(1, client_msg.as_bytes())
                                 .await
                                 .unwrap_or_default();
                             channel.exit_status(1).await.unwrap_or_default();
@@ -281,12 +303,11 @@ impl Handler for ConfigHandler {
 
 fn ensure_repo_access(user: &udb::User, repo: &RepoQid) -> anyhow::Result<()> {
     if repo.org.as_str() != user.username {
-        bail!(
-            "permission denied: user '{}' cannot access repository '{}'; expected organization '{}'",
-            user.username,
-            repo,
-            user.username
-        );
+        return Err(UserFacingError(format!(
+            "permission denied: user '{}' cannot access repository '{}'",
+            user.username, repo,
+        ))
+        .into());
     }
 
     Ok(())
@@ -296,9 +317,12 @@ async fn ensure_repo_exists(client: &cdb::Client, repo: &RepoQid) -> anyhow::Res
     match client.repo(repo.clone()).get().await {
         Ok(_) => Ok(()),
         Err(cdb::RepositoryQueryError::NotFound) => {
-            bail!("repository '{}' does not exist", repo);
+            Err(UserFacingError(format!("repository '{}' does not exist", repo)).into())
         }
-        Err(err) => Err(anyhow!("failed to query repository '{}': {}", repo, err)),
+        Err(err) => {
+            tracing::error!("failed to query repository '{}': {}", repo, err);
+            Err(UserFacingError("failed to access repository".to_string()).into())
+        }
     }
 }
 
@@ -814,11 +838,18 @@ impl<'a> CommandHandler<'a> {
             data: Option<Vec<u8>>,
         }
 
+        /// Maximum number of bytes a single LEB128 varint may occupy (10 bytes
+        /// covers the full u64 range: ceil(64/7) = 10).
+        const MAX_VARINT_BYTES: usize = 10;
+
         fn decode_varint(data: &[u8], mut idx: usize) -> anyhow::Result<(u64, usize)> {
             let mut size = 0u64;
             let mut shift = 0u32;
             let start = idx;
             loop {
+                if idx - start >= MAX_VARINT_BYTES {
+                    bail!("varint exceeds maximum length");
+                }
                 let byte = *data
                     .get(idx)
                     .ok_or_else(|| anyhow!("delta header truncated"))?;
@@ -832,6 +863,10 @@ impl<'a> CommandHandler<'a> {
             Ok((size, idx - start))
         }
 
+        /// Maximum allowed size for a single git object (256 MiB). Prevents
+        /// user-controlled sizes from causing excessive memory allocation.
+        const MAX_OBJECT_SIZE: u64 = 256 * 1024 * 1024;
+
         fn apply_delta(base: &[u8], delta: &[u8]) -> anyhow::Result<Vec<u8>> {
             let (base_size, mut consumed) = decode_varint(delta, 0)?;
             let (result_size, result_consumed) = decode_varint(delta, consumed)?;
@@ -843,7 +878,23 @@ impl<'a> CommandHandler<'a> {
                     base.len()
                 );
             }
+            if result_size > MAX_OBJECT_SIZE {
+                bail!(
+                    "delta result size {} exceeds maximum allowed object size",
+                    result_size
+                );
+            }
             let mut out = Vec::with_capacity(result_size as usize);
+
+            /// Read the next byte from `delta` at `consumed`, advancing the index.
+            fn next_delta_byte(delta: &[u8], consumed: &mut usize) -> anyhow::Result<u8> {
+                let byte = *delta
+                    .get(*consumed)
+                    .ok_or_else(|| anyhow!("delta copy command truncated"))?;
+                *consumed += 1;
+                Ok(byte)
+            }
+
             while consumed < delta.len() {
                 let cmd = delta[consumed];
                 consumed += 1;
@@ -851,32 +902,25 @@ impl<'a> CommandHandler<'a> {
                     let mut ofs: u32 = 0;
                     let mut size: u32 = 0;
                     if cmd & 0x01 != 0 {
-                        ofs |= u32::from(delta[consumed]);
-                        consumed += 1;
+                        ofs |= u32::from(next_delta_byte(delta, &mut consumed)?);
                     }
                     if cmd & 0x02 != 0 {
-                        ofs |= u32::from(delta[consumed]) << 8;
-                        consumed += 1;
+                        ofs |= u32::from(next_delta_byte(delta, &mut consumed)?) << 8;
                     }
                     if cmd & 0x04 != 0 {
-                        ofs |= u32::from(delta[consumed]) << 16;
-                        consumed += 1;
+                        ofs |= u32::from(next_delta_byte(delta, &mut consumed)?) << 16;
                     }
                     if cmd & 0x08 != 0 {
-                        ofs |= u32::from(delta[consumed]) << 24;
-                        consumed += 1;
+                        ofs |= u32::from(next_delta_byte(delta, &mut consumed)?) << 24;
                     }
                     if cmd & 0x10 != 0 {
-                        size |= u32::from(delta[consumed]);
-                        consumed += 1;
+                        size |= u32::from(next_delta_byte(delta, &mut consumed)?);
                     }
                     if cmd & 0x20 != 0 {
-                        size |= u32::from(delta[consumed]) << 8;
-                        consumed += 1;
+                        size |= u32::from(next_delta_byte(delta, &mut consumed)?) << 8;
                     }
                     if cmd & 0x40 != 0 {
-                        size |= u32::from(delta[consumed]) << 16;
-                        consumed += 1;
+                        size |= u32::from(next_delta_byte(delta, &mut consumed)?) << 16;
                     }
                     if size == 0 {
                         size = 0x10000;
@@ -917,6 +961,7 @@ impl<'a> CommandHandler<'a> {
         struct CountingReader<'a, R> {
             inner: &'a mut R,
             bytes_read: u64,
+            hasher: gix_hash::Hasher,
         }
 
         impl<'a, R> CountingReader<'a, R>
@@ -926,6 +971,7 @@ impl<'a> CommandHandler<'a> {
             async fn read_exact(&mut self, buf: &mut [u8]) -> anyhow::Result<()> {
                 self.inner.read_exact(buf).await?;
                 self.bytes_read += buf.len() as u64;
+                self.hasher.update(buf);
                 Ok(())
             }
 
@@ -949,8 +995,13 @@ impl<'a> CommandHandler<'a> {
         ) -> anyhow::Result<u64> {
             let mut byte = r.read_byte().await?;
             let mut value = u64::from(byte) & 0x7f;
+            let mut bytes_read = 1usize;
             while byte & 0x80 != 0 {
+                if bytes_read >= MAX_VARINT_BYTES {
+                    bail!("LEB128 varint exceeds maximum length");
+                }
                 byte = r.read_byte().await?;
+                bytes_read += 1;
                 value += 1;
                 value = (value << 7) + (u64::from(byte) & 0x7f);
             }
@@ -961,6 +1012,9 @@ impl<'a> CommandHandler<'a> {
             r: &mut CountingReader<'_, R>,
             size: u64,
         ) -> anyhow::Result<Vec<u8>> {
+            if size > MAX_OBJECT_SIZE {
+                bail!("object size {} exceeds maximum allowed object size", size);
+            }
             let size: usize = size
                 .try_into()
                 .map_err(|_| anyhow!("object too large to fit into memory"))?;
@@ -1014,6 +1068,7 @@ impl<'a> CommandHandler<'a> {
             let mut reader = CountingReader {
                 inner: &mut r,
                 bytes_read: 0,
+                hasher: gix_hash::hasher(gix_hash::Kind::Sha1),
             };
 
             let mut header = [0u8; 4];
@@ -1024,6 +1079,16 @@ impl<'a> CommandHandler<'a> {
             let _version = read_u32_be(&mut reader).await?;
             let num_objects = read_u32_be(&mut reader).await?;
 
+            /// Maximum number of objects allowed in a single packfile.
+            const MAX_PACK_OBJECTS: u32 = 1_000_000;
+            if num_objects > MAX_PACK_OBJECTS {
+                bail!(
+                    "packfile contains {} objects, exceeding the limit of {}",
+                    num_objects,
+                    MAX_PACK_OBJECTS
+                );
+            }
+
             entries = Vec::with_capacity(num_objects as usize);
             for _ in 0..num_objects {
                 let pack_offset = reader.bytes_read;
@@ -1031,8 +1096,13 @@ impl<'a> CommandHandler<'a> {
                 let type_id = (c >> 4) & 0b0000_0111;
                 let mut size = u64::from(c) & 0b0000_1111;
                 let mut shift = 4u32;
+                let mut header_bytes = 1usize;
                 while c & 0b1000_0000 != 0 {
+                    if header_bytes >= MAX_VARINT_BYTES {
+                        bail!("pack object size varint exceeds maximum length");
+                    }
                     c = reader.read_byte().await?;
+                    header_bytes += 1;
                     size += u64::from(c & 0b0111_1111) << shift;
                     shift += 7;
                 }
@@ -1060,8 +1130,16 @@ impl<'a> CommandHandler<'a> {
                 });
             }
 
+            let expected_checksum = reader
+                .hasher
+                .try_finalize()
+                .map_err(|e| anyhow!("failed to finalize pack checksum: {}", e))?;
             let mut trailer = [0u8; 20];
-            reader.read_exact(&mut trailer).await?;
+            // Read trailer directly from inner reader (not through the hasher)
+            reader.inner.read_exact(&mut trailer).await?;
+            if trailer != expected_checksum.as_slice() {
+                bail!("packfile SHA-1 checksum mismatch");
+            }
         }
 
         let mut oid_by_offset: HashMap<u64, gix_hash::ObjectId> = HashMap::new();
