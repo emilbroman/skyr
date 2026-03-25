@@ -62,7 +62,7 @@ function sortIndicator(column: SortColumn): string {
 </script>
 
 <svelte:head>
-    <title>Deployments · {orgName}/{repoName} ({envName}) - Skyr</title>
+    <title>Deployments · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
 {#if env}

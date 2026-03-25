@@ -10,7 +10,7 @@ const organizations = graphqlQuery(() => ({
 </script>
 
 <svelte:head>
-    <title>Organizations - Skyr</title>
+    <title>Organizations – Skyr</title>
 </svelte:head>
 
 <div class="p-6">

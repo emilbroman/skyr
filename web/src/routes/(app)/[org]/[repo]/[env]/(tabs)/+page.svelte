@@ -25,7 +25,7 @@ let desiredDeployment = $derived(
 </script>
 
 <svelte:head>
-    <title>{orgName}/{repoName} ({envName}) - Skyr</title>
+    <title>{orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
 {#if desiredDeployment}

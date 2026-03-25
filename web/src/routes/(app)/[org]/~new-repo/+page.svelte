@@ -28,7 +28,7 @@ function submit() {
 </script>
 
 <svelte:head>
-    <title>New Repository · {orgName} - Skyr</title>
+    <title>New Repository · {orgName} – Skyr</title>
 </svelte:head>
 
 <div class="p-6 max-w-lg mx-auto">

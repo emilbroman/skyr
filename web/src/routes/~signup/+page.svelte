@@ -118,7 +118,7 @@ async function submitPasskeySignup() {
 </script>
 
 <svelte:head>
-    <title>Sign Up - Skyr</title>
+    <title>Sign Up – Skyr</title>
 </svelte:head>
 
 <div class="flex-1 flex items-center justify-center p-4">

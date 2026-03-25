@@ -38,7 +38,7 @@ function parseSpanStartLine(span: string): number {
 </script>
 
 <svelte:head>
-    <title>{resourceId} · {orgName}/{repoName} ({envName}) - Skyr</title>
+    <title>{resourceId} · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
 {#if resourceDetail.isPending}

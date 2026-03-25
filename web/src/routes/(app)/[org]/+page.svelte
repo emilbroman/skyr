@@ -14,7 +14,7 @@ const orgDetail = graphqlQuery(() => ({
 </script>
 
 <svelte:head>
-    <title>{orgName} - Skyr</title>
+    <title>{orgName} – Skyr</title>
 </svelte:head>
 
 <div class="p-6">

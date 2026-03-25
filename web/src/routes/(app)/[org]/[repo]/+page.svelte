@@ -44,7 +44,7 @@ $effect(() => {
 </script>
 
 <svelte:head>
-    <title>{orgName}/{repoName} - Skyr</title>
+    <title>{orgName}/{repoName} – Skyr</title>
 </svelte:head>
 
 {#if repoDetail.isPending}
