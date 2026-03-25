@@ -12,6 +12,7 @@ import {
     user,
 } from "$lib/stores/auth";
 import { ChevronDown, LogIn, LogOut, Settings } from "lucide-svelte";
+import SkyrLogo from "$lib/components/SkyrLogo.svelte";
 
 let { children } = $props();
 
@@ -54,7 +55,10 @@ function closeDropdown() {
       class="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
     >
       <div class="flex items-center gap-4">
-        <a href="/" class="font-bold text-gray-900">Skyr</a>
+        <a href="/" class="flex items-center gap-1.5 font-bold text-gray-900">
+          <SkyrLogo class="w-5 h-5" />
+          Skyr
+        </a>
         <a
           href="/~docs/"
           class="relative {page.url.pathname.startsWith('/~docs/') ? 'text-gray-900 font-medium after:absolute after:left-0 after:right-0 after:mt-1 after:top-full after:h-0.5 after:bg-orange-500' : 'text-gray-500'} hover:text-gray-800 transition-colors"

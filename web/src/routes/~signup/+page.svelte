@@ -8,6 +8,7 @@ import { graphqlMutation } from "$lib/graphql/query";
 import { setAuth } from "$lib/stores/auth";
 import { createPasskeyRegistration } from "$lib/webauthn";
 import SshSignatureInput from "$lib/components/SshSignatureInput.svelte";
+import SkyrLogo from "$lib/components/SkyrLogo.svelte";
 
 let username = $state("");
 let email = $state("");
@@ -269,5 +270,7 @@ async function submitPasskeySignup() {
         </div>
       {/if}
     </div>
+
+    <SkyrLogo class="w-8 h-8 mx-auto mt-6" />
   </div>
 </div>
