@@ -493,7 +493,7 @@ Artifact.File({ name: "test.txt", contents: "hello" })
 
 ## Type Annotations
 
-Type annotations appear after colons in function parameters, after `extern` declarations, and in `type` declarations.
+Type annotations appear after colons in function parameters, let bindings, and `type` declarations.
 
 ### Basic Types
 
@@ -564,16 +564,6 @@ fn(cfg: MyLib.Config) cfg.host
 ```
 
 This works anywhere a type expression is expected.
-
-## Extern Declarations
-
-Declare external (built-in) functions:
-
-```scl
-export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
-```
-
-The string after `extern` is the internal function name. This is primarily used in standard library modules.
 
 ## Module Structure
 
