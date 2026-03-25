@@ -4,12 +4,11 @@
 //! It serves as both:
 //! - The Orchestrator, accepting node registrations and connecting to Conduit
 //!   services to execute container operations.
-//! - An RTP plugin, handling Image, Pod, and Container resource lifecycle.
+//! - An RTP plugin, handling Image, Pod, and other resource lifecycle.
 //!
 //! Resource types:
 //! - `Std/Container.Image` - Container image build via BuildKit
 //! - `Std/Container.Pod` - Pod sandbox lifecycle
-//! - `Std/Container.Pod.Container` - Container lifecycle within a pod
 //! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
 //! - `Std/Container.Host.Port` - Load-balanced port routing (supports pod and host port backends)

@@ -1124,19 +1124,19 @@ mod tests {
 
     #[test]
     fn resource_id_with_compound_name() {
-        // Resource names can contain slashes (e.g., "pod/container")
-        let id = ResourceId::new("Std/Container.Pod.Container", "web/nginx");
-        assert_eq!(id.resource_type(), "Std/Container.Pod.Container");
-        assert_eq!(id.resource_name(), "web/nginx");
-        assert_eq!(id.to_string(), "Std/Container.Pod.Container:web/nginx");
+        // Resource names can contain slashes (e.g., "pod/port")
+        let id = ResourceId::new("Std/Container.Pod.Port", "web/http");
+        assert_eq!(id.resource_type(), "Std/Container.Pod.Port");
+        assert_eq!(id.resource_name(), "web/http");
+        assert_eq!(id.to_string(), "Std/Container.Pod.Port:web/http");
     }
 
     #[test]
     fn resource_id_parse_compound_name() {
         // The first `:` separates type from name
-        let id: ResourceId = "Std/Container.Pod.Container:web/nginx".parse().unwrap();
-        assert_eq!(id.resource_type(), "Std/Container.Pod.Container");
-        assert_eq!(id.resource_name(), "web/nginx");
+        let id: ResourceId = "Std/Container.Pod.Port:web/http".parse().unwrap();
+        assert_eq!(id.resource_type(), "Std/Container.Pod.Port");
+        assert_eq!(id.resource_name(), "web/http");
     }
 
     #[test]

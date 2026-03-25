@@ -187,7 +187,6 @@ The built-in resource types have the following volatility:
 | `Std/Artifact.File` | No |
 | `Std/Container.Image` | No |
 | `Std/Container.Pod` | Yes |
-| `Std/Container.Pod.Container` | Yes |
 | `Std/Container.Pod.Port` | No |
 | `Std/Container.Host` | No |
 | `Std/Container.Host.Port` | No |

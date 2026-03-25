@@ -39,17 +39,6 @@ Creates a pod sandbox on a worker node via SCOP.
 
 Pods are immutable in CRI — changes to `name`, `uid`, or `allow` trigger pod recreation.
 
-### `Std/Container.Pod.Container`
-
-Creates and starts a container within a pod via SCOP.
-
-| | Fields |
-|---|--------|
-| **Inputs** | `podId`, `podName`, `podUid`, `node`, `name`, `image`, optional `command`, optional `args`, optional `envs` |
-| **Outputs** | `containerId`, `name`, `image` |
-
-Containers are immutable — any input change triggers deletion and recreation. Containers are automatically started after creation.
-
 ### `Std/Container.Pod.Port`
 
 Opens an ingress firewall port on a pod via SCOP.
