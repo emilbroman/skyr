@@ -32,6 +32,18 @@ The `compile()` function:
 
 Parse functions return `Diagnosed<Option<_>>` and report syntax errors as diagnostics (not panics or `Result` errors).
 
+## Extern Declarations
+
+SCL supports `extern` declarations to bind built-in (native) functions into the language. This is an internal mechanism used by the standard library to expose Rust-implemented functions to SCL code:
+
+```scl
+export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
+```
+
+The string after `extern` is the internal function name, which must match a name registered via `register_extern` in the corresponding Rust standard library module. The type annotation after the colon declares the function's signature for the type checker.
+
+Extern functions are registered in `src/std/` modules and wired into the compiler via the `std_modules!` macro in `src/std/mod.rs`.
+
 ## Key Types
 
 - **`Diagnosed<T>`** — wraps a value with a `DiagList` of accumulated warnings and errors. Used throughout the pipeline to collect diagnostics without aborting.
