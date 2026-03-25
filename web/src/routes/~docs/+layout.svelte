@@ -106,7 +106,7 @@ let currentTitle = $derived(findCurrentTitle());
 
 <div class="flex-1 bg-white flex">
     <!-- Desktop sidebar -->
-    <nav class="hidden md:block w-56 shrink-0 border-r border-gray-200 p-4 text-sm">
+    <nav class="hidden md:block w-56 shrink-0 border-r border-gray-200 p-4 text-sm sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">
         {@render navLinks()}
     </nav>
 
