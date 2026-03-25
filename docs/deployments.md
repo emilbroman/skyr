@@ -155,13 +155,15 @@ This ensures resources aren't accidentally destroyed during rollouts and that cl
 Resources can depend on other resources. When tearing down a deployment, Skyr respects these dependencies:
 
 ```scl
-let image = Container.Image({ name: "app", context: "." })
-let pod = Container.Pod({ name: "app" })
-let container = pod.Container({ name: "app", image: image.fullname })
+import Std/Container
+
+let image = Container.Image({ name: "app", context: ".", containerfile: "Containerfile" })
+let pod = Container.Pod({ name: "app", containers: [{ image: image.fullname }] })
+let httpPort = pod.Port({ port: 8080 })
 ```
 
-The container depends on both the pod and the image. During teardown:
-1. The container is destroyed first
+The port depends on the pod, and the pod depends on the image. During teardown:
+1. The port is destroyed first
 2. Then the pod
 3. Then the image
 
@@ -183,7 +185,12 @@ The built-in resource types have the following volatility:
 | Resource Type | Volatile |
 |---------------|----------|
 | `Std/Random.Int` | No |
-| `Std/Crypto.*` | No |
+| `Std/Time.Clock` | Yes |
+| `Std/Crypto.ED25519PrivateKey` | No |
+| `Std/Crypto.ECDSAPrivateKey` | No |
+| `Std/Crypto.RSAPrivateKey` | No |
+| `Std/Crypto.CertificationRequest` | No |
+| `Std/Crypto.CertificateSignature` | No |
 | `Std/Artifact.File` | No |
 | `Std/Container.Image` | No |
 | `Std/Container.Pod` | Yes |
@@ -199,13 +206,15 @@ When a deployment is torn down, Skyr destroys all non-sticky owned resources as 
 
 A resource can be both sticky and volatile. While its deployment is active (Desired), a sticky+volatile resource is reconciled normally. Once the deployment becomes Undesired and transitions to Down, the resource persists but is no longer repaired if it disappears externally.
 
+None of the built-in resource types are currently sticky.
+
 ## Viewing Deployment Status
 
 Use the CLI to check on your deployments:
 
 ```bash
-skyr deployments list alice/my-app   # List all deployments
-skyr deployments logs alice/my-app   # Stream deployment logs in real time
+skyr deployments list alice/my-app    # List all deployments
+skyr deployments logs alice/my-app    # Stream deployment logs in real time
+skyr resources list alice/my-app      # List all resources
+skyr resources logs <resource-qid>    # Stream resource logs
 ```
-
-Or use the GraphQL API to query deployment status, view logs, and access artifacts.

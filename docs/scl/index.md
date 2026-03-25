@@ -132,17 +132,26 @@ let cfg: MyLib.Config = { host: "localhost", port: 8080 }
 
 ### Modules
 
-Organize code with imports:
+Organize code with imports. Standard library modules use the `Std/` prefix:
 
 ```scl
 import Std/Encoding
 import Std/Artifact
 
-let config = Artifact.File({
+Artifact.File({
     name: "config.json",
     contents: Encoding.toJson({ version: 1 }),
 })
 ```
+
+You can also import your own `.scl` files using your repository's qualified name:
+
+```scl
+import alice/my-repo/Config
+let port = Config.defaultPort
+```
+
+See [Syntax Reference — Import](syntax.md#import) for details.
 
 ## Resources
 
@@ -150,7 +159,7 @@ Resources are the building blocks of your infrastructure. When you call a resour
 
 1. **Derives a unique ID** from the resource type and inputs
 2. **Checks if it exists** — if so, returns the existing outputs
-3. **Creates it if needed** — queues a creation task for the resource transition engine
+3. **Creates it if needed** — queues a creation task
 4. **Tracks dependencies** — records which resources depend on which
 
 Resources return records containing their outputs. Use these outputs in other resources to establish dependencies:

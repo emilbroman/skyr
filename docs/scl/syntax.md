@@ -255,7 +255,7 @@ Access record or resource fields using dot notation:
 ```scl
 config.port
 user.name
-pod.Container
+pod.Port
 ```
 
 ### Function Calls
@@ -432,12 +432,44 @@ import Std/Container
 import Std/Encoding
 ```
 
-After importing, access the module's exports via the module name:
+After importing, access the module's exports via the last segment of the import path:
 
 ```scl
 Container.Image(...)
 Encoding.toJson(...)
 ```
+
+#### Importing Your Own Modules
+
+You can split your configuration across multiple `.scl` files. Import paths are resolved relative to the repository root, prefixed with your repository's qualified name (`org/repo`):
+
+```
+my-repo/
+├── Main.scl
+├── Config.scl
+└── Utils/
+    └── Network.scl
+```
+
+```scl
+// Main.scl
+import alice/my-repo/Config
+import alice/my-repo/Utils/Network
+
+let cfg = Config.defaults
+let pod = Network.createPod(cfg)
+```
+
+The last segment of the import path becomes the module alias (`Config`, `Network`).
+
+When using `skyr run` locally, the default package name is `Local`:
+
+```scl
+import Local/Config
+import Local/Utils/Network
+```
+
+You can change this with `skyr run --package alice/my-repo` to match your deployed import paths.
 
 ### Type Declarations
 
@@ -581,13 +613,13 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-let pod = Container.Pod({ name: "my-app" })
+let pod = Container.Pod({
+    name: "my-app",
+    containers: [{ image: image.fullname }],
+})
 
 // Expression statements for side effects
-pod.Container({
-    name: "app",
-    image: image.fullname,
-})
+pod.Port({ port: 8080 })
 
 // Exports (typically in library modules)
 export let config = { ... }

@@ -84,7 +84,7 @@ let httpPort = pod.Port({ port: 8080, protocol: "tcp" })
 | Field | Type | Description |
 |-------|------|-------------|
 | `port` | `Int` | Port number to open |
-| `protocol` | `Str` | Protocol: `"tcp"` (default) or `"udp"` |
+| `protocol` | `Str?` | Protocol: `"tcp"` (default) or `"udp"` |
 
 **Outputs:**
 
@@ -220,9 +220,10 @@ let dbPod = Container.Pod({
 let dbPort = dbPod.Port({ port: 5432 })
 
 // API tier with access to the database
+let apiImage = Container.Image({ name: "api", context: ".", containerfile: "Containerfile" })
 let apiPod = Container.Pod({
     name: "api",
-    containers: [{ image: image.fullname }],
+    containers: [{ image: apiImage.fullname }],
 })
 apiPod.Attachment(dbPort)
 let apiPort = apiPod.Port({ port: 8080 })
@@ -247,7 +248,7 @@ In this example:
 
 ## Std/Artifact
 
-Store files as artifacts. Artifacts persist even after deployments are torn down.
+Store files as downloadable artifacts.
 
 ### File
 
@@ -275,6 +276,9 @@ let readme = Artifact.File({
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `namespace` | `Str` | The artifact namespace (derived from the environment) |
+| `name` | `Str` | The artifact name |
+| `mediaType` | `Str` | The resolved media type |
 | `url` | `Str` | URL to download the artifact |
 
 Artifacts are stored in Skyr's object storage. The URL is a presigned link that allows downloading the file.
@@ -435,6 +439,9 @@ Sign a certificate from a CSR. Supports both CA-signed and self-signed certifica
 import Std/Crypto
 import Std/Time
 
+// Clock that ticks every hour
+let now = Time.Clock({ milliseconds: 3600000 })
+
 let caKey = Crypto.ECDSAPrivateKey({ name: "ca-key", curve: "P-256" })
 let caCsr = Crypto.CertificationRequest({
     privateKeyPem: caKey.pem,
@@ -445,7 +452,7 @@ let caCert = Crypto.CertificateSignature({
     csrPem: caCsr.pem,
     privateKeyPem: caKey.pem,
     validity: {
-        before: Time.add(Time.Clock(Time.hours(1)), Time.days(3650)),
+        before: Time.add(now, { months: 120 }),  // 10 years
     },
 })
 
@@ -462,7 +469,7 @@ let serverCert = Crypto.CertificateSignature({
     privateKeyPem: caKey.pem,
     caCertPem: caCert.pem,
     validity: {
-        before: Time.add(Time.Clock(Time.hours(1)), Time.days(365)),
+        before: Time.add(now, { months: 12 }),  // 1 year
     },
 })
 ```
@@ -470,6 +477,8 @@ let serverCert = Crypto.CertificateSignature({
 **Self-signed example** (omit `caCertPem`):
 
 ```scl
+let now = Time.Clock({ milliseconds: 3600000 })
+
 let key = Crypto.ECDSAPrivateKey({ name: "self-signed-key", curve: "P-256" })
 let csr = Crypto.CertificationRequest({
     privateKeyPem: key.pem,
@@ -479,7 +488,7 @@ let cert = Crypto.CertificateSignature({
     csrPem: csr.pem,
     privateKeyPem: key.pem,
     validity: {
-        before: Time.add(Time.Clock(Time.hours(1)), Time.days(365)),
+        before: Time.add(now, { months: 12 }),  // 1 year
     },
 })
 ```
@@ -815,6 +824,85 @@ For example, with `{ months: 1, milliseconds: 1 }`:
 - Window 1 starts at `1970-01-01T00:00:00.000Z`
 - Window 2 starts at `1970-02-01T00:00:00.001Z`
 - Window 3 starts at `1970-03-01T00:00:00.002Z`
+
+### CalendarDate
+
+A calendar date:
+
+```scl
+let date: Time.CalendarDate = { year: 2024, month: 6, day: 15 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `year` | `Int` | Year |
+| `month` | `Int` | Month (1–12) |
+| `day` | `Int` | Day of month (1–31) |
+
+### ClockTime
+
+A time of day:
+
+```scl
+let time: Time.ClockTime = { hour: 14, minute: 30, second: 0 }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `hour` | `Int` | Hour (0–23) |
+| `minute` | `Int` | Minute (0–59) |
+| `second` | `Int` | Second (0–59) |
+
+### DateTime
+
+A combination of `CalendarDate` and `ClockTime`:
+
+```scl
+let dt: Time.DateTime = {
+    date: { year: 2024, month: 6, day: 15 },
+    time: { hour: 14, minute: 30, second: 0 },
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `date` | `CalendarDate` | The date component |
+| `time` | `ClockTime` | The time component |
+
+### add
+
+Add a `Duration` to an `Instant`:
+
+```scl
+let later = Time.add({ epochMillis: 1700000000000 }, { months: 1 })
+let alsoLater = Time.add({ epochMillis: 1700000000000 }, { milliseconds: 86400000 })
+```
+
+**Type:** `fn(Instant, Duration) Instant`
+
+The month component uses calendar-month arithmetic. The millisecond component is exact.
+
+### subtract
+
+Subtract a `Duration` from an `Instant`:
+
+```scl
+let earlier = Time.subtract({ epochMillis: 1700000000000 }, { months: 1 })
+```
+
+**Type:** `fn(Instant, Duration) Instant`
+
+### utc
+
+Convert an `Instant` to a `DateTime` in UTC:
+
+```scl
+let dt = Time.utc({ epochMillis: 1700000000000 })
+// dt.date == { year: 2023, month: 11, day: 14 }
+// dt.time == { hour: 22, minute: 13, second: 20 }
+```
+
+**Type:** `fn(Instant) DateTime`
 
 ### toISO
 

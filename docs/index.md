@@ -27,18 +27,15 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-let pod = Container.Pod({ name: "my-app" })
-
-pod.Container({
-    name: "app",
-    image: image.fullname,
+let pod = Container.Pod({
+    name: "my-app",
+    containers: [{ image: image.fullname }],
 })
 ```
 
 This configuration:
 1. Builds a container image from the repository's root directory
-2. Creates a pod (a group of containers that share resources)
-3. Runs a container using the built image
+2. Creates a pod running a container with the built image
 
 ### Learn SCL
 
@@ -84,13 +81,10 @@ let image = Container.Image({
     containerfile: "Containerfile",
 })
 
-// Create a pod to run the application
-let pod = Container.Pod({ name: "hello-world" })
-
-// Run the container
-let container = pod.Container({
-    name: "app",
-    image: image.fullname,
+// Create a pod running the application
+let pod = Container.Pod({
+    name: "hello-world",
+    containers: [{ image: image.fullname }],
 })
 
 // Expose deployment info as an artifact
@@ -99,7 +93,6 @@ Artifact.File({
     mediaType: "application/json",
     contents: Encoding.toJson({
         pod: pod.name,
-        container: container.name,
         image: image.fullname,
     }),
 })
@@ -125,16 +118,19 @@ git push skyr main
 The `skyr` CLI helps you work with SCL locally and interact with Skyr servers.
 
 ```bash
-skyr repl                           # Interactive SCL REPL
-skyr run                            # Evaluate Main.scl in the current directory
-skyr run --root ./app               # Evaluate Main.scl in a specific directory
+skyr repl                              # Interactive SCL REPL
+skyr run                               # Evaluate Main.scl in the current directory
+skyr run --root ./app                  # Evaluate Main.scl in a specific directory
+skyr fmt Main.scl                      # Format an SCL file
 skyr signup --username alice --email alice@example.com  # Create a new account
-skyr signin --username alice        # Sign in to Skyr
-skyr whoami                         # Show current user
-skyr repo list                      # List repositories
-skyr repo create alice/my-app       # Create a repository
-skyr deployments list alice/my-app  # List deployments
-skyr deployments logs alice/my-app  # Stream deployment logs
+skyr signin --username alice           # Sign in to Skyr
+skyr whoami                            # Show current user
+skyr repo list                         # List repositories
+skyr repo create alice/my-app          # Create a repository
+skyr deployments list alice/my-app     # List deployments
+skyr deployments logs alice/my-app     # Stream deployment logs
+skyr resources list alice/my-app       # List resources
+skyr resources logs alice/my-app::main::Std/Random.Int:dice  # Stream resource logs
 ```
 
-Use `--format json` with any command to get machine-readable output.
+Use `--format json` with any command to get machine-readable output. Use `--api-url` to point at a different Skyr server.
