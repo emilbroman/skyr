@@ -782,8 +782,8 @@ peg::parser! {
             }
 
         rule let_bind() -> LetBind
-            = let_keyword() var:var() equals() expr:expr() {
-                LetBind { var, expr: Box::new(expr) }
+            = let_keyword() var:var() ty:(colon() ty:type_expr() { ty })? equals() expr:expr() {
+                LetBind { var, ty, expr: Box::new(expr) }
             }
 
         rule export_let_bind() -> LetBind

@@ -118,7 +118,6 @@ When adding or modifying standard library functions/modules in `sclc`, add fixtu
 **Important notes:**
 - Record fields in `exports.txt` are BTreeMap-ordered (alphabetical)
 - SCL strings use `{` for interpolation — escape with `\{` when literal braces are needed
-- SCL does not support type annotations on `let` bindings (e.g., `let x: Int? = nil` won't parse) — pass values directly to functions instead
 - Resource IDs for Crypto CSR/CertificateSignature are hash-based — run the test once with a placeholder to capture the actual hash
 
 ## Running Locally

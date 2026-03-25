@@ -1379,9 +1379,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::Let(let_expr) => {
                 let mut diags = DiagList::new();
+                let annotation_ty = let_expr
+                    .bind
+                    .ty
+                    .as_ref()
+                    .map(|te| self.resolve_type_expr(env, te).unpack(&mut diags));
                 let bind_ty = self
-                    .check_expr(env, let_expr.bind.expr.as_ref(), None)?
+                    .check_expr(env, let_expr.bind.expr.as_ref(), annotation_ty.as_ref())?
                     .unpack(&mut diags);
+                let bind_ty = annotation_ty.unwrap_or(bind_ty);
                 let inner_env = env.with_local(
                     let_expr.bind.var.name.as_str(),
                     let_expr.bind.var.span(),
@@ -2247,6 +2253,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let_bind: &ast::LetBind,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
+        let annotation_ty = let_bind
+            .ty
+            .as_ref()
+            .map(|te| self.resolve_type_expr(env, te).unpack(&mut diags));
         let type_id = next_type_id();
         let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
         let env = env.with_free_var(
@@ -2256,12 +2266,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             constraints.clone(),
         );
         let resolved_ty = self
-            .check_expr(&env, let_bind.expr.as_ref(), None)?
+            .check_expr(&env, let_bind.expr.as_ref(), annotation_ty.as_ref())?
             .unpack(&mut diags);
         // Solve free variable constraints and substitute into the body type
         let solved = constraints.borrow().solve(type_id, &resolved_ty);
         let resolved_ty = resolved_ty.substitute(&solved);
-        let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
+        let ty = if let Some(ann_ty) = annotation_ty {
+            Type::IsoRec(type_id, Box::new(ann_ty))
+        } else {
+            Type::IsoRec(type_id, Box::new(resolved_ty))
+        };
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());
         }

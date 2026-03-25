@@ -511,3 +511,7 @@ test_case!(RecursiveGlobalFn);
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);
+
+// Let type annotation tests
+test_case!(LetTypeAnnotation);
+test_case!(LetTypeAnnotationError);

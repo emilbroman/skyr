@@ -220,6 +220,10 @@ impl Formatter {
 
     fn emit_let_bind(&mut self, bind: &LetBind) {
         self.write(&bind.var.name);
+        if let Some(ty) = &bind.ty {
+            self.write(": ");
+            self.emit_type_expr(ty);
+        }
         self.write(" = ");
         self.emit_expr(&bind.expr);
     }

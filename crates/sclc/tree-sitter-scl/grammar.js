@@ -52,7 +52,7 @@ module.exports = grammar({
       seq($.identifier, repeat(seq("/", $.identifier))),
 
     let_binding: ($) =>
-      seq("let", field("name", $.identifier), "=", field("value", $._expression)),
+      seq("let", field("name", $.identifier), optional(seq(":", field("type", $._type_expression))), "=", field("value", $._expression)),
 
     export_statement: ($) => seq("export", $.let_binding),
 

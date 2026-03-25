@@ -242,6 +242,7 @@ pub struct ImportStmt {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetBind {
     pub var: Loc<Var>,
+    pub ty: Option<Loc<TypeExpr>>,
     pub expr: Box<Loc<Expr>>,
 }
 

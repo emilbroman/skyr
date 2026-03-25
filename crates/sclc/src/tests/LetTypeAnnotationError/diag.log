@@ -1,0 +1,1 @@
+LetTypeAnnotationError/Main 1:14,1:21: invalid type: Str is not assignable to Int
