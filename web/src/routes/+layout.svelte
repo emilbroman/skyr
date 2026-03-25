@@ -52,7 +52,7 @@ function closeDropdown() {
 <QueryClientProvider client={queryClient}>
   <div class="min-h-screen bg-gray-100 flex flex-col">
     <header
-      class="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
+      class="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0 sticky top-0 z-40"
     >
       <div class="flex items-center gap-4">
         <a href="/" class="flex items-center gap-1.5 font-bold text-gray-900">
