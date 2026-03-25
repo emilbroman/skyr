@@ -700,6 +700,20 @@ impl crate::Diag for UnknownType {
 }
 
 #[derive(Error, Debug)]
+#[error("unknown field \"{name}\" in record literal")]
+pub struct UnknownField {
+    pub module_id: crate::ModuleId,
+    pub name: String,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for UnknownField {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -1909,6 +1923,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             )),
                             span: expr.span(),
                         });
+                    }
+                    for field in &record_expr.fields {
+                        if expected_record.get(field.var.name.as_str()).is_none() {
+                            diags.push(UnknownField {
+                                module_id: env.module_id()?,
+                                name: field.var.name.clone(),
+                                span: field.var.span(),
+                            });
+                        }
                     }
                     return Ok(Diagnosed::new(ty, diags));
                 }
