@@ -1,0 +1,2 @@
+let f = fn(x: {name: Str, age: Int?}) x
+let y = f({ name: "Alice", agee: 30 })
