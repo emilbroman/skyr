@@ -67,12 +67,12 @@ $effect(() => {
                     <code
                         class="flex-1 text-xs bg-gray-50 border border-gray-200 rounded px-3 py-2 text-gray-800 overflow-x-auto whitespace-nowrap"
                     >
-                        git clone {cloneUrl}
+                        git clone -o skyr {cloneUrl}
                     </code>
                     <button
                         class="shrink-0 p-1.5 rounded hover:bg-gray-100 transition-colors text-gray-500 hover:text-gray-700"
                         title="Copy to clipboard"
-                        onclick={() => copyText(`git clone ${cloneUrl}`, "clone")}
+                        onclick={() => copyText(`git clone -o skyr ${cloneUrl}`, "clone")}
                     >
                         {#if copiedClone}
                             <Check class="w-4 h-4 text-green-500" />
@@ -95,12 +95,12 @@ $effect(() => {
                     <code
                         class="flex-1 text-xs bg-gray-50 border border-gray-200 rounded px-3 py-2 text-gray-800 overflow-x-auto whitespace-nowrap"
                     >
-                        git remote add origin {cloneUrl}
+                        git remote add skyr {cloneUrl}
                     </code>
                     <button
                         class="shrink-0 p-1.5 rounded hover:bg-gray-100 transition-colors text-gray-500 hover:text-gray-700"
                         title="Copy to clipboard"
-                        onclick={() => copyText(`git remote add origin ${cloneUrl}`, "remote")}
+                        onclick={() => copyText(`git remote add skyr ${cloneUrl}`, "remote")}
                     >
                         {#if copiedRemote}
                             <Check class="w-4 h-4 text-green-500" />
