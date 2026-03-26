@@ -1,13 +1,88 @@
-# Stage 1: build static files
+# Stage 1: build WASM module from Rust
+FROM rust:1-bookworm AS wasm
+RUN cargo install wasm-pack && rustup target add wasm32-unknown-unknown
+WORKDIR /src
+
+# Copy workspace Cargo.toml and all crate Cargo.tomls
+COPY Cargo.toml Cargo.lock ./
+COPY crates/adb/Cargo.toml crates/adb/Cargo.toml
+COPY crates/api/Cargo.toml crates/api/Cargo.toml
+COPY crates/cdb/Cargo.toml crates/cdb/Cargo.toml
+COPY crates/de/Cargo.toml crates/de/Cargo.toml
+COPY crates/ids/Cargo.toml crates/ids/Cargo.toml
+COPY crates/ldb/Cargo.toml crates/ldb/Cargo.toml
+COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
+COPY crates/plugin_std_artifact/Cargo.toml crates/plugin_std_artifact/Cargo.toml
+COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
+COPY crates/plugin_std_crypto/Cargo.toml crates/plugin_std_crypto/Cargo.toml
+COPY crates/plugin_std_random/Cargo.toml crates/plugin_std_random/Cargo.toml
+COPY crates/plugin_std_time/Cargo.toml crates/plugin_std_time/Cargo.toml
+COPY crates/rdb/Cargo.toml crates/rdb/Cargo.toml
+COPY crates/rtp/Cargo.toml crates/rtp/Cargo.toml
+COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
+COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
+COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
+COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
+COPY crates/sclc-wasm/Cargo.toml crates/sclc-wasm/Cargo.toml
+COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
+COPY crates/scop/Cargo.toml crates/scop/Cargo.toml
+COPY crates/scoc/Cargo.toml crates/scoc/Cargo.toml
+COPY crates/udb/Cargo.toml crates/udb/Cargo.toml
+
+# Create stubs for all workspace crates to cache dependency downloads
+RUN set -eu; \
+    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src \
+      crates/ids/src crates/ldb/src crates/lsp/src \
+      crates/plugin_std_artifact/src crates/plugin_std_container/src \
+      crates/plugin_std_crypto/src crates/plugin_std_random/src \
+      crates/plugin_std_time/src \
+      crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src \
+      crates/cli/src crates/sclc/src crates/sclc-wasm/src \
+      crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
+    printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/api/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/de/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ids/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ldb/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/lsp/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_artifact/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_container/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_crypto/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_random/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_time/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/rdb/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/rtp/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/rte/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/cli/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/sclc-wasm/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/scs/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/scop/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/scoc/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/udb/src/lib.rs
+
+# Fetch dependencies with stubs (cached layer)
+RUN cargo fetch --target wasm32-unknown-unknown
+
+# Copy real sources for the crates we need and build WASM
+COPY crates/ids/ crates/ids/
+COPY crates/sclc/ crates/sclc/
+COPY crates/sclc-wasm/ crates/sclc-wasm/
+RUN wasm-pack build crates/sclc-wasm --target web --out-dir /tmp/wasm-out
+
+# Stage 2: build static files
 FROM node:25-alpine AS build
 WORKDIR /app
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
+COPY --from=wasm /tmp/wasm-out src/lib/sclc-wasm/
 COPY docs/ /docs/
 RUN npm run build
 
-# Stage 2: nginx serving static files with API reverse proxy
+# Stage 3: nginx serving static files with API reverse proxy
 FROM nginx:1-alpine
 ENV NGINX_ENVSUBST_FILTER=API_UPSTREAM
 ENV API_UPSTREAM=api:8080

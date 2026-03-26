@@ -37,6 +37,9 @@ jobs:
               - 'flake.lock'
             web:
               - 'web/**'
+              - 'crates/sclc/**'
+              - 'crates/sclc-wasm/**'
+              - 'crates/ids/**'
 
   rust-check:
     name: Rust Check & Test
@@ -68,11 +71,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm
+
       - uses: actions/setup-node@v4
         with:
           node-version-file: web/.node-version
           cache: npm
           cache-dependency-path: web/package-lock.json
+
+      - name: Build WASM
+        run: nix develop -c wasm-pack build crates/sclc-wasm --target web --out-dir ../../web/src/lib/sclc-wasm
 
       - name: web install
         run: npm ci
