@@ -19,6 +19,7 @@ members = [
   "crates/lsp",
   "crates/cli",
   "crates/sclc",
+  "crates/sclc-wasm",
   "crates/scoc",
   "crates/scop",
   "crates/scs",
