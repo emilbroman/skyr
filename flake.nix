@@ -22,11 +22,14 @@
             terragrunt
             gettext
             nodejs_25
+            wasm-pack
+            wasm-bindgen-cli
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
             rustup install nightly
             rustup component add rust-analyzer rustfmt clippy
+            rustup target add wasm32-unknown-unknown
           '';
         };
       }

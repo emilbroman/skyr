@@ -65,6 +65,12 @@ function closeDropdown() {
         >
           Docs
         </a>
+        <a
+          href="/~playground"
+          class="relative {page.url.pathname === '/~playground' ? 'text-gray-900 font-medium after:absolute after:left-0 after:right-0 after:mt-1 after:top-full after:h-0.5 after:bg-orange-500' : 'text-gray-500'} hover:text-gray-800 transition-colors"
+        >
+          Playground
+        </a>
       </div>
 
       {#if $isAuthenticated}
