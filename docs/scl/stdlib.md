@@ -48,12 +48,30 @@ let pod = Container.Pod({
 })
 ```
 
+Pods and containers support optional environment variables via `env`. Pod-level env vars are shared across all containers; container-level env vars override pod-level ones when keys conflict:
+
+```scl
+let pod = Container.Pod({
+    name: "my-app",
+    env: #{ "LOG_LEVEL": "info", "REGION": "eu-north-1" },
+    containers: [
+        {
+            image: "my-app:latest",
+            env: #{ "LOG_LEVEL": "debug" },  // overrides pod-level
+        },
+    ],
+})
+```
+
+In this example, the container sees `LOG_LEVEL=debug` (container wins) and `REGION=eu-north-1` (inherited from pod).
+
 **Inputs:**
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `Str` | Pod name |
-| `containers` | `[{ image: Str }]` | List of containers to run in the pod |
+| `containers` | `[{ image: Str, env: #{Str: Str}? }]` | List of containers to run in the pod |
+| `env` | `#{Str: Str}?` | Pod-level environment variables shared across all containers |
 
 **Outputs:**
 

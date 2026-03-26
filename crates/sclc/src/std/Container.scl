@@ -13,6 +13,7 @@
 
 export type Container {
     image: Str,
+    env: #{Str: Str}?,
 }
 
 export type Image {
@@ -78,6 +79,7 @@ export type Pod {
 export let Pod = extern "Std/Container.Pod": fn({
     name: Str,
     containers: [Container],
+    env: #{Str: Str}?,
 }) Pod
 
 export type HostPort {

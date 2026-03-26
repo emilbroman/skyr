@@ -18,7 +18,7 @@ mod node_registry;
 mod subnet_allocator;
 mod vip_allocator;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -395,7 +395,8 @@ impl ContainerPlugin {
     ///
     /// Inputs:
     /// - `name`: Full resource name including inputs hash (required)
-    /// - `containers`: List of `{ image: Str }` records (required)
+    /// - `containers`: List of `{ image: Str, env: #{Str: Str}? }` records (required)
+    /// - `env`: Pod-level environment variables `#{Str: Str}?` (optional)
     ///
     /// Outputs:
     /// - `node`: The node where the pod was scheduled
@@ -412,8 +413,11 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
             .to_string();
 
-        // Extract containers list
-        let containers = extract_container_configs(inputs.get("containers"))?;
+        // Extract pod-level env vars
+        let pod_env = extract_env_dict(inputs.get("env"));
+
+        // Extract containers list (merging pod-level env)
+        let containers = extract_container_configs(inputs.get("containers"), &pod_env)?;
 
         // Determine target node
         let node_name = match inputs.get("node") {
@@ -1357,10 +1361,32 @@ fn validate_node_address(address: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// Extract a `#{Str: Str}` dictionary value into a `BTreeMap<String, String>`.
+///
+/// Returns an empty map for `Nil` values.
+fn extract_env_dict(value: &Value) -> BTreeMap<String, String> {
+    match value {
+        Value::Dict(dict) => dict
+            .iter()
+            .filter_map(|(k, v)| {
+                let key = k.assert_str_ref().ok()?.to_string();
+                let val = v.assert_str_ref().ok()?.to_string();
+                Some((key, val))
+            })
+            .collect(),
+        _ => BTreeMap::new(),
+    }
+}
+
 /// Extract container configs from the `containers` input value.
 ///
-/// The containers list is a `Value::List` of records, each with an `image` field.
-fn extract_container_configs(value: &Value) -> Result<Vec<scop::ContainerConfig>, PluginError> {
+/// The containers list is a `Value::List` of records, each with `image` and
+/// optional `env` fields. Pod-level env vars are merged with container-level
+/// env vars, with container-level taking precedence on key conflicts.
+fn extract_container_configs(
+    value: &Value,
+    pod_env: &BTreeMap<String, String>,
+) -> Result<Vec<scop::ContainerConfig>, PluginError> {
     match value {
         Value::Nil => Ok(vec![]),
         Value::List(list) => {
@@ -1374,11 +1400,22 @@ fn extract_container_configs(value: &Value) -> Result<Vec<scop::ContainerConfig>
                     .assert_str_ref()
                     .map_err(|e| PluginError::InvalidInput(format!("containers[{i}].image: {e}")))?
                     .to_string();
+
+                // Extract container-level env and merge with pod-level env
+                let container_env = extract_env_dict(record.get("env"));
+                let mut merged_env = pod_env.clone();
+                merged_env.extend(container_env);
+
+                let envs: Vec<scop::KeyValue> = merged_env
+                    .into_iter()
+                    .map(|(key, value)| scop::KeyValue { key, value })
+                    .collect();
+
                 configs.push(scop::ContainerConfig {
                     image,
                     command: vec![],
                     args: vec![],
-                    envs: vec![],
+                    envs,
                 });
             }
             Ok(configs)

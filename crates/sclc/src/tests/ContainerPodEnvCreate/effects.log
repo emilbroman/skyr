@@ -1,0 +1,1 @@
+CreateResource ty=Std/Container.Pod name=web-c41c79c5df4e1d6e inputs={containers: [{image: nginx:latest}], env: #{LOG_LEVEL: info, REGION: eu-north-1}, name: web-c41c79c5df4e1d6e, namespace: test}

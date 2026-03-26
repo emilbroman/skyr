@@ -489,6 +489,9 @@ test_case!(ArtifactFileWithRdb);
 // Std/Container
 test_case!(ContainerImage);
 test_case!(ContainerPod);
+test_case!(ContainerPodEnvCreate);
+test_case!(ContainerPodContainerEnvCreate);
+test_case!(ContainerPodEnvMergeCreate);
 test_case!(ContainerAttachment);
 test_case!(ContainerHost);
 
