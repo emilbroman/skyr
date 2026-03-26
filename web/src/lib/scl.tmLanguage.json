@@ -25,7 +25,7 @@
             "name": "comment.line.double-slash.scl"
         },
         "import": {
-            "match": "\\b(import)\\s+([A-Z][\\w]*/[A-Z][\\w]*)",
+            "match": "\\b(import)\\s+([A-Za-z_][\\w]*(?:/[A-Za-z_][\\w]*)+)",
             "captures": {
                 "1": { "name": "keyword.control.import.scl" },
                 "2": { "name": "entity.name.namespace.scl" }
