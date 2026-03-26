@@ -78,6 +78,7 @@ module.exports = grammar({
         $.try_expression,
         $.binary_expression,
         $.unary_expression,
+        $.type_cast,
         $.call_expression,
         $.property_access,
         $._atom_expression,
@@ -101,6 +102,13 @@ module.exports = grammar({
 
     unary_expression: ($) =>
       prec(PREC.UNARY, seq("-", field("operand", $._expression))),
+
+    type_cast: ($) =>
+      prec.left(PREC.POSTFIX, seq(
+        field("expression", $._expression),
+        "as",
+        field("type", $._type_expression),
+      )),
 
     property_access: ($) =>
       prec.left(PREC.POSTFIX, seq(

@@ -145,6 +145,33 @@ Parenthesized expression
       right: (integer))))
 
 ================
+Type cast
+================
+
+x as Int
+
+---
+
+(source_file
+  (type_cast
+    expression: (identifier)
+    type: (type_identifier)))
+
+================
+Type cast with optional
+================
+
+nil as Int?
+
+---
+
+(source_file
+  (type_cast
+    expression: (nil)
+    type: (optional_type
+      (type_identifier))))
+
+================
 Extern expression
 ================
 

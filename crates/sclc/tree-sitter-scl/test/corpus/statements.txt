@@ -13,6 +13,21 @@ import Std/Container
       (identifier))))
 
 ================
+Multi-segment import
+================
+
+import Local/Utils/Network
+
+---
+
+(source_file
+  (import_statement
+    (import_path
+      (identifier)
+      (identifier)
+      (identifier))))
+
+================
 Let binding
 ================
 
@@ -23,6 +38,20 @@ let x = 42
 (source_file
   (let_binding
     name: (identifier)
+    value: (integer)))
+
+================
+Let binding with type annotation
+================
+
+let x: Int = 42
+
+---
+
+(source_file
+  (let_binding
+    name: (identifier)
+    type: (type_identifier)
     value: (integer)))
 
 ================

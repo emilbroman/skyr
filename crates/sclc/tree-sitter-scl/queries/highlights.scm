@@ -13,6 +13,7 @@
 "raise" @keyword
 "try" @keyword
 "catch" @keyword
+"as" @keyword
 
 ; Literals
 (integer) @number
@@ -42,6 +43,10 @@
 (call_expression
   function: (property_access
     property: (identifier) @function.method.call))
+
+; Type casts
+(type_cast
+  type: (type_identifier) @type)
 
 ; Types
 (type_declaration
