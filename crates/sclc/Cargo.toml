@@ -3,10 +3,14 @@ name = "sclc"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["cdb"]
+cdb = ["dep:cdb"]
+
 [dependencies]
 thiserror = "2.0.18"
 ids = { path = "../ids" }
-cdb = { path = "../cdb" }
+cdb = { path = "../cdb", optional = true }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 unicode-segmentation = "1.12.0"
