@@ -1,0 +1,2 @@
+let f = fn(x: Int) x
+f(nil as Int?)

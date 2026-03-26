@@ -504,6 +504,7 @@ test_case!(CryptoCertSign);
 // Type cast tests
 test_case!(TypeCast);
 test_case!(TypeCastError);
+test_case!(DiagTypeCastOptionalMismatch);
 
 // Recursive globals
 test_case!(RecursiveGlobalFn);
