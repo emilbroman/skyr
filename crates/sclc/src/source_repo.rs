@@ -48,6 +48,7 @@ impl<S: SourceRepo> SourceRepo for AnySource<S> {
     }
 }
 
+#[cfg(feature = "cdb")]
 impl SourceRepo for cdb::DeploymentClient {
     type Err = cdb::FileError;
 
