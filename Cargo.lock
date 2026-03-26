@@ -5384,6 +5384,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sclc-wasm"
+version = "0.1.0"
+dependencies = [
+ "sclc",
+ "serde",
+ "serde_json",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+]
+
+[[package]]
 name = "scoc"
 version = "0.1.0"
 dependencies = [
