@@ -1,0 +1,9 @@
+import Std/Container
+export let pod = Container.Pod({
+    name: "my-app",
+    env: #{ "LOG_LEVEL": "info", "REGION": "eu-north-1" },
+    containers: [{
+        image: "my-app:latest",
+        env: #{ "LOG_LEVEL": "debug" },
+    }],
+})

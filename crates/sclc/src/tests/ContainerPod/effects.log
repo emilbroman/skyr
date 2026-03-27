@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Pod name=web-6255ce6557d8b664 inputs={containers: [{image: nginx:latest}], name: web-6255ce6557d8b664, namespace: test}
+CreateResource ty=Std/Container.Pod name=web-efd7ab2ab7b68fbe inputs={containers: [{image: nginx:latest}], env: nil, name: web-efd7ab2ab7b68fbe, namespace: test}
