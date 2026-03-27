@@ -1,1 +1,1 @@
-{f: {mediaType: application/octet-stream, name: readme, namespace: test, url: https://example.com/readme}}
+{f: {url: https://example.com/readme}}

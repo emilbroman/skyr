@@ -165,25 +165,16 @@ impl ArtifactPlugin {
             .private_read_url(header.namespace(), header.name())?;
 
         let mut outputs = sclc::Record::default();
-        outputs.insert(
-            String::from("namespace"),
-            sclc::Value::Str(header.namespace().to_owned()),
-        );
-        outputs.insert(
-            String::from("name"),
-            sclc::Value::Str(header.name().to_owned()),
-        );
-        outputs.insert(
-            String::from("mediaType"),
-            sclc::Value::Str(header.media_type().to_owned()),
-        );
         outputs.insert(String::from("url"), sclc::Value::Str(private_url));
+
+        let mut markers = std::collections::BTreeSet::new();
+        markers.insert(sclc::Marker::Sticky);
 
         Ok(sclc::Resource {
             inputs,
             outputs,
             dependencies: vec![],
-            markers: Default::default(),
+            markers,
         })
     }
 

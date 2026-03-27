@@ -85,35 +85,6 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
       </a>
     </div>
 
-    <!-- Artifacts -->
-    {#if deployment.artifacts.length > 0}
-      <section class="mb-6">
-        <h2 class="font-medium text-gray-600 mb-3">Artifacts</h2>
-        <div class="space-y-2">
-          {#each deployment.artifacts as artifact}
-            <div
-              class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center justify-between"
-            >
-              <div>
-                <span class="text-gray-700">{artifact.name}</span>
-                <span class="text-gray-400 ml-2"
-                  >({artifact.mediaType})</span
-                >
-              </div>
-              <a
-                href={artifact.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                class="text-orange-600 hover:text-orange-500"
-              >
-                Download
-              </a>
-            </div>
-          {/each}
-        </div>
-      </section>
-    {/if}
-
     <!-- Logs -->
     <section class="mb-6">
       <h2 class="font-medium text-gray-600 mb-3">Logs</h2>

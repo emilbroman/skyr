@@ -1,9 +1,9 @@
 {
   "resources": {
     "Std/Artifact.File": {
-      "readme": {
-        "inputs": { "contents": "hello world", "mediaType": null, "name": "readme", "namespace": "test" },
-        "outputs": { "mediaType": "application/octet-stream", "name": "readme", "namespace": "test", "url": "https://example.com/readme" }
+      "readme-05a587384cbc0bf9edb922b9938bde71": {
+        "inputs": { "contents": "hello world", "mediaType": "application/octet-stream", "name": "readme-05a587384cbc0bf9edb922b9938bde71", "namespace": "test" },
+        "outputs": { "url": "https://example.com/readme" }
       }
     }
   }

@@ -26,7 +26,6 @@ enum Severity {
 scalar JSON
 
 type Artifact {
-  namespace: String!
   name: String!
   mediaType: String!
   url: String!
@@ -65,7 +64,6 @@ type Deployment {
   createdAt: String!
   state: DeploymentState!
   resources: [Resource!]!
-  artifacts: [Artifact!]!
   lastLogs(amount: Int): [Log!]!
 }
 
@@ -77,6 +75,7 @@ type Environment {
   resource(id: String!): Resource
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
+  artifacts: [Artifact!]!
 }
 
 type Log {

@@ -646,8 +646,8 @@ impl Worker {
         }
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
-        let mut eval =
-            sclc::Eval::new::<DeploymentClient>(effects_tx, owner_deployment_qid.clone());
+        let environment_qid_str = self.environment_qid.to_string();
+        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, environment_qid_str);
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
