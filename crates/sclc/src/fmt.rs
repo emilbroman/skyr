@@ -389,6 +389,12 @@ impl Formatter {
                 self.emit_expr(&raise.expr);
             }
             Expr::Try(try_expr) => self.emit_try(try_expr),
+            Expr::IndexedAccess(indexed_access) => {
+                self.emit_expr(&indexed_access.expr);
+                self.write("[");
+                self.emit_expr(&indexed_access.index);
+                self.write("]");
+            }
         }
     }
 

@@ -119,6 +119,11 @@ impl Expr {
                 vars
             }
             Expr::PropertyAccess(property_access) => property_access.expr.as_ref().free_vars(),
+            Expr::IndexedAccess(indexed_access) => {
+                let mut vars = indexed_access.expr.as_ref().free_vars();
+                vars.extend(indexed_access.index.as_ref().free_vars());
+                vars
+            }
             Expr::TypeCast(cast) => cast.expr.as_ref().free_vars(),
             Expr::Exception(_) => HashSet::new(),
             Expr::Raise(raise_expr) => raise_expr.expr.as_ref().free_vars(),
@@ -175,6 +180,7 @@ pub enum Expr {
     List(ListExpr),
     Interp(InterpExpr),
     PropertyAccess(PropertyAccessExpr),
+    IndexedAccess(IndexedAccessExpr),
     TypeCast(TypeCastExpr),
     Exception(ExceptionExpr),
     Raise(RaiseExpr),
@@ -384,6 +390,12 @@ pub struct DictEntry {
 pub struct PropertyAccessExpr {
     pub expr: Box<Loc<Expr>>,
     pub property: Loc<Var>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IndexedAccessExpr {
+    pub expr: Box<Loc<Expr>>,
+    pub index: Box<Loc<Expr>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

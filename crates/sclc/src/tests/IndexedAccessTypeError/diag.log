@@ -1,0 +1,1 @@
+IndexedAccessTypeError/Main 2:9,2:13: indexed access requires a Dict or List type, got Str

@@ -520,3 +520,10 @@ test_case!(DiagRecordExtraField);
 // Let type annotation tests
 test_case!(LetTypeAnnotation);
 test_case!(LetTypeAnnotationError);
+
+// Indexed access tests
+test_case!(DictIndexedAccess);
+test_case!(ListIndexedAccess);
+test_case!(IndexedAccessOutOfBounds);
+test_case!(IndexedAccessMissingKey);
+test_case!(IndexedAccessTypeError);

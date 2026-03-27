@@ -94,6 +94,14 @@ let items = [1, 2, 3]    // Inferred as [Int]
 
 Empty lists infer the special bottom type `[Never]`, which is assignable to any list type.
 
+Elements can be accessed by index using `list[index]`, which returns an `Optional` since the index may be out of bounds:
+
+```scl
+let items = [10, 20, 30]
+items[1]    // 20 (Optional<Int>)
+items[99]   // nil (Optional<Int>)
+```
+
 ### Records
 
 Named fields with specific types. Written as `{ field: Type, ... }`:
@@ -137,6 +145,14 @@ Dicts are covariant in both key and value types:
 ```scl
 let strict: #{ Str: Int } = #{ "a": 1 }
 let flexible: #{ Str?: Int? } = strict    // OK
+```
+
+Values can be looked up by key using indexed access (`dict[key]`), which returns an `Optional` since the key may not be present:
+
+```scl
+let lookup = #{ "a": 1, "b": 2 }
+lookup["a"]   // 1 (Optional<Int>)
+lookup["z"]   // nil (Optional<Int>)
 ```
 
 ### Functions
