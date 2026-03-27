@@ -412,8 +412,9 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
             .to_string();
 
-        // Extract containers list
-        let containers = extract_container_configs(inputs.get("containers"))?;
+        // Extract pod-level env vars and containers list
+        let pod_envs = extract_env_dict(inputs.get("env"))?;
+        let containers = extract_container_configs(inputs.get("containers"), &pod_envs)?;
 
         // Determine target node
         let node_name = match inputs.get("node") {
@@ -1357,10 +1358,72 @@ fn validate_node_address(address: &str) -> Result<(), PluginError> {
     Ok(())
 }
 
+/// Extract environment variables from a `Value::Dict` with string keys and values.
+///
+/// Returns a sorted list of `KeyValue` pairs. Returns an empty vec for `Value::Nil`.
+fn extract_env_dict(value: &Value) -> Result<Vec<scop::KeyValue>, PluginError> {
+    match value {
+        Value::Nil => Ok(vec![]),
+        Value::Dict(dict) => {
+            let mut envs: Vec<scop::KeyValue> = dict
+                .iter()
+                .map(|(k, v)| {
+                    let key = match k {
+                        Value::Str(s) => s.clone(),
+                        other => {
+                            return Err(PluginError::InvalidInput(format!(
+                                "env key: expected Str but got {other}"
+                            )));
+                        }
+                    };
+                    let value = match v {
+                        Value::Str(s) => s.clone(),
+                        other => {
+                            return Err(PluginError::InvalidInput(format!(
+                                "env value for {key}: expected Str but got {other}"
+                            )));
+                        }
+                    };
+                    Ok(scop::KeyValue { key, value })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            envs.sort_by(|a, b| a.key.cmp(&b.key));
+            Ok(envs)
+        }
+        other => Err(PluginError::InvalidInput(format!(
+            "env: expected Dict? but got {other}"
+        ))),
+    }
+}
+
+/// Merge pod-level and container-level env vars into a single list.
+///
+/// Container-level env vars take precedence over pod-level ones when keys conflict.
+fn merge_envs(
+    pod_envs: &[scop::KeyValue],
+    container_envs: Vec<scop::KeyValue>,
+) -> Vec<scop::KeyValue> {
+    let mut merged: std::collections::BTreeMap<String, String> = pod_envs
+        .iter()
+        .map(|kv| (kv.key.clone(), kv.value.clone()))
+        .collect();
+    for kv in container_envs {
+        merged.insert(kv.key, kv.value);
+    }
+    merged
+        .into_iter()
+        .map(|(key, value)| scop::KeyValue { key, value })
+        .collect()
+}
+
 /// Extract container configs from the `containers` input value.
 ///
-/// The containers list is a `Value::List` of records, each with an `image` field.
-fn extract_container_configs(value: &Value) -> Result<Vec<scop::ContainerConfig>, PluginError> {
+/// The containers list is a `Value::List` of records, each with `image` and optional `env` fields.
+/// Pod-level env vars are merged with container-level env vars, with container-level taking precedence.
+fn extract_container_configs(
+    value: &Value,
+    pod_envs: &[scop::KeyValue],
+) -> Result<Vec<scop::ContainerConfig>, PluginError> {
     match value {
         Value::Nil => Ok(vec![]),
         Value::List(list) => {
@@ -1374,11 +1437,14 @@ fn extract_container_configs(value: &Value) -> Result<Vec<scop::ContainerConfig>
                     .assert_str_ref()
                     .map_err(|e| PluginError::InvalidInput(format!("containers[{i}].image: {e}")))?
                     .to_string();
+                let container_envs = extract_env_dict(record.get("env"))
+                    .map_err(|e| PluginError::InvalidInput(format!("containers[{i}].env: {e}")))?;
+                let envs = merge_envs(pod_envs, container_envs);
                 configs.push(scop::ContainerConfig {
                     image,
                     command: vec![],
                     args: vec![],
-                    envs: vec![],
+                    envs,
                 });
             }
             Ok(configs)

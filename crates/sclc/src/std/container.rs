@@ -108,9 +108,14 @@ fn image_extern_fn(
 ///
 /// Builds a canonical JSON representation of the inputs (sorted keys via BTreeMap)
 /// and hashes it to produce a hex suffix for the resource name.
-fn compute_inputs_hash(name: &str, containers: &[serde_json::Value]) -> String {
+fn compute_inputs_hash(
+    name: &str,
+    containers: &[serde_json::Value],
+    env: &serde_json::Value,
+) -> String {
     let canonical = serde_json::json!({
         "containers": containers,
+        "env": env,
         "name": name,
     });
     let json_str = serde_json::to_string(&canonical).unwrap();
@@ -119,9 +124,28 @@ fn compute_inputs_hash(name: &str, containers: &[serde_json::Value]) -> String {
     format!("{:x}", hasher.finish())
 }
 
+/// Convert a `Value::Dict` with string keys/values to a sorted JSON object for hashing.
+fn dict_to_sorted_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::Dict(dict) => {
+            let mut map = serde_json::Map::new();
+            for (k, v) in dict.iter() {
+                if let (Value::Str(key), Value::Str(val)) = (k, v) {
+                    map.insert(key.clone(), serde_json::Value::String(val.clone()));
+                }
+            }
+            // Sort by key for deterministic hashing
+            let sorted: std::collections::BTreeMap<String, serde_json::Value> =
+                map.into_iter().collect();
+            serde_json::json!(sorted)
+        }
+        _ => serde_json::Value::Null,
+    }
+}
+
 /// Extern function for creating Pod resources.
 ///
-/// Input: `{ name: Str, containers: [{ image: Str }] }`
+/// Input: `{ name: Str, containers: [{ image: Str, env: #{Str: Str}? }], env: #{Str: Str}? }`
 /// Output: `{ name: Str, node: Str, address: Str, Port: fn(...), Attachment: fn(...) }`
 fn pod_extern_fn(
     args: Vec<TrackedValue>,
@@ -142,6 +166,7 @@ fn pod_extern_fn(
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
     let containers_value = config.get("containers").clone();
+    let env_value = config.get("env").clone();
 
     // Extract container list for building inputs and computing hash
     let containers_list = match &containers_value {
@@ -150,6 +175,7 @@ fn pod_extern_fn(
     };
 
     // Build canonical JSON representation of containers for hashing
+    // Include container-level env in the hash so changes trigger recreation
     let containers_json: Vec<serde_json::Value> = containers_list
         .iter()
         .map(|c| {
@@ -159,15 +185,19 @@ fn pod_extern_fn(
                     .assert_str_ref()
                     .unwrap_or("")
                     .to_owned();
-                serde_json::json!({ "image": image })
+                let env = dict_to_sorted_json(rec.get("env"));
+                serde_json::json!({ "env": env, "image": image })
             } else {
                 serde_json::json!(null)
             }
         })
         .collect();
 
+    // Build canonical JSON for pod-level env
+    let env_json = dict_to_sorted_json(&env_value);
+
     // Compute resource name: "{name}-{hash}"
-    let hash = compute_inputs_hash(&name, &containers_json);
+    let hash = compute_inputs_hash(&name, &containers_json, &env_json);
     let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
@@ -179,6 +209,7 @@ fn pod_extern_fn(
     let mut inputs = Record::default();
     inputs.insert(String::from("name"), Value::Str(resource_name.clone()));
     inputs.insert(String::from("containers"), containers_value);
+    inputs.insert(String::from("env"), env_value);
     inputs.insert(
         String::from("namespace"),
         Value::Str(eval_ctx.namespace().to_owned()),

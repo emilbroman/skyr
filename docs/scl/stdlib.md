@@ -44,7 +44,13 @@ Create a pod with containers on a worker node:
 ```scl
 let pod = Container.Pod({
     name: "my-pod",
-    containers: [{ image: "nginx:latest" }],
+    env: #{ "LOG_LEVEL": "info", "REGION": "eu-north-1" },
+    containers: [
+        {
+            image: "nginx:latest",
+            env: #{ "LOG_LEVEL": "debug" },
+        },
+    ],
 })
 ```
 
@@ -53,7 +59,10 @@ let pod = Container.Pod({
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | `Str` | Pod name |
-| `containers` | `[{ image: Str }]` | List of containers to run in the pod |
+| `containers` | `[{ image: Str, env: #{Str: Str}? }]` | List of containers to run in the pod |
+| `env` | `#{Str: Str}?` | Pod-level environment variables shared across all containers |
+
+Pod-level `env` vars act as defaults for all containers. Container-level `env` vars override pod-level ones when keys conflict. In the example above, the container sees `LOG_LEVEL=debug` (container wins) and `REGION=eu-north-1` (inherited from pod).
 
 **Outputs:**
 
