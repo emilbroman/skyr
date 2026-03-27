@@ -273,6 +273,10 @@ impl Dict {
         self.entries.push((key, value));
     }
 
+    pub fn get(&self, key: &Value) -> Option<&Value> {
+        self.entries.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Value, &Value)> {
         self.entries.iter().map(|(key, value)| (key, value))
     }

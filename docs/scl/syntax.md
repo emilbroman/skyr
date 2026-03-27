@@ -258,6 +258,22 @@ user.name
 pod.Port
 ```
 
+### Indexed Access
+
+Access elements of dicts and lists by index using bracket notation. The opening bracket must be immediately adjacent to the expression (no whitespace):
+
+```scl
+let myDict = #{ "a": 1, "b": 2 }
+myDict["a"]   // Optional<Int> — returns 1
+myDict["z"]   // Optional<Int> — returns nil (key not found)
+
+let myList = [10, 20, 30]
+myList[1]     // Optional<Int> — returns 20
+myList[99]    // Optional<Int> — returns nil (out of bounds)
+```
+
+The return type is always `Optional` because the lookup may fail (missing key or out-of-bounds index).
+
 ### Function Calls
 
 Functions are called with parenthesized, comma-separated arguments:

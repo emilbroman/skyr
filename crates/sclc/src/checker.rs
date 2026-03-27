@@ -416,6 +416,20 @@ impl crate::Diag for UndefinedMember {
 }
 
 #[derive(Error, Debug)]
+#[error("indexed access requires a Dict or List type, got {ty}")]
+pub struct InvalidIndexTarget {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for InvalidIndexTarget {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("not a function: {ty}")]
 pub struct NotAFunction {
     pub module_id: crate::ModuleId,
@@ -2106,6 +2120,45 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     property: property_access.property.clone(),
                 });
                 Ok(Diagnosed::new(Type::Never, diags))
+            }
+            ast::Expr::IndexedAccess(indexed_access) => {
+                let mut diags = DiagList::new();
+                let container_ty = self
+                    .check_expr(env, indexed_access.expr.as_ref(), None)?
+                    .unpack(&mut diags)
+                    .unfold();
+                let container_ty = env.resolve_var_bound(&container_ty).unfold();
+                if matches!(container_ty, Type::Never) {
+                    return Ok(Diagnosed::new(Type::Never, diags));
+                }
+                let result_ty = match &container_ty {
+                    Type::Dict(dict_ty) => {
+                        self.check_expr(
+                            env,
+                            indexed_access.index.as_ref(),
+                            Some(dict_ty.key.as_ref()),
+                        )?
+                        .unpack(&mut diags);
+                        Type::Optional(dict_ty.value.clone())
+                    }
+                    Type::List(inner_ty) => {
+                        self.check_expr(env, indexed_access.index.as_ref(), Some(&Type::Int))?
+                            .unpack(&mut diags);
+                        Type::Optional(inner_ty.clone())
+                    }
+                    _ => {
+                        diags.push(InvalidIndexTarget {
+                            module_id: env.module_id()?,
+                            ty: container_ty,
+                            span: expr.span(),
+                        });
+                        Type::Never
+                    }
+                };
+                let ty = self
+                    .apply_expected_type(env, expr.span(), result_ty, expected_type)?
+                    .unpack(&mut diags);
+                Ok(Diagnosed::new(ty, diags))
             }
             ast::Expr::Exception(exception_expr) => {
                 let mut diags = DiagList::new();

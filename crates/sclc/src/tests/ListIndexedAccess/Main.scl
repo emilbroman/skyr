@@ -1,0 +1,2 @@
+let myList = [10, 20, 30]
+export let item = myList[1]

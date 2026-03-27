@@ -8,11 +8,11 @@ use thiserror::Error;
 use crate::{
     BinaryExpr, BinaryOp, Bool, CallExpr, CatchClause, Diag, DiagList, Diagnosed, DictEntry,
     DictExpr, DictTypeExpr, ExceptionExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr,
-    ImportStmt, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem, ListIfItem,
-    ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr, RecordExpr,
-    RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token, TryExpr,
-    TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr,
-    UnaryExpr, UnaryOp, Var,
+    ImportStmt, IndexedAccessExpr, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem,
+    ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr,
+    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
+    TryExpr, TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr, TypeParam,
+    TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
 };
 
 /// Maximum allowed source file size in bytes. Files larger than this are
@@ -92,6 +92,7 @@ enum Postfix {
     Property(Loc<Var>),
     Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
     TypeCast(Loc<TypeExpr>),
+    Index(Box<Loc<Expr>>, Span),
 }
 
 enum TypeExprSuffix {
@@ -163,7 +164,7 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>, skip_span: &mut Option<Span>) for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>, skip_span: &mut Option<Span>, last_postfix_end: &std::cell::Cell<Position>) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = items:file_mod_item()* eof() {
                 flush_skip(skip_span, diags, module_id);
@@ -557,8 +558,14 @@ peg::parser! {
                 )
             }
 
+        rule postfix_head() -> Loc<Expr>
+            = e:atom_expr() {
+                last_postfix_end.set(e.span().end());
+                e
+            }
+
         rule property_expr() -> Loc<Expr>
-            = head:atom_expr() suffixes:postfix_suffix()* {
+            = head:postfix_head() suffixes:postfix_suffix()* {
                 let mut expr = head;
                 for suffix in suffixes {
                     expr = match suffix {
@@ -587,16 +594,53 @@ peg::parser! {
                                 ty,
                             }), Span::new(start, end))
                         }
+                        Postfix::Index(index, close_span) => {
+                            let start = expr.span().start();
+                            let end = close_span.end();
+                            Loc::new(Expr::IndexedAccess(IndexedAccessExpr {
+                                expr: Box::new(expr),
+                                index,
+                            }), Span::new(start, end))
+                        }
                     };
                 }
                 expr
             }
 
         rule postfix_suffix() -> Postfix
-            = dot() property:var() { Postfix::Property(property) }
-            / type_args:type_args() open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(type_args, args, close_paren_span) }
-            / open_paren() args:call_args() close_paren_span:close_paren() { Postfix::Call(vec![], args, close_paren_span) }
-            / as_keyword() ty:type_expr() { Postfix::TypeCast(ty) }
+            = dot() property:var() {
+                let end = property.span().end();
+                last_postfix_end.set(end);
+                Postfix::Property(property)
+            }
+            / type_args:type_args() open_paren() args:call_args() close_paren_span:close_paren() {
+                last_postfix_end.set(close_paren_span.end());
+                Postfix::Call(type_args, args, close_paren_span)
+            }
+            / open_paren() args:call_args() close_paren_span:close_paren() {
+                last_postfix_end.set(close_paren_span.end());
+                Postfix::Call(vec![], args, close_paren_span)
+            }
+            / as_keyword() ty:type_expr() {
+                last_postfix_end.set(ty.span().end());
+                Postfix::TypeCast(ty)
+            }
+            / open:adjacent_open_square() index:expr() close:close_square() {
+                last_postfix_end.set(close.end());
+                Postfix::Index(Box::new(index), close)
+            }
+
+        /// Matches `[` only when it is immediately adjacent to the preceding
+        /// expression (no whitespace), to disambiguate from list literals
+        /// in statement position.
+        rule adjacent_open_square() -> Span
+            = open:open_square() {?
+                if last_postfix_end.get() == open.start() {
+                    Ok(open)
+                } else {
+                    Err("adjacent open square")
+                }
+            }
 
         rule type_args() -> Vec<Loc<TypeExpr>>
             = less() args:(type_expr() ++ comma()) comma()? greater() { args }
@@ -1221,6 +1265,7 @@ pub fn parse_file_mod_with_cursor(
         Some(c) => TokenStream::with_cursor(source, c.clone()),
         None => TokenStream::new(source),
     };
+    let last_postfix_end = std::cell::Cell::new(Position::default());
     match grammar::file_mod(
         &token_stream,
         &mut diags,
@@ -1228,6 +1273,7 @@ pub fn parse_file_mod_with_cursor(
         &mut exception_id,
         &cursor,
         &mut skip_span,
+        &last_postfix_end,
     ) {
         Ok(file_mod) => Diagnosed::new(file_mod, diags),
         Err(error) => {
@@ -1268,6 +1314,7 @@ pub fn parse_repl_line_with_cursor(
         Some(c) => TokenStream::with_cursor(source, c.clone()),
         None => TokenStream::new(source),
     };
+    let last_postfix_end = std::cell::Cell::new(Position::default());
     match grammar::repl_line(
         &token_stream,
         &mut diags,
@@ -1275,6 +1322,7 @@ pub fn parse_repl_line_with_cursor(
         &mut exception_id,
         &cursor,
         &mut skip_span,
+        &last_postfix_end,
     ) {
         Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
         Err(error) => {

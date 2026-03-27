@@ -910,6 +910,42 @@ impl Eval {
                     _ => Ok(Self::tracked(Value::Nil)),
                 }
             }
+            ast::Expr::IndexedAccess(indexed_access) => {
+                let container = self.eval_expr(env, indexed_access.expr.as_ref())?;
+                match container.value {
+                    Value::Pending(_) => Ok(Self::pending_with(container.dependencies)),
+                    Value::Dict(dict) => {
+                        let index = self.eval_expr(env, indexed_access.index.as_ref())?;
+                        let mut deps = container.dependencies;
+                        deps.extend(index.dependencies);
+                        match index.value {
+                            Value::Pending(_) => Ok(Self::pending_with(deps)),
+                            _ => {
+                                let result = dict.get(&index.value).cloned().unwrap_or(Value::Nil);
+                                Ok(Self::with_dependencies(result, deps))
+                            }
+                        }
+                    }
+                    Value::List(list) => {
+                        let index = self.eval_expr(env, indexed_access.index.as_ref())?;
+                        let mut deps = container.dependencies;
+                        deps.extend(index.dependencies);
+                        match index.value {
+                            Value::Pending(_) => Ok(Self::pending_with(deps)),
+                            Value::Int(i) => {
+                                let result = if i >= 0 {
+                                    list.get(i as usize).cloned().unwrap_or(Value::Nil)
+                                } else {
+                                    Value::Nil
+                                };
+                                Ok(Self::with_dependencies(result, deps))
+                            }
+                            _ => Ok(Self::with_dependencies(Value::Nil, deps)),
+                        }
+                    }
+                    _ => Ok(Self::tracked(Value::Nil)),
+                }
+            }
             ast::Expr::Exception(exception_expr) => {
                 let exception_id = exception_expr.exception_id;
                 if exception_expr.ty.is_some() {
