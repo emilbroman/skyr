@@ -20,15 +20,15 @@ COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
 COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
 COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
-COPY crates/sclc-wasm/Cargo.toml crates/sclc-wasm/Cargo.toml
 COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
 COPY crates/udb/Cargo.toml crates/udb/Cargo.toml
 COPY crates/scop/Cargo.toml crates/scop/Cargo.toml
 COPY crates/scoc/Cargo.toml crates/scoc/Cargo.toml
 COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
+RUN sed -i '/"crates\/sclc-wasm",/d' Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/sclc-wasm/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
+    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
@@ -45,7 +45,6 @@ RUN set -eu; \
     printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
     printf 'fn main() {}\n' > crates/cli/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
-    printf 'pub fn _stub() {}\n' > crates/sclc-wasm/src/lib.rs; \
     printf 'fn main() {}\n' > crates/scs/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/udb/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/scop/src/lib.rs; \
@@ -62,7 +61,9 @@ RUN --mount=type=cache,target=/opt/cargo/registry \
 
 FROM deps AS build
 COPY Cargo.toml Cargo.lock ./
+RUN sed -i '/"crates\/sclc-wasm",/d' Cargo.toml
 COPY crates ./crates
+RUN rm -rf crates/sclc-wasm
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eu; \
