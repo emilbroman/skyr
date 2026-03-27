@@ -67,11 +67,6 @@ fn image_extern_fn(
     inputs.insert(String::from("name"), Value::Str(name.clone()));
     inputs.insert(String::from("context"), Value::Str(context));
     inputs.insert(String::from("containerfile"), Value::Str(containerfile));
-    // Pass the namespace so the plugin can fetch the Git context
-    inputs.insert(
-        String::from("namespace"),
-        Value::Str(eval_ctx.namespace().to_owned()),
-    );
 
     let Some(outputs) = eval_ctx.resource(
         IMAGE_RESOURCE_TYPE,
@@ -210,10 +205,6 @@ fn pod_extern_fn(
     inputs.insert(String::from("name"), Value::Str(resource_name.clone()));
     inputs.insert(String::from("containers"), containers_value);
     inputs.insert(String::from("env"), env_value);
-    inputs.insert(
-        String::from("namespace"),
-        Value::Str(eval_ctx.namespace().to_owned()),
-    );
 
     let Some(outputs) = eval_ctx.resource(
         POD_RESOURCE_TYPE,

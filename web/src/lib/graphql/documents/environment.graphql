@@ -25,17 +25,16 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
               name
             }
           }
-          artifacts {
-            namespace
-            name
-            mediaType
-            url
-          }
           lastLogs(amount: 20) {
             severity
             timestamp
             message
           }
+        }
+        artifacts {
+          name
+          mediaType
+          url
         }
         resources {
           type
@@ -138,12 +137,6 @@ query DeploymentDetail(
               span
               name
             }
-          }
-          artifacts {
-            namespace
-            name
-            mediaType
-            url
           }
           lastLogs(amount: 20) {
             severity

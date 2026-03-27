@@ -48,6 +48,10 @@ export function envDeploymentsHref(orgName: string, repoName: string, envName: s
     return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d`;
 }
 
+export function envArtifactsHref(orgName: string, repoName: string, envName: string): string {
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~a`;
+}
+
 export function envLogsHref(orgName: string, repoName: string, envName: string): string {
     return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~l`;
 }

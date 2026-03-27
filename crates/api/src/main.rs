@@ -1157,6 +1157,19 @@ impl Environment {
         all_logs.truncate(amount as usize);
         Ok(all_logs)
     }
+
+    async fn artifacts(&self, context: &Context) -> FieldResult<Vec<Artifact>> {
+        let namespace = self.qid.to_string();
+        let artifacts = context.adb_client.list(&namespace).await.map_err(|error| {
+            tracing::error!("Failed to list artifacts for environment {namespace}: {error}");
+            internal_error()
+        })?;
+
+        Ok(artifacts
+            .into_iter()
+            .map(|header| Artifact { header })
+            .collect())
+    }
 }
 
 struct Commit {
@@ -1416,19 +1429,6 @@ impl Deployment {
             })
     }
 
-    async fn artifacts(&self, context: &Context) -> FieldResult<Vec<Artifact>> {
-        let namespace = self.deployment.deployment_qid().to_string();
-        let artifacts = context.adb_client.list(&namespace).await.map_err(|error| {
-            tracing::error!("Failed to list artifacts for deployment {namespace}: {error}");
-            internal_error()
-        })?;
-
-        Ok(artifacts
-            .into_iter()
-            .map(|header| Artifact { header })
-            .collect())
-    }
-
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
@@ -1448,10 +1448,6 @@ struct Artifact {
 
 #[juniper::graphql_object(Context = Context)]
 impl Artifact {
-    fn namespace(&self) -> &str {
-        self.header.namespace()
-    }
-
     fn name(&self) -> &str {
         self.header.name()
     }

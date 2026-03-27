@@ -1,4 +1,33 @@
+use sha2::{Digest, Sha256};
+
 const FILE_RESOURCE_TYPE: &str = "Std/Artifact.File";
+const DEFAULT_MEDIA_TYPE: &str = "application/octet-stream";
+
+/// Compute a content-addressed resource name from all inputs.
+///
+/// Hash is computed over canonicalized inputs (alphabetical key order):
+/// `contents`, `mediaType` (with default resolved), `name`.
+///
+/// The hashed name is derived by splitting the user-provided `name` on the
+/// last `.` and inserting `-{hash_hex[..32]}` between stem and extension.
+fn content_addressed_name(name: &str, contents: &str, media_type: &str) -> String {
+    let canonical = serde_json::json!({
+        "contents": contents,
+        "mediaType": media_type,
+        "name": name,
+    });
+    let json_str = serde_json::to_string(&canonical).unwrap();
+    let hash = Sha256::digest(json_str.as_bytes());
+    let hash_hex = hex::encode(hash);
+    let truncated = &hash_hex[..32];
+
+    if let Some(dot_pos) = name.rfind('.') {
+        let (stem, ext) = name.split_at(dot_pos);
+        format!("{stem}-{truncated}{ext}")
+    } else {
+        format!("{name}-{truncated}")
+    }
+}
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn(FILE_RESOURCE_TYPE, |args, eval_ctx| {
@@ -24,18 +53,22 @@ pub fn register_extern(eval: &mut crate::Eval) {
         let contents = config.get("contents").assert_str_ref()?;
         let namespace = eval_ctx.namespace();
 
+        // Resolve the default media type for hashing
+        let resolved_media_type = media_type.unwrap_or(DEFAULT_MEDIA_TYPE);
+
+        // Compute the content-addressed resource name
+        let hashed_name = content_addressed_name(name, contents, resolved_media_type);
+
         let resource_id = ids::ResourceId {
             typ: FILE_RESOURCE_TYPE.to_owned(),
-            name: name.to_owned(),
+            name: hashed_name.clone(),
         };
 
         let mut inputs = crate::Record::default();
-        inputs.insert(String::from("name"), crate::Value::Str(name.to_owned()));
+        inputs.insert(String::from("name"), crate::Value::Str(hashed_name.clone()));
         inputs.insert(
             String::from("mediaType"),
-            media_type
-                .map(|value| crate::Value::Str(value.to_owned()))
-                .unwrap_or(crate::Value::Nil),
+            crate::Value::Str(resolved_media_type.to_owned()),
         );
         inputs.insert(
             String::from("namespace"),
@@ -48,7 +81,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let Some(outputs) = eval_ctx.resource(
             FILE_RESOURCE_TYPE,
-            name,
+            &hashed_name,
             &inputs,
             argument_dependencies.clone(),
         )?
@@ -57,21 +90,6 @@ pub fn register_extern(eval: &mut crate::Eval) {
         };
 
         let mut out = crate::Record::default();
-        let namespace_out = outputs.get("namespace").assert_str_ref()?;
-        out.insert(
-            String::from("namespace"),
-            crate::Value::Str(namespace_out.to_owned()),
-        );
-        let name_out = outputs.get("name").assert_str_ref()?;
-        out.insert(
-            String::from("name"),
-            crate::Value::Str(name_out.to_owned()),
-        );
-        let media_type_out = outputs.get("mediaType").assert_str_ref()?;
-        out.insert(
-            String::from("mediaType"),
-            crate::Value::Str(media_type_out.to_owned()),
-        );
         let url = outputs.get("url").assert_str_ref()?;
         out.insert(String::from("url"), crate::Value::Str(url.to_owned()));
 

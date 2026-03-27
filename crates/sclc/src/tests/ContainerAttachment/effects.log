@@ -1,4 +1,4 @@
-TouchResource ty=Std/Container.Pod name=server-a8073876862693db inputs={containers: [{image: nginx:latest}], env: nil, name: server-a8073876862693db, namespace: test}
+TouchResource ty=Std/Container.Pod name=server-a8073876862693db inputs={containers: [{image: nginx:latest}], env: nil, name: server-a8073876862693db}
 TouchResource ty=Std/Container.Pod.Port name=server-a8073876862693db:8080/tcp inputs={ip: 10.0.0.2, node: worker-1, podName: server-a8073876862693db, port: 8080, protocol: tcp} deps=[Std/Container.Pod:server-a8073876862693db]
-TouchResource ty=Std/Container.Pod name=client-a62339259ac0aa97 inputs={containers: [{image: curl:latest}], env: nil, name: client-a62339259ac0aa97, namespace: test}
+TouchResource ty=Std/Container.Pod name=client-a62339259ac0aa97 inputs={containers: [{image: curl:latest}], env: nil, name: client-a62339259ac0aa97}
 CreateResource ty=Std/Container.Pod.Attachment name=client-a62339259ac0aa97@10.0.0.2:8080/tcp inputs={destination: 10.0.0.2, node: worker-2, podName: client-a62339259ac0aa97, port: 8080, protocol: tcp, source: 10.0.0.3} deps=[Std/Container.Pod:client-a62339259ac0aa97, Std/Container.Pod:server-a8073876862693db, Std/Container.Pod.Port:server-a8073876862693db:8080/tcp]

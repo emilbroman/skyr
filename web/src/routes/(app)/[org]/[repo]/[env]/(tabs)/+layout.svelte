@@ -4,10 +4,18 @@ import { page } from "$app/stores";
 import { EnvironmentDetailDocument, RepositoryDetailDocument } from "$lib/graphql/generated";
 import Spinner from "$lib/components/Spinner.svelte";
 import { graphqlQuery } from "$lib/graphql/query";
-import { decodeSegment, envDeploymentsHref, envHref, envLogsHref, resourcesHref } from "$lib/paths";
+import {
+    decodeSegment,
+    envArtifactsHref,
+    envDeploymentsHref,
+    envHref,
+    envLogsHref,
+    resourcesHref,
+} from "$lib/paths";
 import { user } from "$lib/stores/auth";
 import {
     AlignJustify,
+    Archive,
     Box,
     Check,
     ChevronDown,
@@ -63,15 +71,18 @@ let currentPath = $derived($page.url.pathname);
 let envBase = $derived(envHref(orgName, repoName, envName));
 let deploymentsPath = $derived(envDeploymentsHref(orgName, repoName, envName));
 let resPath = $derived(resourcesHref(orgName, repoName, envName));
+let artifactsPath = $derived(envArtifactsHref(orgName, repoName, envName));
 let logsPath = $derived(envLogsHref(orgName, repoName, envName));
 let activeTab = $derived(
     currentPath.startsWith(deploymentsPath)
         ? "deployments"
         : currentPath.startsWith(resPath)
           ? "resources"
-          : currentPath.startsWith(logsPath)
-            ? "logs"
-            : "files",
+          : currentPath.startsWith(artifactsPath)
+            ? "artifacts"
+            : currentPath.startsWith(logsPath)
+              ? "logs"
+              : "files",
 );
 
 function switchEnv(newEnv: string) {
@@ -80,9 +91,11 @@ function switchEnv(newEnv: string) {
             ? envDeploymentsHref(orgName, repoName, newEnv)
             : activeTab === "resources"
               ? resourcesHref(orgName, repoName, newEnv)
-              : activeTab === "logs"
-                ? envLogsHref(orgName, repoName, newEnv)
-                : envHref(orgName, repoName, newEnv);
+              : activeTab === "artifacts"
+                ? envArtifactsHref(orgName, repoName, newEnv)
+                : activeTab === "logs"
+                  ? envLogsHref(orgName, repoName, newEnv)
+                  : envHref(orgName, repoName, newEnv);
     goto(tabHref);
 }
 </script>
@@ -186,6 +199,18 @@ function switchEnv(newEnv: string) {
         Resources <span class="text-gray-400 ml-1"
           >({env.resources.length})</span
         >
+      </a>
+      <a
+        href={artifactsPath}
+        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        'artifacts'
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+      >
+        <Archive class="w-4 h-4" />
+        Artifacts {#if env.artifacts.length > 0}<span class="text-gray-400 ml-1"
+          >({env.artifacts.length})</span
+        >{/if}
       </a>
       <a
         href={logsPath}

@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Pod name=my-app-6b3b2b3264207f33 inputs={containers: [{env: #{LOG_LEVEL: debug}, image: my-app:latest}], env: #{LOG_LEVEL: info, REGION: eu-north-1}, name: my-app-6b3b2b3264207f33, namespace: test}
+CreateResource ty=Std/Container.Pod name=my-app-6b3b2b3264207f33 inputs={containers: [{env: #{LOG_LEVEL: debug}, image: my-app:latest}], env: #{LOG_LEVEL: info, REGION: eu-north-1}, name: my-app-6b3b2b3264207f33}
