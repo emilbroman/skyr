@@ -1,32 +1,69 @@
+import Std/Option
+
 export type Instant {
-    epochMillis: Int,
+	epochMillis: Int,
 }
 
 export type CalendarDate {
-    year: Int,
-    month: Int,
-    day: Int,
+	year: Int,
+	month: Int,
+	day: Int,
 }
 
 export type ClockTime {
-    hour: Int,
-    minute: Int,
-    second: Int,
+	hour: Int,
+	minute: Int,
+	second: Int,
 }
 
 export type DateTime {
-    date: CalendarDate,
-    time: ClockTime,
+	date: CalendarDate,
+	time: ClockTime,
 }
 
 export type Duration {
-    milliseconds: Int?,
-    months: Int?,
+	milliseconds: Int?,
+	months: Int?,
 }
 
+export let multiply = fn(duration: Duration, multiplier: Int)
+	{
+		months: Option.map<Int, Int>(duration.months, fn(m: Int)
+			m * multiplier),
+		milliseconds: Option.map<Int, Int>(duration.milliseconds, fn(m: Int)
+			m * multiplier),
+	} as Duration
+
+export let millisecond = {
+	milliseconds: 1,
+} as Duration
+
+export let second = multiply(millisecond, 1000)
+
+export let minute = multiply(second, 60)
+
+export let hour = multiply(minute, 60)
+
+export let day = multiply(hour, 24)
+
+export let week = multiply(day, 7)
+
+export let month = {
+	months: 1,
+} as Duration
+
+export let year = multiply(month, 12)
+
+export let epoch = {
+	epochMillis: 0,
+} as Instant
+
 export let toISO = extern "Std/Time.toISO": fn(Instant) Str
+
 export let utc = extern "Std/Time.utc": fn(Instant) DateTime
+
 export let add = extern "Std/Time.add": fn(Instant, Duration) Instant
+
 export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
 
 export let Clock = extern "Std/Time.Clock": fn(Duration) Instant
