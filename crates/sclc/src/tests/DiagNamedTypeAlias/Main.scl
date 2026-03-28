@@ -1,0 +1,2 @@
+type Point {x: Int, y: Int}
+let p: Point = "hello"

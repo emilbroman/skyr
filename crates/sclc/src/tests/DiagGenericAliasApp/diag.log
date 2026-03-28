@@ -1,0 +1,1 @@
+DiagGenericAliasApp/Main 2:25,2:32: invalid type: Str is not assignable to Pair<Int, Str>

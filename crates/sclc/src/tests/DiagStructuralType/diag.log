@@ -1,0 +1,1 @@
+DiagStructuralType/Main 1:19,1:26: invalid type: Str is not assignable to {a: Int}
