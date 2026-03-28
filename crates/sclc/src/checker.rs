@@ -6,7 +6,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type, ast,
+    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type, TypeKind,
+    ast,
 };
 use thiserror::Error;
 
@@ -58,12 +59,12 @@ impl FreeVarConstraints {
             .lower_bounds
             .get_mut(&id)
             .expect("free var must be registered");
-        if matches!(entry, Type::Never) {
+        if matches!(entry.kind, TypeKind::Never) {
             *entry = new_lower;
-        } else if !matches!(new_lower, Type::Never) {
+        } else if !matches!(new_lower.kind, TypeKind::Never) {
             // Attempt a structural merge for records: union the fields.
-            match (entry, &new_lower) {
-                (Type::Record(existing), Type::Record(new_rec)) => {
+            match (&mut entry.kind, &new_lower.kind) {
+                (TypeKind::Record(existing), TypeKind::Record(new_rec)) => {
                     for (name, ty) in new_rec.iter() {
                         if existing.get(name).is_none() {
                             existing.insert(name.clone(), ty.clone());
@@ -102,7 +103,7 @@ impl FreeVarConstraints {
                     (*id, Type::Never)
                 } else if let Some(solved) = solutions.get(id) {
                     (*id, solved.clone())
-                } else if matches!(bound, Type::Never) {
+                } else if matches!(bound.kind, TypeKind::Never) {
                     (*id, Type::Never)
                 } else {
                     (*id, bound.clone())
@@ -114,30 +115,30 @@ impl FreeVarConstraints {
     /// Walk a constraint type and a concrete type in parallel, recording
     /// solutions for free variables found in the constraint.
     fn unify_constraint(constraint: &Type, concrete: &Type, solutions: &mut HashMap<usize, Type>) {
-        match (constraint, concrete) {
-            (Type::Var(id), _) => {
+        match (&constraint.kind, &concrete.kind) {
+            (TypeKind::Var(id), _) => {
                 solutions.entry(*id).or_insert_with(|| concrete.clone());
             }
-            (Type::Record(c_rec), Type::Record(b_rec)) => {
+            (TypeKind::Record(c_rec), TypeKind::Record(b_rec)) => {
                 for (name, c_field) in c_rec.iter() {
                     if let Some(b_field) = b_rec.get(name) {
                         Self::unify_constraint(c_field, b_field, solutions);
                     }
                 }
             }
-            (Type::Fn(c_fn), Type::Fn(b_fn)) if c_fn.params.len() == b_fn.params.len() => {
+            (TypeKind::Fn(c_fn), TypeKind::Fn(b_fn)) if c_fn.params.len() == b_fn.params.len() => {
                 for (cp, bp) in c_fn.params.iter().zip(b_fn.params.iter()) {
                     Self::unify_constraint(cp, bp, solutions);
                 }
                 Self::unify_constraint(c_fn.ret.as_ref(), b_fn.ret.as_ref(), solutions);
             }
-            (Type::List(c_inner), Type::List(b_inner)) => {
+            (TypeKind::List(c_inner), TypeKind::List(b_inner)) => {
                 Self::unify_constraint(c_inner, b_inner, solutions);
             }
-            (Type::Optional(c_inner), Type::Optional(b_inner)) => {
+            (TypeKind::Optional(c_inner), TypeKind::Optional(b_inner)) => {
                 Self::unify_constraint(c_inner, b_inner, solutions);
             }
-            (Type::Dict(c_dict), Type::Dict(b_dict)) => {
+            (TypeKind::Dict(c_dict), TypeKind::Dict(b_dict)) => {
                 Self::unify_constraint(c_dict.key.as_ref(), b_dict.key.as_ref(), solutions);
                 Self::unify_constraint(c_dict.value.as_ref(), b_dict.value.as_ref(), solutions);
             }
@@ -296,8 +297,8 @@ impl<'a> TypeEnv<'a> {
     /// If `ty` is a type variable with a known upper bound, return a reference
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
-        if let Type::Var(id) = ty
-            && let Some(bound) = self.type_var_bounds.get(id)
+        if let TypeKind::Var(id) = ty.kind
+            && let Some(bound) = self.type_var_bounds.get(&id)
         {
             return bound;
         }
@@ -753,33 +754,33 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let lhs = &lhs.unfold();
         let rhs = &rhs.unfold();
 
-        if lhs == rhs || matches!(lhs, Type::Any) || matches!(rhs, Type::Never) {
+        if lhs == rhs || matches!(lhs.kind, TypeKind::Any) || matches!(rhs.kind, TypeKind::Never) {
             return Ok(());
         }
 
         // If rhs is a bounded type variable, check assignability via its upper bound.
-        if let Type::Var(id) = rhs
-            && let Some(upper_bound) = bounds.get(id)
+        if let TypeKind::Var(id) = rhs.kind
+            && let Some(upper_bound) = bounds.get(&id)
         {
             return self
                 .assign_type_with_bounds(lhs, upper_bound, bounds)
                 .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
         }
 
-        match lhs {
-            Type::Optional(lhs_inner) => match rhs {
-                Type::Optional(rhs_inner) => self
+        match &lhs.kind {
+            TypeKind::Optional(lhs_inner) => match &rhs.kind {
+                TypeKind::Optional(rhs_inner) => self
                     .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => self
                     .assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
             },
-            Type::Record(lhs_record) => match rhs {
-                Type::Record(rhs_record) => {
+            TypeKind::Record(lhs_record) => match &rhs.kind {
+                TypeKind::Record(rhs_record) => {
                     for (name, lhs_field) in lhs_record.iter() {
                         let Some(rhs_field) = rhs_record.get(name) else {
-                            if matches!(lhs_field, Type::Optional(_)) {
+                            if matches!(lhs_field.kind, TypeKind::Optional(_)) {
                                 continue;
                             }
                             return Err(TypeError::new(TypeIssue::Mismatch(
@@ -799,8 +800,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     rhs.clone(),
                 ))),
             },
-            Type::Dict(lhs_dict) => match rhs {
-                Type::Dict(rhs_dict) => {
+            TypeKind::Dict(lhs_dict) => match &rhs.kind {
+                TypeKind::Dict(rhs_dict) => {
                     self.assign_type_with_bounds(
                         lhs_dict.key.as_ref(),
                         rhs_dict.key.as_ref(),
@@ -820,8 +821,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     rhs.clone(),
                 ))),
             },
-            Type::List(lhs_inner) => match rhs {
-                Type::List(rhs_inner) => self
+            TypeKind::List(lhs_inner) => match &rhs.kind {
+                TypeKind::List(rhs_inner) => self
                     .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
@@ -829,8 +830,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     rhs.clone(),
                 ))),
             },
-            Type::Fn(lhs_fn) => match rhs {
-                Type::Fn(rhs_fn) => self
+            TypeKind::Fn(lhs_fn) => match &rhs.kind {
+                TypeKind::Fn(rhs_fn) => self
                     .assign_fn_type(lhs_fn, rhs_fn, bounds)
                     .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
                 _ => Err(TypeError::new(TypeIssue::Mismatch(
@@ -1018,10 +1019,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         assertions: &mut HashMap<usize, (Type, Type)>,
     ) -> Result<(), TypeError> {
         // If rhs is a free type variable, record the bound from lhs
-        if let Type::Var(id) = rhs
-            && free_vars.contains(id)
+        if let TypeKind::Var(id) = rhs.kind
+            && free_vars.contains(&id)
         {
-            let entry = assertions.get_mut(id).expect("free var must have entry");
+            let entry = assertions.get_mut(&id).expect("free var must have entry");
             match variance {
                 Variance::Covariant => {
                     // lhs is an upper bound for this variable
@@ -1036,18 +1037,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
 
         // Structural recursion for matching type constructors
-        match (lhs, rhs) {
-            (Type::Optional(lhs_inner), Type::Optional(rhs_inner)) => {
+        match (&lhs.kind, &rhs.kind) {
+            (TypeKind::Optional(lhs_inner), TypeKind::Optional(rhs_inner)) => {
                 self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
             }
-            (_, Type::Optional(rhs_inner)) if variance == Variance::Covariant => {
+            (_, TypeKind::Optional(rhs_inner)) if variance == Variance::Covariant => {
                 // Non-optional lhs can be assigned to optional rhs in covariant position
                 self.collect_bounds(lhs, rhs_inner, variance, free_vars, assertions)
             }
-            (Type::List(lhs_inner), Type::List(rhs_inner)) => {
+            (TypeKind::List(lhs_inner), TypeKind::List(rhs_inner)) => {
                 self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
             }
-            (Type::Record(lhs_record), Type::Record(rhs_record)) => {
+            (TypeKind::Record(lhs_record), TypeKind::Record(rhs_record)) => {
                 for (name, rhs_field) in rhs_record.iter() {
                     if let Some(lhs_field) = lhs_record.get(name) {
                         self.collect_bounds(lhs_field, rhs_field, variance, free_vars, assertions)?;
@@ -1055,7 +1056,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 Ok(())
             }
-            (Type::Dict(lhs_dict), Type::Dict(rhs_dict)) => {
+            (TypeKind::Dict(lhs_dict), TypeKind::Dict(rhs_dict)) => {
                 self.collect_bounds(
                     lhs_dict.key.as_ref(),
                     rhs_dict.key.as_ref(),
@@ -1071,7 +1072,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     assertions,
                 )
             }
-            (Type::Fn(lhs_fn), Type::Fn(rhs_fn)) if lhs_fn.params.len() == rhs_fn.params.len() => {
+            (TypeKind::Fn(lhs_fn), TypeKind::Fn(rhs_fn))
+                if lhs_fn.params.len() == rhs_fn.params.len() =>
+            {
                 // Parameters: flip variance
                 let flipped = variance.flip();
                 for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
@@ -1153,7 +1156,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             // expected type rather than reporting an error. This allows
             // expressions like `if (b) 123 else test(false)` to propagate
             // the concrete branch type into the free-variable branch.
-            if let Type::Var(id) = &ty
+            if let TypeKind::Var(id) = &ty.kind
                 && env.is_free_var(*id)
             {
                 if let Some(fv) = &env.free_vars {
@@ -1482,13 +1485,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
                 let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
-                if matches!(callee_ty, Type::Never) {
+                if matches!(callee_ty.kind, TypeKind::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
 
                 // If the callee is a free type variable, constrain it to be a
                 // function type derived from the arguments.
-                if let Type::Var(callee_var_id) = &raw_callee_ty
+                if let TypeKind::Var(callee_var_id) = &raw_callee_ty.kind
                     && env.is_free_var(*callee_var_id)
                 {
                     let mut arg_types = Vec::new();
@@ -1513,7 +1516,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     return Ok(Diagnosed::new(ty, diags));
                 }
 
-                let Type::Fn(fn_ty) = callee_ty else {
+                let TypeKind::Fn(fn_ty) = callee_ty.kind else {
                     diags.push(NotAFunction {
                         module_id: env.module_id()?,
                         ty: callee_ty,
@@ -1660,13 +1663,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
 
-                let result_ty = if matches!(operand_ty, Type::Never) {
+                let result_ty = if matches!(operand_ty.kind, TypeKind::Never) {
                     Type::Never
                 } else {
                     match unary_expr.op {
-                        ast::UnaryOp::Negate => match operand_ty {
-                            Type::Int => Type::Int,
-                            Type::Float => Type::Float,
+                        ast::UnaryOp::Negate => match &operand_ty.kind {
+                            TypeKind::Int => Type::Int,
+                            TypeKind::Float => Type::Float,
                             _ => {
                                 diags.push(InvalidUnaryOperand {
                                     module_id: env.module_id()?,
@@ -1696,116 +1699,125 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
 
-                let result_ty = if matches!(lhs_ty, Type::Never) || matches!(rhs_ty, Type::Never) {
-                    Type::Never
-                } else {
-                    match binary_expr.op {
-                        ast::BinaryOp::Add => match (&lhs_ty, &rhs_ty) {
-                            (Type::Int, Type::Int) => Type::Int,
-                            (Type::Float, Type::Float) => Type::Float,
-                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
-                            (Type::Str, Type::Str) => Type::Str,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
+                let result_ty =
+                    if matches!(lhs_ty.kind, TypeKind::Never)
+                        || matches!(rhs_ty.kind, TypeKind::Never)
+                    {
+                        Type::Never
+                    } else {
+                        match binary_expr.op {
+                            ast::BinaryOp::Add => match (&lhs_ty.kind, &rhs_ty.kind) {
+                                (TypeKind::Int, TypeKind::Int) => Type::Int,
+                                (TypeKind::Float, TypeKind::Float) => Type::Float,
+                                (TypeKind::Int, TypeKind::Float)
+                                | (TypeKind::Float, TypeKind::Int) => Type::Float,
+                                (TypeKind::Str, TypeKind::Str) => Type::Str,
+                                _ => {
+                                    diags.push(InvalidBinaryOperands {
+                                        module_id: env.module_id()?,
+                                        op: binary_expr.op,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                    Type::Never
+                                }
+                            },
+                            ast::BinaryOp::Sub => match (&lhs_ty.kind, &rhs_ty.kind) {
+                                (TypeKind::Int, TypeKind::Int) => Type::Int,
+                                (TypeKind::Float, TypeKind::Float) => Type::Float,
+                                (TypeKind::Int, TypeKind::Float)
+                                | (TypeKind::Float, TypeKind::Int) => Type::Float,
+                                _ => {
+                                    diags.push(InvalidBinaryOperands {
+                                        module_id: env.module_id()?,
+                                        op: binary_expr.op,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                    Type::Never
+                                }
+                            },
+                            ast::BinaryOp::Mul => match (&lhs_ty.kind, &rhs_ty.kind) {
+                                (TypeKind::Int, TypeKind::Int) => Type::Int,
+                                (TypeKind::Float, TypeKind::Float) => Type::Float,
+                                (TypeKind::Int, TypeKind::Float)
+                                | (TypeKind::Float, TypeKind::Int) => Type::Float,
+                                _ => {
+                                    diags.push(InvalidBinaryOperands {
+                                        module_id: env.module_id()?,
+                                        op: binary_expr.op,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                    Type::Never
+                                }
+                            },
+                            ast::BinaryOp::Div => match (&lhs_ty.kind, &rhs_ty.kind) {
+                                (TypeKind::Int, TypeKind::Int) => Type::Int,
+                                (TypeKind::Float, TypeKind::Float) => Type::Float,
+                                (TypeKind::Int, TypeKind::Float)
+                                | (TypeKind::Float, TypeKind::Int) => Type::Float,
+                                _ => {
+                                    diags.push(InvalidBinaryOperands {
+                                        module_id: env.module_id()?,
+                                        op: binary_expr.op,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                    Type::Never
+                                }
+                            },
+                            ast::BinaryOp::Eq | ast::BinaryOp::Neq => {
+                                if self.types_disjoint(&lhs_ty, &rhs_ty) {
+                                    diags.push(DisjointEquality {
+                                        module_id: env.module_id()?,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                }
+                                Type::Bool
                             }
-                        },
-                        ast::BinaryOp::Sub => match (&lhs_ty, &rhs_ty) {
-                            (Type::Int, Type::Int) => Type::Int,
-                            (Type::Float, Type::Float) => Type::Float,
-                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
+                            ast::BinaryOp::Lt
+                            | ast::BinaryOp::Lte
+                            | ast::BinaryOp::Gt
+                            | ast::BinaryOp::Gte => match (&lhs_ty.kind, &rhs_ty.kind) {
+                                (TypeKind::Int, TypeKind::Int)
+                                | (TypeKind::Float, TypeKind::Float)
+                                | (TypeKind::Int, TypeKind::Float)
+                                | (TypeKind::Float, TypeKind::Int) => Type::Bool,
+                                _ => {
+                                    diags.push(InvalidBinaryOperands {
+                                        module_id: env.module_id()?,
+                                        op: binary_expr.op,
+                                        lhs: lhs_ty.clone(),
+                                        rhs: rhs_ty.clone(),
+                                        span: expr.span(),
+                                    });
+                                    Type::Never
+                                }
+                            },
+                            ast::BinaryOp::And | ast::BinaryOp::Or => {
+                                match (&lhs_ty.kind, &rhs_ty.kind) {
+                                    (TypeKind::Bool, TypeKind::Bool) => Type::Bool,
+                                    _ => {
+                                        diags.push(InvalidBinaryOperands {
+                                            module_id: env.module_id()?,
+                                            op: binary_expr.op,
+                                            lhs: lhs_ty.clone(),
+                                            rhs: rhs_ty.clone(),
+                                            span: expr.span(),
+                                        });
+                                        Type::Never
+                                    }
+                                }
                             }
-                        },
-                        ast::BinaryOp::Mul => match (&lhs_ty, &rhs_ty) {
-                            (Type::Int, Type::Int) => Type::Int,
-                            (Type::Float, Type::Float) => Type::Float,
-                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
-                            }
-                        },
-                        ast::BinaryOp::Div => match (&lhs_ty, &rhs_ty) {
-                            (Type::Int, Type::Int) => Type::Int,
-                            (Type::Float, Type::Float) => Type::Float,
-                            (Type::Int, Type::Float) | (Type::Float, Type::Int) => Type::Float,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
-                            }
-                        },
-                        ast::BinaryOp::Eq | ast::BinaryOp::Neq => {
-                            if self.types_disjoint(&lhs_ty, &rhs_ty) {
-                                diags.push(DisjointEquality {
-                                    module_id: env.module_id()?,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                            }
-                            Type::Bool
                         }
-                        ast::BinaryOp::Lt
-                        | ast::BinaryOp::Lte
-                        | ast::BinaryOp::Gt
-                        | ast::BinaryOp::Gte => match (&lhs_ty, &rhs_ty) {
-                            (Type::Int, Type::Int)
-                            | (Type::Float, Type::Float)
-                            | (Type::Int, Type::Float)
-                            | (Type::Float, Type::Int) => Type::Bool,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
-                            }
-                        },
-                        ast::BinaryOp::And | ast::BinaryOp::Or => match (&lhs_ty, &rhs_ty) {
-                            (Type::Bool, Type::Bool) => Type::Bool,
-                            _ => {
-                                diags.push(InvalidBinaryOperands {
-                                    module_id: env.module_id()?,
-                                    op: binary_expr.op,
-                                    lhs: lhs_ty.clone(),
-                                    rhs: rhs_ty.clone(),
-                                    span: expr.span(),
-                                });
-                                Type::Never
-                            }
-                        },
-                    }
-                };
+                    };
 
                 let ty = self
                     .apply_expected_type(env, expr.span(), result_ty, expected_type)?
@@ -1895,7 +1907,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut diags = DiagList::new();
                 let mut record_ty = RecordType::default();
                 let expected_record = match expected_type {
-                    Some(Type::Record(record_ty)) => Some(record_ty),
+                    Some(Type {
+                        kind: TypeKind::Record(record_ty),
+                        ..
+                    }) => Some(record_ty),
                     _ => None,
                 };
 
@@ -1925,8 +1940,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let ty = Type::Record(record_ty);
                 if let Some(expected_record) = expected_record {
                     let missing_field = expected_record.iter().any(|(name, field_ty)| {
-                        matches!(ty, Type::Record(ref record) if record.get(name).is_none())
-                            && !matches!(field_ty, Type::Optional(_))
+                        matches!(&ty.kind, TypeKind::Record(record) if record.get(name).is_none())
+                            && !matches!(field_ty.kind, TypeKind::Optional(_))
                     });
                     if missing_field {
                         diags.push(InvalidType {
@@ -1957,7 +1972,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             ast::Expr::Dict(dict_expr) => {
                 let mut diags = DiagList::new();
                 let expected_dict = match expected_type {
-                    Some(Type::Dict(dict_ty)) => Some(dict_ty),
+                    Some(Type {
+                        kind: TypeKind::Dict(dict_ty),
+                        ..
+                    }) => Some(dict_ty),
                     _ => None,
                 };
 
@@ -2007,7 +2025,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
             ast::Expr::List(list_expr) => {
                 let mut diags = DiagList::new();
-                let list_ty = if let Some(Type::List(expected_item_ty)) = expected_type {
+                let list_ty = if let Some(Type {
+                    kind: TypeKind::List(expected_item_ty),
+                    ..
+                }) = expected_type
+                {
                     let expected_item_ty = expected_item_ty.as_ref().clone().unfold();
                     for item in &list_expr.items {
                         self.check_list_item(env, item, Some(&expected_item_ty))?
@@ -2059,13 +2081,13 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
                 let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
-                if matches!(lhs_ty, Type::Never) {
+                if matches!(lhs_ty.kind, TypeKind::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
 
                 // If the LHS is a free type variable, constrain it to be a
                 // record containing the accessed member.
-                if let Type::Var(lhs_var_id) = &raw_lhs_ty
+                if let TypeKind::Var(lhs_var_id) = &raw_lhs_ty.kind
                     && env.is_free_var(*lhs_var_id)
                 {
                     let member_id = next_type_id();
@@ -2087,7 +2109,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
                 if let Some((cursor, offset)) = &property_access.property.cursor {
                     let prefix = &property_access.property.name[..*offset];
-                    if let Type::Record(record_ty) = &lhs_ty {
+                    if let TypeKind::Record(record_ty) = &lhs_ty.kind {
                         for (name, _) in record_ty.iter() {
                             if name.starts_with(prefix) {
                                 cursor.add_completion_candidate(
@@ -2097,8 +2119,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     }
                 }
-                let member_ty = match &lhs_ty {
-                    Type::Record(record_ty) => record_ty
+                let member_ty = match &lhs_ty.kind {
+                    TypeKind::Record(record_ty) => record_ty
                         .get(property_access.property.name.as_str())
                         .cloned(),
                     _ => None,
@@ -2128,11 +2150,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags)
                     .unfold();
                 let container_ty = env.resolve_var_bound(&container_ty).unfold();
-                if matches!(container_ty, Type::Never) {
+                if matches!(container_ty.kind, TypeKind::Never) {
                     return Ok(Diagnosed::new(Type::Never, diags));
                 }
-                let result_ty = match &container_ty {
-                    Type::Dict(dict_ty) => {
+                let result_ty = match &container_ty.kind {
+                    TypeKind::Dict(dict_ty) => {
                         self.check_expr(
                             env,
                             indexed_access.index.as_ref(),
@@ -2141,7 +2163,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .unpack(&mut diags);
                         Type::Optional(dict_ty.value.clone())
                     }
-                    Type::List(inner_ty) => {
+                    TypeKind::List(inner_ty) => {
                         self.check_expr(env, indexed_access.index.as_ref(), Some(&Type::Int))?
                             .unpack(&mut diags);
                         Type::Optional(inner_ty.clone())
@@ -2187,7 +2209,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .check_expr(env, raise_expr.expr.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
-                if !matches!(inner_ty, Type::Exception(_) | Type::Never) {
+                if !matches!(inner_ty.kind, TypeKind::Exception(_) | TypeKind::Never) {
                     diags.push(NotAnException {
                         module_id: env.module_id()?,
                         ty: inner_ty,
@@ -2219,8 +2241,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .unpack(&mut diags)
                         .unfold();
 
-                    match &catch_var_ty {
-                        Type::Exception(_) => {
+                    match &catch_var_ty.kind {
+                        TypeKind::Exception(_) => {
                             if let Some(catch_arg) = &catch.catch_arg {
                                 diags.push(UnexpectedCatchArg {
                                     module_id: env.module_id()?,
@@ -2230,9 +2252,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             self.check_expr(env, &catch.body, Some(&try_ty))?
                                 .unpack(&mut diags);
                         }
-                        Type::Fn(fn_ty) => {
+                        TypeKind::Fn(fn_ty) => {
                             let ret_ty = fn_ty.ret.as_ref().clone().unfold();
-                            if !matches!(ret_ty, Type::Exception(_)) {
+                            if !matches!(ret_ty.kind, TypeKind::Exception(_)) {
                                 diags.push(InvalidCatchTarget {
                                     module_id: env.module_id()?,
                                     ty: catch_var_ty.clone(),
@@ -2253,7 +2275,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                     .unpack(&mut diags);
                             }
                         }
-                        Type::Never => {
+                        TypeKind::Never => {
                             // If the type is Never (e.g., undefined variable), skip further checks
                             self.check_expr(env, &catch.body, Some(&try_ty))?
                                 .unpack(&mut diags);
@@ -2302,14 +2324,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .check_expr(env, for_item.iterable.as_ref(), None)?
                     .unpack(&mut diags)
                     .unfold();
-                let element_ty = match iterable_ty.clone() {
-                    Type::List(element_ty) => *element_ty,
-                    other => {
+                let element_ty = match iterable_ty.kind {
+                    TypeKind::List(element_ty) => *element_ty,
+                    _ => {
                         diags.push(InvalidType {
                             module_id: env.module_id()?,
                             error: TypeError::new(TypeIssue::Mismatch(
                                 Type::List(Box::new(Type::Any)),
-                                other,
+                                iterable_ty,
                             )),
                             span: for_item.iterable.span(),
                         });
@@ -2403,7 +2425,15 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let resolved = if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
                     ty.clone()
                 } else if let Some(ty) = env.lookup_type_level(var.name.as_str()) {
-                    ty.clone()
+                    let ty = ty.clone();
+                    // Attach the alias name for non-generic, non-primitive type aliases.
+                    // Generic type constructors (Fn with type_params) get their name
+                    // when instantiated via TypeExpr::Application.
+                    if !matches!(ty.kind, TypeKind::Fn(ref f) if !f.type_params.is_empty()) {
+                        ty.with_name(var.name.clone())
+                    } else {
+                        ty
+                    }
                 } else {
                     if let Ok(module_id) = env.module_id() {
                         diags.push(UnknownType {
@@ -2481,8 +2511,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let base_ty = self
                     .resolve_type_expr(env, app.base.as_ref())
                     .unpack(&mut diags);
-                match &base_ty {
-                    Type::Fn(fn_ty) if fn_ty.params.is_empty() && !fn_ty.type_params.is_empty() => {
+                match &base_ty.kind {
+                    TypeKind::Fn(fn_ty)
+                        if fn_ty.params.is_empty() && !fn_ty.type_params.is_empty() =>
+                    {
                         if fn_ty.type_params.len() != app.args.len() {
                             if let Ok(module_id) = env.module_id() {
                                 diags.push(WrongTypeArgCount {
@@ -2523,6 +2555,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 }
                                 let _ = id;
                             }
+                            // Build the application name (e.g., "Pair<Int, Str>")
+                            let app_name = {
+                                let base_name = match &**app.base.as_ref() {
+                                    ast::TypeExpr::Var(var) => Some(var.name.as_str()),
+                                    _ => None,
+                                };
+                                base_name.map(|name| {
+                                    let args_str: Vec<String> =
+                                        resolved_args.iter().map(|ty| ty.to_string()).collect();
+                                    format!("{name}<{}>", args_str.join(", "))
+                                })
+                            };
                             // Substitute type params with the provided args
                             let replacements: Vec<(usize, Type)> = fn_ty
                                 .type_params
@@ -2530,7 +2574,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                 .zip(resolved_args)
                                 .map(|((id, _), ty)| (*id, ty))
                                 .collect();
-                            fn_ty.ret.substitute(&replacements)
+                            let result = fn_ty.ret.substitute(&replacements);
+                            match app_name {
+                                Some(name) => result.with_name(name),
+                                None => result,
+                            }
                         }
                     }
                     _ => {
@@ -2550,7 +2598,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 if let Some((cursor, offset)) = &prop_access.property.cursor {
                     let prefix = &prop_access.property.name[..*offset];
-                    if let Type::Record(record_ty) = &lhs_ty {
+                    if let TypeKind::Record(record_ty) = &lhs_ty.kind {
                         for (name, _) in record_ty.iter() {
                             if name.starts_with(prefix) {
                                 cursor.add_completion_candidate(
@@ -2560,8 +2608,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     }
                 }
-                match &lhs_ty {
-                    Type::Record(record_ty) => {
+                match &lhs_ty.kind {
+                    TypeKind::Record(record_ty) => {
                         if let Some(member_ty) = record_ty.get(prop_access.property.name.as_str()) {
                             if let Some((cursor, _)) = &prop_access.property.cursor {
                                 cursor.set_type(member_ty.clone());
@@ -2579,7 +2627,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             Type::Never
                         }
                     }
-                    Type::Never => Type::Never,
+                    TypeKind::Never => Type::Never,
                     _ => {
                         if let Ok(module_id) = env.module_id() {
                             diags.push(UndefinedMember {
@@ -2768,6 +2816,7 @@ mod tests {
     use super::{TypeChecker, next_type_id};
     use crate::{
         DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
+        TypeKind,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -3086,7 +3135,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &add_expr, None)
             .expect("type check should succeed with diags");
-        assert!(matches!(*diagnosed, Type::Never));
+        assert!(matches!(diagnosed.kind, TypeKind::Never));
 
         let mut diags = diagnosed.diags().iter();
         let diag = diags.next().expect("expected diagnostic");
@@ -3231,7 +3280,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &cmp_expr, None)
             .expect("type check should succeed with diags");
-        assert!(matches!(*diagnosed, Type::Never));
+        assert!(matches!(diagnosed.kind, TypeKind::Never));
     }
 
     #[test]
@@ -3253,7 +3302,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &and_expr, None)
             .expect("type check should succeed with diags");
-        assert!(matches!(*diagnosed, Type::Never));
+        assert!(matches!(diagnosed.kind, TypeKind::Never));
     }
 
     #[test]
@@ -3678,17 +3727,17 @@ mod tests {
     /// Helper to extract an export's Fn type from a check_module result,
     /// unfolding any iso-recursive wrapper.
     fn get_export_fn(diagnosed: &crate::Diagnosed<Type>, name: &str) -> FnType {
-        let Type::Record(exports) = diagnosed.as_ref() else {
+        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
             panic!("expected record type, got: {}", diagnosed.as_ref());
         };
         let Some(ty) = exports.get(name) else {
             panic!("expected export '{name}'");
         };
         let unfolded = ty.unfold();
-        let Type::Fn(fn_ty) = unfolded else {
+        let TypeKind::Fn(fn_ty) = &unfolded.kind else {
             panic!("expected fn type for '{name}', got: {}", ty);
         };
-        fn_ty
+        fn_ty.clone()
     }
 
     #[test]
@@ -3716,7 +3765,7 @@ mod tests {
         );
         let fn_ty = get_export_fn(&diagnosed, "p");
         // param should be { fst: Int, snd: Str }
-        let Type::Record(param_rec) = &fn_ty.params[0] else {
+        let TypeKind::Record(param_rec) = &fn_ty.params[0].kind else {
             panic!("expected record param type, got: {}", fn_ty.params[0]);
         };
         assert_eq!(param_rec.get("fst"), Some(&Type::Int));
@@ -3749,7 +3798,7 @@ mod tests {
             "unexpected errors: {:?}",
             diagnosed.diags()
         );
-        let Type::Record(exports) = diagnosed.as_ref() else {
+        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
             panic!("expected record type");
         };
         // The value export should exist
@@ -3774,7 +3823,7 @@ mod tests {
         let Some(config_ty) = type_exports.get("Config") else {
             panic!("expected exported type 'Config'");
         };
-        let Type::Record(config_rec) = config_ty else {
+        let TypeKind::Record(config_rec) = &config_ty.kind else {
             panic!("expected record type");
         };
         assert_eq!(config_rec.get("host"), Some(&Type::Str));
@@ -3822,7 +3871,7 @@ mod tests {
             "unexpected errors: {:?}",
             diagnosed.diags()
         );
-        let Type::Record(exports) = diagnosed.as_ref() else {
+        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
             panic!("expected record type");
         };
         // The exported `v` should be Int (possibly wrapped in IsoRec)
@@ -3839,13 +3888,13 @@ mod tests {
             "unexpected errors: {:?}",
             diagnosed.diags()
         );
-        let Type::Record(exports) = diagnosed.as_ref() else {
+        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
             panic!("expected record type");
         };
         let node_ty = exports.get("node").expect("expected 'node' export");
         // Should be IsoRec since `node` references itself
         assert!(
-            matches!(node_ty, Type::IsoRec(_, _)),
+            matches!(node_ty.kind, TypeKind::IsoRec(_, _)),
             "expected IsoRec type, got: {node_ty}"
         );
     }
@@ -3855,7 +3904,7 @@ mod tests {
         // A global that doesn't reference itself should not have a meaningful IsoRec.
         let diagnosed = check_module("export let x = 42");
         assert!(!diagnosed.diags().has_errors());
-        let Type::Record(exports) = diagnosed.as_ref() else {
+        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
             panic!("expected record type");
         };
         let x_ty = exports.get("x").expect("expected 'x' export");

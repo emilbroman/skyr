@@ -29,8 +29,105 @@ fn typevar_name(index: usize) -> String {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct Type {
+    pub kind: TypeKind,
+    /// Optional display name from a source-level type alias.
+    /// Does NOT participate in equality or hashing.
+    name: Option<String>,
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind
+    }
+}
+
+impl Eq for Type {}
+
+impl Type {
+    pub fn new(kind: TypeKind) -> Self {
+        Self { kind, name: None }
+    }
+
+    pub fn named(kind: TypeKind, name: impl Into<String>) -> Self {
+        Self {
+            kind,
+            name: Some(name.into()),
+        }
+    }
+
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
+    pub fn strip_name(mut self) -> Self {
+        self.name = None;
+        self
+    }
+
+    pub fn has_name(&self) -> bool {
+        self.name.is_some()
+    }
+}
+
+// Convenience constructors matching the old enum variants.
+#[allow(non_upper_case_globals, non_snake_case)]
+impl Type {
+    pub const Any: Self = Self {
+        kind: TypeKind::Any,
+        name: None,
+    };
+    pub const Int: Self = Self {
+        kind: TypeKind::Int,
+        name: None,
+    };
+    pub const Float: Self = Self {
+        kind: TypeKind::Float,
+        name: None,
+    };
+    pub const Bool: Self = Self {
+        kind: TypeKind::Bool,
+        name: None,
+    };
+    pub const Str: Self = Self {
+        kind: TypeKind::Str,
+        name: None,
+    };
+    pub const Never: Self = Self {
+        kind: TypeKind::Never,
+        name: None,
+    };
+
+    pub fn Optional(inner: Box<Type>) -> Self {
+        Self::new(TypeKind::Optional(inner))
+    }
+    pub fn List(inner: Box<Type>) -> Self {
+        Self::new(TypeKind::List(inner))
+    }
+    pub fn Fn(fn_ty: FnType) -> Self {
+        Self::new(TypeKind::Fn(fn_ty))
+    }
+    pub fn Record(record: RecordType) -> Self {
+        Self::new(TypeKind::Record(record))
+    }
+    pub fn Dict(dict: DictType) -> Self {
+        Self::new(TypeKind::Dict(dict))
+    }
+    pub fn IsoRec(id: usize, body: Box<Type>) -> Self {
+        Self::new(TypeKind::IsoRec(id, body))
+    }
+    pub fn Var(id: usize) -> Self {
+        Self::new(TypeKind::Var(id))
+    }
+    pub fn Exception(id: u64) -> Self {
+        Self::new(TypeKind::Exception(id))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Type {
+pub enum TypeKind {
     Any,
     Int,
     Float,
@@ -100,9 +197,10 @@ impl DictType {
 
 impl Type {
     /// Substitute multiple type variables at once.
+    /// Names are stripped from the result since substitution produces new structural types.
     pub fn substitute(&self, replacements: &[(usize, Type)]) -> Self {
-        match self {
-            Type::Var(id) => {
+        match &self.kind {
+            TypeKind::Var(id) => {
                 for (target_id, replacement) in replacements {
                     if id == target_id {
                         return replacement.clone();
@@ -110,13 +208,16 @@ impl Type {
                 }
                 Type::Var(*id)
             }
-            Type::Any | Type::Int | Type::Float | Type::Bool | Type::Str | Type::Never => {
-                self.clone()
-            }
-            Type::Exception(id) => Type::Exception(*id),
-            Type::Optional(ty) => Type::Optional(Box::new(ty.substitute(replacements))),
-            Type::List(ty) => Type::List(Box::new(ty.substitute(replacements))),
-            Type::Fn(fn_ty) => Type::Fn(FnType {
+            TypeKind::Any
+            | TypeKind::Int
+            | TypeKind::Float
+            | TypeKind::Bool
+            | TypeKind::Str
+            | TypeKind::Never => self.clone(),
+            TypeKind::Exception(id) => Type::Exception(*id),
+            TypeKind::Optional(ty) => Type::Optional(Box::new(ty.substitute(replacements))),
+            TypeKind::List(ty) => Type::List(Box::new(ty.substitute(replacements))),
+            TypeKind::Fn(fn_ty) => Type::Fn(FnType {
                 type_params: fn_ty
                     .type_params
                     .iter()
@@ -129,22 +230,29 @@ impl Type {
                     .collect(),
                 ret: Box::new(fn_ty.ret.substitute(replacements)),
             }),
-            Type::Record(record) => {
+            TypeKind::Record(record) => {
                 Type::Record(record.map_types(|ty| ty.substitute(replacements)))
             }
-            Type::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.substitute(replacements))),
-            Type::IsoRec(id, body) => Type::IsoRec(*id, Box::new(body.substitute(replacements))),
+            TypeKind::Dict(dict) => Type::Dict(dict.map_types(|ty| ty.substitute(replacements))),
+            TypeKind::IsoRec(id, body) => {
+                Type::IsoRec(*id, Box::new(body.substitute(replacements)))
+            }
         }
     }
 
     /// Returns `true` if this type contains `Type::Var(var_id)` anywhere.
     pub fn contains_var(&self, var_id: usize) -> bool {
-        match self {
-            Type::Var(id) => *id == var_id,
-            Type::Any | Type::Int | Type::Float | Type::Bool | Type::Str | Type::Never => false,
-            Type::Exception(_) => false,
-            Type::Optional(ty) | Type::List(ty) => ty.contains_var(var_id),
-            Type::Fn(fn_ty) => {
+        match &self.kind {
+            TypeKind::Var(id) => *id == var_id,
+            TypeKind::Any
+            | TypeKind::Int
+            | TypeKind::Float
+            | TypeKind::Bool
+            | TypeKind::Str
+            | TypeKind::Never => false,
+            TypeKind::Exception(_) => false,
+            TypeKind::Optional(ty) | TypeKind::List(ty) => ty.contains_var(var_id),
+            TypeKind::Fn(fn_ty) => {
                 fn_ty
                     .type_params
                     .iter()
@@ -152,15 +260,22 @@ impl Type {
                     || fn_ty.params.iter().any(|p| p.contains_var(var_id))
                     || fn_ty.ret.contains_var(var_id)
             }
-            Type::Record(record) => record.fields.values().any(|ty| ty.contains_var(var_id)),
-            Type::Dict(dict) => dict.key.contains_var(var_id) || dict.value.contains_var(var_id),
-            Type::IsoRec(id, body) => *id != var_id && body.contains_var(var_id),
+            TypeKind::Record(record) => record.fields.values().any(|ty| ty.contains_var(var_id)),
+            TypeKind::Dict(dict) => {
+                dict.key.contains_var(var_id) || dict.value.contains_var(var_id)
+            }
+            TypeKind::IsoRec(id, body) => *id != var_id && body.contains_var(var_id),
         }
     }
 
     pub fn unfold(&self) -> Self {
-        match self {
-            Type::IsoRec(id, body) => {
+        match &self.kind {
+            TypeKind::IsoRec(id, body) => {
+                if !body.contains_var(*id) {
+                    // Non-recursive: body doesn't reference the bound variable,
+                    // so just unwrap — preserving the body's name if present.
+                    return *body.clone();
+                }
                 let rec = Type::IsoRec(*id, body.clone());
                 body.substitute(&[(*id, rec)])
             }
@@ -171,18 +286,27 @@ impl Type {
 
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(name) = &self.name {
+            return write!(f, "{name}");
+        }
+        self.kind.fmt(f)
+    }
+}
+
+impl std::fmt::Display for TypeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Type::Any => write!(f, "Any"),
-            Type::Int => write!(f, "Int"),
-            Type::Float => write!(f, "Float"),
-            Type::Bool => write!(f, "Bool"),
-            Type::Str => write!(f, "Str"),
-            Type::Optional(ty) => write!(f, "{ty}?"),
-            Type::List(ty) => write!(f, "[{ty}]"),
-            Type::Fn(fn_ty) => write!(f, "{fn_ty}"),
-            Type::Record(record) => write!(f, "{record}"),
-            Type::Dict(dict) => write!(f, "{dict}"),
-            Type::IsoRec(id, ty) => {
+            TypeKind::Any => write!(f, "Any"),
+            TypeKind::Int => write!(f, "Int"),
+            TypeKind::Float => write!(f, "Float"),
+            TypeKind::Bool => write!(f, "Bool"),
+            TypeKind::Str => write!(f, "Str"),
+            TypeKind::Optional(ty) => write!(f, "{ty}?"),
+            TypeKind::List(ty) => write!(f, "[{ty}]"),
+            TypeKind::Fn(fn_ty) => write!(f, "{fn_ty}"),
+            TypeKind::Record(record) => write!(f, "{record}"),
+            TypeKind::Dict(dict) => write!(f, "{dict}"),
+            TypeKind::IsoRec(id, ty) => {
                 if !ty.contains_var(*id) {
                     return write!(f, "{ty}");
                 }
@@ -203,7 +327,7 @@ impl std::fmt::Display for Type {
 
                 Ok(())
             }
-            Type::Var(id) => {
+            TypeKind::Var(id) => {
                 let name = DISPLAY_TYPE_PARAMS.with(|stack| {
                     stack
                         .borrow()
@@ -216,8 +340,8 @@ impl std::fmt::Display for Type {
                     None => write!(f, "T{id}"),
                 }
             }
-            Type::Never => write!(f, "Never"),
-            Type::Exception(id) => write!(f, "Exception#{id}"),
+            TypeKind::Never => write!(f, "Never"),
+            TypeKind::Exception(id) => write!(f, "Exception#{id}"),
         }
     }
 }
@@ -444,5 +568,30 @@ mod tests {
 
         let bare = Type::Var(7);
         assert_eq!(bare.to_string(), "T7");
+    }
+
+    #[test]
+    fn display_named_type_uses_name() {
+        let ty = Type::named(TypeKind::Int, "UserId");
+        assert_eq!(ty.to_string(), "UserId");
+    }
+
+    #[test]
+    fn display_unnamed_type_uses_kind() {
+        let ty = Type::new(TypeKind::Int);
+        assert_eq!(ty.to_string(), "Int");
+    }
+
+    #[test]
+    fn named_type_equals_unnamed() {
+        let named = Type::named(TypeKind::Int, "UserId");
+        let unnamed = Type::Int;
+        assert_eq!(named, unnamed);
+    }
+
+    #[test]
+    fn strip_name_removes_alias() {
+        let ty = Type::named(TypeKind::Int, "UserId").strip_name();
+        assert_eq!(ty.to_string(), "Int");
     }
 }

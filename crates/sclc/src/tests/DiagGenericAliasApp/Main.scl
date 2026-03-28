@@ -1,0 +1,2 @@
+type Pair<A, B> {fst: A, snd: B}
+let p: Pair<Int, Str> = "hello"

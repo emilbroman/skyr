@@ -1,0 +1,1 @@
+DiagInferredTypeNotNamed/Main 3:14,3:15: invalid type: {a: Int} is not assignable to Str

@@ -527,3 +527,12 @@ test_case!(ListIndexedAccess);
 test_case!(IndexedAccessOutOfBounds);
 test_case!(IndexedAccessMissingKey);
 test_case!(IndexedAccessTypeError);
+
+// Named type diagnostics
+test_case!(DiagNamedTypeAlias);
+test_case!(DiagStructuralType);
+test_case!(DiagInferredTypeNotNamed);
+test_case!(DiagFnParamAlias);
+test_case!(DiagGenericAliasApp);
+test_case!(DiagNestedNamedType);
+test_case!(DiagRecordFieldNamedType);

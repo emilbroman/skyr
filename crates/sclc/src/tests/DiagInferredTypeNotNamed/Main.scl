@@ -1,0 +1,3 @@
+type X {a: Int}
+let y = {a: 1}
+let z: Str = y
