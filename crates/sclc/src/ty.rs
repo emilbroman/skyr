@@ -197,9 +197,12 @@ impl DictType {
 
 impl Type {
     /// Substitute multiple type variables at once.
-    /// Names are stripped from the result since substitution produces new structural types.
+    /// Display names are preserved on the outermost type — a named record like
+    /// `X` keeps its alias through substitution as long as the type variable
+    /// replacement doesn't change the named type itself. When a `Var` is
+    /// directly replaced, the replacement's own name (or lack thereof) is used.
     pub fn substitute(&self, replacements: &[(usize, Type)]) -> Self {
-        match &self.kind {
+        let result = match &self.kind {
             TypeKind::Var(id) => {
                 for (target_id, replacement) in replacements {
                     if id == target_id {
@@ -237,6 +240,12 @@ impl Type {
             TypeKind::IsoRec(id, body) => {
                 Type::IsoRec(*id, Box::new(body.substitute(replacements)))
             }
+        };
+        // Preserve the display name from the original type.
+        if let Some(name) = &self.name {
+            result.with_name(name.clone())
+        } else {
+            result
         }
     }
 

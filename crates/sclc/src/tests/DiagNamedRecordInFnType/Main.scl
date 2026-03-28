@@ -1,0 +1,5 @@
+type X {a: Int}
+
+let f = fn(x: X) x
+
+export let result: Str = f

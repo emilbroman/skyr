@@ -1,0 +1,1 @@
+DiagNamedRecordInFnType/Main 5:26,5:27: invalid type: fn(X) X is not assignable to Str
