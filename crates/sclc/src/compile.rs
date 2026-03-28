@@ -69,6 +69,7 @@ mod tests {
             "Num",
             "Option",
             "Random",
+            "Time",
         ];
 
         let main_scl = stdlib_modules
