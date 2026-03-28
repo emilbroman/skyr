@@ -70,6 +70,10 @@ impl Type {
     pub fn has_name(&self) -> bool {
         self.name.is_some()
     }
+
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_ref().map(AsRef::as_ref)
+    }
 }
 
 // Convenience constructors matching the old enum variants.

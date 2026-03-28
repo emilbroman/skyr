@@ -1878,16 +1878,20 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         }
                     }
                 }
+                let prop_name = property_access.property.name.as_str();
                 let member_ty = match &lhs_ty.kind {
-                    TypeKind::Record(record_ty) => record_ty
-                        .get(property_access.property.name.as_str())
-                        .cloned(),
+                    TypeKind::Record(record_ty) => record_ty.get(prop_name).cloned(),
                     _ => None,
                 };
                 if let Some(member_ty) = member_ty {
                     if let Some((cursor, _)) = &property_access.property.cursor {
                         cursor.set_type(member_ty.clone());
                     }
+                    let member_ty = if let Some(outer_name) = lhs_ty.name() {
+                        member_ty.with_name(format!("{outer_name}.{prop_name}"))
+                    } else {
+                        member_ty
+                    };
                     let ty = self
                         .apply_expected_type(env, expr.span(), member_ty, expected_type)?
                         .unpack(&mut diags);
