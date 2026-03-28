@@ -19,3 +19,9 @@ export let default = fn<T>(value: T?, fallback: T)
 		uncheckedUnwrap<T>(value)
 	else
 		fallback
+
+export let map = fn<T, U>(value: T?, transform: fn(T) U)
+	if (value == nil)
+		nil as U?
+	else
+		transform(uncheckedUnwrap<T>(value))
