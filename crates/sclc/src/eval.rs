@@ -599,6 +599,16 @@ impl Eval {
         env: &EvalEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
     ) -> Result<TrackedValue, EvalError> {
+        stacker::maybe_grow(512 * 1024, 2 * 1024 * 1024, || {
+            self.eval_expr_inner(env, expr)
+        })
+    }
+
+    fn eval_expr_inner(
+        &self,
+        env: &EvalEnv<'_>,
+        expr: &crate::Loc<ast::Expr>,
+    ) -> Result<TrackedValue, EvalError> {
         match expr.as_ref() {
             ast::Expr::Int(int) => Ok(Self::tracked(Value::Int(int.value))),
             ast::Expr::Float(float) => Ok(Self::tracked(Value::Float(float.value))),

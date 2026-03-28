@@ -147,16 +147,23 @@ impl FreeVarConstraints {
     }
 }
 
-pub struct TypeEnv<'a> {
-    module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
-    imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
+/// Heap-allocated maps that make up the mutable portion of a type environment.
+/// Boxed to keep `TypeEnv` small on the stack (~48 bytes instead of ~224).
+#[derive(Clone, Debug)]
+struct TypeEnvMaps<'a> {
     locals: HashMap<&'a str, (crate::Span, Type)>,
     type_vars: HashMap<String, Type>,
     /// Upper bounds for type variable IDs (used during function body checking).
     type_var_bounds: HashMap<usize, Type>,
     /// Type-level bindings from `type` declarations and imports (separate namespace from values).
     type_level: HashMap<String, Type>,
+}
+
+pub struct TypeEnv<'a> {
+    module_id: Option<&'a crate::ModuleId>,
+    globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
+    imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
+    maps: Box<TypeEnvMaps<'a>>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
     cursor: Option<crate::Cursor>,
     /// Free variable constraints for recursive global checking.
@@ -176,10 +183,12 @@ impl<'a> TypeEnv<'a> {
             module_id: None,
             globals: None,
             imports: None,
-            locals: HashMap::new(),
-            type_vars: HashMap::new(),
-            type_var_bounds: HashMap::new(),
-            type_level: HashMap::new(),
+            maps: Box::new(TypeEnvMaps {
+                locals: HashMap::new(),
+                type_vars: HashMap::new(),
+                type_var_bounds: HashMap::new(),
+                type_level: HashMap::new(),
+            }),
             cursor: None,
             free_vars: None,
         }
@@ -190,10 +199,7 @@ impl<'a> TypeEnv<'a> {
             module_id: self.module_id,
             globals: self.globals,
             imports: self.imports,
-            locals: self.locals.clone(),
-            type_vars: self.type_vars.clone(),
-            type_var_bounds: self.type_var_bounds.clone(),
-            type_level: self.type_level.clone(),
+            maps: self.maps.clone(),
             cursor: self.cursor.clone(),
             free_vars: self.free_vars.clone(),
         }
@@ -203,14 +209,13 @@ impl<'a> TypeEnv<'a> {
         &self,
         globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>,
     ) -> Self {
+        let mut maps = self.maps.clone();
+        maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
             globals: Some(globals),
             imports: self.imports,
-            locals: HashMap::new(),
-            type_vars: self.type_vars.clone(),
-            type_var_bounds: self.type_var_bounds.clone(),
-            type_level: self.type_level.clone(),
+            maps,
             cursor: self.cursor.clone(),
             free_vars: self.free_vars.clone(),
         }
@@ -220,14 +225,13 @@ impl<'a> TypeEnv<'a> {
         &self,
         imports: &'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>,
     ) -> Self {
+        let mut maps = self.maps.clone();
+        maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
             globals: self.globals,
             imports: Some(imports),
-            locals: HashMap::new(),
-            type_vars: self.type_vars.clone(),
-            type_var_bounds: self.type_var_bounds.clone(),
-            type_level: self.type_level.clone(),
+            maps,
             cursor: self.cursor.clone(),
             free_vars: self.free_vars.clone(),
         }
@@ -238,10 +242,7 @@ impl<'a> TypeEnv<'a> {
             module_id: Some(module_id),
             globals: self.globals,
             imports: self.imports,
-            locals: self.locals.clone(),
-            type_vars: self.type_vars.clone(),
-            type_var_bounds: self.type_var_bounds.clone(),
-            type_level: self.type_level.clone(),
+            maps: self.maps.clone(),
             cursor: self.cursor.clone(),
             free_vars: self.free_vars.clone(),
         }
@@ -255,25 +256,25 @@ impl<'a> TypeEnv<'a> {
 
     pub fn with_local(&self, name: &'a str, span: crate::Span, ty: Type) -> Self {
         let mut env = self.inner();
-        env.locals.insert(name, (span, ty));
+        env.maps.locals.insert(name, (span, ty));
         env
     }
 
     pub fn with_type_var(&self, name: String, ty: Type) -> Self {
         let mut env = self.inner();
-        env.type_vars.insert(name, ty);
+        env.maps.type_vars.insert(name, ty);
         env
     }
 
     pub fn with_type_var_bound(&self, id: usize, upper_bound: Type) -> Self {
         let mut env = self.inner();
-        env.type_var_bounds.insert(id, upper_bound);
+        env.maps.type_var_bounds.insert(id, upper_bound);
         env
     }
 
     pub fn with_type_level(&self, name: String, ty: Type) -> Self {
         let mut env = self.inner();
-        env.type_level.insert(name, ty);
+        env.maps.type_level.insert(name, ty);
         env
     }
 
@@ -289,7 +290,7 @@ impl<'a> TypeEnv<'a> {
     ) -> Self {
         constraints.borrow_mut().register(type_id);
         let mut env = self.inner();
-        env.locals.insert(name, (span, Type::Var(type_id)));
+        env.maps.locals.insert(name, (span, Type::Var(type_id)));
         env.free_vars = Some(constraints);
         env
     }
@@ -298,7 +299,7 @@ impl<'a> TypeEnv<'a> {
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
         if let TypeKind::Var(id) = ty.kind
-            && let Some(bound) = self.type_var_bounds.get(&id)
+            && let Some(bound) = self.maps.type_var_bounds.get(&id)
         {
             return bound;
         }
@@ -313,29 +314,28 @@ impl<'a> TypeEnv<'a> {
     }
 
     pub fn without_locals(&self) -> Self {
+        let mut maps = self.maps.clone();
+        maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
             globals: self.globals,
             imports: self.imports,
-            locals: HashMap::new(),
-            type_vars: self.type_vars.clone(),
-            type_var_bounds: self.type_var_bounds.clone(),
-            type_level: self.type_level.clone(),
+            maps,
             cursor: self.cursor.clone(),
             free_vars: self.free_vars.clone(),
         }
     }
 
     pub fn lookup_type_var(&self, name: &str) -> Option<&Type> {
-        self.type_vars.get(name)
+        self.maps.type_vars.get(name)
     }
 
     pub fn lookup_type_level(&self, name: &str) -> Option<&Type> {
-        self.type_level.get(name)
+        self.maps.type_level.get(name)
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&(crate::Span, Type)> {
-        self.locals.get(name)
+        self.maps.locals.get(name)
     }
 
     pub fn lookup_global(&self, name: &str) -> Option<(crate::Span, &crate::Loc<ast::Expr>)> {
@@ -357,7 +357,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     pub fn local_names(&self) -> impl Iterator<Item = &str> {
-        self.locals.keys().copied()
+        self.maps.locals.keys().copied()
     }
 
     pub fn global_names(&self) -> impl Iterator<Item = &str> {
@@ -369,6 +369,15 @@ impl<'a> TypeEnv<'a> {
 
 pub struct TypeChecker<'p, S> {
     program: &'p Program<S>,
+    /// Cache for resolved global expression types (keyed by expression pointer).
+    /// Avoids re-checking the same global expression multiple times within a
+    /// single type-checking pass. Diagnostics are not cached — they are only
+    /// emitted during the canonical check in `check_global_let_bind`.
+    global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
+    /// Cache for resolved import module types (keyed by FileMod pointer).
+    import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
+    /// Cache for type-level exports (keyed by FileMod pointer).
+    type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
 
 /// Global monotonic counter for unique type variable IDs.
@@ -1163,7 +1172,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     fv.borrow_mut().constrain(*id, expected_type.clone());
                 }
             } else if let Err(error) =
-                self.assign_type_with_bounds(expected_type, &ty, &env.type_var_bounds)
+                self.assign_type_with_bounds(expected_type, &ty, &env.maps.type_var_bounds)
             {
                 diags.push(InvalidType {
                     module_id: env.module_id()?,
@@ -1177,7 +1186,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     pub fn new(program: &'p Program<S>) -> Self {
-        Self { program }
+        Self {
+            program,
+            global_cache: RefCell::new(HashMap::new()),
+            import_cache: RefCell::new(HashMap::new()),
+            type_level_cache: RefCell::new(HashMap::new()),
+        }
     }
 
     pub fn check_program(&self) -> Result<Diagnosed<()>, TypeCheckError> {
@@ -1208,11 +1222,16 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         Ok(Diagnosed::new((), diags))
     }
 
+    #[inline(never)]
     pub fn check_file_mod(
         &self,
         env: &TypeEnv<'_>,
         file_mod: &ast::FileMod,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        let cache_key = file_mod as *const ast::FileMod;
+        if let Some(cached) = self.import_cache.borrow().get(&cache_key) {
+            return Ok(Diagnosed::new(cached.clone(), DiagList::new()));
+        }
         let globals = file_mod.find_globals();
         let imports = self.find_imports(file_mod);
         let mut env = env.with_globals(&globals).with_imports(&imports);
@@ -1229,15 +1248,25 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
         }
 
-        Ok(Diagnosed::new(Type::Record(exports), diags))
+        let result = Type::Record(exports);
+        self.import_cache
+            .borrow_mut()
+            .insert(cache_key, result.clone());
+        Ok(Diagnosed::new(result, diags))
     }
 
     /// Compute the type-level exports of a module (from `export type` declarations).
+    #[inline(never)]
     pub fn type_level_exports(
         &self,
         env: &TypeEnv<'_>,
         file_mod: &ast::FileMod,
     ) -> Diagnosed<RecordType> {
+        let cache_key = file_mod as *const ast::FileMod;
+        if let Some(cached) = self.type_level_cache.borrow().get(&cache_key) {
+            return Diagnosed::new(cached.clone(), DiagList::new());
+        }
+
         let mut diags = DiagList::new();
         let mut type_exports = RecordType::default();
 
@@ -1259,6 +1288,9 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
         }
 
+        self.type_level_cache
+            .borrow_mut()
+            .insert(cache_key, type_exports.clone());
         Diagnosed::new(type_exports, diags)
     }
 
@@ -1296,6 +1328,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         Ok(())
     }
 
+    #[inline(never)]
     pub fn check_stmt(
         &self,
         env: &TypeEnv<'_>,
@@ -1312,9 +1345,22 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     && let Some((target_module_id, Some(import_file_mod))) =
                         env.lookup_import(alias.name.as_str())
                 {
-                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
-                    if let Ok(imported_ty) = self.check_file_mod(&import_env, import_file_mod) {
-                        cursor.set_type(imported_ty.into_inner());
+                    let cache_key = import_file_mod as *const ast::FileMod;
+                    let imported_ty =
+                        if let Some(cached) = self.import_cache.borrow().get(&cache_key) {
+                            Some(cached.clone())
+                        } else {
+                            let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                            self.check_file_mod(&import_env, import_file_mod)
+                                .ok()
+                                .map(|d| {
+                                    let ty = d.into_inner();
+                                    self.import_cache.borrow_mut().insert(cache_key, ty.clone());
+                                    ty
+                                })
+                        };
+                    if let Some(ty) = imported_ty {
+                        cursor.set_type(ty);
                     }
                 }
                 Ok(Diagnosed::new(None, DiagList::new()))
@@ -1344,6 +1390,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
+    #[inline(never)]
     pub fn check_expr(
         &self,
         env: &TypeEnv<'_>,
@@ -1429,233 +1476,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(body_ty, diags))
             }
-            ast::Expr::Fn(fn_expr) => {
-                let mut diags = DiagList::new();
-                let mut fn_env = env.inner();
-
-                // Allocate type variable IDs for generic type parameters
-                let mut type_param_entries = Vec::with_capacity(fn_expr.type_params.len());
-                for type_param in &fn_expr.type_params {
-                    let type_id = next_type_id();
-                    fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
-                    let upper_bound = if let Some(bound_expr) = &type_param.bound {
-                        self.resolve_type_expr(&fn_env, bound_expr)
-                            .unpack(&mut diags)
-                    } else {
-                        Type::Any
-                    };
-                    fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
-                    type_param_entries.push((type_id, upper_bound));
-                }
-
-                let mut params = Vec::with_capacity(fn_expr.params.len());
-                for param in &fn_expr.params {
-                    let param_ty = self
-                        .resolve_type_expr(&fn_env, &param.ty)
-                        .unpack(&mut diags);
-                    fn_env = fn_env.with_local(
-                        param.var.name.as_str(),
-                        param.var.span(),
-                        param_ty.clone(),
-                    );
-                    params.push(param_ty);
-                }
-
-                let ret = self
-                    .check_expr(&fn_env, fn_expr.body.as_ref(), None)?
-                    .unpack(&mut diags);
-                let ty = self
-                    .apply_expected_type(
-                        env,
-                        expr.span(),
-                        Type::Fn(FnType {
-                            type_params: type_param_entries,
-                            params,
-                            ret: Box::new(ret),
-                        }),
-                        expected_type,
-                    )?
-                    .unpack(&mut diags);
-                Ok(Diagnosed::new(ty, diags))
-            }
-            ast::Expr::Call(call_expr) => {
-                let mut diags = DiagList::new();
-                let raw_callee_ty = self
-                    .check_expr(env, call_expr.callee.as_ref(), None)?
-                    .unpack(&mut diags)
-                    .unfold();
-                let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
-                if matches!(callee_ty.kind, TypeKind::Never) {
-                    return Ok(Diagnosed::new(Type::Never, diags));
-                }
-
-                // If the callee is a free type variable, constrain it to be a
-                // function type derived from the arguments.
-                if let TypeKind::Var(callee_var_id) = &raw_callee_ty.kind
-                    && env.is_free_var(*callee_var_id)
-                {
-                    let mut arg_types = Vec::new();
-                    for arg in &call_expr.args {
-                        let arg_ty = self.check_expr(env, arg, None)?.unpack(&mut diags);
-                        arg_types.push(arg_ty);
-                    }
-                    let ret_id = next_type_id();
-                    let ret_var = Type::Var(ret_id);
-                    if let Some(fv) = &env.free_vars {
-                        fv.borrow_mut().register(ret_id);
-                        let fn_constraint = Type::Fn(FnType {
-                            type_params: vec![],
-                            params: arg_types,
-                            ret: Box::new(ret_var.clone()),
-                        });
-                        fv.borrow_mut().constrain(*callee_var_id, fn_constraint);
-                    }
-                    let ty = self
-                        .apply_expected_type(env, expr.span(), ret_var, expected_type)?
-                        .unpack(&mut diags);
-                    return Ok(Diagnosed::new(ty, diags));
-                }
-
-                let TypeKind::Fn(fn_ty) = callee_ty.kind else {
-                    diags.push(NotAFunction {
-                        module_id: env.module_id()?,
-                        ty: callee_ty,
-                        span: call_expr.callee.span(),
-                    });
-                    return Ok(Diagnosed::new(Type::Never, diags));
-                };
-
-                // Handle type argument instantiation for generic functions
-                let fn_ty = if !call_expr.type_args.is_empty() {
-                    if fn_ty.type_params.is_empty() {
-                        diags.push(UnexpectedTypeArgs {
-                            module_id: env.module_id()?,
-                            span: expr.span(),
-                        });
-                        fn_ty
-                    } else if call_expr.type_args.len() != fn_ty.type_params.len() {
-                        diags.push(WrongTypeArgCount {
-                            module_id: env.module_id()?,
-                            expected: fn_ty.type_params.len(),
-                            got: call_expr.type_args.len(),
-                            span: expr.span(),
-                        });
-                        // Substitute Any for params (to accept any argument) and Never for return
-                        // (to be usable anywhere). This prevents downstream type errors.
-                        let param_replacements: Vec<(usize, Type)> = fn_ty
-                            .type_params
-                            .iter()
-                            .map(|(id, _)| (*id, Type::Any))
-                            .collect();
-                        let ret_replacements: Vec<(usize, Type)> = fn_ty
-                            .type_params
-                            .iter()
-                            .map(|(id, _)| (*id, Type::Never))
-                            .collect();
-                        FnType {
-                            type_params: vec![],
-                            params: fn_ty
-                                .params
-                                .iter()
-                                .map(|p| p.substitute(&param_replacements))
-                                .collect(),
-                            ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
-                        }
-                    } else {
-                        // Build substitution map from type param IDs to resolved type args
-                        // and check each type arg against its declared bound
-                        let replacements: Vec<(usize, Type)> = fn_ty
-                            .type_params
-                            .iter()
-                            .zip(call_expr.type_args.iter())
-                            .map(|((id, bound), type_arg)| {
-                                let resolved =
-                                    self.resolve_type_expr(env, type_arg).unpack(&mut diags);
-                                // Check that the type argument satisfies the declared bound
-                                if self
-                                    .assign_type_with_bounds(bound, &resolved, &env.type_var_bounds)
-                                    .is_err()
-                                {
-                                    diags.push(TypeArgBoundViolation {
-                                        module_id: env.module_id().unwrap(),
-                                        actual: resolved.clone(),
-                                        bound: bound.clone(),
-                                        span: type_arg.span(),
-                                    });
-                                }
-                                (*id, resolved)
-                            })
-                            .collect();
-                        FnType {
-                            type_params: vec![],
-                            params: fn_ty
-                                .params
-                                .iter()
-                                .map(|p| p.substitute(&replacements))
-                                .collect(),
-                            ret: Box::new(fn_ty.ret.substitute(&replacements)),
-                        }
-                    }
-                } else if !fn_ty.type_params.is_empty() {
-                    // Generic function called without type arguments
-                    diags.push(MissingTypeArgs {
-                        module_id: env.module_id()?,
-                        expected: fn_ty.type_params.len(),
-                        span: call_expr.callee.span(),
-                    });
-                    // Substitute Any for params (to accept any argument) and Never for return
-                    // (to be usable anywhere). This prevents downstream type errors.
-                    let param_replacements: Vec<(usize, Type)> = fn_ty
-                        .type_params
-                        .iter()
-                        .map(|(id, _)| (*id, Type::Any))
-                        .collect();
-                    let ret_replacements: Vec<(usize, Type)> = fn_ty
-                        .type_params
-                        .iter()
-                        .map(|(id, _)| (*id, Type::Never))
-                        .collect();
-                    FnType {
-                        type_params: vec![],
-                        params: fn_ty
-                            .params
-                            .iter()
-                            .map(|p| p.substitute(&param_replacements))
-                            .collect(),
-                        ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
-                    }
-                } else {
-                    fn_ty
-                };
-
-                if call_expr.args.len() < fn_ty.params.len() {
-                    diags.push(MissingArguments {
-                        module_id: env.module_id()?,
-                        expected: fn_ty.params.len(),
-                        got: call_expr.args.len(),
-                        span: call_expr.callee.span(),
-                    });
-                }
-
-                for (index, arg) in call_expr.args.iter().enumerate() {
-                    let Some(param_ty) = fn_ty.params.get(index) else {
-                        diags.push(ExtraneousArgument {
-                            module_id: env.module_id()?,
-                            index,
-                            span: arg.span(),
-                        });
-                        continue;
-                    };
-
-                    self.check_expr(env, arg, Some(param_ty))?
-                        .unpack(&mut diags);
-                }
-
-                let ty = self
-                    .apply_expected_type(env, expr.span(), *fn_ty.ret, expected_type)?
-                    .unpack(&mut diags);
-                Ok(Diagnosed::new(ty, diags))
-            }
+            ast::Expr::Fn(fn_expr) => self.check_fn_expr(env, expr, fn_expr, expected_type),
+            ast::Expr::Call(call_expr) => self.check_call_expr(env, expr, call_expr, expected_type),
             ast::Expr::Unary(unary_expr) => {
                 let mut diags = DiagList::new();
                 let operand_ty = self
@@ -1824,85 +1646,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .unpack(&mut diags);
                 Ok(Diagnosed::new(ty, diags))
             }
-            ast::Expr::Var(var) => {
-                if let Some((cursor, offset)) = &var.cursor {
-                    let prefix = &var.name[..*offset];
-                    for name in env.local_names().chain(env.global_names()) {
-                        if name.starts_with(prefix) {
-                            cursor.add_completion_candidate(crate::CompletionCandidate::Var(
-                                name.to_owned(),
-                            ));
-                        }
-                    }
-                }
-                let set_cursor = |decl: crate::Span, ty: &Type| {
-                    if let Some((cursor, _)) = &var.cursor {
-                        cursor.set_declaration(decl);
-                        cursor.set_type(ty.clone());
-                    }
-                };
-                let track_ref = |decl: crate::Span| {
-                    if let Some(cursor) = &env.cursor {
-                        cursor.track_reference(decl, expr.span());
-                    }
-                };
-                if let Some((decl, local_ty)) = env.lookup_local(var.name.as_str()) {
-                    let decl = *decl;
-                    let local_ty = local_ty.clone();
-                    track_ref(decl);
-                    set_cursor(decl, &local_ty);
-                    return self.apply_expected_type(env, expr.span(), local_ty, expected_type);
-                }
-                if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
-                    let mut diags = DiagList::new();
-                    let type_id = next_type_id();
-                    let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
-                    let global_env = env.without_locals().with_free_var(
-                        var.name.as_str(),
-                        decl,
-                        type_id,
-                        constraints.clone(),
-                    );
-                    let resolved_ty = self
-                        .check_expr(&global_env, global_expr, None)?
-                        .unpack(&mut diags);
-                    // Solve free variable constraints and substitute into the body type
-                    let solved = constraints.borrow().solve(type_id, &resolved_ty);
-                    let resolved_ty = resolved_ty.substitute(&solved);
-                    let ty = self
-                        .apply_expected_type(
-                            env,
-                            expr.span(),
-                            Type::IsoRec(type_id, Box::new(resolved_ty)),
-                            expected_type,
-                        )?
-                        .unpack(&mut diags);
-                    track_ref(decl);
-                    set_cursor(decl, &ty);
-                    return Ok(Diagnosed::new(ty, diags));
-                }
-                if let Some((target_module_id, maybe_import_file_mod)) =
-                    env.lookup_import(var.name.as_str())
-                {
-                    let Some(import_file_mod) = maybe_import_file_mod else {
-                        return Ok(Diagnosed::new(Type::Never, DiagList::new()));
-                    };
-                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
-                    let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
-                    let imported_ty = imported_ty.into_inner();
-                    if let Some((cursor, _)) = &var.cursor {
-                        cursor.set_type(imported_ty.clone());
-                    }
-                    return self.apply_expected_type(env, expr.span(), imported_ty, expected_type);
-                }
-                let mut diags = DiagList::new();
-                diags.push(UndefinedVariable {
-                    module_id: env.module_id()?,
-                    name: var.name.clone(),
-                    var: var.clone(),
-                });
-                Ok(Diagnosed::new(Type::Never, diags))
-            }
+            ast::Expr::Var(var) => self.check_var_expr(env, expr, var, expected_type),
             ast::Expr::Record(record_expr) => {
                 let mut diags = DiagList::new();
                 let mut record_ty = RecordType::default();
@@ -2300,6 +2044,356 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
+    /// Check a function expression. Extracted from `check_expr` to reduce
+    /// the match arm's contribution to the parent stack frame.
+    #[inline(never)]
+    fn check_fn_expr(
+        &self,
+        env: &TypeEnv<'_>,
+        expr: &crate::Loc<ast::Expr>,
+        fn_expr: &ast::FnExpr,
+        expected_type: Option<&Type>,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        let mut diags = DiagList::new();
+        let mut fn_env = env.inner();
+
+        // Allocate type variable IDs for generic type parameters
+        let mut type_param_entries = Vec::with_capacity(fn_expr.type_params.len());
+        for type_param in &fn_expr.type_params {
+            let type_id = next_type_id();
+            fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+            let upper_bound = if let Some(bound_expr) = &type_param.bound {
+                self.resolve_type_expr(&fn_env, bound_expr)
+                    .unpack(&mut diags)
+            } else {
+                Type::Any
+            };
+            fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
+            type_param_entries.push((type_id, upper_bound));
+        }
+
+        let mut params = Vec::with_capacity(fn_expr.params.len());
+        for param in &fn_expr.params {
+            let param_ty = self
+                .resolve_type_expr(&fn_env, &param.ty)
+                .unpack(&mut diags);
+            fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
+            params.push(param_ty);
+        }
+
+        let ret = self
+            .check_expr(&fn_env, fn_expr.body.as_ref(), None)?
+            .unpack(&mut diags);
+        let ty = self
+            .apply_expected_type(
+                env,
+                expr.span(),
+                Type::Fn(FnType {
+                    type_params: type_param_entries,
+                    params,
+                    ret: Box::new(ret),
+                }),
+                expected_type,
+            )?
+            .unpack(&mut diags);
+        Ok(Diagnosed::new(ty, diags))
+    }
+
+    /// Check a call expression. Extracted from `check_expr` to reduce
+    /// the match arm's contribution to the parent stack frame.
+    #[inline(never)]
+    fn check_call_expr(
+        &self,
+        env: &TypeEnv<'_>,
+        expr: &crate::Loc<ast::Expr>,
+        call_expr: &ast::CallExpr,
+        expected_type: Option<&Type>,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        let mut diags = DiagList::new();
+        let raw_callee_ty = self
+            .check_expr(env, call_expr.callee.as_ref(), None)?
+            .unpack(&mut diags)
+            .unfold();
+        let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
+        if matches!(callee_ty.kind, TypeKind::Never) {
+            return Ok(Diagnosed::new(Type::Never, diags));
+        }
+
+        // If the callee is a free type variable, constrain it to be a
+        // function type derived from the arguments.
+        if let TypeKind::Var(callee_var_id) = &raw_callee_ty.kind
+            && env.is_free_var(*callee_var_id)
+        {
+            let mut arg_types = Vec::new();
+            for arg in &call_expr.args {
+                let arg_ty = self.check_expr(env, arg, None)?.unpack(&mut diags);
+                arg_types.push(arg_ty);
+            }
+            let ret_id = next_type_id();
+            let ret_var = Type::Var(ret_id);
+            if let Some(fv) = &env.free_vars {
+                fv.borrow_mut().register(ret_id);
+                let fn_constraint = Type::Fn(FnType {
+                    type_params: vec![],
+                    params: arg_types,
+                    ret: Box::new(ret_var.clone()),
+                });
+                fv.borrow_mut().constrain(*callee_var_id, fn_constraint);
+            }
+            let ty = self
+                .apply_expected_type(env, expr.span(), ret_var, expected_type)?
+                .unpack(&mut diags);
+            return Ok(Diagnosed::new(ty, diags));
+        }
+
+        let TypeKind::Fn(fn_ty) = callee_ty.kind else {
+            diags.push(NotAFunction {
+                module_id: env.module_id()?,
+                ty: callee_ty,
+                span: call_expr.callee.span(),
+            });
+            return Ok(Diagnosed::new(Type::Never, diags));
+        };
+
+        // Handle type argument instantiation for generic functions
+        let fn_ty = if !call_expr.type_args.is_empty() {
+            if fn_ty.type_params.is_empty() {
+                diags.push(UnexpectedTypeArgs {
+                    module_id: env.module_id()?,
+                    span: expr.span(),
+                });
+                fn_ty
+            } else if call_expr.type_args.len() != fn_ty.type_params.len() {
+                diags.push(WrongTypeArgCount {
+                    module_id: env.module_id()?,
+                    expected: fn_ty.type_params.len(),
+                    got: call_expr.type_args.len(),
+                    span: expr.span(),
+                });
+                // Substitute Any for params (to accept any argument) and Never for return
+                // (to be usable anywhere). This prevents downstream type errors.
+                let param_replacements: Vec<(usize, Type)> = fn_ty
+                    .type_params
+                    .iter()
+                    .map(|(id, _)| (*id, Type::Any))
+                    .collect();
+                let ret_replacements: Vec<(usize, Type)> = fn_ty
+                    .type_params
+                    .iter()
+                    .map(|(id, _)| (*id, Type::Never))
+                    .collect();
+                FnType {
+                    type_params: vec![],
+                    params: fn_ty
+                        .params
+                        .iter()
+                        .map(|p| p.substitute(&param_replacements))
+                        .collect(),
+                    ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
+                }
+            } else {
+                // Build substitution map from type param IDs to resolved type args
+                // and check each type arg against its declared bound
+                let replacements: Vec<(usize, Type)> = fn_ty
+                    .type_params
+                    .iter()
+                    .zip(call_expr.type_args.iter())
+                    .map(|((id, bound), type_arg)| {
+                        let resolved = self.resolve_type_expr(env, type_arg).unpack(&mut diags);
+                        // Check that the type argument satisfies the declared bound
+                        if self
+                            .assign_type_with_bounds(bound, &resolved, &env.maps.type_var_bounds)
+                            .is_err()
+                        {
+                            diags.push(TypeArgBoundViolation {
+                                module_id: env.module_id().unwrap(),
+                                actual: resolved.clone(),
+                                bound: bound.clone(),
+                                span: type_arg.span(),
+                            });
+                        }
+                        (*id, resolved)
+                    })
+                    .collect();
+                FnType {
+                    type_params: vec![],
+                    params: fn_ty
+                        .params
+                        .iter()
+                        .map(|p| p.substitute(&replacements))
+                        .collect(),
+                    ret: Box::new(fn_ty.ret.substitute(&replacements)),
+                }
+            }
+        } else if !fn_ty.type_params.is_empty() {
+            // Generic function called without type arguments
+            diags.push(MissingTypeArgs {
+                module_id: env.module_id()?,
+                expected: fn_ty.type_params.len(),
+                span: call_expr.callee.span(),
+            });
+            // Substitute Any for params (to accept any argument) and Never for return
+            // (to be usable anywhere). This prevents downstream type errors.
+            let param_replacements: Vec<(usize, Type)> = fn_ty
+                .type_params
+                .iter()
+                .map(|(id, _)| (*id, Type::Any))
+                .collect();
+            let ret_replacements: Vec<(usize, Type)> = fn_ty
+                .type_params
+                .iter()
+                .map(|(id, _)| (*id, Type::Never))
+                .collect();
+            FnType {
+                type_params: vec![],
+                params: fn_ty
+                    .params
+                    .iter()
+                    .map(|p| p.substitute(&param_replacements))
+                    .collect(),
+                ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
+            }
+        } else {
+            fn_ty
+        };
+
+        if call_expr.args.len() < fn_ty.params.len() {
+            diags.push(MissingArguments {
+                module_id: env.module_id()?,
+                expected: fn_ty.params.len(),
+                got: call_expr.args.len(),
+                span: call_expr.callee.span(),
+            });
+        }
+
+        for (index, arg) in call_expr.args.iter().enumerate() {
+            let Some(param_ty) = fn_ty.params.get(index) else {
+                diags.push(ExtraneousArgument {
+                    module_id: env.module_id()?,
+                    index,
+                    span: arg.span(),
+                });
+                continue;
+            };
+
+            self.check_expr(env, arg, Some(param_ty))?
+                .unpack(&mut diags);
+        }
+
+        let ty = self
+            .apply_expected_type(env, expr.span(), *fn_ty.ret, expected_type)?
+            .unpack(&mut diags);
+        Ok(Diagnosed::new(ty, diags))
+    }
+
+    /// Check a variable expression. Extracted from `check_expr` to reduce
+    /// the match arm's contribution to the parent stack frame. Also handles
+    /// caching of global and import type checks.
+    #[inline(never)]
+    fn check_var_expr(
+        &self,
+        env: &TypeEnv<'_>,
+        expr: &crate::Loc<ast::Expr>,
+        var: &crate::Loc<ast::Var>,
+        expected_type: Option<&Type>,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        if let Some((cursor, offset)) = &var.cursor {
+            let prefix = &var.name[..*offset];
+            for name in env.local_names().chain(env.global_names()) {
+                if name.starts_with(prefix) {
+                    cursor
+                        .add_completion_candidate(crate::CompletionCandidate::Var(name.to_owned()));
+                }
+            }
+        }
+        let set_cursor = |decl: crate::Span, ty: &Type| {
+            if let Some((cursor, _)) = &var.cursor {
+                cursor.set_declaration(decl);
+                cursor.set_type(ty.clone());
+            }
+        };
+        let track_ref = |decl: crate::Span| {
+            if let Some(cursor) = &env.cursor {
+                cursor.track_reference(decl, expr.span());
+            }
+        };
+        if let Some((decl, local_ty)) = env.lookup_local(var.name.as_str()) {
+            let decl = *decl;
+            let local_ty = local_ty.clone();
+            track_ref(decl);
+            set_cursor(decl, &local_ty);
+            return self.apply_expected_type(env, expr.span(), local_ty, expected_type);
+        }
+        if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
+            let mut diags = DiagList::new();
+            let cache_key = global_expr as *const crate::Loc<ast::Expr>;
+            let resolved_ty = if let Some(cached_ty) = self.global_cache.borrow().get(&cache_key) {
+                cached_ty.clone()
+            } else {
+                let type_id = next_type_id();
+                let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
+                let global_env = env.without_locals().with_free_var(
+                    var.name.as_str(),
+                    decl,
+                    type_id,
+                    constraints.clone(),
+                );
+                let resolved_ty = self
+                    .check_expr(&global_env, global_expr, None)?
+                    .unpack(&mut diags);
+                // Solve free variable constraints and substitute into the body type
+                let solved = constraints.borrow().solve(type_id, &resolved_ty);
+                let resolved_ty = resolved_ty.substitute(&solved);
+                self.global_cache
+                    .borrow_mut()
+                    .insert(cache_key, resolved_ty.clone());
+                resolved_ty
+            };
+            let type_id = next_type_id();
+            let ty = self
+                .apply_expected_type(
+                    env,
+                    expr.span(),
+                    Type::IsoRec(type_id, Box::new(resolved_ty)),
+                    expected_type,
+                )?
+                .unpack(&mut diags);
+            track_ref(decl);
+            set_cursor(decl, &ty);
+            return Ok(Diagnosed::new(ty, diags));
+        }
+        if let Some((target_module_id, maybe_import_file_mod)) =
+            env.lookup_import(var.name.as_str())
+        {
+            let Some(import_file_mod) = maybe_import_file_mod else {
+                return Ok(Diagnosed::new(Type::Never, DiagList::new()));
+            };
+            let cache_key = import_file_mod as *const ast::FileMod;
+            let imported_ty = if let Some(cached_ty) = self.import_cache.borrow().get(&cache_key) {
+                cached_ty.clone()
+            } else {
+                let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
+                let imported_ty = imported_ty.into_inner();
+                self.import_cache
+                    .borrow_mut()
+                    .insert(cache_key, imported_ty.clone());
+                imported_ty
+            };
+            if let Some((cursor, _)) = &var.cursor {
+                cursor.set_type(imported_ty.clone());
+            }
+            return self.apply_expected_type(env, expr.span(), imported_ty, expected_type);
+        }
+        let mut diags = DiagList::new();
+        diags.push(UndefinedVariable {
+            module_id: env.module_id()?,
+            name: var.name.clone(),
+            var: var.clone(),
+        });
+        Ok(Diagnosed::new(Type::Never, diags))
+    }
+
     fn check_list_item(
         &self,
         env: &TypeEnv<'_>,
@@ -2348,6 +2442,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
     }
 
+    #[inline(never)]
     pub fn check_global_let_bind(
         &self,
         env: &TypeEnv<'_>,
@@ -2372,6 +2467,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         // Solve free variable constraints and substitute into the body type
         let solved = constraints.borrow().solve(type_id, &resolved_ty);
         let resolved_ty = resolved_ty.substitute(&solved);
+        // Populate the global cache so subsequent references don't re-check.
+        let cache_key = let_bind.expr.as_ref() as *const crate::Loc<ast::Expr>;
+        self.global_cache
+            .borrow_mut()
+            .insert(cache_key, resolved_ty.clone());
         let ty = if let Some(ann_ty) = annotation_ty {
             Type::IsoRec(type_id, Box::new(ann_ty))
         } else {
@@ -2693,6 +2793,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     /// Populate the type-level namespace of `env` with type exports from imported modules.
+    #[inline(never)]
     fn populate_import_type_level(
         &self,
         env: &mut TypeEnv<'_>,

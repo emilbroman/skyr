@@ -20,6 +20,7 @@ ordered-float = { version = "4.2.0", features = ["serde"] }
 chrono = "0.4.44"
 sha2 = "0.10.9"
 hex = "0.4.3"
+stacker = "0.1"
 
 [lints]
 workspace = true
