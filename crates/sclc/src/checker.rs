@@ -767,6 +767,29 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             return Ok(());
         }
 
+        if let TypeKind::Optional(lhs_inner) = &lhs.kind {
+            return match &rhs.kind {
+                TypeKind::Optional(rhs_inner) => self
+                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+                // If rhs is a bounded type variable whose bound is Optional, resolve
+                // the bound first so both sides can be unwrapped together. Otherwise,
+                // fall through to the `_` branch which checks `inner assignable from rhs`.
+                TypeKind::Var(id)
+                    if bounds
+                        .get(id)
+                        .is_some_and(|b| matches!(b.kind, TypeKind::Optional(_))) =>
+                {
+                    let upper_bound = &bounds[id];
+                    self.assign_type_with_bounds(lhs, upper_bound, bounds)
+                        .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                }
+                _ => self
+                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
+                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+            };
+        }
+
         // If rhs is a bounded type variable, check assignability via its upper bound.
         if let TypeKind::Var(id) = rhs.kind
             && let Some(upper_bound) = bounds.get(&id)
@@ -777,14 +800,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         }
 
         match &lhs.kind {
-            TypeKind::Optional(lhs_inner) => match &rhs.kind {
-                TypeKind::Optional(rhs_inner) => self
-                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-                _ => self
-                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-            },
             TypeKind::Record(lhs_record) => match &rhs.kind {
                 TypeKind::Record(rhs_record) => {
                     for (name, lhs_field) in lhs_record.iter() {
