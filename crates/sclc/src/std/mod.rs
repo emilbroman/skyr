@@ -1,6 +1,6 @@
 use std::{collections::HashMap, convert::Infallible, path::Path};
 
-use crate::{ModuleId, SourceRepo};
+use crate::{ModuleId, RecordType, SourceRepo, Type};
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {
@@ -77,4 +77,95 @@ impl SourceRepo for StdSourceRepo {
     fn register_extern(eval: &mut crate::Eval) {
         register_std_externs(eval);
     }
+}
+
+/// Compiles all standard library modules and returns the value-level type and
+/// type-level type exports for each module, keyed by module ID (e.g. `Std/Time`).
+pub async fn stdlib_types() -> Result<HashMap<ModuleId, (Type, RecordType)>, crate::CompileError> {
+    // Derive module names from the embedded .scl files.
+    let module_names: Vec<&str> = BUNDLED_FILES
+        .iter()
+        .filter_map(|(path, _)| path.strip_suffix(".scl"))
+        .collect();
+
+    // Build a Main.scl that imports every stdlib module so that
+    // resolve_imports discovers and parses them all.
+    let main_scl = module_names
+        .iter()
+        .map(|m| format!("import Std/{m}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut files = HashMap::new();
+    files.insert("Main.scl".to_string(), main_scl.into_bytes());
+
+    // Use a trivial in-memory source repo as the "user" package.
+    struct MemSourceRepo {
+        files: HashMap<String, Vec<u8>>,
+    }
+
+    impl SourceRepo for MemSourceRepo {
+        type Err = Infallible;
+
+        fn package_id(&self) -> ModuleId {
+            [String::from("_StdlibTypes")].into()
+        }
+
+        async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+            let key = path.to_string_lossy().replace('\\', "/");
+            Ok(self.files.get(&key).cloned())
+        }
+    }
+
+    let source = MemSourceRepo { files };
+
+    let mut program = crate::Program::new();
+    let package = program.open_package(source).await;
+    let mut diags = crate::DiagList::new();
+    package.open("Main.scl").await?.unpack(&mut diags);
+    program.resolve_imports().await?.unpack(&mut diags);
+    program.check_types()?.unpack(&mut diags);
+
+    let checker = crate::TypeChecker::new(&program);
+    let std_package_id: ModuleId = [String::from("Std")].into();
+
+    let mut result = HashMap::new();
+
+    for (_, pkg) in program.packages() {
+        if pkg.package_id() != std_package_id {
+            continue;
+        }
+        for (path, file_mod) in pkg.modules() {
+            let module_id = module_id_for_path(&std_package_id, path);
+            let env = crate::TypeEnv::new().with_module_id(&module_id);
+
+            let mut diags = crate::DiagList::new();
+
+            let value_type = checker.check_file_mod(&env, file_mod)?.unpack(&mut diags);
+
+            let type_level = checker
+                .type_level_exports(&env, file_mod)
+                .unpack(&mut diags);
+
+            result.insert(module_id, (value_type, type_level));
+        }
+    }
+
+    Ok(result)
+}
+
+/// Compute a module ID from a package ID and a file path within that package.
+fn module_id_for_path(package_id: &ModuleId, path: &Path) -> ModuleId {
+    let mut segments = package_id.as_slice().to_vec();
+    if let Some(parent) = path.parent() {
+        for segment in parent.components() {
+            if let std::path::Component::Normal(part) = segment {
+                segments.push(part.to_string_lossy().into_owned());
+            }
+        }
+    }
+    if let Some(stem) = path.file_stem() {
+        segments.push(stem.to_string_lossy().into_owned());
+    }
+    segments.into_iter().collect()
 }
