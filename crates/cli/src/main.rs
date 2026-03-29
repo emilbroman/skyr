@@ -27,7 +27,12 @@ struct Program {
 #[derive(clap::Subcommand)]
 enum Command {
     Lsp,
-    Repl,
+    Repl {
+        #[arg(long, default_value = ".")]
+        root: PathBuf,
+        #[arg(long, default_value = "Local")]
+        package: String,
+    },
     Run {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -58,8 +63,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Lsp => {
             lsp::run_lsp().await?;
         }
-        Command::Repl => {
-            repl::run_repl().await?;
+        Command::Repl { root, package } => {
+            repl::run_repl(root, package).await?;
         }
         Command::Run { root, package } => {
             run::run_program(root, package).await?;

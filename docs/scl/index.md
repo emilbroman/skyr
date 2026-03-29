@@ -144,10 +144,10 @@ Artifact.File({
 })
 ```
 
-You can also import your own `.scl` files using your repository's qualified name:
+You can also import your own `.scl` files using `Self` to refer to the current package:
 
 ```scl
-import alice/my-repo/Config
+import Self/Config
 let port = Config.defaultPort
 ```
 

@@ -504,7 +504,7 @@ Encoding.toJson(...)
 
 #### Importing Your Own Modules
 
-You can split your configuration across multiple `.scl` files. Import paths are resolved relative to the repository root, prefixed with your repository's qualified name (`org/repo`):
+You can split your configuration across multiple `.scl` files. Use `Self` to refer to the current package — it is automatically resolved to the correct package ID regardless of context:
 
 ```
 my-repo/
@@ -516,8 +516,8 @@ my-repo/
 
 ```scl
 // Main.scl
-import alice/my-repo/Config
-import alice/my-repo/Utils/Network
+import Self/Config
+import Self/Utils/Network
 
 let cfg = Config.defaults
 let pod = Network.createPod(cfg)
@@ -525,14 +525,26 @@ let pod = Network.createPod(cfg)
 
 The last segment of the import path becomes the module alias (`Config`, `Network`).
 
-When using `skyr run` locally, the default package name is `Local`:
+`Self` resolves to:
+- `Local` when using `skyr run` or `skyr repl` locally (the default package name)
+- Your repository's qualified name (`org/repo`) when deployed
+
+You can also use the fully-qualified package name directly:
 
 ```scl
-import Local/Config
-import Local/Utils/Network
+import alice/my-repo/Config
+import Local/Config  // equivalent to Self/Config when running locally
 ```
 
-You can change this with `skyr run --package alice/my-repo` to match your deployed import paths.
+You can change the local package name with `skyr run --package alice/my-repo` to match your deployed import paths.
+
+#### Importing from Other Repositories
+
+To import a module from a different Skyr repository, use its full qualified path:
+
+```scl
+import alice/other-repo/SharedConfig
+```
 
 ### Type Declarations
 
