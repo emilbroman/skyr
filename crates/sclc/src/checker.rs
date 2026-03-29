@@ -1,13 +1,13 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Component;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type, TypeKind,
-    ast,
+    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type,
+    TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -326,83 +326,10 @@ impl crate::Diag for UnknownField {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// TypeError / TypeIssue
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[derive(Clone, Debug)]
-pub enum TypeIssue {
-    Mismatch(Type, Type),
-}
-
-impl std::fmt::Display for TypeIssue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TypeIssue::Mismatch(lhs, rhs) => write!(f, "{rhs} is not assignable to {lhs}"),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct TypeError {
-    issue: TypeIssue,
-    cause: Option<Box<TypeError>>,
-}
-
-impl TypeError {
-    pub fn new(issue: TypeIssue) -> Self {
-        Self { issue, cause: None }
-    }
-
-    pub fn causing(self, issue: TypeIssue) -> Self {
-        Self {
-            issue,
-            cause: Some(Box::new(self)),
-        }
-    }
-}
-
-impl std::fmt::Display for TypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.issue)?;
-        if let Some(cause) = &self.cause {
-            write!(f, ", because {cause}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for TypeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause
-            .as_ref()
-            .map(|cause| cause.as_ref() as &(dyn std::error::Error + 'static))
-    }
-}
-
 #[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
-}
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// Variance
-// ═══════════════════════════════════════════════════════════════════════════════
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Variance {
-    Covariant,
-    Contravariant,
-}
-
-impl Variance {
-    fn flip(self) -> Self {
-        match self {
-            Variance::Covariant => Variance::Contravariant,
-            Variance::Contravariant => Variance::Covariant,
-        }
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -770,381 +697,6 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Subtyping
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    pub(crate) fn types_disjoint(&self, lhs: &Type, rhs: &Type) -> bool {
-        self.assign_type(lhs, rhs).is_err() && self.assign_type(rhs, lhs).is_err()
-    }
-
-    pub(crate) fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
-        self.assign_type_with_bounds(lhs, rhs, &HashMap::new())
-    }
-
-    fn assign_type_with_bounds(
-        &self,
-        lhs: &Type,
-        rhs: &Type,
-        bounds: &HashMap<usize, Type>,
-    ) -> Result<(), TypeError> {
-        let lhs = &lhs.unfold();
-        let rhs = &rhs.unfold();
-
-        if lhs == rhs || matches!(lhs.kind, TypeKind::Any) || matches!(rhs.kind, TypeKind::Never) {
-            return Ok(());
-        }
-
-        if let TypeKind::Optional(lhs_inner) = &lhs.kind {
-            return match &rhs.kind {
-                TypeKind::Optional(rhs_inner) => self
-                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-                TypeKind::Var(id)
-                    if bounds
-                        .get(id)
-                        .is_some_and(|b| matches!(b.kind, TypeKind::Optional(_))) =>
-                {
-                    let upper_bound = &bounds[id];
-                    self.assign_type_with_bounds(lhs, upper_bound, bounds)
-                        .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
-                }
-                _ => self
-                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-            };
-        }
-
-        if let TypeKind::Var(id) = rhs.kind
-            && let Some(upper_bound) = bounds.get(&id)
-        {
-            return self
-                .assign_type_with_bounds(lhs, upper_bound, bounds)
-                .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
-        }
-
-        match &lhs.kind {
-            TypeKind::Record(lhs_record) => match &rhs.kind {
-                TypeKind::Record(rhs_record) => {
-                    for (name, lhs_field) in lhs_record.iter() {
-                        let Some(rhs_field) = rhs_record.get(name) else {
-                            if matches!(lhs_field.kind, TypeKind::Optional(_)) {
-                                continue;
-                            }
-                            return Err(TypeError::new(TypeIssue::Mismatch(
-                                lhs.clone(),
-                                rhs.clone(),
-                            )));
-                        };
-                        self.assign_type_with_bounds(lhs_field, rhs_field, bounds)
-                            .map_err(|err| {
-                                err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                            })?;
-                    }
-                    Ok(())
-                }
-                _ => Err(TypeError::new(TypeIssue::Mismatch(
-                    lhs.clone(),
-                    rhs.clone(),
-                ))),
-            },
-            TypeKind::Dict(lhs_dict) => match &rhs.kind {
-                TypeKind::Dict(rhs_dict) => {
-                    self.assign_type_with_bounds(
-                        lhs_dict.key.as_ref(),
-                        rhs_dict.key.as_ref(),
-                        bounds,
-                    )
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
-                    self.assign_type_with_bounds(
-                        lhs_dict.value.as_ref(),
-                        rhs_dict.value.as_ref(),
-                        bounds,
-                    )
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
-                    Ok(())
-                }
-                _ => Err(TypeError::new(TypeIssue::Mismatch(
-                    lhs.clone(),
-                    rhs.clone(),
-                ))),
-            },
-            TypeKind::List(lhs_inner) => match &rhs.kind {
-                TypeKind::List(rhs_inner) => self
-                    .assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-                _ => Err(TypeError::new(TypeIssue::Mismatch(
-                    lhs.clone(),
-                    rhs.clone(),
-                ))),
-            },
-            TypeKind::Fn(lhs_fn) => match &rhs.kind {
-                TypeKind::Fn(rhs_fn) => self
-                    .assign_fn_type(lhs_fn, rhs_fn, bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-                _ => Err(TypeError::new(TypeIssue::Mismatch(
-                    lhs.clone(),
-                    rhs.clone(),
-                ))),
-            },
-            _ => Err(TypeError::new(TypeIssue::Mismatch(
-                lhs.clone(),
-                rhs.clone(),
-            ))),
-        }
-    }
-
-    /// Check that a function type `rhs` is assignable to `lhs`.
-    ///
-    /// Handles three cases:
-    /// 1. Both non-generic: direct structural check with contravariant params
-    /// 2. Generic rhs, non-generic lhs: unify to solve type params
-    /// 3. Both generic: F-sub rule with contravariant bounds and alpha-renaming
-    fn assign_fn_type(
-        &self,
-        lhs_fn: &FnType,
-        rhs_fn: &FnType,
-        bounds: &HashMap<usize, Type>,
-    ) -> Result<(), TypeError> {
-        if lhs_fn.params.len() != rhs_fn.params.len() {
-            return Err(TypeError::new(TypeIssue::Mismatch(
-                Type::Fn(lhs_fn.clone()),
-                Type::Fn(rhs_fn.clone()),
-            )));
-        }
-
-        match (lhs_fn.type_params.is_empty(), rhs_fn.type_params.is_empty()) {
-            (true, true) => {
-                for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
-                    self.assign_type_with_bounds(rhs_param, lhs_param, bounds)?;
-                }
-                self.assign_type_with_bounds(lhs_fn.ret.as_ref(), rhs_fn.ret.as_ref(), bounds)?;
-                Ok(())
-            }
-
-            (true, false) => self.unify_generic_fn(lhs_fn, rhs_fn, bounds),
-
-            (false, true) => {
-                let replacements: Vec<(usize, Type)> = lhs_fn
-                    .type_params
-                    .iter()
-                    .map(|(id, bound)| (*id, bound.clone()))
-                    .collect();
-                let instantiated_lhs = FnType {
-                    type_params: vec![],
-                    params: lhs_fn
-                        .params
-                        .iter()
-                        .map(|p| p.substitute(&replacements))
-                        .collect(),
-                    ret: Box::new(lhs_fn.ret.substitute(&replacements)),
-                };
-                self.assign_fn_type(&instantiated_lhs, rhs_fn, bounds)
-            }
-
-            (false, false) => {
-                if lhs_fn.type_params.len() != rhs_fn.type_params.len() {
-                    return Err(TypeError::new(TypeIssue::Mismatch(
-                        Type::Fn(lhs_fn.clone()),
-                        Type::Fn(rhs_fn.clone()),
-                    )));
-                }
-
-                for ((_, lhs_bound), (_, rhs_bound)) in
-                    lhs_fn.type_params.iter().zip(rhs_fn.type_params.iter())
-                {
-                    self.assign_type_with_bounds(lhs_bound, rhs_bound, bounds)?;
-                }
-
-                let alpha_rename: Vec<(usize, Type)> = lhs_fn
-                    .type_params
-                    .iter()
-                    .zip(rhs_fn.type_params.iter())
-                    .map(|((lhs_id, _), (rhs_id, _))| (*lhs_id, Type::Var(*rhs_id)))
-                    .collect();
-
-                let renamed_lhs = FnType {
-                    type_params: vec![],
-                    params: lhs_fn
-                        .params
-                        .iter()
-                        .map(|p| p.substitute(&alpha_rename))
-                        .collect(),
-                    ret: Box::new(lhs_fn.ret.substitute(&alpha_rename)),
-                };
-                let body_rhs = FnType {
-                    type_params: vec![],
-                    params: rhs_fn.params.clone(),
-                    ret: rhs_fn.ret.clone(),
-                };
-
-                let mut extended_bounds = bounds.clone();
-                for (id, bound) in &rhs_fn.type_params {
-                    extended_bounds.insert(*id, bound.clone());
-                }
-
-                self.assign_fn_type(&renamed_lhs, &body_rhs, &extended_bounds)
-            }
-        }
-    }
-
-    fn unify_generic_fn(
-        &self,
-        lhs_fn: &FnType,
-        rhs_fn: &FnType,
-        bounds: &HashMap<usize, Type>,
-    ) -> Result<(), TypeError> {
-        let free_vars: HashSet<usize> = rhs_fn.type_params.iter().map(|(id, _)| *id).collect();
-
-        let mut assertions: HashMap<usize, (Type, Type)> = rhs_fn
-            .type_params
-            .iter()
-            .map(|(id, upper_bound)| (*id, (Type::Never, upper_bound.clone())))
-            .collect();
-
-        for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
-            self.collect_bounds(
-                lhs_param,
-                rhs_param,
-                Variance::Contravariant,
-                &free_vars,
-                &mut assertions,
-            )?;
-        }
-
-        self.collect_bounds(
-            lhs_fn.ret.as_ref(),
-            rhs_fn.ret.as_ref(),
-            Variance::Covariant,
-            &free_vars,
-            &mut assertions,
-        )?;
-
-        for (lower, upper) in assertions.values() {
-            self.assign_type_with_bounds(upper, lower, bounds)
-                .map_err(|err| {
-                    err.causing(TypeIssue::Mismatch(
-                        Type::Fn(lhs_fn.clone()),
-                        Type::Fn(rhs_fn.clone()),
-                    ))
-                })?;
-        }
-
-        Ok(())
-    }
-
-    /// Walk two types structurally, collecting bounds for free type variables in rhs.
-    fn collect_bounds(
-        &self,
-        lhs: &Type,
-        rhs: &Type,
-        variance: Variance,
-        free_vars: &HashSet<usize>,
-        assertions: &mut HashMap<usize, (Type, Type)>,
-    ) -> Result<(), TypeError> {
-        if let TypeKind::Var(id) = rhs.kind
-            && free_vars.contains(&id)
-        {
-            let entry = assertions.get_mut(&id).expect("free var must have entry");
-            match variance {
-                Variance::Covariant => {
-                    self.tighten_upper(&mut entry.1, lhs)?;
-                }
-                Variance::Contravariant => {
-                    self.tighten_lower(&mut entry.0, lhs)?;
-                }
-            }
-            return Ok(());
-        }
-
-        match (&lhs.kind, &rhs.kind) {
-            (TypeKind::Optional(lhs_inner), TypeKind::Optional(rhs_inner)) => {
-                self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
-            }
-            (_, TypeKind::Optional(rhs_inner)) if variance == Variance::Covariant => {
-                self.collect_bounds(lhs, rhs_inner, variance, free_vars, assertions)
-            }
-            (TypeKind::List(lhs_inner), TypeKind::List(rhs_inner)) => {
-                self.collect_bounds(lhs_inner, rhs_inner, variance, free_vars, assertions)
-            }
-            (TypeKind::Record(lhs_record), TypeKind::Record(rhs_record)) => {
-                for (name, rhs_field) in rhs_record.iter() {
-                    if let Some(lhs_field) = lhs_record.get(name) {
-                        self.collect_bounds(lhs_field, rhs_field, variance, free_vars, assertions)?;
-                    }
-                }
-                Ok(())
-            }
-            (TypeKind::Dict(lhs_dict), TypeKind::Dict(rhs_dict)) => {
-                self.collect_bounds(
-                    lhs_dict.key.as_ref(),
-                    rhs_dict.key.as_ref(),
-                    variance,
-                    free_vars,
-                    assertions,
-                )?;
-                self.collect_bounds(
-                    lhs_dict.value.as_ref(),
-                    rhs_dict.value.as_ref(),
-                    variance,
-                    free_vars,
-                    assertions,
-                )
-            }
-            (TypeKind::Fn(lhs_fn), TypeKind::Fn(rhs_fn))
-                if lhs_fn.params.len() == rhs_fn.params.len() =>
-            {
-                let flipped = variance.flip();
-                for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
-                    self.collect_bounds(lhs_param, rhs_param, flipped, free_vars, assertions)?;
-                }
-                self.collect_bounds(
-                    lhs_fn.ret.as_ref(),
-                    rhs_fn.ret.as_ref(),
-                    variance,
-                    free_vars,
-                    assertions,
-                )
-            }
-            _ => match variance {
-                Variance::Covariant => self
-                    .assign_type(lhs, rhs)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-                Variance::Contravariant => self
-                    .assign_type(rhs, lhs)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-            },
-        }
-    }
-
-    fn tighten_upper(&self, current: &mut Type, new_bound: &Type) -> Result<(), TypeError> {
-        if self.assign_type(current, new_bound).is_ok() {
-            *current = new_bound.clone();
-        } else if self.assign_type(new_bound, current).is_ok() {
-            // current is already tighter
-        } else {
-            return Err(TypeError::new(TypeIssue::Mismatch(
-                current.clone(),
-                new_bound.clone(),
-            )));
-        }
-        Ok(())
-    }
-
-    fn tighten_lower(&self, current: &mut Type, new_bound: &Type) -> Result<(), TypeError> {
-        if self.assign_type(new_bound, current).is_ok() {
-            *current = new_bound.clone();
-        } else if self.assign_type(current, new_bound).is_ok() {
-            // current is already tighter
-        } else {
-            return Err(TypeError::new(TypeIssue::Mismatch(
-                current.clone(),
-                new_bound.clone(),
-            )));
-        }
-        Ok(())
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // Subsumption check
     // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1166,7 +718,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 fv.borrow_mut().constrain(*id, expected_ty.clone());
             }
         } else if let Err(error) =
-            self.assign_type_with_bounds(expected_ty, &actual_ty, &env.maps.type_var_bounds)
+            crate::assign_type_with_bounds(expected_ty, &actual_ty, &env.maps.type_var_bounds)
         {
             diags.push(InvalidType {
                 module_id: env.module_id()?,
@@ -1527,7 +1079,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                         .map(|((id, _), ty)| (*id, ty.clone()))
                                         .collect::<Vec<_>>(),
                                 );
-                                if self.assign_type(&instantiated_bound, arg_ty).is_err()
+                                if instantiated_bound.is_assignable_from(arg_ty).is_err()
                                     && let Ok(module_id) = env.module_id()
                                 {
                                     diags.push(TypeArgBoundViolation {
@@ -1689,34 +1241,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        match expr.as_ref() {
-            ast::Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
-            ast::Expr::Float(_) => Ok(Diagnosed::new(Type::Float, DiagList::new())),
-            ast::Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool, DiagList::new())),
-            ast::Expr::Nil => Ok(Diagnosed::new(
-                Type::Optional(Box::new(Type::Never)),
-                DiagList::new(),
-            )),
-            ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
-            ast::Expr::Extern(extern_expr) => extern_expr.type_synth(self, env),
-            ast::Expr::If(if_expr) => if_expr.type_synth(self, env, expr),
-            ast::Expr::Let(let_expr) => let_expr.type_synth(self, env),
-            ast::Expr::Fn(fn_expr) => fn_expr.type_synth(self, env),
-            ast::Expr::Call(call_expr) => call_expr.type_synth(self, env, expr),
-            ast::Expr::Unary(unary_expr) => unary_expr.type_synth(self, env, expr),
-            ast::Expr::Binary(binary_expr) => binary_expr.type_synth(self, env, expr),
-            ast::Expr::Var(var) => ast::var_expr::synth_var(self, env, expr, var),
-            ast::Expr::Record(record_expr) => record_expr.type_synth(self, env),
-            ast::Expr::Dict(dict_expr) => dict_expr.type_synth(self, env),
-            ast::Expr::List(list_expr) => list_expr.type_synth(self, env),
-            ast::Expr::Interp(interp_expr) => interp_expr.type_synth(self, env),
-            ast::Expr::TypeCast(cast) => cast.type_synth(self, env),
-            ast::Expr::PropertyAccess(pa) => pa.type_synth(self, env),
-            ast::Expr::IndexedAccess(ia) => ia.type_synth(self, env, expr),
-            ast::Expr::Exception(exc) => exc.type_synth(self, env),
-            ast::Expr::Raise(raise) => raise.type_synth(self, env),
-            ast::Expr::Try(try_expr) => try_expr.type_synth(self, env),
-        }
+        expr.as_ref().type_synth(self, env, expr)
     }
 
     /// Check mode: validate expression against an expected type, pushing errors
@@ -1728,17 +1253,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         expr: &crate::Loc<ast::Expr>,
         expected: &Type,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        match expr.as_ref() {
-            ast::Expr::Record(record_expr) => record_expr.type_check(self, env, expr, expected),
-            ast::Expr::List(list_expr) => list_expr.type_check(self, env, expr, expected),
-            ast::Expr::Dict(dict_expr) => dict_expr.type_check(self, env, expr, expected),
-            ast::Expr::If(if_expr) => if_expr.type_check(self, env, expr, expected),
-            ast::Expr::Let(let_expr) => let_expr.type_check(self, env, expected),
-            ast::Expr::TypeCast(cast) => cast.type_check(self, env, expr, expected),
-            ast::Expr::Call(call_expr) => call_expr.type_check(self, env, expr, expected),
-            ast::Expr::Try(try_expr) => try_expr.type_check(self, env, expr, expected),
-            _ => self.synth_then_subsume(env, expr, expected),
-        }
+        expr.as_ref().type_check(self, env, expr, expected)
     }
 
     /// Fall-through: synthesize and then check subsumption.
@@ -1808,9 +1323,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     .zip(call_expr.type_args.iter())
                     .map(|((id, bound), type_arg)| {
                         let resolved = self.resolve_type_expr(env, type_arg).unpack(diags);
-                        if self
-                            .assign_type_with_bounds(bound, &resolved, &env.maps.type_var_bounds)
-                            .is_err()
+                        if crate::assign_type_with_bounds(
+                            bound,
+                            &resolved,
+                            &env.maps.type_var_bounds,
+                        )
+                        .is_err()
                         {
                             diags.push(TypeArgBoundViolation {
                                 module_id: env.module_id().unwrap(),
@@ -2144,34 +1662,28 @@ mod tests {
 
     #[test]
     fn assign_type_accepts_exact_match() {
-        let checker = checker();
-        assert!(checker.assign_type(&Type::Int, &Type::Int).is_ok());
+        assert!(Type::Int.is_assignable_from(&Type::Int).is_ok());
     }
 
     #[test]
     fn assign_type_accepts_non_optional_rhs_for_optional_lhs() {
-        let checker = checker();
         let lhs = Type::Optional(Box::new(Type::Int));
         let rhs = Type::Int;
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_rejects_optional_rhs_for_non_optional_lhs() {
-        let checker = checker();
         let lhs = Type::Int;
         let rhs = Type::Optional(Box::new(Type::Int));
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_error_has_causal_chain() {
-        let checker = checker();
         let lhs = Type::Optional(Box::new(Type::Str));
         let rhs = Type::Int;
-        let error = checker
-            .assign_type(&lhs, &rhs)
-            .expect_err("expected mismatch");
+        let error = lhs.is_assignable_from(&rhs).expect_err("expected mismatch");
         let text = error.to_string();
 
         assert!(text.contains("Int is not assignable to Str?"));
@@ -2181,7 +1693,6 @@ mod tests {
 
     #[test]
     fn assign_type_record_width_subtyping() {
-        let checker = checker();
         let mut lhs_record = RecordType::default();
         lhs_record.insert("a".into(), Type::Int);
         lhs_record.insert("c".into(), Type::Bool);
@@ -2193,12 +1704,11 @@ mod tests {
         rhs_record.insert("c".into(), Type::Bool);
         let rhs = Type::Record(rhs_record);
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_record_depth_subtyping() {
-        let checker = checker();
         let mut lhs_record = RecordType::default();
         lhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
         let lhs = Type::Record(lhs_record);
@@ -2207,12 +1717,11 @@ mod tests {
         rhs_record.insert("a".into(), Type::Int);
         let rhs = Type::Record(rhs_record);
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_record_missing_field_rejected() {
-        let checker = checker();
         let mut lhs_record = RecordType::default();
         lhs_record.insert("a".into(), Type::Int);
         lhs_record.insert("b".into(), Type::Str);
@@ -2222,12 +1731,11 @@ mod tests {
         rhs_record.insert("a".into(), Type::Int);
         let rhs = Type::Record(rhs_record);
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_record_missing_optional_field_accepted() {
-        let checker = checker();
         let mut lhs_record = RecordType::default();
         lhs_record.insert("a".into(), Type::Int);
         lhs_record.insert("b".into(), Type::Optional(Box::new(Type::Str)));
@@ -2237,7 +1745,7 @@ mod tests {
         rhs_record.insert("a".into(), Type::Int);
         let rhs = Type::Record(rhs_record);
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
@@ -2280,7 +1788,6 @@ mod tests {
 
     #[test]
     fn assign_type_record_field_not_subtype_rejected() {
-        let checker = checker();
         let mut lhs_record = RecordType::default();
         lhs_record.insert("a".into(), Type::Int);
         let lhs = Type::Record(lhs_record);
@@ -2289,7 +1796,7 @@ mod tests {
         rhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
         let rhs = Type::Record(rhs_record);
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
@@ -2333,7 +1840,6 @@ mod tests {
 
     #[test]
     fn assign_type_dict_covariant() {
-        let checker = checker();
         let lhs = Type::Dict(DictType {
             key: Box::new(Type::Optional(Box::new(Type::Str))),
             value: Box::new(Type::Optional(Box::new(Type::Int))),
@@ -2343,7 +1849,7 @@ mod tests {
             value: Box::new(Type::Int),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
@@ -2616,19 +2122,17 @@ mod tests {
 
     #[test]
     fn assign_type_fn_exact_match() {
-        let checker = checker();
         let ty = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
         });
 
-        assert!(checker.assign_type(&ty, &ty).is_ok());
+        assert!(ty.is_assignable_from(&ty).is_ok());
     }
 
     #[test]
     fn assign_type_fn_covariant_return() {
-        let checker = checker();
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
@@ -2640,12 +2144,11 @@ mod tests {
             ret: Box::new(Type::Str),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_fn_rejects_return_type_mismatch() {
-        let checker = checker();
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
@@ -2657,12 +2160,11 @@ mod tests {
             ret: Box::new(Type::Bool),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_fn_rejects_param_count_mismatch() {
-        let checker = checker();
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
@@ -2674,12 +2176,11 @@ mod tests {
             ret: Box::new(Type::Str),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_fn_rejects_param_type_mismatch() {
-        let checker = checker();
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
@@ -2691,24 +2192,22 @@ mod tests {
             ret: Box::new(Type::Str),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_fn_rejects_non_fn_rhs() {
-        let checker = checker();
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
             ret: Box::new(Type::Str),
         });
 
-        assert!(checker.assign_type(&lhs, &Type::Int).is_err());
+        assert!(lhs.is_assignable_from(&Type::Int).is_err());
     }
 
     #[test]
     fn assign_type_generic_lhs_fn_concrete_rhs_rejected() {
-        let checker = checker();
         let id_a = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2722,12 +2221,11 @@ mod tests {
             ret: Box::new(Type::Int),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_generic_lhs_fn_concrete_rhs_tight_bound() {
-        let checker = checker();
         let id_a = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2741,12 +2239,11 @@ mod tests {
             ret: Box::new(Type::Int),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_concrete_lhs_generic_rhs() {
-        let checker = checker();
         let id_a = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2760,12 +2257,11 @@ mod tests {
             ret: Box::new(Type::Var(id_a)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_both_generic_fns() {
-        let checker = checker();
         let id_a = next_type_id();
         let id_b = next_type_id();
 
@@ -2780,12 +2276,11 @@ mod tests {
             ret: Box::new(Type::Var(id_b)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_bounded_generic_rhs_succeeds() {
-        let checker = checker();
         let id_t = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2799,12 +2294,11 @@ mod tests {
             ret: Box::new(Type::Var(id_t)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_bounded_generic_rhs_fails_bound_violation() {
-        let checker = checker();
         let id_t = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2818,12 +2312,11 @@ mod tests {
             ret: Box::new(Type::Var(id_t)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_contravariant_generic_fn() {
-        let checker = checker();
         let id_t = next_type_id();
 
         let lhs = Type::Fn(FnType {
@@ -2845,13 +2338,11 @@ mod tests {
             ret: Box::new(Type::Var(id_t)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_fn_contravariant_params() {
-        let checker = checker();
-
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Int],
@@ -2863,13 +2354,11 @@ mod tests {
             ret: Box::new(Type::Int),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_fn_contravariant_params_reject() {
-        let checker = checker();
-
         let lhs = Type::Fn(FnType {
             type_params: vec![],
             params: vec![Type::Optional(Box::new(Type::Int))],
@@ -2881,12 +2370,11 @@ mod tests {
             ret: Box::new(Type::Int),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_both_generic_tighter_bound_succeeds() {
-        let checker = checker();
         let id_a = next_type_id();
         let id_b = next_type_id();
 
@@ -2901,12 +2389,11 @@ mod tests {
             ret: Box::new(Type::Var(id_b)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_both_generic_looser_bound_fails() {
-        let checker = checker();
         let id_a = next_type_id();
         let id_b = next_type_id();
 
@@ -2921,58 +2408,47 @@ mod tests {
             ret: Box::new(Type::Var(id_b)),
         });
 
-        assert!(checker.assign_type(&lhs, &rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_var_to_bound_via_upper_bound() {
         use std::collections::HashMap;
-        let checker = checker();
         let id = next_type_id();
         let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
         assert!(
-            checker
-                .assign_type_with_bounds(
-                    &Type::Optional(Box::new(Type::Int)),
-                    &Type::Var(id),
-                    &bounds
-                )
-                .is_ok()
+            crate::assign_type_with_bounds(
+                &Type::Optional(Box::new(Type::Int)),
+                &Type::Var(id),
+                &bounds
+            )
+            .is_ok()
         );
     }
 
     #[test]
     fn assign_type_var_to_stricter_than_bound_fails() {
         use std::collections::HashMap;
-        let checker = checker();
         let id = next_type_id();
         let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
-        assert!(
-            checker
-                .assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds)
-                .is_err()
-        );
+        assert!(crate::assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds).is_err());
     }
 
     #[test]
     fn assign_type_var_with_record_bound_allows_field_access() {
         use std::collections::HashMap;
-        let checker = checker();
         let id = next_type_id();
         let mut record = RecordType::default();
         record.insert("x".to_string(), Type::Int);
         let bounds = HashMap::from([(id, Type::Record(record.clone()))]);
         assert!(
-            checker
-                .assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds)
-                .is_ok()
+            crate::assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds).is_ok()
         );
     }
 
     #[test]
     fn assign_type_var_with_fn_bound_allows_fn_assignment() {
         use std::collections::HashMap;
-        let checker = checker();
         let id = next_type_id();
         let fn_ty = Type::Fn(FnType {
             type_params: vec![],
@@ -2980,11 +2456,7 @@ mod tests {
             ret: Box::new(Type::Int),
         });
         let bounds = HashMap::from([(id, fn_ty.clone())]);
-        assert!(
-            checker
-                .assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds)
-                .is_ok()
-        );
+        assert!(crate::assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds).is_ok());
     }
 
     // --- Type declaration tests ---

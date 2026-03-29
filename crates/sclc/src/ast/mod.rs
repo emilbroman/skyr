@@ -2,6 +2,7 @@ mod binary_expr;
 mod call_expr;
 mod dict_expr;
 mod exception_expr;
+mod expr;
 mod extern_expr;
 mod fn_expr;
 mod if_expr;
@@ -22,6 +23,7 @@ pub use binary_expr::*;
 pub use call_expr::*;
 pub use dict_expr::*;
 pub use exception_expr::*;
+pub use expr::*;
 pub use extern_expr::*;
 pub use fn_expr::*;
 pub use if_expr::*;
@@ -37,9 +39,7 @@ pub use type_cast::*;
 pub use type_expr::*;
 pub use unary_expr::*;
 
-use std::collections::{HashMap, HashSet};
-
-use ordered_float::NotNan;
+use std::collections::HashMap;
 
 use crate::Loc;
 
@@ -83,33 +83,6 @@ impl FileMod {
     }
 }
 
-impl Expr {
-    pub fn free_vars(&self) -> HashSet<&str> {
-        match self {
-            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Nil | Expr::Str(_) => {
-                HashSet::new()
-            }
-            Expr::Extern(_) | Expr::Exception(_) => HashSet::new(),
-            Expr::If(e) => e.free_vars(),
-            Expr::Let(e) => e.free_vars(),
-            Expr::Fn(e) => e.free_vars(),
-            Expr::Call(e) => e.free_vars(),
-            Expr::Unary(e) => e.free_vars(),
-            Expr::Binary(e) => e.free_vars(),
-            Expr::Var(var) => HashSet::from([var.name.as_str()]),
-            Expr::Record(e) => e.free_vars(),
-            Expr::Dict(e) => e.free_vars(),
-            Expr::List(e) => e.free_vars(),
-            Expr::Interp(e) => e.free_vars(),
-            Expr::PropertyAccess(e) => e.free_vars(),
-            Expr::IndexedAccess(e) => e.free_vars(),
-            Expr::TypeCast(e) => e.free_vars(),
-            Expr::Raise(e) => e.free_vars(),
-            Expr::Try(e) => e.free_vars(),
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModStmt {
     Import(Loc<ImportStmt>),
@@ -118,33 +91,6 @@ pub enum ModStmt {
     TypeDef(TypeDef),
     ExportTypeDef(TypeDef),
     Expr(Loc<Expr>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Expr {
-    Int(Int),
-    Float(Float),
-    Bool(Bool),
-    Nil,
-    Str(StrExpr),
-    Extern(ExternExpr),
-    If(IfExpr),
-    Let(LetExpr),
-    Fn(FnExpr),
-    Call(CallExpr),
-    Unary(UnaryExpr),
-    Binary(BinaryExpr),
-    Var(Loc<Var>),
-    Record(RecordExpr),
-    Dict(DictExpr),
-    List(ListExpr),
-    Interp(InterpExpr),
-    PropertyAccess(PropertyAccessExpr),
-    IndexedAccess(IndexedAccessExpr),
-    TypeCast(TypeCastExpr),
-    Exception(ExceptionExpr),
-    Raise(RaiseExpr),
-    Try(TryExpr),
 }
 
 #[derive(Clone)]
@@ -165,26 +111,6 @@ impl std::fmt::Debug for Var {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "#{}", self.name)
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Int {
-    pub value: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Float {
-    pub value: NotNan<f64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Bool {
-    pub value: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StrExpr {
-    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -213,6 +139,8 @@ pub enum TypeExpr {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use super::*;
 
     fn var(name: &str) -> Loc<Var> {

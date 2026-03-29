@@ -612,31 +612,7 @@ impl Eval {
         env: &EvalEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
     ) -> Result<TrackedValue, EvalError> {
-        match expr.as_ref() {
-            ast::Expr::Int(int) => Ok(Self::tracked(Value::Int(int.value))),
-            ast::Expr::Float(float) => Ok(Self::tracked(Value::Float(float.value))),
-            ast::Expr::Bool(bool) => Ok(Self::tracked(Value::Bool(bool.value))),
-            ast::Expr::Nil => Ok(Self::tracked(Value::Nil)),
-            ast::Expr::Str(str) => Ok(Self::tracked(Value::Str(str.value.clone()))),
-            ast::Expr::Extern(extern_expr) => extern_expr.eval(self, env, expr),
-            ast::Expr::If(if_expr) => if_expr.eval(self, env, expr),
-            ast::Expr::Let(let_expr) => let_expr.eval(self, env),
-            ast::Expr::Fn(fn_expr) => fn_expr.eval(self, env, expr),
-            ast::Expr::Call(call_expr) => call_expr.eval(self, env, expr),
-            ast::Expr::Unary(unary_expr) => unary_expr.eval(self, env, expr),
-            ast::Expr::Binary(binary_expr) => binary_expr.eval(self, env, expr),
-            ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
-            ast::Expr::Record(record_expr) => record_expr.eval(self, env),
-            ast::Expr::Dict(dict_expr) => dict_expr.eval(self, env),
-            ast::Expr::List(list_expr) => list_expr.eval(self, env),
-            ast::Expr::Interp(interp_expr) => interp_expr.eval(self, env),
-            ast::Expr::TypeCast(cast) => cast.eval(self, env),
-            ast::Expr::PropertyAccess(pa) => pa.eval(self, env),
-            ast::Expr::IndexedAccess(ia) => ia.eval(self, env),
-            ast::Expr::Exception(exc) => exc.eval(self, env, expr),
-            ast::Expr::Raise(raise) => raise.eval(self, env, expr),
-            ast::Expr::Try(try_expr) => try_expr.eval(self, env, expr),
-        }
+        expr.as_ref().eval(self, env, expr)
     }
 
     pub(crate) fn eval_binary_values(

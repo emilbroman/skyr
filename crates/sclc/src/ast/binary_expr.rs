@@ -100,7 +100,7 @@ impl BinaryExpr {
                     }
                 }
                 BinaryOp::Eq | BinaryOp::Neq => {
-                    if checker.types_disjoint(&lhs_ty, &rhs_ty) {
+                    if lhs_ty.is_disjoint_from(&rhs_ty) {
                         diags.push(DisjointEquality {
                             module_id: env.module_id()?,
                             lhs: lhs_ty.clone(),
