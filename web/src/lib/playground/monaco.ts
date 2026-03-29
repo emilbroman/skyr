@@ -126,9 +126,13 @@ export function registerProviders(worker: SclWorker): monaco.IDisposable {
                     position.column - 1,
                 );
                 if (!result) return null;
-                return {
-                    contents: [{ value: `\`\`\`scl\n${result.type}\n\`\`\`` }],
-                };
+                const contents: monaco.IMarkdownString[] = [
+                    { value: `\`\`\`scl\n${result.type}\n\`\`\`` },
+                ];
+                if (result.description) {
+                    contents.push({ value: result.description });
+                }
+                return { contents };
             },
         }),
     );

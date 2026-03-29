@@ -9,6 +9,7 @@ export interface DiagnosticInfo {
 
 export interface HoverInfo {
     type: string;
+    description?: string;
 }
 
 export interface CompletionItem {
