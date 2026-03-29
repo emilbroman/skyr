@@ -95,8 +95,10 @@ impl completion::Completer for ReplHelper {
             info.completion_candidates
                 .iter()
                 .map(|c| match c {
-                    sclc::CompletionCandidate::Var(name)
-                    | sclc::CompletionCandidate::Member(name) => CompletionEntry(name.clone()),
+                    sclc::CompletionCandidate::Var(name) => CompletionEntry(name.clone()),
+                    sclc::CompletionCandidate::Member(member) => {
+                        CompletionEntry(member.name.clone())
+                    }
                 })
                 .collect();
 

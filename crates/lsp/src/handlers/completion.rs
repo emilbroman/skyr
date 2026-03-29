@@ -48,9 +48,17 @@ pub fn completion(
                 kind: Some(lsp::CompletionItemKind::VARIABLE),
                 ..Default::default()
             },
-            sclc::CompletionCandidate::Member(name) => lsp::CompletionItem {
-                label: name.clone(),
+            sclc::CompletionCandidate::Member(member) => lsp::CompletionItem {
+                label: member.name.clone(),
                 kind: Some(lsp::CompletionItemKind::FIELD),
+                detail: member
+                    .ty
+                    .as_ref()
+                    .map(|ty| format!("let {}: {ty}", &member.name)),
+                documentation: member
+                    .description
+                    .as_ref()
+                    .map(|desc| lsp::Documentation::String(desc.clone())),
                 ..Default::default()
             },
         })

@@ -137,6 +137,10 @@ pub async fn hover(source: &str, line: u32, col: u32) -> Option<String> {
 struct CompletionItem {
     label: String,
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
 /// Get completions at a position.
@@ -163,10 +167,17 @@ pub async fn completions(source: &str, line: u32, col: u32) -> String {
             sclc::CompletionCandidate::Var(name) => CompletionItem {
                 label: name.clone(),
                 kind: "variable",
+                detail: None,
+                description: None,
             },
-            sclc::CompletionCandidate::Member(name) => CompletionItem {
-                label: name.clone(),
+            sclc::CompletionCandidate::Member(member) => CompletionItem {
+                label: member.name.clone(),
                 kind: "field",
+                detail: member
+                    .ty
+                    .as_ref()
+                    .map(|ty| format!("let {}: {ty}", &member.name)),
+                description: member.description.clone(),
             },
         })
         .collect();
