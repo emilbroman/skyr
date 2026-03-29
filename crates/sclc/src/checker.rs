@@ -537,10 +537,7 @@ impl<'a> TypeEnv<'a> {
         }
     }
 
-    pub fn with_globals(
-        &self,
-        globals: &'a GlobalsMap<'a>,
-    ) -> Self {
+    pub fn with_globals(&self, globals: &'a GlobalsMap<'a>) -> Self {
         let mut maps = self.maps.clone();
         maps.locals = HashMap::new();
         Self {

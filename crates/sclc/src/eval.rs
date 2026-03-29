@@ -75,10 +75,7 @@ impl<'a> EvalEnv<'a> {
         }
     }
 
-    pub fn with_globals(
-        &self,
-        globals: &'a GlobalsMap<'a>,
-    ) -> Self {
+    pub fn with_globals(&self, globals: &'a GlobalsMap<'a>) -> Self {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
