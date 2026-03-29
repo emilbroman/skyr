@@ -138,10 +138,10 @@ impl PropertyAccessExpr {
             if let Some((cursor, _)) = &self.property.cursor {
                 cursor.set_type(member_ty.clone());
                 cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
-                if let TypeKind::Record(record_ty) = &lhs_ty.kind {
-                    if let Some(doc) = record_ty.get_doc(prop_name) {
-                        cursor.set_description(doc.to_owned());
-                    }
+                if let TypeKind::Record(record_ty) = &lhs_ty.kind
+                    && let Some(doc) = record_ty.get_doc(prop_name)
+                {
+                    cursor.set_description(doc.to_owned());
                 }
             }
             let member_ty = if let Some(outer_name) = lhs_ty.name() {

@@ -38,10 +38,11 @@ impl StackFrame<'_> {
     }
 }
 
+type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
+
 pub struct EvalEnv<'a> {
     pub(crate) module_id: Option<&'a crate::ModuleId>,
-    globals:
-        Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>>,
+    globals: Option<&'a GlobalsMap<'a>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
     pub(crate) stack: Option<&'a StackFrame<'a>>,
@@ -76,7 +77,7 @@ impl<'a> EvalEnv<'a> {
 
     pub fn with_globals(
         &self,
-        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>,
+        globals: &'a GlobalsMap<'a>,
     ) -> Self {
         Self {
             module_id: self.module_id,

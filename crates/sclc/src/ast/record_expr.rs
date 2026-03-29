@@ -91,8 +91,7 @@ impl RecordExpr {
 
             let field_description = field
                 .doc_comment
-                .as_ref()
-                .map(String::as_str)
+                .as_deref()
                 .or_else(|| expected_record.get_doc(field.var.name.as_str()))
                 .map(String::from);
 
