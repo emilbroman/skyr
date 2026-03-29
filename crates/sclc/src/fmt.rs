@@ -342,6 +342,7 @@ impl Formatter {
             } else {
                 self.emit_comments_before(field.var.span().start());
             }
+            self.emit_doc_comment(&field.doc_comment);
             self.write(&field.var.name);
             self.write(": ");
             self.emit_type_expr(&field.ty);
@@ -570,6 +571,7 @@ impl Formatter {
                 let prev_end = record.fields[i - 1].expr.span().end();
                 self.emit_comments_between(prev_end, field.var.span().start());
             }
+            self.emit_doc_comment(&field.doc_comment);
             // Detect shorthand: if the field expression is a Var with the same name as the field
             let is_shorthand =
                 matches!(field.expr.as_ref(), Expr::Var(v) if v.name == field.var.name);

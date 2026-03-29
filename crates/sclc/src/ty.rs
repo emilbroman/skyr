@@ -156,9 +156,10 @@ pub struct FnType {
     pub ret: Box<Type>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct RecordType {
     fields: BTreeMap<String, Type>,
+    doc_comments: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -167,13 +168,32 @@ pub struct DictType {
     pub value: Box<Type>,
 }
 
+impl PartialEq for RecordType {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields
+    }
+}
+
+impl Eq for RecordType {}
+
 impl RecordType {
     pub fn insert(&mut self, name: String, ty: Type) {
         self.fields.insert(name, ty);
     }
 
+    pub fn insert_with_doc(&mut self, name: String, ty: Type, doc: Option<String>) {
+        self.fields.insert(name.clone(), ty);
+        if let Some(doc) = doc {
+            self.doc_comments.insert(name, doc);
+        }
+    }
+
     pub fn get(&self, name: &str) -> Option<&Type> {
         self.fields.get(name)
+    }
+
+    pub fn get_doc(&self, name: &str) -> Option<&str> {
+        self.doc_comments.get(name).map(|s| s.as_str())
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Type)> {
@@ -186,7 +206,10 @@ impl RecordType {
             .iter()
             .map(|(name, ty)| (name.clone(), f(ty)))
             .collect();
-        Self { fields }
+        Self {
+            fields,
+            doc_comments: self.doc_comments.clone(),
+        }
     }
 }
 

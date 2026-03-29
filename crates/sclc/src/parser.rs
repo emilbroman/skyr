@@ -511,7 +511,7 @@ peg::parser! {
             }
 
         rule type_expr_record_field() -> RecordTypeFieldExpr
-            = var:var() colon() ty:type_expr() { RecordTypeFieldExpr { var, ty } }
+            = doc:doc_comment()? var:var() colon() ty:type_expr() { RecordTypeFieldExpr { doc_comment: doc, var, ty } }
 
         rule raise_expr() -> Loc<Expr>
             = raise_kw_span:raise_keyword() expr:expr() {
@@ -757,11 +757,11 @@ peg::parser! {
             }
 
         rule record_field() -> RecordField
-            = var:var() colon() expr:expr() { RecordField { var, expr } }
-            / var:var() {
+            = doc:doc_comment()? var:var() colon() expr:expr() { RecordField { doc_comment: doc, var, expr } }
+            / doc:doc_comment()? var:var() {
                 let span = var.span();
                 let expr = Loc::new(Expr::Var(var.clone()), span);
-                RecordField { var, expr }
+                RecordField { doc_comment: doc, var, expr }
             }
 
         rule dict_expr() -> Loc<Expr>

@@ -790,8 +790,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let mut exports = RecordType::default();
 
         for statement in &file_mod.statements {
-            if let Some((name, ty)) = self.check_stmt(&env, statement)?.unpack(&mut diags) {
-                exports.insert(name, ty);
+            if let Some((name, ty, doc)) = self.check_stmt(&env, statement)?.unpack(&mut diags) {
+                exports.insert_with_doc(name, ty, doc);
             }
         }
 
@@ -829,7 +829,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             if let ast::ModStmt::ExportTypeDef(type_def) = statement
                 && let Some((ty, _)) = inner_env.lookup_type_level(type_def.var.name.as_str())
             {
-                type_exports.insert(type_def.var.name.clone(), ty.clone());
+                type_exports.insert_with_doc(
+                    type_def.var.name.clone(),
+                    ty.clone(),
+                    type_def.doc_comment.clone(),
+                );
             }
         }
 
@@ -887,7 +891,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         &self,
         env: &TypeEnv<'_>,
         stmt: &ast::ModStmt,
-    ) -> Result<Diagnosed<Option<(String, Type)>>, TypeCheckError> {
+    ) -> Result<Diagnosed<Option<(String, Type, Option<String>)>>, TypeCheckError> {
         match stmt {
             ast::ModStmt::Import(import_stmt) => {
                 let alias = import_stmt
@@ -935,7 +939,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let ty = self
                     .check_global_let_bind(env, let_bind)?
                     .unpack(&mut diags);
-                Ok(Diagnosed::new(Some((let_bind.var.name.clone(), ty)), diags))
+                Ok(Diagnosed::new(
+                    Some((let_bind.var.name.clone(), ty, let_bind.doc_comment.clone())),
+                    diags,
+                ))
             }
             ast::ModStmt::TypeDef(_) | ast::ModStmt::ExportTypeDef(_) => {
                 Ok(Diagnosed::new(None, DiagList::new()))
@@ -1061,7 +1068,18 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 let mut resolved = RecordType::default();
                 for field in &record_ty.fields {
                     let field_ty = self.resolve_type_expr(env, &field.ty).unpack(&mut diags);
-                    resolved.insert(field.var.name.clone(), field_ty);
+                    if let Some((cursor, _)) = &field.var.cursor {
+                        cursor.set_type(field_ty.clone());
+                        cursor.set_identifier(CursorIdentifier::Let(field.var.name.clone()));
+                        if let Some(doc) = &field.doc_comment {
+                            cursor.set_description(doc.clone());
+                        }
+                    }
+                    resolved.insert_with_doc(
+                        field.var.name.clone(),
+                        field_ty,
+                        field.doc_comment.clone(),
+                    );
                 }
                 Type::Record(resolved)
             }
@@ -1178,6 +1196,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         if let Some(member_ty) = record_ty.get(prop_access.property.name.as_str()) {
                             if let Some((cursor, _)) = &prop_access.property.cursor {
                                 cursor.set_type(member_ty.clone());
+                                cursor.set_identifier(CursorIdentifier::Type(
+                                    prop_access.property.name.clone(),
+                                ));
+                                if let Some(doc) =
+                                    record_ty.get_doc(prop_access.property.name.as_str())
+                                {
+                                    cursor.set_description(doc.to_owned());
+                                }
                             }
                             member_ty.clone()
                         } else {
@@ -1772,6 +1798,7 @@ mod tests {
         let record_expr = loc(
             Expr::Record(RecordExpr {
                 fields: vec![RecordField {
+                    doc_comment: None,
                     var: loc(
                         Var {
                             name: "a".into(),
@@ -1824,6 +1851,7 @@ mod tests {
         let record_expr = loc(
             Expr::Record(RecordExpr {
                 fields: vec![RecordField {
+                    doc_comment: None,
                     var: loc(
                         Var {
                             name: "a".into(),

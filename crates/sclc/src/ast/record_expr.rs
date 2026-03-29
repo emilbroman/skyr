@@ -10,6 +10,7 @@ pub struct RecordExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordField {
+    pub doc_comment: Option<String>,
     pub var: Loc<Var>,
     pub expr: Loc<Expr>,
 }
@@ -35,8 +36,11 @@ impl RecordExpr {
             let field_ty = checker.synth_expr(env, &field.expr)?.unpack(&mut diags);
             if let Some((cursor, _)) = &field.var.cursor {
                 cursor.set_type(field_ty.clone());
+                if let Some(doc) = &field.doc_comment {
+                    cursor.set_description(doc.clone());
+                }
             }
-            record_ty.insert(field.var.name.clone(), field_ty);
+            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field.doc_comment.clone());
         }
         Ok(crate::Diagnosed::new(crate::Type::Record(record_ty), diags))
     }
@@ -84,8 +88,11 @@ impl RecordExpr {
                 .unpack(&mut diags);
             if let Some((cursor, _)) = &field.var.cursor {
                 cursor.set_type(field_ty.clone());
+                if let Some(doc) = &field.doc_comment {
+                    cursor.set_description(doc.clone());
+                }
             }
-            record_ty.insert(field.var.name.clone(), field_ty);
+            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field.doc_comment.clone());
         }
 
         let ty = crate::Type::Record(record_ty);

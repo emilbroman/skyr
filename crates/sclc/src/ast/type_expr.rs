@@ -47,6 +47,7 @@ pub struct DictTypeExpr {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordTypeFieldExpr {
+    pub doc_comment: Option<String>,
     pub var: Loc<Var>,
     pub ty: Loc<TypeExpr>,
 }

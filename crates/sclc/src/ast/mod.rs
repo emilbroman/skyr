@@ -166,10 +166,12 @@ mod tests {
         let expr = Expr::Record(RecordExpr {
             fields: vec![
                 RecordField {
+                    doc_comment: None,
                     var: var("a"),
                     expr: expr_loc(Expr::Var(var("a"))),
                 },
                 RecordField {
+                    doc_comment: None,
                     var: var("b"),
                     expr: expr_loc(Expr::Fn(FnExpr {
                         type_params: vec![],
@@ -186,14 +188,17 @@ mod tests {
                         body: Box::new(expr_loc(Expr::Record(RecordExpr {
                             fields: vec![
                                 RecordField {
+                                    doc_comment: None,
                                     var: var("x"),
                                     expr: expr_loc(Expr::Var(var("x"))),
                                 },
                                 RecordField {
+                                    doc_comment: None,
                                     var: var("y"),
                                     expr: expr_loc(Expr::Var(var("y"))),
                                 },
                                 RecordField {
+                                    doc_comment: None,
                                     var: var("z"),
                                     expr: expr_loc(Expr::Var(var("z"))),
                                 },
