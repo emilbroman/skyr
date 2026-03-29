@@ -29,7 +29,7 @@ fn typevar_name(index: usize) -> String {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Type {
     pub kind: TypeKind,
     /// Optional display name from a source-level type alias.
@@ -130,7 +130,7 @@ impl Type {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TypeKind {
     Any,
     Int,
@@ -148,7 +148,7 @@ pub enum TypeKind {
     Exception(u64),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FnType {
     /// Type parameter IDs paired with their upper bounds (defaults to Type::Any).
     pub type_params: Vec<(usize, Type)>,
@@ -156,13 +156,13 @@ pub struct FnType {
     pub ret: Box<Type>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct RecordType {
     fields: BTreeMap<String, Type>,
     doc_comments: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DictType {
     pub key: Box<Type>,
     pub value: Box<Type>,
