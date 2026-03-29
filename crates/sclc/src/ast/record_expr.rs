@@ -35,6 +35,7 @@ impl RecordExpr {
         for field in &self.fields {
             let field_ty = checker.synth_expr(env, &field.expr)?.unpack(&mut diags);
             if let Some((cursor, _)) = &field.var.cursor {
+                cursor.set_identifier(crate::CursorIdentifier::Let(field.var.name.clone()));
                 cursor.set_type(field_ty.clone());
                 if let Some(doc) = &field.doc_comment {
                     cursor.set_description(doc.clone());
@@ -87,16 +88,25 @@ impl RecordExpr {
                 }
             }
             let expected_field_ty = expected_record.get(field.var.name.as_str());
+
+            let field_description = field
+                .doc_comment
+                .as_ref()
+                .map(String::as_str)
+                .or_else(|| expected_record.get_doc(field.var.name.as_str()))
+                .map(String::from);
+
             let field_ty = checker
                 .check_expr(env, &field.expr, expected_field_ty)?
                 .unpack(&mut diags);
             if let Some((cursor, _)) = &field.var.cursor {
+                cursor.set_identifier(crate::CursorIdentifier::Let(field.var.name.clone()));
                 cursor.set_type(field_ty.clone());
-                if let Some(doc) = &field.doc_comment {
+                if let Some(doc) = &field_description {
                     cursor.set_description(doc.clone());
                 }
             }
-            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field.doc_comment.clone());
+            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field_description);
         }
 
         let ty = crate::Type::Record(record_ty);
