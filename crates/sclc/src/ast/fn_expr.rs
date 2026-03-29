@@ -66,6 +66,7 @@ impl FnExpr {
             };
             if let Some((cursor, _)) = &param.var.cursor {
                 cursor.set_type(body_ty.clone());
+                cursor.set_identifier(crate::CursorIdentifier::Let(param.var.name.clone()));
             }
             fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), body_ty);
             params.push(param_ty);
@@ -147,6 +148,7 @@ impl FnExpr {
             };
             if let Some((cursor, _)) = &param.var.cursor {
                 cursor.set_type(param_ty.clone());
+                cursor.set_identifier(crate::CursorIdentifier::Let(param.var.name.clone()));
             }
             fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
             params.push(param_ty);

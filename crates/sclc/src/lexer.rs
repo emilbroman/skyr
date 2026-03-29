@@ -58,6 +58,7 @@ pub enum Token<'a> {
     Symbol(&'a str),
     Whitepace(&'a str),
     Comment(&'a str),
+    DocComment(&'a str),
     Unknown(&'a str),
     Cursor { content: &'a str, offset: usize },
 }
@@ -277,6 +278,29 @@ impl<'a> Lexer<'a> {
         let comment = &self.source[comment_start..comment_end];
         Loc::new(
             Token::Comment(comment),
+            Span::new(comment_start_position, self.current_position),
+        )
+    }
+
+    fn consume_doc_comment(
+        &mut self,
+        comment_start: usize,
+        comment_start_position: Position,
+    ) -> Loc<Token<'a>> {
+        let mut comment_end = comment_start + "///".len();
+
+        while let Some((_, next_grapheme)) = self.graphemes.peek().copied() {
+            if next_grapheme == "\n" || next_grapheme == "\r\n" {
+                break;
+            }
+
+            let (next_index, next_grapheme, _) = self.next_grapheme().expect("peek returned Some");
+            comment_end = next_index + next_grapheme.len();
+        }
+
+        let comment = &self.source[comment_start..comment_end];
+        Loc::new(
+            Token::DocComment(comment),
             Span::new(comment_start_position, self.current_position),
         )
     }
@@ -509,6 +533,11 @@ impl<'a> Iterator for Lexer<'a> {
                 "/" => {
                     if let Some((_, "/")) = self.graphemes.peek().copied() {
                         self.next_grapheme().expect("peek returned Some");
+                        // Check for a third slash: `///` is a doc comment
+                        if let Some((_, "/")) = self.graphemes.peek().copied() {
+                            self.next_grapheme().expect("peek returned Some");
+                            return Some(self.consume_doc_comment(grapheme_index, start));
+                        }
                         return Some(self.consume_line_comment(grapheme_index, start));
                     }
 

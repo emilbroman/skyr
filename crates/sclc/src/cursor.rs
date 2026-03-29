@@ -9,9 +9,17 @@ pub enum CompletionCandidate {
     Member(String),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CursorIdentifier {
+    Let(String),
+    Type(String),
+}
+
 #[derive(Debug)]
 pub struct CursorInfo {
     pub ty: Option<Type>,
+    pub identifier: Option<CursorIdentifier>,
+    pub description: Option<String>,
     pub declaration: Option<Span>,
     pub references: Vec<Span>,
     pub completion_candidates: Vec<CompletionCandidate>,
@@ -32,6 +40,8 @@ impl Cursor {
             position,
             inner: Arc::new(Mutex::new(CursorInfo {
                 ty: None,
+                identifier: None,
+                description: None,
                 declaration: None,
                 references: Vec::new(),
                 completion_candidates: Vec::new(),
@@ -42,6 +52,14 @@ impl Cursor {
 
     pub fn set_type(&self, ty: Type) {
         self.inner.lock().unwrap().ty = Some(ty);
+    }
+
+    pub fn set_identifier(&self, identifier: CursorIdentifier) {
+        self.inner.lock().unwrap().identifier = Some(identifier);
+    }
+
+    pub fn set_description(&self, description: String) {
+        self.inner.lock().unwrap().description = Some(description);
     }
 
     pub fn set_declaration(&self, span: Span) {

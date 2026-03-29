@@ -32,6 +32,7 @@ impl LetExpr {
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
         if let Some((cursor, _)) = &self.bind.var.cursor {
             cursor.set_type(bind_ty.clone());
+            cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let body_ty = checker
@@ -58,6 +59,7 @@ impl LetExpr {
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
         if let Some((cursor, _)) = &self.bind.var.cursor {
             cursor.set_type(bind_ty.clone());
+            cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let body_ty = checker

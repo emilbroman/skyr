@@ -190,6 +190,27 @@ peg::parser! {
 
         rule eof() = ![_]
 
+        rule doc_comment_line() -> String
+            = [token if matches!(token.as_ref(), Token::DocComment(_))] {
+                match token.as_ref() {
+                    Token::DocComment(text) => {
+                        // Strip the leading "///" prefix, and one optional leading space
+                        let content = &text[3..];
+                        if let Some(stripped) = content.strip_prefix(' ') {
+                            stripped.to_owned()
+                        } else {
+                            content.to_owned()
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+        rule doc_comment() -> String
+            = lines:doc_comment_line()+ {
+                lines.join("\n")
+            }
+
         rule mod_stmt() -> ModStmt
             = import_stmt:import_stmt() { ModStmt::Import(import_stmt) }
             / export_type_def:export_type_def() { ModStmt::ExportTypeDef(export_type_def) }
@@ -827,20 +848,24 @@ peg::parser! {
             }
 
         rule let_bind() -> LetBind
-            = let_keyword() var:var() ty:(colon() ty:type_expr() { ty })? equals() expr:expr() {
-                LetBind { var, ty, expr: Box::new(expr) }
+            = doc:doc_comment()? let_keyword() var:var() ty:(colon() ty:type_expr() { ty })? equals() expr:expr() {
+                LetBind { doc_comment: doc, var, ty, expr: Box::new(expr) }
             }
 
         rule export_let_bind() -> LetBind
-            = export_keyword() let_bind:let_bind() { let_bind }
+            = doc:doc_comment()? export_keyword() let_keyword() var:var() ty:(colon() ty:type_expr() { ty })? equals() expr:expr() {
+                LetBind { doc_comment: doc, var, ty, expr: Box::new(expr) }
+            }
 
         rule type_def() -> TypeDef
-            = type_keyword() var:var() type_params:type_params()? ty:type_expr() {
-                TypeDef { var, type_params: type_params.unwrap_or_default(), ty }
+            = doc:doc_comment()? type_keyword() var:var() type_params:type_params()? ty:type_expr() {
+                TypeDef { doc_comment: doc, var, type_params: type_params.unwrap_or_default(), ty }
             }
 
         rule export_type_def() -> TypeDef
-            = export_keyword() type_def:type_def() { type_def }
+            = doc:doc_comment()? export_keyword() type_keyword() var:var() type_params:type_params()? ty:type_expr() {
+                TypeDef { doc_comment: doc, var, type_params: type_params.unwrap_or_default(), ty }
+            }
 
         rule import_stmt() -> Loc<ImportStmt>
             = keyword_span:import_keyword_span() vars:import_path() {

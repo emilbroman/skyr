@@ -40,7 +40,8 @@ impl StackFrame<'_> {
 
 pub struct EvalEnv<'a> {
     pub(crate) module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
+    globals:
+        Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
     pub(crate) stack: Option<&'a StackFrame<'a>>,
@@ -75,7 +76,7 @@ impl<'a> EvalEnv<'a> {
 
     pub fn with_globals(
         &self,
-        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>,
+        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>,
     ) -> Self {
         Self {
             module_id: self.module_id,
@@ -153,7 +154,7 @@ impl<'a> EvalEnv<'a> {
     pub fn lookup_global(&self, name: &str) -> Option<&crate::Loc<ast::Expr>> {
         self.globals
             .and_then(|globals| globals.get(name))
-            .map(|(_, expr)| *expr)
+            .map(|(_, expr, _)| *expr)
     }
 
     pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, &'a ast::FileMod)> {

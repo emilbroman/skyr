@@ -3,6 +3,7 @@ use crate::Loc;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeDef {
+    pub doc_comment: Option<String>,
     pub var: Loc<Var>,
     pub type_params: Vec<TypeParam>,
     pub ty: Loc<TypeExpr>,

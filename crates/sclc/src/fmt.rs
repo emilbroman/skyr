@@ -189,18 +189,22 @@ impl Formatter {
         match stmt {
             ModStmt::Import(import) => self.emit_import(import),
             ModStmt::Let(bind) => {
+                self.emit_doc_comment(&bind.doc_comment);
                 self.write("let ");
                 self.emit_let_bind(bind);
             }
             ModStmt::Export(bind) => {
+                self.emit_doc_comment(&bind.doc_comment);
                 self.write("export let ");
                 self.emit_let_bind(bind);
             }
             ModStmt::TypeDef(td) => {
+                self.emit_doc_comment(&td.doc_comment);
                 self.write("type ");
                 self.emit_type_def(td);
             }
             ModStmt::ExportTypeDef(td) => {
+                self.emit_doc_comment(&td.doc_comment);
                 self.write("export type ");
                 self.emit_type_def(td);
             }
@@ -215,6 +219,20 @@ impl Formatter {
                 self.write("/");
             }
             self.write(&var.name);
+        }
+    }
+
+    fn emit_doc_comment(&mut self, doc: &Option<String>) {
+        if let Some(doc) = doc {
+            for line in doc.lines() {
+                if line.is_empty() {
+                    self.write("///");
+                } else {
+                    self.write("/// ");
+                    self.write(line);
+                }
+                self.newline();
+            }
         }
     }
 

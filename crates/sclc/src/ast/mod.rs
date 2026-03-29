@@ -54,7 +54,7 @@ pub struct ReplLine {
 }
 
 impl FileMod {
-    pub fn find_globals(&self) -> HashMap<&str, (crate::Span, &Loc<Expr>)> {
+    pub fn find_globals(&self) -> HashMap<&str, (crate::Span, &Loc<Expr>, Option<&str>)> {
         let mut globals = HashMap::new();
 
         for statement in &self.statements {
@@ -62,7 +62,11 @@ impl FileMod {
                 ModStmt::Let(let_bind) | ModStmt::Export(let_bind) => {
                     globals.insert(
                         let_bind.var.name.as_str(),
-                        (let_bind.var.span(), let_bind.expr.as_ref()),
+                        (
+                            let_bind.var.span(),
+                            let_bind.expr.as_ref(),
+                            let_bind.doc_comment.as_deref(),
+                        ),
                     );
                 }
                 _ => {}
@@ -120,6 +124,7 @@ pub struct ImportStmt {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetBind {
+    pub doc_comment: Option<String>,
     pub var: Loc<Var>,
     pub ty: Option<Loc<TypeExpr>>,
     pub expr: Box<Loc<Expr>>,

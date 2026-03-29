@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    AnySource, DiagList, Diagnosed, DictType, FnType, Package, Program, RecordType, Type,
-    TypeError, TypeIssue, TypeKind, ast,
+    AnySource, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package, Program,
+    RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -458,12 +458,14 @@ pub(crate) struct TypeEnvMaps<'a> {
     /// Upper bounds for type variable IDs (used during function body checking).
     pub(crate) type_var_bounds: HashMap<usize, Type>,
     /// Type-level bindings from `type` declarations and imports (separate namespace from values).
-    type_level: HashMap<String, Type>,
+    /// Each entry stores the type and an optional doc comment.
+    type_level: HashMap<String, (Type, Option<String>)>,
 }
 
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
-    globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
+    globals:
+        Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     pub(crate) maps: Box<TypeEnvMaps<'a>>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
@@ -508,7 +510,7 @@ impl<'a> TypeEnv<'a> {
 
     pub fn with_globals(
         &self,
-        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>,
+        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>,
     ) -> Self {
         let mut maps = self.maps.clone();
         maps.locals = HashMap::new();
@@ -573,9 +575,9 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
-    pub fn with_type_level(&self, name: String, ty: Type) -> Self {
+    pub fn with_type_level(&self, name: String, ty: Type, doc: Option<String>) -> Self {
         let mut env = self.inner();
-        env.maps.type_level.insert(name, ty);
+        env.maps.type_level.insert(name, (ty, doc));
         env
     }
 
@@ -631,18 +633,24 @@ impl<'a> TypeEnv<'a> {
         self.maps.type_vars.get(name)
     }
 
-    pub fn lookup_type_level(&self, name: &str) -> Option<&Type> {
-        self.maps.type_level.get(name)
+    pub fn lookup_type_level(&self, name: &str) -> Option<(&Type, Option<&str>)> {
+        self.maps
+            .type_level
+            .get(name)
+            .map(|(ty, doc)| (ty, doc.as_deref()))
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&(crate::Span, Type)> {
         self.maps.locals.get(name)
     }
 
-    pub fn lookup_global(&self, name: &str) -> Option<(crate::Span, &crate::Loc<ast::Expr>)> {
+    pub fn lookup_global(
+        &self,
+        name: &str,
+    ) -> Option<(crate::Span, &crate::Loc<ast::Expr>, Option<&'a str>)> {
         self.globals
             .and_then(|globals| globals.get(name))
-            .map(|(span, expr)| (*span, *expr))
+            .map(|(span, expr, doc)| (*span, *expr, *doc))
     }
 
     pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, Option<&'a ast::FileMod>)> {
@@ -819,7 +827,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
         for statement in &file_mod.statements {
             if let ast::ModStmt::ExportTypeDef(type_def) = statement
-                && let Some(ty) = inner_env.lookup_type_level(type_def.var.name.as_str())
+                && let Some((ty, _)) = inner_env.lookup_type_level(type_def.var.name.as_str())
             {
                 type_exports.insert(type_def.var.name.clone(), ty.clone());
             }
@@ -845,13 +853,29 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         let type_defs = file_mod.find_type_defs();
 
         for type_def in &type_defs {
-            *env = env.with_type_level(type_def.var.name.clone(), Type::Never);
+            *env = env.with_type_level(type_def.var.name.clone(), Type::Never, None);
         }
 
         for _ in 0..2 {
             for type_def in &type_defs {
                 let resolved_ty = self.resolve_type_def(env, type_def).unpack(diags);
-                *env = env.with_type_level(type_def.var.name.clone(), resolved_ty);
+                *env = env.with_type_level(
+                    type_def.var.name.clone(),
+                    resolved_ty,
+                    type_def.doc_comment.clone(),
+                );
+            }
+        }
+
+        for type_def in &type_defs {
+            if let Some((cursor, _)) = &type_def.var.cursor {
+                if let Some((ty, _)) = env.lookup_type_level(type_def.var.name.as_str()) {
+                    cursor.set_type(ty.clone().strip_name());
+                }
+                cursor.set_identifier(CursorIdentifier::Type(type_def.var.name.clone()));
+                if let Some(doc) = &type_def.doc_comment {
+                    cursor.set_description(doc.clone());
+                }
             }
         }
 
@@ -961,15 +985,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 Type::Str
             }
             ast::TypeExpr::Var(var) => {
-                let resolved = if let Some(ty) = env.lookup_type_var(var.name.as_str()) {
-                    ty.clone()
-                } else if let Some(ty) = env.lookup_type_level(var.name.as_str()) {
+                let (resolved, doc_comment) = if let Some(ty) =
+                    env.lookup_type_var(var.name.as_str())
+                {
+                    (ty.clone(), None)
+                } else if let Some((ty, doc)) = env.lookup_type_level(var.name.as_str()) {
                     let ty = ty.clone();
-                    if !matches!(ty.kind, TypeKind::Fn(ref f) if !f.type_params.is_empty()) {
+                    let ty = if !matches!(ty.kind, TypeKind::Fn(ref f) if !f.type_params.is_empty())
+                    {
                         ty.with_name(var.name.clone())
                     } else {
                         ty
-                    }
+                    };
+                    (ty, doc)
                 } else {
                     if let Ok(module_id) = env.module_id() {
                         diags.push(UnknownType {
@@ -978,10 +1006,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                             span: type_expr.span(),
                         });
                     }
-                    Type::Never
+                    (Type::Never, None)
                 };
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(resolved.clone());
+                    cursor.set_type(resolved.clone().strip_name());
+                    cursor.set_identifier(CursorIdentifier::Type(var.name.clone()));
+                    if let Some(doc) = doc_comment {
+                        cursor.set_description(doc.to_owned());
+                    }
                 }
                 resolved
             }
@@ -1432,6 +1464,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
         };
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());
+            cursor.set_identifier(CursorIdentifier::Let(let_bind.var.name.clone()));
+            if let Some(doc) = &let_bind.doc_comment {
+                cursor.set_description(doc.clone());
+            }
         }
         Ok(Diagnosed::new(ty, diags))
     }
@@ -1519,7 +1555,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .type_level_exports(&import_env, import_file_mod)
                         .unpack(diags);
                     if type_exports.iter().next().is_some() {
-                        *env = env.with_type_level(alias.name.clone(), Type::Record(type_exports));
+                        *env = env.with_type_level(
+                            alias.name.clone(),
+                            Type::Record(type_exports),
+                            None,
+                        );
                     }
                 }
             }

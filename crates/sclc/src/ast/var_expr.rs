@@ -23,6 +23,7 @@ pub(crate) fn synth_var<S: SourceRepo>(
         if let Some((cursor, _)) = &var.cursor {
             cursor.set_declaration(decl);
             cursor.set_type(ty.clone());
+            cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
         }
     };
     let track_ref = |decl: crate::Span| {
@@ -41,8 +42,8 @@ pub(crate) fn synth_var<S: SourceRepo>(
     }
 
     // Global variable
-    if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
-        return synth_global(checker, env, expr, var, decl, global_expr);
+    if let Some((decl, global_expr, doc_comment)) = env.lookup_global(var.name.as_str()) {
+        return synth_global(checker, env, expr, var, decl, global_expr, doc_comment);
     }
 
     // Import
@@ -86,11 +87,16 @@ pub(crate) fn synth_global<S: SourceRepo>(
     var: &crate::Loc<super::Var>,
     decl: crate::Span,
     global_expr: &crate::Loc<super::Expr>,
+    doc_comment: Option<&str>,
 ) -> Result<Diagnosed<Type>, TypeCheckError> {
     let set_cursor = |decl: crate::Span, ty: &Type| {
         if let Some((cursor, _)) = &var.cursor {
             cursor.set_declaration(decl);
             cursor.set_type(ty.clone());
+            cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
+            if let Some(doc) = doc_comment {
+                cursor.set_description(doc.to_owned());
+            }
         }
     };
     let track_ref = |decl: crate::Span| {
