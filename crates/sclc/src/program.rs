@@ -14,11 +14,18 @@ use crate::{TrackedValue, std::StdSourceRepo};
 #[derive(Clone, Default)]
 pub struct Program<S> {
     packages: HashMap<ModuleId, Package<AnySource<S>>>,
+    /// The package ID of the user's own package, used to resolve `Self/…` imports.
+    self_package_id: Option<ModuleId>,
 }
 
 impl<S> Program<S> {
     pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package<AnySource<S>>)> {
         self.packages.iter()
+    }
+
+    /// The package ID of the user's own package (used to resolve `Self/…` imports).
+    pub fn self_package_id(&self) -> Option<&ModuleId> {
+        self.self_package_id.as_ref()
     }
 
     pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError>
@@ -74,14 +81,32 @@ impl<S: SourceRepo> Program<S> {
         let mut packages = HashMap::new();
         let std = StdSourceRepo::new();
         packages.insert(std.package_id(), Package::new(AnySource::Std(std)));
-        Self { packages }
+        Self {
+            packages,
+            self_package_id: None,
+        }
     }
 
     pub async fn open_package(&mut self, source: S) -> &mut Package<AnySource<S>> {
         let name = SourceRepo::package_id(&source);
+        self.self_package_id = Some(name.clone());
         self.packages
             .entry(name)
             .or_insert_with(|| Package::new(AnySource::User(source)))
+    }
+
+    /// If `import_path` starts with `Self`, replace that prefix with the
+    /// user package ID so that the rest of the resolution machinery can find
+    /// it in the package map.
+    fn resolve_self_import(&self, import_path: ModuleId) -> ModuleId {
+        if import_path.as_slice().first().map(String::as_str) == Some("Self")
+            && let Some(self_id) = &self.self_package_id
+        {
+            let mut segments: Vec<String> = self_id.as_slice().to_vec();
+            segments.extend(import_path.as_slice()[1..].iter().cloned());
+            return ModuleId::new(segments);
+        }
+        import_path
     }
 
     pub async fn resolve_imports(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
@@ -100,6 +125,7 @@ impl<S: SourceRepo> Program<S> {
                         .iter()
                         .map(|var| var.as_ref().name.clone())
                         .collect::<ModuleId>();
+                    let import_path = self.resolve_self_import(import_path);
                     (import_path, import_stmt.clone())
                 })
                 .collect::<Vec<_>>();
@@ -247,6 +273,7 @@ impl<S: SourceRepo> Program<S> {
                         .iter()
                         .map(|var| var.as_ref().name.clone())
                         .collect::<ModuleId>();
+                    let import_path = self.resolve_self_import(import_path);
                     let destination = self.resolve_import_path(&import_path)?;
                     return Some((alias.as_ref().name.as_str(), (import_path, destination)));
                 }

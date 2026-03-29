@@ -399,10 +399,25 @@ async fn run_test_case(dir_name: &str) {
 }
 
 /// Resolve an import path to a FileMod within the compiled program.
+/// Resolve `Self/…` import paths by replacing the `Self` prefix with the
+/// program's own package ID.
+fn resolve_self_import(program: &crate::Program<MemSourceRepo>, import_path: ModuleId) -> ModuleId {
+    if import_path.as_slice().first().map(String::as_str) == Some("Self")
+        && let Some(self_id) = program.self_package_id()
+    {
+        let mut segments: Vec<String> = self_id.as_slice().to_vec();
+        segments.extend(import_path.as_slice()[1..].iter().cloned());
+        return ModuleId::new(segments);
+    }
+    import_path
+}
+
 fn resolve_import<'a>(
     program: &'a crate::Program<MemSourceRepo>,
     import_path: &ModuleId,
 ) -> Option<&'a crate::ast::FileMod> {
+    let import_path = resolve_self_import(program, import_path.clone());
+
     // Find matching package by longest prefix
     let package_name = program
         .packages()
@@ -443,6 +458,7 @@ test_case!(BasicExport);
 test_case!(MultiExport);
 test_case!(EmptyModule);
 test_case!(ImportModule);
+test_case!(SelfImport);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
 test_case!(RandomInt);
