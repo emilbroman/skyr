@@ -37,7 +37,12 @@ pub fn hover(
     let result = match &info.ty {
         Some(ty) => {
             let hover = lsp::Hover {
-                contents: lsp::HoverContents::Scalar(lsp::MarkedString::String(ty.to_string())),
+                contents: lsp::HoverContents::Scalar(lsp::MarkedString::LanguageString(
+                    lsp::LanguageString {
+                        language: "scl".to_string(),
+                        value: ty.to_string(),
+                    },
+                )),
                 range: None,
             };
             serde_json::to_value(hover).unwrap_or_else(|err| {
