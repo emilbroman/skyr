@@ -182,7 +182,7 @@ impl highlight::Highlighter for ReplHelper {
                 }
 
                 // Comments
-                Token::Comment(s) => emit!(s, "\x1b[90m"),
+                Token::Comment(s) | Token::DocComment(s) => emit!(s, "\x1b[90m"),
 
                 // Punctuation and operators (no color)
                 Token::OpenCurly => emit!("{"),
@@ -398,7 +398,7 @@ impl Repl {
             |env, (name, (ty, _))| env.with_local(name.as_str(), sclc::Span::default(), ty.clone()),
         );
         type_defs.iter().fold(env, |env, (name, ty)| {
-            env.with_type_level(name.clone(), ty.clone())
+            env.with_type_level(name.clone(), ty.clone(), None)
         })
     }
 
