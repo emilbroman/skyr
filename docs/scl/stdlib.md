@@ -634,8 +634,8 @@ Check if a value is `nil`:
 ```scl
 import Std/Option
 
-Option.isNone<Int>(nil)    // true
-Option.isNone<Int>(42)     // false
+Option.isNone(nil as Int?)    // true
+Option.isNone(42)             // false
 ```
 
 **Type:** `fn<T>(value: T?) Bool`
@@ -645,8 +645,8 @@ Option.isNone<Int>(42)     // false
 Check if a value is not `nil`:
 
 ```scl
-Option.isSome<Int>(42)     // true
-Option.isSome<Int>(nil)    // false
+Option.isSome(42)             // true
+Option.isSome(nil as Int?)    // false
 ```
 
 **Type:** `fn<T>(value: T?) Bool`
@@ -656,8 +656,8 @@ Option.isSome<Int>(nil)    // false
 Extract the value from an optional, or raise an exception if `nil`:
 
 ```scl
-Option.unwrap<Int>(42)     // 42
-Option.unwrap<Int>(nil)    // raises UnexpectedNil
+Option.unwrap(42)     // 42
+Option.unwrap(nil)    // raises UnexpectedNil
 ```
 
 **Type:** `fn<T>(value: T?) T`
@@ -665,7 +665,7 @@ Option.unwrap<Int>(nil)    // raises UnexpectedNil
 Raises the `Option.UnexpectedNil` exception if the value is `nil`. Use `try`/`catch` to handle:
 
 ```scl
-let result = try Option.unwrap<Str>(maybeValue)
+let result = try Option.unwrap(maybeValue)
     catch Option.UnexpectedNil: "fallback"
 ```
 
@@ -674,11 +674,22 @@ let result = try Option.unwrap<Str>(maybeValue)
 Return the value if present, or a fallback if `nil`:
 
 ```scl
-Option.default<Int>(42, 0)     // 42
-Option.default<Int>(nil, 0)    // 0
+Option.default(42, 0)     // 42
+Option.default(nil, 0)    // 0
 ```
 
 **Type:** `fn<T>(value: T?, fallback: T) T`
+
+### map
+
+Apply a function to the value if present, or return `nil` if absent:
+
+```scl
+Option.map(42, fn(x) x * 2)      // 84
+Option.map(nil as Int?, fn(x) x * 2)  // nil
+```
+
+**Type:** `fn<T, U>(value: T?, transform: fn(T) U) U?`
 
 ### UnexpectedNil
 
@@ -707,7 +718,7 @@ Returns a list containing every integer in the half-open range `[0, n)`. Returns
 Apply a function to each element:
 
 ```scl
-List.map<Int, Int>([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
+List.map([1, 2, 3], fn(x) x * 2)   // [2, 4, 6]
 ```
 
 **Type:** `fn<T, U>(list: [T], transform: fn(T) U) [U]`
@@ -717,7 +728,7 @@ List.map<Int, Int>([1, 2, 3], fn(x: Int) x * 2)   // [2, 4, 6]
 Keep only elements that satisfy a predicate:
 
 ```scl
-List.filter<Int>([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
+List.filter([1, 2, 3, 4], fn(x) x > 2)   // [3, 4]
 ```
 
 **Type:** `fn<T>(list: [T], predicate: fn(T) Bool) [T]`
@@ -727,7 +738,7 @@ List.filter<Int>([1, 2, 3, 4], fn(x: Int) x > 2)   // [3, 4]
 Add an element to the end of a list:
 
 ```scl
-List.append<Int>([1, 2], 3)   // [1, 2, 3]
+List.append([1, 2], 3)   // [1, 2, 3]
 ```
 
 **Type:** `fn<T>(list: [T], newItem: T) [T]`
@@ -737,7 +748,7 @@ List.append<Int>([1, 2], 3)   // [1, 2, 3]
 Flatten a list of lists into a single list:
 
 ```scl
-List.concat<Int>([[1, 2], [3, 4]])   // [1, 2, 3, 4]
+List.concat([[1, 2], [3, 4]])   // [1, 2, 3, 4]
 ```
 
 **Type:** `fn<T>(lists: [[T]]) [T]`
@@ -747,7 +758,7 @@ List.concat<Int>([[1, 2], [3, 4]])   // [1, 2, 3, 4]
 Map each element to a list, then flatten:
 
 ```scl
-List.flatMap<Int, Int>([1, 2, 3], fn(x: Int) [x, x * 10])   // [1, 10, 2, 20, 3, 30]
+List.flatMap([1, 2, 3], fn(x) [x, x * 10])   // [1, 10, 2, 20, 3, 30]
 ```
 
 **Type:** `fn<T, U>(list: [T], transform: fn(T) [U]) [U]`
@@ -805,6 +816,40 @@ let mixed: Time.Duration = { months: 1, milliseconds: 1 }
 | `months` | `Int?` | Calendar month component (optional) |
 
 Both fields are optional. The month component uses calendar-month arithmetic (adding 1 month to Jan 31 gives Feb 28/29), while the millisecond component is exact.
+
+### Duration Constants
+
+Pre-defined `Duration` values for common time spans:
+
+| Constant | Value |
+|----------|-------|
+| `Time.millisecond` | `{ milliseconds: 1 }` |
+| `Time.second` | `{ milliseconds: 1000 }` |
+| `Time.minute` | `{ milliseconds: 60000 }` |
+| `Time.hour` | `{ milliseconds: 3600000 }` |
+| `Time.day` | `{ milliseconds: 86400000 }` |
+| `Time.week` | `{ milliseconds: 604800000 }` |
+| `Time.month` | `{ months: 1 }` |
+| `Time.year` | `{ months: 12 }` |
+
+### epoch
+
+The Unix epoch as an `Instant`:
+
+```scl
+Time.epoch   // { epochMillis: 0 }
+```
+
+### multiply
+
+Multiply a `Duration` by an integer scalar:
+
+```scl
+Time.multiply(Time.hour, 2)   // { milliseconds: 7200000 }
+Time.multiply(Time.month, 6)  // { months: 6 }
+```
+
+**Type:** `fn(Duration, Int) Duration`
 
 ### Clock
 

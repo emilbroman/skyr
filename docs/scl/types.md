@@ -187,7 +187,20 @@ let getName = fn<T <: { name: Str }>(item: T) item.name
 getName({ name: "alice", age: 30 })   // "alice"
 ```
 
-At call sites, type arguments must be provided explicitly (e.g., `List.map<Int, Str>(...)`). Generic functions enable reusable utilities like `List.map` and `Option.unwrap` that work with any type.
+At call sites, type arguments are usually inferred from the arguments:
+
+```scl
+List.map([1, 2, 3], fn(x: Int) "{x}")   // T=Int, U=Str inferred
+Option.unwrap(maybeValue)                 // T inferred from argument type
+```
+
+You can still provide them explicitly when needed:
+
+```scl
+List.map<Int, Str>([1, 2, 3], fn(x: Int) "{x}")
+```
+
+Generic functions enable reusable utilities like `List.map` and `Option.unwrap` that work with any type.
 
 ### Exception Types
 
@@ -265,14 +278,19 @@ let lookup = #{ "a": 1, "b": 2 }   // Inferred: #{ Str: Int }
 
 ## Type Annotations
 
-Type annotations are required in function parameters:
+Type annotations on function parameters can be omitted when the expected type is known from context:
 
 ```scl
+// Explicit annotations (always valid)
 fn(x: Int) x * 2
-fn(config: { port: Int }) config.port
+
+// Inferred from context (e.g., when passed to a function expecting fn(Int) Int)
+List.map([1, 2, 3], fn(x) x * 2)
 ```
 
-They're optional elsewhere but can be used for documentation or to constrain types:
+When there is no contextual type, annotations are required — otherwise the compiler emits a diagnostic.
+
+Type annotations are optional on let bindings and can be used for documentation or to constrain types:
 
 ```scl
 let port: Int = 8080

@@ -100,7 +100,7 @@ Define exceptions and handle them with `try`/`catch`:
 ```scl
 import Std/Option
 
-let value = try Option.unwrap<Str>(maybeValue)
+let value = try Option.unwrap(maybeValue)
     catch Option.UnexpectedNil: "fallback"
 ```
 

@@ -322,6 +322,12 @@ fn(a: Int, b: Int) a + b
 fn(config: { port: Int }) config.port
 ```
 
+When the expected type is known from context, parameter type annotations can be omitted:
+
+```scl
+List.map([1, 2, 3], fn(x) x * 2)    // x inferred as Int
+```
+
 Functions capture their environment (closures):
 
 ```scl
@@ -347,7 +353,14 @@ fn<T <: { name: Str }>(item: T) item.name
 
 This constrains `T` to types that have at least a `name: Str` field.
 
-When calling generic functions, type arguments must be provided explicitly:
+Type arguments are inferred from the call arguments when possible:
+
+```scl
+unwrap(maybeValue)
+List.map([1, 2], fn(x) "{x}")
+```
+
+You can still provide them explicitly:
 
 ```scl
 unwrap<Int>(maybeValue)
