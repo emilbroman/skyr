@@ -211,6 +211,7 @@ impl highlight::Highlighter for ReplHelper {
                 Token::AndAnd => emit!("&&"),
                 Token::OrOr => emit!("||"),
                 Token::QuestionMark => emit!("?"),
+                Token::QuestionQuestion => emit!("??"),
 
                 // Identifiers, whitespace, unknown
                 Token::Symbol(s)
