@@ -505,8 +505,10 @@ impl Formatter {
                 self.write(", ");
             }
             self.write(&param.var.name);
-            self.write(": ");
-            self.emit_type_expr(&param.ty);
+            if let Some(ty) = &param.ty {
+                self.write(": ");
+                self.emit_type_expr(ty);
+            }
         }
         self.write(")");
         self.newline();

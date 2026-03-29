@@ -13,10 +13,10 @@ pub struct FnExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnParam {
     pub var: Loc<Var>,
-    pub ty: Loc<TypeExpr>,
+    pub ty: Option<Loc<TypeExpr>>,
 }
 
-use crate::checker::next_type_id;
+use crate::checker::{MissingParameterType, next_type_id};
 use crate::eval::{Eval, EvalEnv, EvalError, FnEnv};
 use crate::{
     DiagList, Diagnosed, FnType, FnValue, SourceRepo, TrackedValue, Type, TypeCheckError,
@@ -49,9 +49,20 @@ impl FnExpr {
 
         let mut params = Vec::with_capacity(self.params.len());
         for param in &self.params {
-            let param_ty = checker
-                .resolve_type_expr(&fn_env, &param.ty)
-                .unpack(&mut diags);
+            let param_ty = if let Some(ty_expr) = &param.ty {
+                checker
+                    .resolve_type_expr(&fn_env, ty_expr)
+                    .unpack(&mut diags)
+            } else {
+                diags.push(MissingParameterType {
+                    module_id: env.module_id()?,
+                    span: param.var.span(),
+                });
+                Type::Any
+            };
+            if let Some((cursor, _)) = &param.var.cursor {
+                cursor.set_type(param_ty.clone());
+            }
             fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
             params.push(param_ty);
         }
@@ -67,6 +78,89 @@ impl FnExpr {
             }),
             diags,
         ))
+    }
+
+    pub(crate) fn type_check<S: SourceRepo>(
+        &self,
+        checker: &TypeChecker<'_, S>,
+        env: &TypeEnv<'_>,
+        expr: &crate::Loc<super::Expr>,
+        expected: &Type,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+        // If no untyped params, fall back to synth-then-subsume.
+        let has_untyped = self.params.iter().any(|p| p.ty.is_none());
+        if !has_untyped {
+            return checker.synth_then_subsume(env, expr, expected);
+        }
+
+        // Try to extract a function type from the expected type.
+        let expected_unfolded = expected.clone().unfold();
+        let expected_fn = match &expected_unfolded.kind {
+            crate::TypeKind::Fn(fn_ty) => Some(fn_ty),
+            _ => None,
+        };
+
+        let mut diags = DiagList::new();
+        let mut fn_env = env.inner();
+
+        let mut type_param_entries = Vec::with_capacity(self.type_params.len());
+        for type_param in &self.type_params {
+            let type_id = next_type_id();
+            fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
+            let upper_bound = if let Some(bound_expr) = &type_param.bound {
+                checker
+                    .resolve_type_expr(&fn_env, bound_expr)
+                    .unpack(&mut diags)
+            } else {
+                Type::Any
+            };
+            fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
+            type_param_entries.push((type_id, upper_bound));
+        }
+
+        let mut params = Vec::with_capacity(self.params.len());
+        for (i, param) in self.params.iter().enumerate() {
+            let param_ty = if let Some(ty_expr) = &param.ty {
+                checker
+                    .resolve_type_expr(&fn_env, ty_expr)
+                    .unpack(&mut diags)
+            } else if let Some(fn_ty) = expected_fn {
+                if let Some(expected_param_ty) = fn_ty.params.get(i) {
+                    expected_param_ty.clone()
+                } else {
+                    diags.push(MissingParameterType {
+                        module_id: env.module_id()?,
+                        span: param.var.span(),
+                    });
+                    Type::Any
+                }
+            } else {
+                diags.push(MissingParameterType {
+                    module_id: env.module_id()?,
+                    span: param.var.span(),
+                });
+                Type::Any
+            };
+            if let Some((cursor, _)) = &param.var.cursor {
+                cursor.set_type(param_ty.clone());
+            }
+            fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
+            params.push(param_ty);
+        }
+
+        let expected_ret = expected_fn.map(|ft| ft.ret.as_ref());
+        let ret = checker
+            .check_expr(&fn_env, self.body.as_ref(), expected_ret)?
+            .unpack(&mut diags);
+
+        let actual = Type::Fn(FnType {
+            type_params: type_param_entries,
+            params,
+            ret: Box::new(ret),
+        });
+
+        let ty = checker.subsumption_check(env, expr.span(), actual, expected, &mut diags)?;
+        Ok(Diagnosed::new(ty, diags))
     }
 
     pub(crate) fn eval(

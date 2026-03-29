@@ -171,11 +171,11 @@ mod tests {
                         params: vec![
                             FnParam {
                                 var: var("x"),
-                                ty: type_loc(TypeExpr::Var(var("X"))),
+                                ty: Some(type_loc(TypeExpr::Var(var("X")))),
                             },
                             FnParam {
                                 var: var("y"),
-                                ty: type_loc(TypeExpr::Var(var("Y"))),
+                                ty: Some(type_loc(TypeExpr::Var(var("Y")))),
                             },
                         ],
                         body: Box::new(expr_loc(Expr::Record(RecordExpr {

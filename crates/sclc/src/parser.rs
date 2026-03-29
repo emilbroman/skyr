@@ -390,7 +390,8 @@ peg::parser! {
             }
 
         rule fn_param() -> FnParam
-            = var:var() colon() ty:type_expr() { FnParam { var, ty } }
+            = var:var() colon() ty:type_expr() { FnParam { var, ty: Some(ty) } }
+            / var:var() { FnParam { var, ty: None } }
 
         rule type_expr() -> Loc<TypeExpr>
             = base:type_expr_base() optional:question_mark()? {
@@ -2045,7 +2046,8 @@ mod tests {
         let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
             panic!("expected fn expression");
         };
-        let crate::TypeExpr::PropertyAccess(prop) = fn_expr.params[0].ty.as_ref() else {
+        let crate::TypeExpr::PropertyAccess(prop) = fn_expr.params[0].ty.as_ref().unwrap().as_ref()
+        else {
             panic!("expected type-level property access");
         };
         assert_eq!(prop.property.name, "Config");
@@ -2068,7 +2070,8 @@ mod tests {
         let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
             panic!("expected fn expression");
         };
-        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref() else {
+        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref().unwrap().as_ref()
+        else {
             panic!("expected type application");
         };
         let crate::TypeExpr::Var(base_var) = app.base.as_ref().as_ref() else {
@@ -2091,7 +2094,8 @@ mod tests {
         let crate::Expr::Fn(fn_expr) = let_bind.expr.as_ref().as_ref() else {
             panic!("expected fn expression");
         };
-        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref() else {
+        let crate::TypeExpr::Application(app) = fn_expr.params[0].ty.as_ref().unwrap().as_ref()
+        else {
             panic!("expected type application");
         };
         let crate::TypeExpr::PropertyAccess(prop) = app.base.as_ref().as_ref() else {

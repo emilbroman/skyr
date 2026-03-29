@@ -133,6 +133,7 @@ impl Expr {
         expected: &Type,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match self {
+            Expr::Fn(fn_expr) => fn_expr.type_check(checker, env, expr, expected),
             Expr::Record(record_expr) => record_expr.type_check(checker, env, expr, expected),
             Expr::List(list_expr) => list_expr.type_check(checker, env, expr, expected),
             Expr::Dict(dict_expr) => dict_expr.type_check(checker, env, expr, expected),
