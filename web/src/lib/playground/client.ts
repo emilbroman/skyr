@@ -15,6 +15,8 @@ export interface HoverInfo {
 export interface CompletionItem {
     label: string;
     kind: "variable" | "field";
+    detail?: string;
+    description?: string;
 }
 
 export interface LocationInfo {

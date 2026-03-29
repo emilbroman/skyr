@@ -161,6 +161,8 @@ export function registerProviders(worker: SclWorker): monaco.IDisposable {
                             item.kind === "field"
                                 ? monaco.languages.CompletionItemKind.Field
                                 : monaco.languages.CompletionItemKind.Variable,
+                        detail: item.detail,
+                        documentation: item.description,
                         insertText: item.label,
                         range,
                     })),
