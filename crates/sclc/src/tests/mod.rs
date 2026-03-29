@@ -225,17 +225,27 @@ fn load_fixture(dir_name: &str) -> Fixture {
         "fixture directory does not exist: {fixture_dir}"
     );
 
-    // Collect .scl files
+    // Collect .scl files (recursively, preserving relative paths)
     let mut files = HashMap::new();
-    for entry in std::fs::read_dir(fixture_path).expect("read fixture dir") {
-        let entry = entry.expect("read dir entry");
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "scl") {
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
-            let content = std::fs::read(&path).expect("read .scl file");
-            files.insert(filename, content);
+    fn collect_scl_files(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        files: &mut HashMap<String, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read fixture dir") {
+            let entry = entry.expect("read dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                collect_scl_files(&path, base, files);
+            } else if path.extension().is_some_and(|ext| ext == "scl") {
+                let relative = path.strip_prefix(base).unwrap();
+                let key = relative.to_string_lossy().replace('\\', "/");
+                let content = std::fs::read(&path).expect("read .scl file");
+                files.insert(key, content);
+            }
         }
     }
+    collect_scl_files(fixture_path, fixture_path, &mut files);
 
     assert!(
         files.contains_key("Main.scl"),
@@ -399,10 +409,25 @@ async fn run_test_case(dir_name: &str) {
 }
 
 /// Resolve an import path to a FileMod within the compiled program.
+/// Resolve `Self/…` import paths by replacing the `Self` prefix with the
+/// program's own package ID.
+fn resolve_self_import(program: &crate::Program<MemSourceRepo>, import_path: ModuleId) -> ModuleId {
+    if import_path.as_slice().first().map(String::as_str) == Some("Self")
+        && let Some(self_id) = program.self_package_id()
+    {
+        let mut segments: Vec<String> = self_id.as_slice().to_vec();
+        segments.extend(import_path.as_slice()[1..].iter().cloned());
+        return ModuleId::new(segments);
+    }
+    import_path
+}
+
 fn resolve_import<'a>(
     program: &'a crate::Program<MemSourceRepo>,
     import_path: &ModuleId,
 ) -> Option<&'a crate::ast::FileMod> {
+    let import_path = resolve_self_import(program, import_path.clone());
+
     // Find matching package by longest prefix
     let package_name = program
         .packages()
@@ -443,6 +468,8 @@ test_case!(BasicExport);
 test_case!(MultiExport);
 test_case!(EmptyModule);
 test_case!(ImportModule);
+test_case!(SelfImport);
+test_case!(SelfImportSubdir);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
 test_case!(RandomInt);

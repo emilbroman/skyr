@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use rustyline::completion::{self, Candidate};
 use rustyline::error::ReadlineError;
@@ -243,13 +244,17 @@ impl Helper for ReplHelper {}
 struct Repl {
     line_number: usize,
     eval: sclc::Eval,
+    root: PathBuf,
+    package_id: sclc::ModuleId,
 }
 
 impl Repl {
-    fn new(eval: sclc::Eval) -> Self {
+    fn new(eval: sclc::Eval, root: PathBuf, package_id: sclc::ModuleId) -> Self {
         Self {
             line_number: 0,
             eval,
+            root,
+            package_id,
         }
     }
 
@@ -353,6 +358,11 @@ impl Repl {
         };
 
         let mut program = sclc::Program::<FsSource>::new();
+        let source = FsSource {
+            root: self.root.clone(),
+            package_id: self.package_id.clone(),
+        };
+        program.open_package(source).await;
         let Some(file_mod) = program.resolve_import(&import_path).await?.cloned() else {
             let diag = sclc::InvalidImport {
                 module_id: import_path,
@@ -414,11 +424,16 @@ impl Repl {
     }
 }
 
-pub async fn run_repl() -> anyhow::Result<()> {
+pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
+    let package_id = package
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect::<sclc::ModuleId>();
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
-    let eval = sclc::Eval::new::<FsSource>(effects_tx, String::from("cli/repl"));
-    let mut repl = Repl::new(eval);
+    let eval = sclc::Eval::new::<FsSource>(effects_tx, package_id.to_string());
+    let mut repl = Repl::new(eval, root, package_id);
     let helper = ReplHelper::new();
     let mut editor = Editor::new()?;
     editor.set_helper(Some(helper));

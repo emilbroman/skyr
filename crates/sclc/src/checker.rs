@@ -1604,6 +1604,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .iter()
                         .map(|var| var.name.clone())
                         .collect::<crate::ModuleId>();
+                    let target_module_id = self.resolve_self_import(target_module_id);
                     let import_env = TypeEnv::new().with_module_id(&target_module_id);
                     let type_exports = self
                         .type_level_exports(&import_env, import_file_mod)
@@ -1619,6 +1620,19 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             }
         }
         Ok(())
+    }
+
+    /// If `import_path` starts with `Self`, replace that prefix with the
+    /// user package ID.
+    fn resolve_self_import(&self, import_path: crate::ModuleId) -> crate::ModuleId {
+        if import_path.as_slice().first().map(String::as_str) == Some("Self")
+            && let Some(self_id) = self.program.self_package_id()
+        {
+            let mut segments: Vec<String> = self_id.as_slice().to_vec();
+            segments.extend(import_path.as_slice()[1..].iter().cloned());
+            return crate::ModuleId::new(segments);
+        }
+        import_path
     }
 
     fn find_imports<'a>(
@@ -1641,6 +1655,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         .iter()
                         .map(|var| var.name.clone())
                         .collect::<crate::ModuleId>();
+                    let import_path = self.resolve_self_import(import_path);
                     let destination = self.resolve_import(import_stmt);
                     return Some((alias.name.as_str(), (import_path, destination)));
                 }
@@ -1659,6 +1674,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             .iter()
             .map(|var| var.name.clone())
             .collect::<crate::ModuleId>();
+        let import_path = self.resolve_self_import(import_path);
         let package_name = self.package_name_for_import(&import_path)?;
         let (_, package) = self
             .program
