@@ -1,0 +1,2 @@
+let x: {name: Str}? = {name: "hello"}
+export let r = x?.name

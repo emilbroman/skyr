@@ -777,7 +777,9 @@ impl Eval {
                 }
                 (lhs, rhs) => Err(EvalErrorKind::InvalidComparison { op, lhs, rhs }),
             },
-            ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("handled earlier"),
+            ast::BinaryOp::And | ast::BinaryOp::Or | ast::BinaryOp::NilCoalesce => {
+                unreachable!("handled earlier")
+            }
         }
     }
 

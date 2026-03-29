@@ -49,6 +49,7 @@ pub enum Token<'a> {
     TypeKeyword,
     AsKeyword,
     QuestionMark,
+    QuestionQuestion,
     Int(&'a str),
     Float(&'a str),
     StrBegin(&'a str),
@@ -584,7 +585,14 @@ impl<'a> Iterator for Lexer<'a> {
                 "+" => Token::Plus,
                 "-" => Token::Minus,
                 "*" => Token::Star,
-                "?" => Token::QuestionMark,
+                "?" => {
+                    if let Some((_, "?")) = self.graphemes.peek().copied() {
+                        self.next_grapheme().expect("peek returned Some");
+                        Token::QuestionQuestion
+                    } else {
+                        Token::QuestionMark
+                    }
+                }
                 _ => Token::Unknown(grapheme),
             }
         };

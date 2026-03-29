@@ -393,7 +393,11 @@ impl Formatter {
             Expr::List(list) => self.emit_list(list, expr.span()),
             Expr::PropertyAccess(access) => {
                 self.emit_expr(&access.expr);
-                self.write(".");
+                if access.optional {
+                    self.write("?.");
+                } else {
+                    self.write(".");
+                }
                 self.write(&access.property.name);
             }
             Expr::TypeCast(cast) => {
@@ -439,11 +443,12 @@ impl Formatter {
     fn binary_precedence(op: &BinaryOp) -> u8 {
         match op {
             BinaryOp::Or => 1,
-            BinaryOp::And => 2,
-            BinaryOp::Eq | BinaryOp::Neq => 3,
-            BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => 4,
-            BinaryOp::Add | BinaryOp::Sub => 5,
-            BinaryOp::Mul | BinaryOp::Div => 6,
+            BinaryOp::NilCoalesce => 2,
+            BinaryOp::And => 3,
+            BinaryOp::Eq | BinaryOp::Neq => 4,
+            BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => 5,
+            BinaryOp::Add | BinaryOp::Sub => 6,
+            BinaryOp::Mul | BinaryOp::Div => 7,
         }
     }
 

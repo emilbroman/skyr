@@ -7,6 +7,7 @@ use crate::Loc;
 pub struct PropertyAccessExpr {
     pub expr: Box<Loc<Expr>>,
     pub property: Loc<Var>,
+    pub optional: bool,
 }
 
 impl PropertyAccessExpr {
@@ -29,6 +30,67 @@ impl PropertyAccessExpr {
         let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
         if matches!(lhs_ty.kind, TypeKind::Never) {
             return Ok(Diagnosed::new(Type::Never, diags));
+        }
+
+        if self.optional {
+            // Optional chaining: LHS must be optional
+            if let TypeKind::Optional(inner) = &lhs_ty.kind {
+                let inner_ty = inner.as_ref().clone();
+                let prop_name = self.property.name.as_str();
+
+                // Completion candidates
+                if let Some((cursor, offset)) = &self.property.cursor {
+                    let prefix = &self.property.name[..*offset];
+                    if let TypeKind::Record(record_ty) = &inner_ty.unfold().kind {
+                        for (name, field_ty) in record_ty.iter() {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::Member(crate::CompletionMember {
+                                        name: name.clone(),
+                                        description: record_ty.get_doc(name).map(str::to_owned),
+                                        ty: Some(field_ty.clone()),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+
+                let resolved = inner_ty.unfold();
+                let member_ty = match &resolved.kind {
+                    TypeKind::Record(record_ty) => record_ty.get(prop_name).cloned(),
+                    _ => None,
+                };
+                if let Some(member_ty) = member_ty {
+                    if let Some((cursor, _)) = &self.property.cursor {
+                        cursor.set_type(member_ty.clone());
+                        cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
+                    }
+                    let member_ty = if let Some(outer_name) = resolved.name() {
+                        member_ty.with_name(format!("{outer_name}.{prop_name}"))
+                    } else {
+                        member_ty
+                    };
+                    // Wrap in Optional since LHS could be nil
+                    return Ok(Diagnosed::new(Type::Optional(Box::new(member_ty)), diags));
+                }
+
+                diags.push(crate::checker::UndefinedMember {
+                    module_id: env.module_id()?,
+                    name: self.property.name.clone(),
+                    ty: inner_ty,
+                    property: self.property.clone(),
+                });
+                return Ok(Diagnosed::new(Type::Never, diags));
+            } else {
+                // Optional chaining on non-optional type
+                diags.push(crate::checker::OptionalChainOnNonOptional {
+                    module_id: env.module_id()?,
+                    ty: lhs_ty.clone(),
+                    span: self.property.span(),
+                });
+                return Ok(Diagnosed::new(Type::Never, diags));
+            }
         }
 
         // Free variable: constrain to record with accessed member
@@ -110,6 +172,9 @@ impl PropertyAccessExpr {
         let value = evaluator.eval_expr(env, self.expr.as_ref())?;
         match value.value {
             Value::Pending(_) => Ok(Eval::pending_with(value.dependencies)),
+            Value::Nil if self.optional => {
+                Ok(Eval::with_dependencies(Value::Nil, value.dependencies))
+            }
             Value::Record(record) => Ok(Eval::with_dependencies(
                 record.get(self.property.name.as_str()).clone(),
                 value.dependencies,

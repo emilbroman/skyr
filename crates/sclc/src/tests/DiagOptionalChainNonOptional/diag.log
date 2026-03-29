@@ -1,0 +1,1 @@
+DiagOptionalChainNonOptional/Main 2:19,2:23: optional chaining (?.) on non-optional type {name: Str}

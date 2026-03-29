@@ -1,0 +1,2 @@
+let x = "hello"
+export let r = x ?? "default"

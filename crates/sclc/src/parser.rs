@@ -90,6 +90,7 @@ fn flush_skip(skip_span: &mut Option<Span>, diags: &mut DiagList, module_id: &Mo
 
 enum Postfix {
     Property(Loc<Var>),
+    OptionalProperty(Loc<Var>),
     Call(Vec<Loc<TypeExpr>>, Vec<Loc<Expr>>, Span),
     TypeCast(Loc<TypeExpr>),
     Index(Box<Loc<Expr>>, Span),
@@ -229,8 +230,27 @@ peg::parser! {
             / logical_or_expr()
 
         rule logical_or_expr() -> Loc<Expr>
+            = head:nil_coalesce_expr() tail:(
+                or_or() rhs:nil_coalesce_expr() { (BinaryOp::Or, rhs) }
+            )* {
+                let mut expr = head;
+                for (op, rhs) in tail {
+                    let span = Span::new(expr.span().start(), rhs.span().end());
+                    expr = Loc::new(
+                        Expr::Binary(BinaryExpr {
+                            op,
+                            lhs: Box::new(expr),
+                            rhs: Box::new(rhs),
+                        }),
+                        span,
+                    );
+                }
+                expr
+            }
+
+        rule nil_coalesce_expr() -> Loc<Expr>
             = head:logical_and_expr() tail:(
-                or_or() rhs:logical_and_expr() { (BinaryOp::Or, rhs) }
+                question_question() rhs:logical_and_expr() { (BinaryOp::NilCoalesce, rhs) }
             )* {
                 let mut expr = head;
                 for (op, rhs) in tail {
@@ -597,6 +617,16 @@ peg::parser! {
                             Loc::new(Expr::PropertyAccess(PropertyAccessExpr {
                                 expr: Box::new(expr),
                                 property,
+                                optional: false,
+                            }), Span::new(start, end))
+                        }
+                        Postfix::OptionalProperty(property) => {
+                            let start = expr.span().start();
+                            let end = property.span().end();
+                            Loc::new(Expr::PropertyAccess(PropertyAccessExpr {
+                                expr: Box::new(expr),
+                                property,
+                                optional: true,
                             }), Span::new(start, end))
                         }
                         Postfix::Call(type_args, args, close_paren_span) => {
@@ -630,7 +660,12 @@ peg::parser! {
             }
 
         rule postfix_suffix() -> Postfix
-            = dot() property:var() {
+            = question_mark() dot() property:var() {
+                let end = property.span().end();
+                last_postfix_end.set(end);
+                Postfix::OptionalProperty(property)
+            }
+            / dot() property:var() {
                 let end = property.span().end();
                 last_postfix_end.set(end);
                 Postfix::Property(property)
@@ -1088,6 +1123,12 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::QuestionMark)] { token.span() }
             }
             / expected!("?")
+
+        rule question_question() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::QuestionQuestion)] { token.span() }
+            }
+            / expected!("??")
 
         rule slash() = quiet!{
             [token if matches!(token.as_ref(), Token::Slash)]

@@ -17,6 +17,7 @@ pub enum BinaryOp {
     Gte,
     And,
     Or,
+    NilCoalesce,
 }
 
 impl std::fmt::Display for BinaryOp {
@@ -34,6 +35,7 @@ impl std::fmt::Display for BinaryOp {
             BinaryOp::Gte => write!(f, ">="),
             BinaryOp::And => write!(f, "&&"),
             BinaryOp::Or => write!(f, "||"),
+            BinaryOp::NilCoalesce => write!(f, "??"),
         }
     }
 }
@@ -73,6 +75,27 @@ impl BinaryExpr {
             .synth_expr(env, self.lhs.as_ref())?
             .unpack(&mut diags)
             .unfold();
+
+        // NilCoalesce is handled separately: check RHS against the inner type.
+        if self.op == BinaryOp::NilCoalesce {
+            if matches!(lhs_ty.kind, TypeKind::Never) {
+                return Ok(Diagnosed::new(Type::Never, diags));
+            }
+            if let TypeKind::Optional(inner) = &lhs_ty.kind {
+                checker
+                    .check_expr(env, self.rhs.as_ref(), Some(inner))?
+                    .unpack(&mut diags);
+                return Ok(Diagnosed::new(inner.as_ref().clone(), diags));
+            } else {
+                diags.push(crate::checker::NilCoalesceOnNonOptional {
+                    module_id: env.module_id()?,
+                    ty: lhs_ty.clone(),
+                    span: expr.span(),
+                });
+                return Ok(Diagnosed::new(Type::Never, diags));
+            }
+        }
+
         let rhs_ty = checker
             .synth_expr(env, self.rhs.as_ref())?
             .unpack(&mut diags)
@@ -140,6 +163,7 @@ impl BinaryExpr {
                         }
                     }
                 }
+                BinaryOp::NilCoalesce => unreachable!("handled above"),
             }
         };
 
@@ -170,6 +194,13 @@ impl BinaryExpr {
         let op_name = format!("{:?}", self.op).to_lowercase();
 
         match self.op {
+            BinaryOp::NilCoalesce => {
+                if matches!(lhs.value, Value::Nil) {
+                    evaluator.eval_expr(env, self.rhs.as_ref())
+                } else {
+                    Ok(lhs)
+                }
+            }
             BinaryOp::And => lhs.try_flat_map(|lhs| match lhs {
                 Value::Bool(false) => Ok(TrackedValue::new(Value::Bool(false))),
                 Value::Bool(true) => {
