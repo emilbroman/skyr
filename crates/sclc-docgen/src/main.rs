@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
+use clap::Parser;
 use sclc::{RecordType, TypeKind};
 
 #[derive(serde::Serialize)]
@@ -8,8 +10,18 @@ struct ModuleTypes<'a> {
     type_exports: &'a RecordType,
 }
 
+#[derive(Parser, Debug)]
+#[command(name = "sclc-docgen", about = "Generate stdlib type documentation")]
+struct Cli {
+    /// Output file path
+    #[arg(short = 'f', long = "output-file")]
+    output_file: PathBuf,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let cli = Cli::parse();
+
     let stdlib = sclc::stdlib_types()
         .await
         .expect("failed to compile stdlib");
@@ -29,5 +41,5 @@ async fn main() {
     }
 
     let json = serde_json::to_string_pretty(&modules).expect("failed to serialize");
-    println!("{json}");
+    std::fs::write(&cli.output_file, json).expect("failed to write output file");
 }

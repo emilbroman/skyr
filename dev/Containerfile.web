@@ -74,7 +74,7 @@ COPY crates/sclc/ crates/sclc/
 COPY crates/sclc-docgen/ crates/sclc-docgen/
 COPY crates/sclc-wasm/ crates/sclc-wasm/
 RUN wasm-pack build crates/sclc-wasm --target web --out-dir /tmp/wasm-out
-RUN cargo run -p sclc-docgen > /tmp/stdlib-types.json
+RUN cargo run -p sclc-docgen -- -f /tmp/stdlib-types.json
 
 # Stage 2: build static files
 FROM node:25-alpine AS build

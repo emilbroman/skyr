@@ -89,7 +89,7 @@ jobs:
         run: nix develop -c wasm-pack build crates/sclc-wasm --target web --out-dir ../../web/src/lib/sclc-wasm
 
       - name: Build stdlib types
-        run: nix develop -c cargo run -p sclc-docgen > web/src/lib/stdlib-types.json
+        run: nix develop -c cargo run -p sclc-docgen -- -f web/src/lib/stdlib-types.json
 
       - name: web install
         run: npm ci

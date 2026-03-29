@@ -14,7 +14,7 @@
         "lint": "biome lint .",
         "biome:check": "biome check .",
         "build:wasm": "wasm-pack build ../crates/sclc-wasm --target web --out-dir ../../web/src/lib/sclc-wasm",
-        "build:stdlib-types": "cargo run -p sclc-docgen > src/lib/stdlib-types.json"
+        "build:stdlib-types": "cargo run -p sclc-docgen -- -f src/lib/stdlib-types.json"
     },
     "dependencies": {
         "@tanstack/svelte-query": "^6.1.3",

@@ -5418,6 +5418,7 @@ dependencies = [
 name = "sclc-docgen"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "sclc",
  "serde",
  "serde_json",
