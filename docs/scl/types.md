@@ -108,8 +108,8 @@ Elements can be accessed by index using `list[index]`, which returns an `Optiona
 
 ```scl
 let items = [10, 20, 30]
-items[1]    // 20 (Optional<Int>)
-items[99]   // nil (Optional<Int>)
+items[1]    // 20 (Int?)
+items[99]   // nil (Int?)
 ```
 
 ### Records
@@ -161,8 +161,8 @@ Values can be looked up by key using indexed access (`dict[key]`), which returns
 
 ```scl
 let lookup = #{ "a": 1, "b": 2 }
-lookup["a"]   // 1 (Optional<Int>)
-lookup["z"]   // nil (Optional<Int>)
+lookup["a"]   // 1 (Int?)
+lookup["z"]   // nil (Int?)
 ```
 
 ### Functions

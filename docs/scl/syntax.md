@@ -298,12 +298,12 @@ Access elements of dicts and lists by index using bracket notation. The opening 
 
 ```scl
 let myDict = #{ "a": 1, "b": 2 }
-myDict["a"]   // Optional<Int> — returns 1
-myDict["z"]   // Optional<Int> — returns nil (key not found)
+myDict["a"]   // Int? — returns 1
+myDict["z"]   // Int? — returns nil (key not found)
 
 let myList = [10, 20, 30]
-myList[1]     // Optional<Int> — returns 20
-myList[99]    // Optional<Int> — returns nil (out of bounds)
+myList[1]     // Int? — returns 20
+myList[99]    // Int? — returns nil (out of bounds)
 ```
 
 The return type is always `Optional` because the lookup may fail (missing key or out-of-bounds index).
