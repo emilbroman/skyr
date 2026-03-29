@@ -1,0 +1,2 @@
+import Std/Option
+let x: Bool = Option.default(nil as Str?, 123)

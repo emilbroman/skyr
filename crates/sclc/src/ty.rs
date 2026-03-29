@@ -795,10 +795,8 @@ fn tighten_lower(current: &mut Type, new_bound: &Type) -> Result<(), TypeError> 
     } else if current.is_assignable_from(new_bound).is_ok() {
         // current is already tighter
     } else {
-        return Err(TypeError::new(TypeIssue::Mismatch(
-            current.clone(),
-            new_bound.clone(),
-        )));
+        // Incompatible lower bounds — their join is Any.
+        *current = Type::Any;
     }
     Ok(())
 }
