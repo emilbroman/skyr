@@ -21,9 +21,8 @@ const nav = [
         children: [
             { title: "Syntax", path: "/~docs/scl/syntax/" },
             { title: "Types", path: "/~docs/scl/types/" },
-            { title: "Standard Library", path: "/~docs/scl/stdlib/" },
             {
-                title: "Stdlib Reference",
+                title: "Standard Library",
                 path: "/~docs/scl/stdlib-ref/",
                 children: stdlibRefChildren,
             },
