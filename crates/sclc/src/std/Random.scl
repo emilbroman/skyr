@@ -1,9 +1,21 @@
+/// Generate a random integer in a range.
+///
+/// The value is generated when the resource is created and regenerated
+/// on updates (e.g., when `min` or `max` change).
 export let Int = extern "Std/Random.Int": fn({
+	/// Resource identifier (must be unique)
 	name: Str,
+	/// Minimum value (inclusive)
 	min: Int,
+	/// Maximum value (inclusive)
 	max: Int,
-}) {
+}) RandomInt
+
+export type RandomInt {
+	/// Input min value
 	min: Int,
+	/// Input max value
 	max: Int,
+	/// The generated random integer
 	result: Int,
 }

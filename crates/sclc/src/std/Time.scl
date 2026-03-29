@@ -1,31 +1,51 @@
 import Std/Option
 
+/// A point in time, represented as milliseconds since the Unix epoch.
 export type Instant {
+	/// Milliseconds since 1970-01-01T00:00:00Z
 	epochMillis: Int,
 }
 
+/// A calendar date.
 export type CalendarDate {
+	/// Year
 	year: Int,
+	/// Month (1–12)
 	month: Int,
+	/// Day of month (1–31)
 	day: Int,
 }
 
+/// A time of day.
 export type ClockTime {
+	/// Hour (0–23)
 	hour: Int,
+	/// Minute (0–59)
 	minute: Int,
+	/// Second (0–59)
 	second: Int,
 }
 
+/// A combination of `CalendarDate` and `ClockTime`.
 export type DateTime {
+	/// The date component
 	date: CalendarDate,
+	/// The time component
 	time: ClockTime,
 }
 
+/// A time span with optional month and millisecond components.
+///
+/// The month component uses calendar-month arithmetic (adding 1 month to
+/// Jan 31 gives Feb 28/29), while the millisecond component is exact.
 export type Duration {
+	/// Millisecond component
 	milliseconds: Int?,
+	/// Calendar month component
 	months: Int?,
 }
 
+/// Multiply a `Duration` by an integer scalar.
 export let multiply = fn(duration: Duration, multiplier: Int)
 	{
 		months: Option.map<Int, Int>(duration.months, fn(m: Int)
@@ -34,36 +54,59 @@ export let multiply = fn(duration: Duration, multiplier: Int)
 			m * multiplier),
 	} as Duration
 
+/// 1 millisecond duration.
 export let millisecond = {
 	milliseconds: 1,
 } as Duration
 
+/// 1 second duration (1000 milliseconds).
 export let second = multiply(millisecond, 1000)
 
+/// 1 minute duration (60 seconds).
 export let minute = multiply(second, 60)
 
+/// 1 hour duration (60 minutes).
 export let hour = multiply(minute, 60)
 
+/// 1 day duration (24 hours).
 export let day = multiply(hour, 24)
 
+/// 1 week duration (7 days).
 export let week = multiply(day, 7)
 
+/// 1 calendar month duration.
 export let month = {
 	months: 1,
 } as Duration
 
+/// 1 year duration (12 calendar months).
 export let year = multiply(month, 12)
 
+/// The Unix epoch as an `Instant` (1970-01-01T00:00:00Z).
 export let epoch = {
 	epochMillis: 0,
 } as Instant
 
+/// Format an `Instant` as a UTC ISO 8601 string with second precision.
+///
+/// Returns a string in the format `YYYY-MM-DDTHH:MM:SSZ`.
 export let toISO = extern "Std/Time.toISO": fn(Instant) Str
 
+/// Convert an `Instant` to a `DateTime` in UTC.
 export let utc = extern "Std/Time.utc": fn(Instant) DateTime
 
+/// Add a `Duration` to an `Instant`.
+///
+/// The month component uses calendar-month arithmetic. The millisecond component is exact.
 export let add = extern "Std/Time.add": fn(Instant, Duration) Instant
 
+/// Subtract a `Duration` from an `Instant`.
 export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
 
+/// Create a volatile clock resource that produces a time-window `Instant`.
+///
+/// The clock truncates the current time to the closest past boundary of
+/// the given duration, aligned with the Unix epoch. The resource is volatile:
+/// the deployment engine periodically re-checks it. When the clock crosses
+/// a window boundary the output changes, triggering dependent resources to update.
 export let Clock = extern "Std/Time.Clock": fn(Duration) Instant

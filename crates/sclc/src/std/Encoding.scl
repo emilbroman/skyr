@@ -1,3 +1,10 @@
+/// Convert any value to a JSON string.
+///
+/// Functions cannot be serialized and will cause a runtime error.
 export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
 
+/// Parse a JSON string into a value.
+///
+/// Returns `Any`, so fields are accessed dynamically.
+/// Note: JSON numbers become `Float`, not `Int`.
 export let fromJson = extern "Std/Encoding.fromJson": fn(Str) Any

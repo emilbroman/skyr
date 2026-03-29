@@ -1,53 +1,107 @@
 import Std/Time
 
+/// Generate an Ed25519 key pair.
+///
+/// Keys persist across deployments.
 export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
+	/// Key identifier (unique within environment)
 	name: Str,
 }) {
+	/// Private key in PKCS#8 PEM format
 	pem: Str,
+	/// Public key in SPKI PEM format
 	publicKeyPem: Str,
 }
 
+/// Generate an ECDSA key pair on a specified curve.
+///
+/// Keys persist across deployments.
 export let ECDSAPrivateKey = extern "Std/Crypto.ECDSAPrivateKey": fn({
+	/// Key identifier (unique within environment)
 	name: Str,
+	/// Elliptic curve: `"P-256"` (default), `"P-384"`, or `"P-521"`
 	curve: Str?,
 }) {
+	/// Private key in PKCS#8 PEM format
 	pem: Str,
+	/// Public key in SPKI PEM format
 	publicKeyPem: Str,
 }
 
+/// Generate an RSA key pair.
+///
+/// Keys persist across deployments.
 export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
+	/// Key identifier (unique within environment)
 	name: Str,
+	/// Key size in bits (default `2048`, minimum `2048`)
 	size: Int?,
 }) {
+	/// Private key in PKCS#8 PEM format
 	pem: Str,
+	/// Public key in SPKI PEM format
 	publicKeyPem: Str,
 }
 
+/// Generate a PKCS#10 Certificate Signing Request (CSR) from an existing private key.
+///
+/// The resource is identified by a hash of its inputs rather than an explicit name,
+/// so changing any input produces a new CSR.
+///
+/// Note: P-521 keys are not currently supported for certification requests.
 export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
+	/// Private key PEM (from any `*PrivateKey` resource)
 	privateKeyPem: Str,
+	/// Subject distinguished name fields
 	subject: {
+		/// Common Name (CN)
 		commonName: Str,
+		/// Organization (O)
 		organization: Str?,
+		/// Organizational Unit (OU)
 		organizationalUnit: Str?,
+		/// Country (C)
 		country: Str?,
+		/// State or Province (ST)
 		state: Str?,
+		/// Locality (L)
 		locality: Str?,
 	},
+	/// Subject Alternative Names — auto-detected as DNS, IP, or email
 	subjectAlternativeNames: [Str]?,
+	/// Key usage flags (e.g., `"digitalSignature"`, `"keyEncipherment"`)
 	keyUsage: [Str]?,
+	/// Extended key usage OIDs (e.g., `"serverAuth"`, `"clientAuth"`)
 	extendedKeyUsage: [Str]?,
 }) {
+	/// Signed CSR in PEM format
 	pem: Str,
 }
 
+/// Sign a certificate from a CSR. Supports both CA-signed and self-signed certificates.
+///
+/// When `caCertPem` is omitted, the certificate is self-signed. The plugin verifies
+/// that the CSR was signed by the same private key provided.
+///
+/// The resource is identified by a hash of its inputs rather than an explicit name,
+/// so changing any input produces a new certificate.
+///
+/// Note: P-521 keys are not currently supported for certificate signing.
 export let CertificateSignature = extern "Std/Crypto.CertificateSignature": fn({
+	/// CSR in PEM format (from a `CertificationRequest` resource)
 	csrPem: Str,
+	/// Signing key PEM — the CA key (CA-signed) or the same key as the CSR (self-signed)
 	privateKeyPem: Str,
+	/// CA certificate PEM. Omit for self-signed certificates.
 	caCertPem: Str?,
+	/// Certificate validity period
 	validity: {
+		/// Certificate expiry (Not After)
 		before: Time.Instant,
+		/// Certificate start (Not Before). Defaults to resource creation time.
 		after: Time.Instant?,
 	},
 }) {
+	/// Signed X.509 certificate in PEM format
 	pem: Str,
 }

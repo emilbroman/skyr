@@ -1,16 +1,24 @@
+/// Generate a list of integers from `0` up to (but not including) `n`.
+///
+/// Returns an empty list when `n` is zero. Raises an error if `n` is negative.
 export let range = extern "Std/List.range": fn(Int) [Int]
 
+/// Apply a function to each element, returning a new list of transformed values.
 export let map = fn<T, U>(list: [T], transform: fn(T) U)
 	[for (t in list) transform(t)]
 
+/// Add an element to the end of a list.
 export let append = fn<T>(list: [T], newItem: T)
 	[for (t in list) t, newItem]
 
+/// Flatten a list of lists into a single list.
 export let concat = fn<T>(lists: [[T]])
 	[for (list in lists) for (t in list) t]
 
+/// Keep only elements that satisfy a predicate.
 export let filter = fn<T>(list: [T], predicate: fn(T) Bool)
 	[for (t in list) if (predicate(t)) t]
 
+/// Map each element to a list, then flatten the results into a single list.
 export let flatMap = fn<T, U>(list: [T], transform: fn(T) [U])
 	[for (t in list) for (u in transform(t)) u]

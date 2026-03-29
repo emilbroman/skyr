@@ -1,122 +1,122 @@
-// Std/Container - Container orchestration resources
-//
-// Usage:
-//   import Std/Container
-//
-//   let pod = Container.Pod({
-//     name: "my-pod",
-//     env: #{ "LOG_LEVEL": "info" },
-//     containers: [{ image: "nginx:latest" }],
-//   })
-//
-//   let http = pod.Port({ port: 8080 })
-//   let attachment = pod.Attachment(http)
+/// A container specification within a pod.
 export type Container {
+	/// Container image reference (e.g., `"nginx:latest"` or an `Image` output's `fullname`)
 	image: Str,
+	/// Container-level environment variables. Overrides pod-level `env` when keys conflict.
 	env: #{Str: Str}?,
 }
 
+/// Output of `Image` — a built container image pushed to the Skyr registry.
 export type Image {
-	// Full image reference including registry and digest (e.g., "registry:5000/my-app@sha256:...")
+	/// Full image reference including registry and digest (e.g., `"registry:5000/my-app@sha256:..."`)
 	fullname: Str,
-	// Image digest (e.g., "sha256:...")
+	/// Image digest (e.g., `"sha256:..."`)
 	digest: Str,
 }
 
-// Image resource - builds a container image using BuildKit
-//
-// The image is built from a context directory in the deployment's Git tree
-// and pushed to the Skyr container registry. The resource ID is derived from
-// the Git tree hash of the context directory combined with other inputs,
-// ensuring rebuilds only happen when the source changes.
+/// Build a container image from a directory in your repository.
+///
+/// The image is built using BuildKit and pushed to Skyr's container registry.
+/// The resource ID is derived from the Git tree hash of the context directory,
+/// so rebuilds only happen when source files change.
 export let Image = extern "Std/Container.Image": fn({
-	// Image name (without registry prefix, e.g., "my-app")
+	/// Image name (without registry prefix)
 	name: Str,
-	// Path to the build context directory relative to repo root (e.g., ".")
+	/// Path to build context directory, relative to repo root
 	context: Str,
-	// Path to the Containerfile/Dockerfile relative to context (e.g., "Dockerfile")
+	/// Path to Containerfile/Dockerfile, relative to context
 	containerfile: Str,
 }) Image
 
+/// Output of `Pod.Port` — an open ingress port on a pod.
 export type Port {
-	// The pod's IP address
+	/// The pod's IP address
 	address: Str,
-	// The opened port number
+	/// The opened port number
 	port: Int,
-	// The protocol
+	/// The protocol (`"tcp"` or `"udp"`)
 	protocol: Str,
 }
 
+/// Output of `Pod.Attachment` — an egress grant from one pod to a destination port.
 export type Attachment {
-	// The port that was attached to
+	/// The destination port that was attached to
 	port: Port,
-	// The source pod's IP address
+	/// The source pod's IP address
 	clientAddress: Str,
 }
 
+/// Output of `Pod` — a running pod with networking capabilities.
 export type Pod {
+	/// Full resource name (includes inputs hash)
 	name: Str,
+	/// Worker node hosting this pod
 	node: Str,
-	// The pod's IP address within the cluster network
+	/// Pod IP address within the cluster network
 	address: Str,
-	// Open a port on the pod's firewall
+	/// Open an ingress port on this pod's firewall.
+	/// Pass the result to another pod's `Attachment` to grant it egress access.
 	Port: fn({
-		// Port number to open
+		/// Port number to open
 		port: Int,
-		// Protocol: "tcp" (default) or "udp"
+		/// Protocol: `"tcp"` (default) or `"udp"`
 		protocol: Str?,
 	}) Port,
-	// Attach to a port, granting this pod egress access to the destination
+	/// Grant this pod egress access to a destination port.
+	/// Without an attachment, egress to other cluster pods is blocked.
 	Attachment: fn(Port) Attachment,
 }
 
-// Pod resource - creates a pod with containers on a worker node
-//
-// Each pod runs in its own network namespace with a unique IP address.
-// By default, all ingress traffic is denied and egress to other pods is
-// blocked. Use Pod.Port to open ingress ports and Pod.Attachment to
-// grant egress access to specific port resources.
+/// Create a pod with containers on a worker node.
+///
+/// A pod is the smallest unit of deployment — a group of containers that share
+/// a network namespace. By default, pods are network-isolated: all ingress is
+/// denied, and egress to other cluster pods is blocked. Pods can always reach
+/// the internet. Use `Pod.Port` and `Pod.Attachment` to open communication
+/// between pods.
 export let Pod = extern "Std/Container.Pod": fn({
+	/// Pod name
 	name: Str,
+	/// List of containers to run in the pod
 	containers: [Container],
+	/// Pod-level environment variables shared across all containers.
+	/// Container-level `env` overrides these when keys conflict.
 	env: #{Str: Str}?,
 }) Pod
 
+/// Output of `Host.Port` — a load-balanced port on a virtual host.
 export type HostPort {
-	// The DNS hostname for this host
+	/// The host's DNS hostname
 	hostname: Str,
-	// The host's virtual IP address
+	/// The host's virtual IP address
 	address: Str,
-	// The exposed port number
+	/// The exposed port number
 	port: Int,
-	// The protocol
+	/// The protocol (`"tcp"` or `"udp"`)
 	protocol: Str,
 }
 
-// Host resource - creates a virtual load balancer with DNS name
-//
-// A Host provides a stable DNS hostname and virtual IP address that can
-// load-balance traffic across multiple pod backends. Use Host.Port to
-// configure port routing to backend pod ports.
+/// Create a virtual load balancer with a cluster-internal DNS name.
+///
+/// A Host is a virtual network appliance — it doesn't run any containers.
+/// It acts as a DNS entry and load balancer. Use `host.Port` to create
+/// load-balanced ports that route to backend pod ports.
 export let Host = extern "Std/Container.Host": fn({
-	// Host name (used to derive the DNS hostname)
+	/// Host name (becomes `\{name}.internal` for DNS)
 	name: Str,
 }) {
-	// The DNS hostname for this host (e.g., "my-host.namespace.skyr.local")
+	/// Full DNS hostname (e.g., `"api.internal"`)
 	hostname: Str,
-	// Configure a port on this host to route traffic to backend ports.
-	// Backends can be Pod.Port or Host.Port resources (chaining), enabling
-	// complex routing topologies such as internal API gateways.
+	/// Create a load-balanced port on this host.
+	/// Backends can be `Pod.Port` or `Host.Port` resources, enabling
+	/// complex routing topologies such as internal API gateways.
 	Port: fn({
-		// Port number to expose on the host
+		/// Port number to expose on the host
 		port: Int,
-		// Protocol: "tcp" (default) or "udp"
+		/// Protocol: `"tcp"` (default) or `"udp"`
 		protocol: Str?,
-		// List of backend ports to route traffic to.
-		// Each entry must have { address: Str, port: Int, protocol: Str }.
-		// Both Pod.Port and Host.Port outputs satisfy this shape.
-		// When a Host.Port is used as a backend, traffic is forwarded through
-		// its load-balancing rules to the ultimate pod backends.
+		/// Backend ports to load-balance across.
+		/// Both `Pod.Port` and `Host.Port` outputs satisfy this shape.
 		backends: [{
 			address: Str,
 			port: Int,

@@ -1,10 +1,21 @@
+/// Create a downloadable file artifact.
+///
+/// Artifacts are stored in Skyr's object storage. The URL is a presigned
+/// link that allows downloading the file.
 export let File = extern "Std/Artifact.File": fn({
+	/// Artifact name (unique within deployment)
 	name: Str,
+	/// Media type (defaults to `"application/octet-stream"`)
 	mediaType: Str?,
+	/// File contents
 	contents: Str,
 }) {
+	/// The artifact namespace (derived from the environment)
 	namespace: Str,
+	/// The artifact name
 	name: Str,
+	/// The resolved media type
 	mediaType: Str,
+	/// URL to download the artifact
 	url: Str,
 }
