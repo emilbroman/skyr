@@ -13,7 +13,10 @@ pub(crate) fn synth_var<S: SourceRepo>(
     // Completion candidates
     if let Some((cursor, offset)) = &var.cursor {
         let prefix = &var.name[..*offset];
-        for name in env.local_names().chain(env.global_names()) {
+        for name in env.local_names().chain(
+            env.global_names()
+                .filter(|name| env.lookup_local(name).is_none()),
+        ) {
             if name.starts_with(prefix) {
                 cursor.add_completion_candidate(crate::CompletionCandidate::Var(name.to_owned()));
             }
