@@ -9,7 +9,7 @@ Always run formatting and linting before committing:
 **Rust (from repo root):**
 
 ```sh
-cargo clippy --all-targets
+cargo clippy --workspace -- -D warnings
 cargo test
 cargo fmt
 ```

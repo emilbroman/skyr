@@ -490,10 +490,11 @@ pub(crate) struct TypeEnvMaps<'a> {
     type_level: HashMap<String, (Type, Option<String>)>,
 }
 
+type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
+
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
-    globals:
-        Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>>,
+    globals: Option<&'a GlobalsMap<'a>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     pub(crate) maps: Box<TypeEnvMaps<'a>>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
@@ -538,7 +539,7 @@ impl<'a> TypeEnv<'a> {
 
     pub fn with_globals(
         &self,
-        globals: &'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>,
+        globals: &'a GlobalsMap<'a>,
     ) -> Self {
         let mut maps = self.maps.clone();
         maps.locals = HashMap::new();
@@ -915,6 +916,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     #[inline(never)]
+    #[allow(clippy::type_complexity)]
     pub fn check_stmt(
         &self,
         env: &TypeEnv<'_>,
