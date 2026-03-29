@@ -453,6 +453,8 @@ test_case!(RandomIntTouch);
 test_case!(ListRange);
 test_case!(ListRangeEmpty);
 test_case!(ListMap);
+test_case!(ListMapInferred);
+test_case!(ListMapInferredUntyped);
 test_case!(ListAppend);
 test_case!(ListConcat);
 test_case!(ListFilter);
@@ -461,6 +463,10 @@ test_case!(ListMapEmpty);
 
 // Std/Num
 test_case!(NumToHex);
+
+// Nil
+test_case!(NilOptionalCheck);
+test_case!(NilUnwrapInfer);
 
 // Std/Option
 test_case!(OptionIsNoneIsSome);

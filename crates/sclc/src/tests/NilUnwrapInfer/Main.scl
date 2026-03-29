@@ -1,0 +1,7 @@
+import Std/Option
+
+let x: Int? = nil
+
+let y = Option.unwrap(x)
+
+let z: Str = y + 1

@@ -62,8 +62,118 @@ impl CallExpr {
             return Ok(Diagnosed::new(Type::Never, diags));
         };
 
-        let fn_ty = checker.instantiate_call_type_args(env, expr, self, fn_ty, &mut diags)?;
+        let mut fn_ty = checker.instantiate_call_type_args(env, expr, self, fn_ty, &mut diags)?;
 
+        // If type params remain, infer type arguments from argument types.
+        if !fn_ty.type_params.is_empty() {
+            // Phase 1: Synth all args to get initial type information.
+            let mut synth_arg_types = Vec::new();
+            for arg in &self.args {
+                let arg_ty = checker.synth_expr(env, arg)?.unpack(&mut DiagList::new());
+                synth_arg_types.push(arg_ty);
+            }
+
+            let partial =
+                crate::infer_type_args(&fn_ty, &synth_arg_types, &env.maps.type_var_bounds);
+
+            let partial = match partial {
+                Ok(p) => p,
+                Err(_) => {
+                    // Inference completely failed — fall back to permissive
+                    // types so we still get useful diagnostics.
+                    let fallback = self.fallback_fn_ty(&fn_ty);
+                    return self.check_args_and_return(checker, env, &fallback, diags);
+                }
+            };
+
+            let has_unsolved = partial
+                .iter()
+                .any(|(_, ty)| matches!(ty.kind, TypeKind::Never));
+
+            if !has_unsolved {
+                // All type vars solved — substitute and fall through to
+                // normal argument checking.
+                fn_ty = FnType {
+                    type_params: vec![],
+                    params: fn_ty
+                        .params
+                        .iter()
+                        .map(|p| p.substitute(&partial))
+                        .collect(),
+                    ret: Box::new(fn_ty.ret.substitute(&partial)),
+                };
+            } else {
+                // Phase 2: Some vars unsolved. Substitute solved vars and use
+                // upper bounds for unsolved, then CHECK args with bidirectional
+                // typing to get better actual types (especially for lambdas
+                // with untyped parameters).
+                let check_replacements: Vec<(usize, Type)> = fn_ty
+                    .type_params
+                    .iter()
+                    .map(|(id, bound)| {
+                        let solution = &partial.iter().find(|(pid, _)| pid == id).unwrap().1;
+                        if matches!(solution.kind, TypeKind::Never) {
+                            (*id, bound.clone())
+                        } else {
+                            (*id, solution.clone())
+                        }
+                    })
+                    .collect();
+
+                let check_params: Vec<Type> = fn_ty
+                    .params
+                    .iter()
+                    .map(|p| p.substitute(&check_replacements))
+                    .collect();
+
+                if self.args.len() < fn_ty.params.len() {
+                    diags.push(MissingArguments {
+                        module_id: env.module_id()?,
+                        expected: fn_ty.params.len(),
+                        got: self.args.len(),
+                        span: self.callee.span(),
+                    });
+                }
+
+                let mut actual_arg_types = Vec::new();
+                for (index, arg) in self.args.iter().enumerate() {
+                    let Some(param_ty) = check_params.get(index) else {
+                        diags.push(ExtraneousArgument {
+                            module_id: env.module_id()?,
+                            index,
+                            span: arg.span(),
+                        });
+                        continue;
+                    };
+
+                    let actual = checker
+                        .check_expr(env, arg, Some(param_ty))?
+                        .unpack(&mut diags);
+                    actual_arg_types.push(actual);
+                }
+
+                // Phase 3: Re-infer using actual types from checking.
+                let final_replacements =
+                    crate::infer_type_args(&fn_ty, &actual_arg_types, &env.maps.type_var_bounds)
+                        .unwrap_or(partial);
+
+                let ret = fn_ty.ret.substitute(&final_replacements);
+                return Ok(Diagnosed::new(ret, diags));
+            }
+        }
+
+        self.check_args_and_return(checker, env, &fn_ty, diags)
+    }
+
+    /// Check arguments against a fully-instantiated (no type params) fn type
+    /// and return the return type.
+    fn check_args_and_return<S: crate::SourceRepo>(
+        &self,
+        checker: &TypeChecker<'_, S>,
+        env: &TypeEnv<'_>,
+        fn_ty: &FnType,
+        mut diags: DiagList,
+    ) -> Result<Diagnosed<Type>, TypeCheckError> {
         if self.args.len() < fn_ty.params.len() {
             diags.push(MissingArguments {
                 module_id: env.module_id()?,
@@ -88,7 +198,31 @@ impl CallExpr {
                 .unpack(&mut diags);
         }
 
-        Ok(Diagnosed::new(*fn_ty.ret, diags))
+        Ok(Diagnosed::new(*fn_ty.ret.clone(), diags))
+    }
+
+    /// Produce a permissive fallback FnType when inference fails entirely:
+    /// params become Any (accept anything), return becomes Never.
+    fn fallback_fn_ty(&self, fn_ty: &FnType) -> FnType {
+        let param_replacements: Vec<(usize, Type)> = fn_ty
+            .type_params
+            .iter()
+            .map(|(id, _)| (*id, Type::Any))
+            .collect();
+        let ret_replacements: Vec<(usize, Type)> = fn_ty
+            .type_params
+            .iter()
+            .map(|(id, _)| (*id, Type::Never))
+            .collect();
+        FnType {
+            type_params: vec![],
+            params: fn_ty
+                .params
+                .iter()
+                .map(|p| p.substitute(&param_replacements))
+                .collect(),
+            ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
+        }
     }
 
     #[inline(never)]

@@ -621,6 +621,51 @@ fn unify_generic_fn(
     Ok(())
 }
 
+/// Infer type arguments for a generic function from the types of the arguments
+/// at a call site. Uses contravariant bound collection on parameter types to
+/// determine the tightest concrete type for each type variable, then validates
+/// that each solution satisfies the declared upper bound.
+///
+/// Returns `Ok(replacements)` — one `(type_var_id, inferred_type)` per type
+/// parameter — or `Err` if constraints are contradictory or bounds are violated.
+pub fn infer_type_args(
+    fn_ty: &FnType,
+    arg_types: &[Type],
+    bounds: &HashMap<usize, Type>,
+) -> Result<Vec<(usize, Type)>, TypeError> {
+    let free_vars: HashSet<usize> = fn_ty.type_params.iter().map(|(id, _)| *id).collect();
+
+    let mut assertions: HashMap<usize, (Type, Type)> = fn_ty
+        .type_params
+        .iter()
+        .map(|(id, upper_bound)| (*id, (Type::Never, upper_bound.clone())))
+        .collect();
+
+    for (arg_ty, param_ty) in arg_types.iter().zip(fn_ty.params.iter()) {
+        collect_bounds(
+            arg_ty,
+            param_ty,
+            Variance::Contravariant,
+            &free_vars,
+            &mut assertions,
+        )?;
+    }
+
+    // Check that each inferred lower bound satisfies the declared upper bound.
+    for (lower, upper) in assertions.values() {
+        assign_type_with_bounds(upper, lower, bounds)?;
+    }
+
+    Ok(fn_ty
+        .type_params
+        .iter()
+        .map(|(id, _)| {
+            let (lower, _) = assertions.get(id).unwrap();
+            (*id, lower.clone())
+        })
+        .collect())
+}
+
 /// Walk two types structurally, collecting bounds for free type variables in rhs.
 fn collect_bounds(
     lhs: &Type,
@@ -629,6 +674,9 @@ fn collect_bounds(
     free_vars: &HashSet<usize>,
     assertions: &mut HashMap<usize, (Type, Type)>,
 ) -> Result<(), TypeError> {
+    let lhs = &lhs.unfold();
+    let rhs = &rhs.unfold();
+
     if let TypeKind::Var(id) = rhs.kind
         && free_vars.contains(&id)
     {
