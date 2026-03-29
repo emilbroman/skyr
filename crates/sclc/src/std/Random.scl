@@ -1,9 +1,9 @@
 export let Int = extern "Std/Random.Int": fn({
-    name: Str,
-    min: Int,
-    max: Int,
+	name: Str,
+	min: Int,
+	max: Int,
 }) {
-    min: Int,
-    max: Int,
-    result: Int,
+	min: Int,
+	max: Int,
+	result: Int,
 }

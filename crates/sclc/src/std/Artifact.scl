@@ -1,10 +1,10 @@
 export let File = extern "Std/Artifact.File": fn({
-    name: Str,
-    mediaType: Str?,
-    contents: Str,
+	name: Str,
+	mediaType: Str?,
+	contents: Str,
 }) {
-    namespace: Str,
-    name: Str,
-    mediaType: Str,
-    url: Str,
+	namespace: Str,
+	name: Str,
+	mediaType: Str,
+	url: Str,
 }

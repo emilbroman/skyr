@@ -1,53 +1,53 @@
 import Std/Time
 
 export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
-    name: Str,
+	name: Str,
 }) {
-    pem: Str,
-    publicKeyPem: Str,
+	pem: Str,
+	publicKeyPem: Str,
 }
 
 export let ECDSAPrivateKey = extern "Std/Crypto.ECDSAPrivateKey": fn({
-    name: Str,
-    curve: Str?,
+	name: Str,
+	curve: Str?,
 }) {
-    pem: Str,
-    publicKeyPem: Str,
+	pem: Str,
+	publicKeyPem: Str,
 }
 
 export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
-    name: Str,
-    size: Int?,
+	name: Str,
+	size: Int?,
 }) {
-    pem: Str,
-    publicKeyPem: Str,
+	pem: Str,
+	publicKeyPem: Str,
 }
 
 export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
-    privateKeyPem: Str,
-    subject: {
-        commonName: Str,
-        organization: Str?,
-        organizationalUnit: Str?,
-        country: Str?,
-        state: Str?,
-        locality: Str?,
-    },
-    subjectAlternativeNames: [Str]?,
-    keyUsage: [Str]?,
-    extendedKeyUsage: [Str]?,
+	privateKeyPem: Str,
+	subject: {
+		commonName: Str,
+		organization: Str?,
+		organizationalUnit: Str?,
+		country: Str?,
+		state: Str?,
+		locality: Str?,
+	},
+	subjectAlternativeNames: [Str]?,
+	keyUsage: [Str]?,
+	extendedKeyUsage: [Str]?,
 }) {
-    pem: Str,
+	pem: Str,
 }
 
 export let CertificateSignature = extern "Std/Crypto.CertificateSignature": fn({
-    csrPem: Str,
-    privateKeyPem: Str,
-    caCertPem: Str?,
-    validity: {
-        before: Time.Instant,
-        after: Time.Instant?,
-    },
+	csrPem: Str,
+	privateKeyPem: Str,
+	caCertPem: Str?,
+	validity: {
+		before: Time.Instant,
+		after: Time.Instant?,
+	},
 }) {
-    pem: Str,
+	pem: Str,
 }
