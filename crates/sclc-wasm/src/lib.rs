@@ -96,9 +96,11 @@ pub async fn analyze(source: &str) -> String {
 struct HoverInfo {
     #[serde(rename = "type")]
     ty: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
 }
 
-/// Get hover information (type) at a position.
+/// Get hover information (type + description) at a position.
 #[wasm_bindgen]
 pub async fn hover(source: &str, line: u32, col: u32) -> Option<String> {
     let repo = make_source(source);
@@ -116,9 +118,21 @@ pub async fn hover(source: &str, line: u32, col: u32) -> Option<String> {
     let cursor_info = query_cursor(&program, source, &module_id, position);
 
     let info = cursor_info.lock().unwrap();
-    info.ty
-        .as_ref()
-        .map(|ty| serde_json::to_string(&HoverInfo { ty: ty.to_string() }).unwrap())
+    let ty_str = match (&info.identifier, &info.ty) {
+        (Some(sclc::CursorIdentifier::Let(name)), Some(ty)) => Some(format!("let {name}: {ty}")),
+        (Some(sclc::CursorIdentifier::Type(name)), Some(ty)) => {
+            Some(format!("type {name} {ty}"))
+        }
+        (None, Some(ty)) => Some(ty.to_string()),
+        _ => None,
+    };
+    ty_str.map(|ty| {
+        serde_json::to_string(&HoverInfo {
+            ty,
+            description: info.description.clone(),
+        })
+        .unwrap()
+    })
 }
 
 #[derive(Serialize)]
