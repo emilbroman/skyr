@@ -98,7 +98,7 @@ impl RecordExpr {
         if missing_field {
             diags.push(crate::checker::InvalidType {
                 module_id: env.module_id()?,
-                error: crate::checker::TypeError::new(crate::checker::TypeIssue::Mismatch(
+                error: crate::TypeError::new(crate::TypeIssue::Mismatch(
                     crate::Type::Record(expected_record.clone()),
                     ty.clone(),
                 )),
