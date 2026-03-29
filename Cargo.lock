@@ -5415,6 +5415,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "sclc-docgen"
+version = "0.1.0"
+dependencies = [
+ "sclc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sclc-wasm"
 version = "0.1.0"
 dependencies = [
