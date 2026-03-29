@@ -27,7 +27,7 @@ use thiserror::Error;
 /// stable or reproducible across runs.
 static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(0);
 
-fn next_type_id() -> usize {
+pub(crate) fn next_type_id() -> usize {
     NEXT_TYPE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -413,19 +413,19 @@ impl Variance {
 /// global checking. Shared (via `Rc<RefCell<…>>`) across all derived environments
 /// while checking a single global's body.
 #[derive(Default)]
-struct FreeVarConstraints {
+pub(crate) struct FreeVarConstraints {
     /// Maps free var ID → accumulated lower bound.
     /// Starts as `Type::Never` and is tightened upward as constraints arrive.
     lower_bounds: HashMap<usize, Type>,
 }
 
 impl FreeVarConstraints {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// Register a new free variable with initial lower bound `Never`.
-    fn register(&mut self, id: usize) {
+    pub(crate) fn register(&mut self, id: usize) {
         self.lower_bounds.insert(id, Type::Never);
     }
 
@@ -437,7 +437,7 @@ impl FreeVarConstraints {
     /// Tighten the lower bound for a free variable by replacing `Never` with
     /// the first concrete constraint. Subsequent constraints are merged
     /// structurally when possible (e.g. record types are merged field-by-field).
-    fn constrain(&mut self, id: usize, new_lower: Type) {
+    pub(crate) fn constrain(&mut self, id: usize, new_lower: Type) {
         let entry = self
             .lower_bounds
             .get_mut(&id)
@@ -461,7 +461,7 @@ impl FreeVarConstraints {
     }
 
     /// Solve constraints given that `primary_id` equals `body_type`.
-    fn solve(&self, primary_id: usize, body_type: &Type) -> Vec<(usize, Type)> {
+    pub(crate) fn solve(&self, primary_id: usize, body_type: &Type) -> Vec<(usize, Type)> {
         let mut solutions: HashMap<usize, Type> = HashMap::new();
 
         if let Some(constraint) = self.lower_bounds.get(&primary_id) {
@@ -526,11 +526,11 @@ impl FreeVarConstraints {
 /// Heap-allocated maps that make up the mutable portion of a type environment.
 /// Boxed to keep `TypeEnv` small on the stack (~48 bytes instead of ~224).
 #[derive(Clone, Debug)]
-struct TypeEnvMaps<'a> {
+pub(crate) struct TypeEnvMaps<'a> {
     locals: HashMap<&'a str, (crate::Span, Type)>,
     type_vars: HashMap<String, Type>,
     /// Upper bounds for type variable IDs (used during function body checking).
-    type_var_bounds: HashMap<usize, Type>,
+    pub(crate) type_var_bounds: HashMap<usize, Type>,
     /// Type-level bindings from `type` declarations and imports (separate namespace from values).
     type_level: HashMap<String, Type>,
 }
@@ -539,11 +539,11 @@ pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
-    maps: Box<TypeEnvMaps<'a>>,
+    pub(crate) maps: Box<TypeEnvMaps<'a>>,
     /// Cursor for reference tracking. Shared (via Arc) across all derived envs.
-    cursor: Option<crate::Cursor>,
+    pub(crate) cursor: Option<crate::Cursor>,
     /// Free variable constraints for recursive global checking.
-    free_vars: Option<Rc<RefCell<FreeVarConstraints>>>,
+    pub(crate) free_vars: Option<Rc<RefCell<FreeVarConstraints>>>,
 }
 
 impl<'a> Default for TypeEnv<'a> {
@@ -656,7 +656,7 @@ impl<'a> TypeEnv<'a> {
     /// Create a derived environment with a free variable for recursive global
     /// checking. The free variable is added to the shared constraint set and
     /// bound as a local so that name resolution finds it.
-    fn with_free_var(
+    pub(crate) fn with_free_var(
         &self,
         name: &'a str,
         span: crate::Span,
@@ -682,7 +682,7 @@ impl<'a> TypeEnv<'a> {
     }
 
     /// Check if a type variable ID is a free variable in the current constraint set.
-    fn is_free_var(&self, id: usize) -> bool {
+    pub(crate) fn is_free_var(&self, id: usize) -> bool {
         self.free_vars
             .as_ref()
             .is_some_and(|fv| fv.borrow().contains(id))
@@ -752,9 +752,9 @@ pub struct TypeChecker<'p, S> {
     /// Avoids re-checking the same global expression multiple times within a
     /// single type-checking pass. Diagnostics are not cached — they are only
     /// emitted during the canonical check in `check_global_let_bind`.
-    global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
+    pub(crate) global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
     /// Cache for resolved import module types (keyed by FileMod pointer).
-    import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
+    pub(crate) import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
     /// Cache for type-level exports (keyed by FileMod pointer).
     type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
@@ -773,11 +773,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     // Subtyping
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn types_disjoint(&self, lhs: &Type, rhs: &Type) -> bool {
+    pub(crate) fn types_disjoint(&self, lhs: &Type, rhs: &Type) -> bool {
         self.assign_type(lhs, rhs).is_err() && self.assign_type(rhs, lhs).is_err()
     }
 
-    fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
+    pub(crate) fn assign_type(&self, lhs: &Type, rhs: &Type) -> Result<(), TypeError> {
         self.assign_type_with_bounds(lhs, rhs, &HashMap::new())
     }
 
@@ -1151,7 +1151,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     /// Validate that `actual_ty` is assignable to `expected_ty`, emitting a
     /// diagnostic at `span` if not. For free variables, constrains instead
     /// of erroring. Returns `actual_ty` unchanged (preserves synthesis result).
-    fn subsumption_check(
+    pub(crate) fn subsumption_check(
         &self,
         env: &TypeEnv<'_>,
         span: crate::Span,
@@ -1372,7 +1372,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     // Type resolution
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn resolve_type_expr(
+    pub(crate) fn resolve_type_expr(
         &self,
         env: &TypeEnv<'_>,
         type_expr: &crate::Loc<ast::TypeExpr>,
@@ -1684,7 +1684,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
     /// Synthesis mode: bottom-up type inference with no expected type.
     #[inline(never)]
-    fn synth_expr(
+    pub(crate) fn synth_expr(
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
@@ -1698,85 +1698,52 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 DiagList::new(),
             )),
             ast::Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
-            ast::Expr::Extern(extern_expr) => self.synth_extern(env, extern_expr),
-            ast::Expr::If(if_expr) => self.synth_if(env, expr, if_expr),
-            ast::Expr::Let(let_expr) => self.synth_let(env, let_expr),
-            ast::Expr::Fn(fn_expr) => self.synth_fn(env, fn_expr),
-            ast::Expr::Call(call_expr) => self.synth_call(env, expr, call_expr),
-            ast::Expr::Unary(unary_expr) => self.synth_unary(env, expr, unary_expr),
-            ast::Expr::Binary(binary_expr) => self.synth_binary(env, expr, binary_expr),
-            ast::Expr::Var(var) => self.synth_var(env, expr, var),
-            ast::Expr::Record(record_expr) => self.synth_record(env, record_expr),
-            ast::Expr::Dict(dict_expr) => self.synth_dict(env, dict_expr),
-            ast::Expr::List(list_expr) => self.synth_list(env, list_expr),
-            ast::Expr::Interp(interp_expr) => self.synth_interp(env, interp_expr),
-            ast::Expr::TypeCast(cast) => self.synth_type_cast(env, cast),
-            ast::Expr::PropertyAccess(pa) => self.synth_property_access(env, expr, pa),
-            ast::Expr::IndexedAccess(ia) => self.synth_indexed_access(env, expr, ia),
-            ast::Expr::Exception(exc) => self.synth_exception(env, exc),
-            ast::Expr::Raise(raise) => self.synth_raise(env, raise),
-            ast::Expr::Try(try_expr) => self.synth_try(env, try_expr),
+            ast::Expr::Extern(extern_expr) => extern_expr.type_synth(self, env),
+            ast::Expr::If(if_expr) => if_expr.type_synth(self, env, expr),
+            ast::Expr::Let(let_expr) => let_expr.type_synth(self, env),
+            ast::Expr::Fn(fn_expr) => fn_expr.type_synth(self, env),
+            ast::Expr::Call(call_expr) => call_expr.type_synth(self, env, expr),
+            ast::Expr::Unary(unary_expr) => unary_expr.type_synth(self, env, expr),
+            ast::Expr::Binary(binary_expr) => binary_expr.type_synth(self, env, expr),
+            ast::Expr::Var(var) => ast::var_expr::synth_var(self, env, expr, var),
+            ast::Expr::Record(record_expr) => record_expr.type_synth(self, env),
+            ast::Expr::Dict(dict_expr) => dict_expr.type_synth(self, env),
+            ast::Expr::List(list_expr) => list_expr.type_synth(self, env),
+            ast::Expr::Interp(interp_expr) => interp_expr.type_synth(self, env),
+            ast::Expr::TypeCast(cast) => cast.type_synth(self, env),
+            ast::Expr::PropertyAccess(pa) => pa.type_synth(self, env),
+            ast::Expr::IndexedAccess(ia) => ia.type_synth(self, env, expr),
+            ast::Expr::Exception(exc) => exc.type_synth(self, env),
+            ast::Expr::Raise(raise) => raise.type_synth(self, env),
+            ast::Expr::Try(try_expr) => try_expr.type_synth(self, env),
         }
     }
 
     /// Check mode: validate expression against an expected type, pushing errors
     /// to the most specific AST node where possible.
     #[inline(never)]
-    fn check_expr_against(
+    pub(crate) fn check_expr_against(
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
         expected: &Type,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match expr.as_ref() {
-            // Record: push expected field types into field expressions
-            ast::Expr::Record(record_expr) => {
-                if let TypeKind::Record(expected_record) = &expected.kind {
-                    return self.check_record_against(env, expr, record_expr, expected_record);
-                }
-                // Fall through to synth + subsumption
-                self.synth_then_subsume(env, expr, expected)
-            }
-
-            // List: push expected element type into items
-            ast::Expr::List(list_expr) => {
-                if let TypeKind::List(expected_item_ty) = &expected.kind {
-                    return self.check_list_against(env, list_expr, expected_item_ty);
-                }
-                self.synth_then_subsume(env, expr, expected)
-            }
-
-            // Dict: push expected key/value types into entries
-            ast::Expr::Dict(dict_expr) => {
-                if let TypeKind::Dict(expected_dict) = &expected.kind {
-                    return self.check_dict_against(env, dict_expr, expected_dict);
-                }
-                self.synth_then_subsume(env, expr, expected)
-            }
-
-            // If/Else: synth then, check else against then, validate against expected
-            ast::Expr::If(if_expr) => self.check_if_against(env, expr, if_expr, expected),
-
-            // Let: check bind expr (with annotation), check body against expected
-            ast::Expr::Let(let_expr) => self.check_let_against(env, let_expr, expected),
-
-            // TypeCast: check inner against cast type, validate cast against expected
-            ast::Expr::TypeCast(cast) => self.check_type_cast_against(env, expr, cast, expected),
-
-            // Call: synth callee, check args against param types, validate ret against expected
-            ast::Expr::Call(call_expr) => self.check_call_against(env, expr, call_expr, expected),
-
-            // Try: push expected into try body
-            ast::Expr::Try(try_expr) => self.check_try_against(env, expr, try_expr, expected),
-
-            // All others: synth then subsumption check
+            ast::Expr::Record(record_expr) => record_expr.type_check(self, env, expr, expected),
+            ast::Expr::List(list_expr) => list_expr.type_check(self, env, expr, expected),
+            ast::Expr::Dict(dict_expr) => dict_expr.type_check(self, env, expr, expected),
+            ast::Expr::If(if_expr) => if_expr.type_check(self, env, expr, expected),
+            ast::Expr::Let(let_expr) => let_expr.type_check(self, env, expected),
+            ast::Expr::TypeCast(cast) => cast.type_check(self, env, expr, expected),
+            ast::Expr::Call(call_expr) => call_expr.type_check(self, env, expr, expected),
+            ast::Expr::Try(try_expr) => try_expr.type_check(self, env, expr, expected),
             _ => self.synth_then_subsume(env, expr, expected),
         }
     }
 
     /// Fall-through: synthesize and then check subsumption.
     #[inline(never)]
-    fn synth_then_subsume(
+    pub(crate) fn synth_then_subsume(
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
@@ -1789,209 +1756,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Per-expression synthesis functions
+    // Shared helpers called by per-node AST files
     // ═══════════════════════════════════════════════════════════════════════════
 
-    #[inline(never)]
-    fn synth_extern(
-        &self,
-        env: &TypeEnv<'_>,
-        extern_expr: &ast::ExternExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let resolved_ty = self
-            .resolve_type_expr(env, &extern_expr.ty)
-            .unpack(&mut diags);
-        Ok(Diagnosed::new(resolved_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_if(
-        &self,
-        env: &TypeEnv<'_>,
-        _expr: &crate::Loc<ast::Expr>,
-        if_expr: &ast::IfExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        self.check_expr(env, if_expr.condition.as_ref(), Some(&Type::Bool))?
-            .unpack(&mut diags);
-
-        let then_ty = self
-            .synth_expr(env, if_expr.then_expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-
-        if let Some(else_expr) = if_expr.else_expr.as_ref() {
-            self.check_expr(env, else_expr.as_ref(), Some(&then_ty))?
-                .unpack(&mut diags);
-            return Ok(Diagnosed::new(then_ty, diags));
-        }
-
-        Ok(Diagnosed::new(Type::Optional(Box::new(then_ty)), diags))
-    }
-
-    #[inline(never)]
-    fn synth_let(
-        &self,
-        env: &TypeEnv<'_>,
-        let_expr: &ast::LetExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let annotation_ty = let_expr
-            .bind
-            .ty
-            .as_ref()
-            .map(|te| self.resolve_type_expr(env, te).unpack(&mut diags));
-        let bind_ty = self
-            .check_expr(env, let_expr.bind.expr.as_ref(), annotation_ty.as_ref())?
-            .unpack(&mut diags);
-        let bind_ty = annotation_ty.unwrap_or(bind_ty);
-        let inner_env = env.with_local(
-            let_expr.bind.var.name.as_str(),
-            let_expr.bind.var.span(),
-            bind_ty,
-        );
-        let body_ty = self
-            .synth_expr(&inner_env, let_expr.expr.as_ref())?
-            .unpack(&mut diags);
-        Ok(Diagnosed::new(body_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_fn(
-        &self,
-        env: &TypeEnv<'_>,
-        fn_expr: &ast::FnExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let mut fn_env = env.inner();
-
-        let mut type_param_entries = Vec::with_capacity(fn_expr.type_params.len());
-        for type_param in &fn_expr.type_params {
-            let type_id = next_type_id();
-            fn_env = fn_env.with_type_var(type_param.var.name.clone(), Type::Var(type_id));
-            let upper_bound = if let Some(bound_expr) = &type_param.bound {
-                self.resolve_type_expr(&fn_env, bound_expr)
-                    .unpack(&mut diags)
-            } else {
-                Type::Any
-            };
-            fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
-            type_param_entries.push((type_id, upper_bound));
-        }
-
-        let mut params = Vec::with_capacity(fn_expr.params.len());
-        for param in &fn_expr.params {
-            let param_ty = self
-                .resolve_type_expr(&fn_env, &param.ty)
-                .unpack(&mut diags);
-            fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
-            params.push(param_ty);
-        }
-
-        let ret = self
-            .synth_expr(&fn_env, fn_expr.body.as_ref())?
-            .unpack(&mut diags);
-        Ok(Diagnosed::new(
-            Type::Fn(FnType {
-                type_params: type_param_entries,
-                params,
-                ret: Box::new(ret),
-            }),
-            diags,
-        ))
-    }
-
-    #[inline(never)]
-    fn synth_call(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        call_expr: &ast::CallExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let raw_callee_ty = self
-            .synth_expr(env, call_expr.callee.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-        let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
-        if matches!(callee_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
-        }
-
-        // Free variable callee constraint handling
-        if let TypeKind::Var(callee_var_id) = &raw_callee_ty.kind
-            && env.is_free_var(*callee_var_id)
-        {
-            return self.synth_call_free_var(env, call_expr, *callee_var_id, &mut diags);
-        }
-
-        let TypeKind::Fn(fn_ty) = callee_ty.kind else {
-            diags.push(NotAFunction {
-                module_id: env.module_id()?,
-                ty: callee_ty,
-                span: call_expr.callee.span(),
-            });
-            return Ok(Diagnosed::new(Type::Never, diags));
-        };
-
-        let fn_ty = self.instantiate_call_type_args(env, expr, call_expr, fn_ty, &mut diags)?;
-
-        if call_expr.args.len() < fn_ty.params.len() {
-            diags.push(MissingArguments {
-                module_id: env.module_id()?,
-                expected: fn_ty.params.len(),
-                got: call_expr.args.len(),
-                span: call_expr.callee.span(),
-            });
-        }
-
-        for (index, arg) in call_expr.args.iter().enumerate() {
-            let Some(param_ty) = fn_ty.params.get(index) else {
-                diags.push(ExtraneousArgument {
-                    module_id: env.module_id()?,
-                    index,
-                    span: arg.span(),
-                });
-                continue;
-            };
-
-            self.check_expr(env, arg, Some(param_ty))?
-                .unpack(&mut diags);
-        }
-
-        Ok(Diagnosed::new(*fn_ty.ret, diags))
-    }
-
-    #[inline(never)]
-    fn synth_call_free_var(
-        &self,
-        env: &TypeEnv<'_>,
-        call_expr: &ast::CallExpr,
-        callee_var_id: usize,
-        diags: &mut DiagList,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut arg_types = Vec::new();
-        for arg in &call_expr.args {
-            let arg_ty = self.synth_expr(env, arg)?.unpack(diags);
-            arg_types.push(arg_ty);
-        }
-        let ret_id = next_type_id();
-        let ret_var = Type::Var(ret_id);
-        if let Some(fv) = &env.free_vars {
-            fv.borrow_mut().register(ret_id);
-            let fn_constraint = Type::Fn(FnType {
-                type_params: vec![],
-                params: arg_types,
-                ret: Box::new(ret_var.clone()),
-            });
-            fv.borrow_mut().constrain(callee_var_id, fn_constraint);
-        }
-        Ok(Diagnosed::new(ret_var, DiagList::new()))
-    }
-
     /// Handle type argument instantiation for generic functions at call sites.
-    fn instantiate_call_type_args(
+    pub(crate) fn instantiate_call_type_args(
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
@@ -2099,7 +1868,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
 
     /// Compute the result type for an arithmetic binary operator (+, -, *, /).
     /// Returns `None` if the operand types are invalid for the operator.
-    fn arithmetic_result(op: ast::BinaryOp, lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
+    pub(crate) fn arithmetic_result(
+        op: ast::BinaryOp,
+        lhs: &TypeKind,
+        rhs: &TypeKind,
+    ) -> Option<Type> {
         match (lhs, rhs) {
             (TypeKind::Int, TypeKind::Int) => Some(Type::Int),
             (TypeKind::Float, TypeKind::Float)
@@ -2111,7 +1884,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     /// Compute the result type for a comparison binary operator (<, <=, >, >=).
-    fn comparison_result(lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
+    pub(crate) fn comparison_result(lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
         match (lhs, rhs) {
             (TypeKind::Int, TypeKind::Int)
             | (TypeKind::Float, TypeKind::Float)
@@ -2122,268 +1895,11 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     /// Compute the result type for a logical binary operator (&&, ||).
-    fn logical_result(lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
+    pub(crate) fn logical_result(lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
         match (lhs, rhs) {
             (TypeKind::Bool, TypeKind::Bool) => Some(Type::Bool),
             _ => None,
         }
-    }
-
-    #[inline(never)]
-    fn synth_binary(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        binary_expr: &ast::BinaryExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let lhs_ty = self
-            .synth_expr(env, binary_expr.lhs.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-        let rhs_ty = self
-            .synth_expr(env, binary_expr.rhs.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-
-        let result_ty = if matches!(lhs_ty.kind, TypeKind::Never)
-            || matches!(rhs_ty.kind, TypeKind::Never)
-        {
-            Type::Never
-        } else {
-            match binary_expr.op {
-                ast::BinaryOp::Add
-                | ast::BinaryOp::Sub
-                | ast::BinaryOp::Mul
-                | ast::BinaryOp::Div => {
-                    match Self::arithmetic_result(binary_expr.op, &lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
-                                module_id: env.module_id()?,
-                                op: binary_expr.op,
-                                lhs: lhs_ty.clone(),
-                                rhs: rhs_ty.clone(),
-                                span: expr.span(),
-                            });
-                            Type::Never
-                        }
-                    }
-                }
-                ast::BinaryOp::Eq | ast::BinaryOp::Neq => {
-                    if self.types_disjoint(&lhs_ty, &rhs_ty) {
-                        diags.push(DisjointEquality {
-                            module_id: env.module_id()?,
-                            lhs: lhs_ty.clone(),
-                            rhs: rhs_ty.clone(),
-                            span: expr.span(),
-                        });
-                    }
-                    Type::Bool
-                }
-                ast::BinaryOp::Lt | ast::BinaryOp::Lte | ast::BinaryOp::Gt | ast::BinaryOp::Gte => {
-                    match Self::comparison_result(&lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
-                                module_id: env.module_id()?,
-                                op: binary_expr.op,
-                                lhs: lhs_ty.clone(),
-                                rhs: rhs_ty.clone(),
-                                span: expr.span(),
-                            });
-                            Type::Never
-                        }
-                    }
-                }
-                ast::BinaryOp::And | ast::BinaryOp::Or => {
-                    match Self::logical_result(&lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
-                                module_id: env.module_id()?,
-                                op: binary_expr.op,
-                                lhs: lhs_ty.clone(),
-                                rhs: rhs_ty.clone(),
-                                span: expr.span(),
-                            });
-                            Type::Never
-                        }
-                    }
-                }
-            }
-        };
-
-        Ok(Diagnosed::new(result_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_unary(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        unary_expr: &ast::UnaryExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let operand_ty = self
-            .synth_expr(env, unary_expr.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-
-        let result_ty = if matches!(operand_ty.kind, TypeKind::Never) {
-            Type::Never
-        } else {
-            match unary_expr.op {
-                ast::UnaryOp::Negate => match &operand_ty.kind {
-                    TypeKind::Int => Type::Int,
-                    TypeKind::Float => Type::Float,
-                    _ => {
-                        diags.push(InvalidUnaryOperand {
-                            module_id: env.module_id()?,
-                            op: unary_expr.op,
-                            operand: operand_ty.clone(),
-                            span: expr.span(),
-                        });
-                        Type::Never
-                    }
-                },
-            }
-        };
-
-        Ok(Diagnosed::new(result_ty, diags))
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Variable/global resolution
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    #[inline(never)]
-    fn synth_var(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        var: &crate::Loc<ast::Var>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        // Completion candidates
-        if let Some((cursor, offset)) = &var.cursor {
-            let prefix = &var.name[..*offset];
-            for name in env.local_names().chain(env.global_names()) {
-                if name.starts_with(prefix) {
-                    cursor
-                        .add_completion_candidate(crate::CompletionCandidate::Var(name.to_owned()));
-                }
-            }
-        }
-        let set_cursor = |decl: crate::Span, ty: &Type| {
-            if let Some((cursor, _)) = &var.cursor {
-                cursor.set_declaration(decl);
-                cursor.set_type(ty.clone());
-            }
-        };
-        let track_ref = |decl: crate::Span| {
-            if let Some(cursor) = &env.cursor {
-                cursor.track_reference(decl, expr.span());
-            }
-        };
-
-        // Local variable
-        if let Some((decl, local_ty)) = env.lookup_local(var.name.as_str()) {
-            let decl = *decl;
-            let local_ty = local_ty.clone();
-            track_ref(decl);
-            set_cursor(decl, &local_ty);
-            return Ok(Diagnosed::new(local_ty, DiagList::new()));
-        }
-
-        // Global variable
-        if let Some((decl, global_expr)) = env.lookup_global(var.name.as_str()) {
-            return self.synth_global(env, expr, var, decl, global_expr);
-        }
-
-        // Import
-        if let Some((target_module_id, maybe_import_file_mod)) =
-            env.lookup_import(var.name.as_str())
-        {
-            let Some(import_file_mod) = maybe_import_file_mod else {
-                return Ok(Diagnosed::new(Type::Never, DiagList::new()));
-            };
-            let cache_key = import_file_mod as *const ast::FileMod;
-            let imported_ty = if let Some(cached_ty) = self.import_cache.borrow().get(&cache_key) {
-                cached_ty.clone()
-            } else {
-                let import_env = TypeEnv::new().with_module_id(&target_module_id);
-                let imported_ty = self.check_file_mod(&import_env, import_file_mod)?;
-                let imported_ty = imported_ty.into_inner();
-                self.import_cache
-                    .borrow_mut()
-                    .insert(cache_key, imported_ty.clone());
-                imported_ty
-            };
-            if let Some((cursor, _)) = &var.cursor {
-                cursor.set_type(imported_ty.clone());
-            }
-            return Ok(Diagnosed::new(imported_ty, DiagList::new()));
-        }
-
-        // Undefined
-        let mut diags = DiagList::new();
-        diags.push(UndefinedVariable {
-            module_id: env.module_id()?,
-            name: var.name.clone(),
-            var: var.clone(),
-        });
-        Ok(Diagnosed::new(Type::Never, diags))
-    }
-
-    #[inline(never)]
-    fn synth_global(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        var: &crate::Loc<ast::Var>,
-        decl: crate::Span,
-        global_expr: &crate::Loc<ast::Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let set_cursor = |decl: crate::Span, ty: &Type| {
-            if let Some((cursor, _)) = &var.cursor {
-                cursor.set_declaration(decl);
-                cursor.set_type(ty.clone());
-            }
-        };
-        let track_ref = |decl: crate::Span| {
-            if let Some(cursor) = &env.cursor {
-                cursor.track_reference(decl, expr.span());
-            }
-        };
-
-        let mut diags = DiagList::new();
-        let cache_key = global_expr as *const crate::Loc<ast::Expr>;
-        let resolved_ty = if let Some(cached_ty) = self.global_cache.borrow().get(&cache_key) {
-            cached_ty.clone()
-        } else {
-            let type_id = next_type_id();
-            let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
-            let global_env = env.without_locals().with_free_var(
-                var.name.as_str(),
-                decl,
-                type_id,
-                constraints.clone(),
-            );
-            let resolved_ty = self
-                .synth_expr(&global_env, global_expr)?
-                .unpack(&mut diags);
-            let solved = constraints.borrow().solve(type_id, &resolved_ty);
-            let resolved_ty = resolved_ty.substitute(&solved);
-            self.global_cache
-                .borrow_mut()
-                .insert(cache_key, resolved_ty.clone());
-            resolved_ty
-        };
-        let type_id = next_type_id();
-        let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
-        track_ref(decl);
-        set_cursor(decl, &ty);
-        Ok(Diagnosed::new(ty, diags))
     }
 
     #[inline(never)]
@@ -2426,581 +1942,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
-    // Remaining synthesis functions
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    #[inline(never)]
-    fn synth_record(
-        &self,
-        env: &TypeEnv<'_>,
-        record_expr: &ast::RecordExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let mut record_ty = RecordType::default();
-        for field in &record_expr.fields {
-            let field_ty = self.synth_expr(env, &field.expr)?.unpack(&mut diags);
-            if let Some((cursor, _)) = &field.var.cursor {
-                cursor.set_type(field_ty.clone());
-            }
-            record_ty.insert(field.var.name.clone(), field_ty);
-        }
-        Ok(Diagnosed::new(Type::Record(record_ty), diags))
-    }
-
-    #[inline(never)]
-    fn synth_dict(
-        &self,
-        env: &TypeEnv<'_>,
-        dict_expr: &ast::DictExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let dict_ty = if let Some((first, rest)) = dict_expr.entries.split_first() {
-            let key_ty = self
-                .synth_expr(env, &first.key)?
-                .unpack(&mut diags)
-                .unfold();
-            let value_ty = self
-                .synth_expr(env, &first.value)?
-                .unpack(&mut diags)
-                .unfold();
-            for entry in rest {
-                self.check_expr(env, &entry.key, Some(&key_ty))?
-                    .unpack(&mut diags);
-                self.check_expr(env, &entry.value, Some(&value_ty))?
-                    .unpack(&mut diags);
-            }
-            Type::Dict(DictType {
-                key: Box::new(key_ty),
-                value: Box::new(value_ty),
-            })
-        } else {
-            Type::Dict(DictType {
-                key: Box::new(Type::Never),
-                value: Box::new(Type::Never),
-            })
-        };
-        Ok(Diagnosed::new(dict_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_list(
-        &self,
-        env: &TypeEnv<'_>,
-        list_expr: &ast::ListExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let list_ty = if let Some((first, rest)) = list_expr.items.split_first() {
-            let first_ty = self
-                .check_list_item(env, first, None)?
-                .unpack(&mut diags)
-                .unfold();
-            for item in rest {
-                self.check_list_item(env, item, Some(&first_ty))?
-                    .unpack(&mut diags);
-            }
-            Type::List(Box::new(first_ty))
-        } else {
-            Type::List(Box::new(Type::Never))
-        };
-        Ok(Diagnosed::new(list_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_interp(
-        &self,
-        env: &TypeEnv<'_>,
-        interp_expr: &ast::InterpExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        for part in &interp_expr.parts {
-            self.synth_expr(env, part)?.unpack(&mut diags);
-        }
-        Ok(Diagnosed::new(Type::Str, diags))
-    }
-
-    #[inline(never)]
-    fn synth_type_cast(
-        &self,
-        env: &TypeEnv<'_>,
-        cast: &ast::TypeCastExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let target_ty = self.resolve_type_expr(env, &cast.ty).unpack(&mut diags);
-        self.check_expr(env, &cast.expr, Some(&target_ty))?
-            .unpack(&mut diags);
-        Ok(Diagnosed::new(target_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_property_access(
-        &self,
-        env: &TypeEnv<'_>,
-        _expr: &crate::Loc<ast::Expr>,
-        property_access: &ast::PropertyAccessExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let raw_lhs_ty = self
-            .synth_expr(env, property_access.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-        let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
-        if matches!(lhs_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
-        }
-
-        // Free variable: constrain to record with accessed member
-        if let TypeKind::Var(lhs_var_id) = &raw_lhs_ty.kind
-            && env.is_free_var(*lhs_var_id)
-        {
-            let member_id = next_type_id();
-            let member_var = Type::Var(member_id);
-            if let Some(fv) = &env.free_vars {
-                fv.borrow_mut().register(member_id);
-                let mut record = RecordType::default();
-                record.insert(property_access.property.name.clone(), member_var.clone());
-                fv.borrow_mut().constrain(*lhs_var_id, Type::Record(record));
-            }
-            if let Some((cursor, _)) = &property_access.property.cursor {
-                cursor.set_type(member_var.clone());
-            }
-            return Ok(Diagnosed::new(member_var, diags));
-        }
-
-        // Completion candidates for property access
-        if let Some((cursor, offset)) = &property_access.property.cursor {
-            let prefix = &property_access.property.name[..*offset];
-            if let TypeKind::Record(record_ty) = &lhs_ty.kind {
-                for (name, _) in record_ty.iter() {
-                    if name.starts_with(prefix) {
-                        cursor.add_completion_candidate(crate::CompletionCandidate::Member(
-                            name.clone(),
-                        ));
-                    }
-                }
-            }
-        }
-
-        let prop_name = property_access.property.name.as_str();
-        let member_ty = match &lhs_ty.kind {
-            TypeKind::Record(record_ty) => record_ty.get(prop_name).cloned(),
-            _ => None,
-        };
-        if let Some(member_ty) = member_ty {
-            if let Some((cursor, _)) = &property_access.property.cursor {
-                cursor.set_type(member_ty.clone());
-            }
-            let member_ty = if let Some(outer_name) = lhs_ty.name() {
-                member_ty.with_name(format!("{outer_name}.{prop_name}"))
-            } else {
-                member_ty
-            };
-            return Ok(Diagnosed::new(member_ty, diags));
-        }
-
-        diags.push(UndefinedMember {
-            module_id: env.module_id()?,
-            name: property_access.property.name.clone(),
-            ty: lhs_ty,
-            property: property_access.property.clone(),
-        });
-        Ok(Diagnosed::new(Type::Never, diags))
-    }
-
-    #[inline(never)]
-    fn synth_indexed_access(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        indexed_access: &ast::IndexedAccessExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let container_ty = self
-            .synth_expr(env, indexed_access.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-        let container_ty = env.resolve_var_bound(&container_ty).unfold();
-        if matches!(container_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
-        }
-        let result_ty = match &container_ty.kind {
-            TypeKind::Dict(dict_ty) => {
-                self.check_expr(
-                    env,
-                    indexed_access.index.as_ref(),
-                    Some(dict_ty.key.as_ref()),
-                )?
-                .unpack(&mut diags);
-                Type::Optional(dict_ty.value.clone())
-            }
-            TypeKind::List(inner_ty) => {
-                self.check_expr(env, indexed_access.index.as_ref(), Some(&Type::Int))?
-                    .unpack(&mut diags);
-                Type::Optional(inner_ty.clone())
-            }
-            _ => {
-                diags.push(InvalidIndexTarget {
-                    module_id: env.module_id()?,
-                    ty: container_ty,
-                    span: expr.span(),
-                });
-                Type::Never
-            }
-        };
-        Ok(Diagnosed::new(result_ty, diags))
-    }
-
-    #[inline(never)]
-    fn synth_exception(
-        &self,
-        env: &TypeEnv<'_>,
-        exception_expr: &ast::ExceptionExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let exception_ty = Type::Exception(exception_expr.exception_id);
-        if let Some(ty_expr) = &exception_expr.ty {
-            let param_ty = self.resolve_type_expr(env, ty_expr).unpack(&mut diags);
-            let fn_ty = Type::Fn(FnType {
-                type_params: vec![],
-                params: vec![param_ty],
-                ret: Box::new(exception_ty),
-            });
-            Ok(Diagnosed::new(fn_ty, diags))
-        } else {
-            Ok(Diagnosed::new(exception_ty, diags))
-        }
-    }
-
-    #[inline(never)]
-    fn synth_raise(
-        &self,
-        env: &TypeEnv<'_>,
-        raise_expr: &ast::RaiseExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let inner_ty = self
-            .synth_expr(env, raise_expr.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-        if !matches!(inner_ty.kind, TypeKind::Exception(_) | TypeKind::Never) {
-            diags.push(NotAnException {
-                module_id: env.module_id()?,
-                ty: inner_ty,
-                span: raise_expr.expr.span(),
-            });
-        }
-        Ok(Diagnosed::new(Type::Never, diags))
-    }
-
-    #[inline(never)]
-    fn synth_try(
-        &self,
-        env: &TypeEnv<'_>,
-        try_expr: &ast::TryExpr,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let try_ty = self
-            .synth_expr(env, try_expr.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-
-        self.check_catch_clauses(env, try_expr, &try_ty, &mut diags)?;
-
-        Ok(Diagnosed::new(try_ty, diags))
-    }
-
-    fn check_catch_clauses(
-        &self,
-        env: &TypeEnv<'_>,
-        try_expr: &ast::TryExpr,
-        try_ty: &Type,
-        diags: &mut DiagList,
-    ) -> Result<(), TypeCheckError> {
-        for catch in &try_expr.catches {
-            let catch_var_ty = self
-                .synth_expr(
-                    env,
-                    &crate::Loc::new(
-                        ast::Expr::Var(catch.exception_var.clone()),
-                        catch.exception_var.span(),
-                    ),
-                )?
-                .unpack(diags)
-                .unfold();
-
-            match &catch_var_ty.kind {
-                TypeKind::Exception(_) => {
-                    if let Some(catch_arg) = &catch.catch_arg {
-                        diags.push(UnexpectedCatchArg {
-                            module_id: env.module_id()?,
-                            span: catch_arg.span(),
-                        });
-                    }
-                    self.check_expr(env, &catch.body, Some(try_ty))?
-                        .unpack(diags);
-                }
-                TypeKind::Fn(fn_ty) => {
-                    let ret_ty = fn_ty.ret.as_ref().clone().unfold();
-                    if !matches!(ret_ty.kind, TypeKind::Exception(_)) {
-                        diags.push(InvalidCatchTarget {
-                            module_id: env.module_id()?,
-                            ty: catch_var_ty.clone(),
-                            span: catch.exception_var.span(),
-                        });
-                    }
-                    if let Some(catch_arg) = &catch.catch_arg {
-                        let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never);
-                        let inner_env =
-                            env.with_local(catch_arg.name.as_str(), catch_arg.span(), param_ty);
-                        self.check_expr(&inner_env, &catch.body, Some(try_ty))?
-                            .unpack(diags);
-                    } else {
-                        self.check_expr(env, &catch.body, Some(try_ty))?
-                            .unpack(diags);
-                    }
-                }
-                TypeKind::Never => {
-                    self.check_expr(env, &catch.body, Some(try_ty))?
-                        .unpack(diags);
-                }
-                _ => {
-                    diags.push(InvalidCatchTarget {
-                        module_id: env.module_id()?,
-                        ty: catch_var_ty,
-                        span: catch.exception_var.span(),
-                    });
-                    self.check_expr(env, &catch.body, Some(try_ty))?
-                        .unpack(diags);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
-    // Check-mode expression handlers
-    // ═══════════════════════════════════════════════════════════════════════════
-
-    #[inline(never)]
-    fn check_record_against(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        record_expr: &ast::RecordExpr,
-        expected_record: &RecordType,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let mut record_ty = RecordType::default();
-
-        for field in &record_expr.fields {
-            // Completion candidates for record field names
-            if let Some((cursor, offset)) = &field.var.cursor {
-                let prefix = &field.var.name[..*offset];
-                for (name, _) in expected_record.iter() {
-                    if name.starts_with(prefix) {
-                        cursor.add_completion_candidate(crate::CompletionCandidate::Member(
-                            name.clone(),
-                        ));
-                    }
-                }
-            }
-            let expected_field_ty = expected_record.get(field.var.name.as_str());
-            let field_ty = self
-                .check_expr(env, &field.expr, expected_field_ty)?
-                .unpack(&mut diags);
-            if let Some((cursor, _)) = &field.var.cursor {
-                cursor.set_type(field_ty.clone());
-            }
-            record_ty.insert(field.var.name.clone(), field_ty);
-        }
-
-        let ty = Type::Record(record_ty);
-
-        // Check for missing required fields
-        let missing_field = expected_record.iter().any(|(name, field_ty)| {
-            matches!(&ty.kind, TypeKind::Record(record) if record.get(name).is_none())
-                && !matches!(field_ty.kind, TypeKind::Optional(_))
-        });
-        if missing_field {
-            diags.push(InvalidType {
-                module_id: env.module_id()?,
-                error: TypeError::new(TypeIssue::Mismatch(
-                    Type::Record(expected_record.clone()),
-                    ty.clone(),
-                )),
-                span: expr.span(),
-            });
-        }
-
-        // Check for unknown fields
-        for field in &record_expr.fields {
-            if expected_record.get(field.var.name.as_str()).is_none() {
-                diags.push(UnknownField {
-                    module_id: env.module_id()?,
-                    name: field.var.name.clone(),
-                    span: field.var.span(),
-                });
-            }
-        }
-
-        Ok(Diagnosed::new(ty, diags))
-    }
-
-    #[inline(never)]
-    fn check_list_against(
-        &self,
-        env: &TypeEnv<'_>,
-        list_expr: &ast::ListExpr,
-        expected_item_ty: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let expected_item_ty = expected_item_ty.clone().unfold();
-        for item in &list_expr.items {
-            self.check_list_item(env, item, Some(&expected_item_ty))?
-                .unpack(&mut diags);
-        }
-        Ok(Diagnosed::new(
-            Type::List(Box::new(expected_item_ty)),
-            diags,
-        ))
-    }
-
-    #[inline(never)]
-    fn check_dict_against(
-        &self,
-        env: &TypeEnv<'_>,
-        dict_expr: &ast::DictExpr,
-        expected_dict: &DictType,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let expected_key = expected_dict.key.as_ref().clone().unfold();
-        let expected_value = expected_dict.value.as_ref().clone().unfold();
-        for entry in &dict_expr.entries {
-            self.check_expr(env, &entry.key, Some(&expected_key))?
-                .unpack(&mut diags);
-            self.check_expr(env, &entry.value, Some(&expected_value))?
-                .unpack(&mut diags);
-        }
-        Ok(Diagnosed::new(
-            Type::Dict(DictType {
-                key: Box::new(expected_key),
-                value: Box::new(expected_value),
-            }),
-            diags,
-        ))
-    }
-
-    #[inline(never)]
-    fn check_if_against(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        if_expr: &ast::IfExpr,
-        expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        self.check_expr(env, if_expr.condition.as_ref(), Some(&Type::Bool))?
-            .unpack(&mut diags);
-
-        let then_ty = self
-            .synth_expr(env, if_expr.then_expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
-
-        if let Some(else_expr) = if_expr.else_expr.as_ref() {
-            self.check_expr(env, else_expr.as_ref(), Some(&then_ty))?
-                .unpack(&mut diags);
-            self.subsumption_check(env, expr.span(), then_ty.clone(), expected, &mut diags)?;
-            return Ok(Diagnosed::new(then_ty, diags));
-        }
-
-        let result_ty = Type::Optional(Box::new(then_ty));
-        self.subsumption_check(env, expr.span(), result_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(result_ty, diags))
-    }
-
-    #[inline(never)]
-    fn check_let_against(
-        &self,
-        env: &TypeEnv<'_>,
-        let_expr: &ast::LetExpr,
-        expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let annotation_ty = let_expr
-            .bind
-            .ty
-            .as_ref()
-            .map(|te| self.resolve_type_expr(env, te).unpack(&mut diags));
-        let bind_ty = self
-            .check_expr(env, let_expr.bind.expr.as_ref(), annotation_ty.as_ref())?
-            .unpack(&mut diags);
-        let bind_ty = annotation_ty.unwrap_or(bind_ty);
-        let inner_env = env.with_local(
-            let_expr.bind.var.name.as_str(),
-            let_expr.bind.var.span(),
-            bind_ty,
-        );
-        let body_ty = self
-            .check_expr(&inner_env, let_expr.expr.as_ref(), Some(expected))?
-            .unpack(&mut diags);
-        Ok(Diagnosed::new(body_ty, diags))
-    }
-
-    #[inline(never)]
-    fn check_type_cast_against(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        cast: &ast::TypeCastExpr,
-        expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let target_ty = self.resolve_type_expr(env, &cast.ty).unpack(&mut diags);
-        self.check_expr(env, &cast.expr, Some(&target_ty))?
-            .unpack(&mut diags);
-        self.subsumption_check(env, expr.span(), target_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(target_ty, diags))
-    }
-
-    #[inline(never)]
-    fn check_call_against(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        call_expr: &ast::CallExpr,
-        expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let actual_ty = self.synth_call(env, expr, call_expr)?.unpack(&mut diags);
-        self.subsumption_check(env, expr.span(), actual_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(actual_ty, diags))
-    }
-
-    #[inline(never)]
-    fn check_try_against(
-        &self,
-        env: &TypeEnv<'_>,
-        expr: &crate::Loc<ast::Expr>,
-        try_expr: &ast::TryExpr,
-        expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
-        let mut diags = DiagList::new();
-        let try_ty = self
-            .check_expr(env, try_expr.expr.as_ref(), Some(expected))?
-            .unpack(&mut diags)
-            .unfold();
-
-        self.check_catch_clauses(env, try_expr, &try_ty, &mut diags)?;
-
-        self.subsumption_check(env, expr.span(), try_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(try_ty, diags))
-    }
-
-    // ═══════════════════════════════════════════════════════════════════════════
     // List item checking
     // ═══════════════════════════════════════════════════════════════════════════
 
-    fn check_list_item(
+    pub(crate) fn check_list_item(
         &self,
         env: &TypeEnv<'_>,
         item: &ast::ListItem,

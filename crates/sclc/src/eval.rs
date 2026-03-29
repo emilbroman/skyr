@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use ids::ResourceId;
 
-use crate::{Dict, ExceptionValue, ExternFnValue, FnValue, Record, TrackedValue, Value, ast};
+use crate::{ExternFnValue, Record, TrackedValue, Value, ast};
 
 #[derive(Debug)]
 pub struct StackFrame<'a> {
@@ -27,7 +27,7 @@ impl StackFrame<'_> {
         depth
     }
 
-    fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span, String)> {
+    pub(crate) fn collect_trace(&self) -> Vec<(crate::ModuleId, crate::Span, String)> {
         let mut trace = vec![(self.module_id.clone(), self.span, self.name.clone())];
         let mut frame = self.parent;
         while let Some(f) = frame {
@@ -39,11 +39,11 @@ impl StackFrame<'_> {
 }
 
 pub struct EvalEnv<'a> {
-    module_id: Option<&'a crate::ModuleId>,
+    pub(crate) module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>)>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
-    stack: Option<&'a StackFrame<'a>>,
+    pub(crate) stack: Option<&'a StackFrame<'a>>,
 }
 
 impl<'a> Default for EvalEnv<'a> {
@@ -226,8 +226,8 @@ impl FnEnv {
 }
 
 pub struct Eval {
-    ctx: EvalCtx,
-    externs: HashMap<String, Value>,
+    pub(crate) ctx: EvalCtx,
+    pub(crate) externs: HashMap<String, Value>,
 }
 
 /// Resource effects emitted during evaluation.
@@ -269,11 +269,11 @@ pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<ResourceId, crate::Resource>,
     namespace: String,
-    source_trace: Mutex<ids::SourceTrace>,
+    pub(crate) source_trace: Mutex<ids::SourceTrace>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum ListItemOutcome {
+pub(crate) enum ListItemOutcome {
     Complete,
     Pending(BTreeSet<ResourceId>),
 }
@@ -582,15 +582,18 @@ impl Eval {
         self.add_extern(name, Value::ExternFn(ExternFnValue::new(Box::new(f))));
     }
 
-    fn tracked(value: Value) -> TrackedValue {
+    pub(crate) fn tracked(value: Value) -> TrackedValue {
         TrackedValue::new(value)
     }
 
-    fn pending_with(dependencies: BTreeSet<ResourceId>) -> TrackedValue {
+    pub(crate) fn pending_with(dependencies: BTreeSet<ResourceId>) -> TrackedValue {
         TrackedValue::pending().with_dependencies(dependencies)
     }
 
-    fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>) -> TrackedValue {
+    pub(crate) fn with_dependencies(
+        value: Value,
+        dependencies: BTreeSet<ResourceId>,
+    ) -> TrackedValue {
         TrackedValue::new(value).with_dependencies(dependencies)
     }
 
@@ -604,7 +607,7 @@ impl Eval {
         })
     }
 
-    fn eval_expr_inner(
+    pub(crate) fn eval_expr_inner(
         &self,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
@@ -615,519 +618,28 @@ impl Eval {
             ast::Expr::Bool(bool) => Ok(Self::tracked(Value::Bool(bool.value))),
             ast::Expr::Nil => Ok(Self::tracked(Value::Nil)),
             ast::Expr::Str(str) => Ok(Self::tracked(Value::Str(str.value.clone()))),
-            ast::Expr::Extern(extern_expr) => self
-                .externs
-                .get(extern_expr.name.as_str())
-                .cloned()
-                .map(Self::tracked)
-                .ok_or_else(|| {
-                    env.throw(
-                        EvalErrorKind::MissingExtern(extern_expr.name.clone()),
-                        Some((
-                            env.module_id.cloned().unwrap_or_default(),
-                            expr.span(),
-                            "extern".to_string(),
-                        )),
-                    )
-                }),
-            ast::Expr::If(if_expr) => {
-                let condition = self.eval_expr(env, if_expr.condition.as_ref())?;
-                if matches!(&condition.value, Value::Pending(_)) {
-                    return Ok(condition.map(|_| Value::Pending(crate::PendingValue)));
-                }
-
-                match condition.value {
-                    Value::Bool(true) => self.eval_expr(env, if_expr.then_expr.as_ref()),
-                    Value::Bool(false) => {
-                        if let Some(else_expr) = &if_expr.else_expr {
-                            self.eval_expr(env, else_expr.as_ref())
-                        } else {
-                            Ok(Self::tracked(Value::Nil))
-                        }
-                    }
-                    other => Err(env.throw(
-                        EvalErrorKind::UnexpectedValue(other),
-                        Some((
-                            env.module_id.cloned().unwrap_or_default(),
-                            expr.span(),
-                            "if".to_string(),
-                        )),
-                    )),
-                }
-            }
-            ast::Expr::Let(let_expr) => {
-                let bind_value = self.eval_expr(env, let_expr.bind.expr.as_ref())?;
-                let inner_env = env.with_local(let_expr.bind.var.name.as_str(), bind_value);
-                self.eval_expr(&inner_env, let_expr.expr.as_ref())
-            }
-            ast::Expr::Fn(fn_expr) => {
-                let mut captures = HashMap::new();
-                for name in expr.as_ref().free_vars() {
-                    captures.insert(name.to_owned(), self.eval_var_name(env, name)?);
-                }
-                Ok(Self::tracked(Value::Fn(FnValue {
-                    env: FnEnv {
-                        module_id: env.module_id()?,
-                        captures,
-                        parameters: fn_expr
-                            .params
-                            .iter()
-                            .map(|param| param.var.name.clone())
-                            .collect(),
-                        self_name: None,
-                    },
-                    body: *fn_expr.body.clone(),
-                })))
-            }
-            ast::Expr::Call(call_expr) => {
-                let args = call_expr
-                    .args
-                    .iter()
-                    .map(|arg| self.eval_expr(env, arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let callee = self.eval_expr(env, call_expr.callee.as_ref())?;
-                let callee_dependencies = callee.dependencies.clone();
-                if matches!(&callee.value, Value::Pending(_)) {
-                    return Ok(TrackedValue::pending().with_dependencies(callee_dependencies));
-                }
-
-                let frame_name = match &**call_expr.callee.as_ref() {
-                    ast::Expr::Var(var) => var.name.clone(),
-                    _ => "[fn]".to_string(),
-                };
-
-                match callee.value {
-                    Value::Fn(ref function) => {
-                        let call_module_id = env.module_id.cloned().unwrap_or_default();
-                        let frame = StackFrame {
-                            module_id: call_module_id,
-                            span: expr.span(),
-                            name: frame_name,
-                            parent: env.stack,
-                        };
-                        let call_env = function.env.as_eval_env(function, &args, Some(&frame));
-                        self.eval_expr(&call_env, &function.body)
-                            .map(|value| value.with_dependencies(callee_dependencies))
-                    }
-                    Value::ExternFn(function) => {
-                        // Capture the full source trace for resource tracking.
-                        let call_module_id = env.module_id.cloned().unwrap_or_default();
-                        let mut trace = vec![ids::SourceFrame {
-                            module_id: call_module_id.to_string(),
-                            span: expr.span().to_string(),
-                            name: frame_name.clone(),
-                        }];
-                        if let Some(stack) = env.stack {
-                            for (mid, sp, nm) in stack.collect_trace() {
-                                trace.push(ids::SourceFrame {
-                                    module_id: mid.to_string(),
-                                    span: sp.to_string(),
-                                    name: nm,
-                                });
-                            }
-                        }
-                        *self.ctx.source_trace.lock().unwrap() = trace;
-
-                        let result = function
-                            .call(args, &self.ctx)
-                            .map(|value| value.with_dependencies(callee_dependencies));
-                        self.ctx.source_trace.lock().unwrap().clear();
-                        result
-                    }
-                    _ => Ok(Self::tracked(Value::Nil).with_dependencies(callee_dependencies)),
-                }
-            }
-            ast::Expr::Unary(unary_expr) => {
-                let value = self.eval_expr(env, unary_expr.expr.as_ref())?;
-                if matches!(value.value, Value::Pending(_)) {
-                    return Ok(Self::pending_with(value.dependencies));
-                }
-                let unary_span = expr.span();
-                let unary_module_id = env.module_id.cloned().unwrap_or_default();
-                match unary_expr.op {
-                    ast::UnaryOp::Negate => value.try_map(|value| match value {
-                        Value::Int(value) => Ok(Value::Int(-value)),
-                        Value::Float(value_float) => Ok(Value::Float(
-                            ordered_float::NotNan::new(-value_float.into_inner()).map_err(
-                                |_| {
-                                    env.throw(
-                                        EvalErrorKind::InvalidNumericResult(
-                                            "unary - produced NaN".into(),
-                                        ),
-                                        Some((
-                                            unary_module_id.clone(),
-                                            unary_span,
-                                            "-".to_string(),
-                                        )),
-                                    )
-                                },
-                            )?,
-                        )),
-                        other => Err(env.throw(
-                            EvalErrorKind::UnexpectedValue(other),
-                            Some((unary_module_id.clone(), unary_span, "-".to_string())),
-                        )),
-                    }),
-                }
-            }
-            ast::Expr::Binary(binary_expr) => {
-                let lhs = self.eval_expr(env, binary_expr.lhs.as_ref())?;
-                if matches!(lhs.value, Value::Pending(_)) {
-                    return Ok(Self::pending_with(lhs.dependencies));
-                }
-
-                let binary_span = expr.span();
-                let binary_module_id = env.module_id.cloned().unwrap_or_default();
-                let op_name = format!("{:?}", binary_expr.op).to_lowercase();
-
-                match binary_expr.op {
-                    ast::BinaryOp::And => lhs.try_flat_map(|lhs| match lhs {
-                        Value::Bool(false) => Ok(TrackedValue::new(Value::Bool(false))),
-                        Value::Bool(true) => {
-                            let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
-                            if matches!(&rhs.value, Value::Pending(_)) {
-                                return Ok(rhs.map(|_| Value::Pending(crate::PendingValue)));
-                            }
-                            rhs.try_map(|rhs| match rhs {
-                                Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(env.throw(
-                                    EvalErrorKind::UnexpectedValue(other),
-                                    Some((binary_module_id.clone(), binary_span, op_name.clone())),
-                                )),
-                            })
-                        }
-                        other => Err(env.throw(
-                            EvalErrorKind::UnexpectedValue(other),
-                            Some((binary_module_id.clone(), binary_span, op_name.clone())),
-                        )),
-                    }),
-                    ast::BinaryOp::Or => lhs.try_flat_map(|lhs| match lhs {
-                        Value::Bool(true) => Ok(TrackedValue::new(Value::Bool(true))),
-                        Value::Bool(false) => {
-                            let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
-                            if matches!(&rhs.value, Value::Pending(_)) {
-                                return Ok(rhs.map(|_| Value::Pending(crate::PendingValue)));
-                            }
-                            rhs.try_map(|rhs| match rhs {
-                                Value::Bool(value) => Ok(Value::Bool(value)),
-                                other => Err(env.throw(
-                                    EvalErrorKind::UnexpectedValue(other),
-                                    Some((binary_module_id.clone(), binary_span, op_name.clone())),
-                                )),
-                            })
-                        }
-                        other => Err(env.throw(
-                            EvalErrorKind::UnexpectedValue(other),
-                            Some((binary_module_id.clone(), binary_span, op_name.clone())),
-                        )),
-                    }),
-                    _ => {
-                        let rhs = self.eval_expr(env, binary_expr.rhs.as_ref())?;
-                        if matches!(rhs.value, Value::Pending(_)) {
-                            return Ok(Self::pending_with(rhs.dependencies));
-                        }
-
-                        lhs.try_flat_map(|lhs| {
-                            rhs.try_map(|rhs| {
-                                self.eval_binary_values(binary_expr.op, lhs, rhs)
-                                    .map_err(|kind| {
-                                        env.throw(
-                                            kind,
-                                            Some((
-                                                binary_module_id.clone(),
-                                                binary_span,
-                                                op_name.clone(),
-                                            )),
-                                        )
-                                    })
-                            })
-                        })
-                    }
-                }
-            }
+            ast::Expr::Extern(extern_expr) => extern_expr.eval(self, env, expr),
+            ast::Expr::If(if_expr) => if_expr.eval(self, env, expr),
+            ast::Expr::Let(let_expr) => let_expr.eval(self, env),
+            ast::Expr::Fn(fn_expr) => fn_expr.eval(self, env, expr),
+            ast::Expr::Call(call_expr) => call_expr.eval(self, env, expr),
+            ast::Expr::Unary(unary_expr) => unary_expr.eval(self, env, expr),
+            ast::Expr::Binary(binary_expr) => binary_expr.eval(self, env, expr),
             ast::Expr::Var(var) => self.eval_var_name(env, var.name.as_str()),
-            ast::Expr::Record(record_expr) => {
-                let mut record = Record::default();
-                let mut dependencies = BTreeSet::new();
-                for field in &record_expr.fields {
-                    let value = self.eval_expr(env, &field.expr)?;
-                    dependencies.extend(value.dependencies.clone());
-                    record.insert(field.var.name.clone(), value.value);
-                }
-                Ok(Self::with_dependencies(Value::Record(record), dependencies))
-            }
-            ast::Expr::Dict(dict_expr) => {
-                let mut dict = Dict::default();
-                let mut dependencies = BTreeSet::new();
-                for entry in &dict_expr.entries {
-                    let key = self.eval_expr(env, &entry.key)?;
-                    let value = self.eval_expr(env, &entry.value)?;
-                    dependencies.extend(key.dependencies.clone());
-                    dependencies.extend(value.dependencies.clone());
-                    if matches!(key.value, Value::Pending(_))
-                        || matches!(value.value, Value::Pending(_))
-                    {
-                        return Ok(Self::pending_with(dependencies));
-                    }
-                    dict.insert(key.value, value.value);
-                }
-                Ok(Self::with_dependencies(Value::Dict(dict), dependencies))
-            }
-            ast::Expr::List(list_expr) => {
-                let mut values = Vec::new();
-                let mut dependencies = BTreeSet::new();
-                for item in &list_expr.items {
-                    match self.eval_list_item(env, item, &mut values)? {
-                        ListItemOutcome::Complete => {}
-                        ListItemOutcome::Pending(pending_dependencies) => {
-                            dependencies.extend(pending_dependencies);
-                            return Ok(Self::pending_with(dependencies));
-                        }
-                    }
-                }
-
-                for value in &values {
-                    dependencies.extend(value.dependencies.clone());
-                }
-
-                Ok(Self::with_dependencies(
-                    Value::List(values.into_iter().map(|value| value.value).collect()),
-                    dependencies,
-                ))
-            }
-            ast::Expr::Interp(interp_expr) => {
-                let mut out = String::new();
-                let mut dependencies = BTreeSet::new();
-                for part in &interp_expr.parts {
-                    let value = self.eval_expr(env, part)?;
-                    dependencies.extend(value.dependencies.clone());
-                    if matches!(value.value, Value::Pending(_)) {
-                        return Ok(Self::pending_with(dependencies));
-                    }
-                    out.push_str(&value.value.to_string());
-                }
-                Ok(Self::with_dependencies(Value::Str(out), dependencies))
-            }
-            ast::Expr::TypeCast(cast) => self.eval_expr(env, &cast.expr),
-            ast::Expr::PropertyAccess(property_access) => {
-                let value = self.eval_expr(env, property_access.expr.as_ref())?;
-                match value.value {
-                    Value::Pending(_) => Ok(Self::pending_with(value.dependencies)),
-                    Value::Record(record) => Ok(Self::with_dependencies(
-                        record.get(property_access.property.name.as_str()).clone(),
-                        value.dependencies,
-                    )),
-                    _ => Ok(Self::tracked(Value::Nil)),
-                }
-            }
-            ast::Expr::IndexedAccess(indexed_access) => {
-                let container = self.eval_expr(env, indexed_access.expr.as_ref())?;
-                match container.value {
-                    Value::Pending(_) => Ok(Self::pending_with(container.dependencies)),
-                    Value::Dict(dict) => {
-                        let index = self.eval_expr(env, indexed_access.index.as_ref())?;
-                        let mut deps = container.dependencies;
-                        deps.extend(index.dependencies);
-                        match index.value {
-                            Value::Pending(_) => Ok(Self::pending_with(deps)),
-                            _ => {
-                                let result = dict.get(&index.value).cloned().unwrap_or(Value::Nil);
-                                Ok(Self::with_dependencies(result, deps))
-                            }
-                        }
-                    }
-                    Value::List(list) => {
-                        let index = self.eval_expr(env, indexed_access.index.as_ref())?;
-                        let mut deps = container.dependencies;
-                        deps.extend(index.dependencies);
-                        match index.value {
-                            Value::Pending(_) => Ok(Self::pending_with(deps)),
-                            Value::Int(i) => {
-                                let result = if i >= 0 {
-                                    list.get(i as usize).cloned().unwrap_or(Value::Nil)
-                                } else {
-                                    Value::Nil
-                                };
-                                Ok(Self::with_dependencies(result, deps))
-                            }
-                            _ => Ok(Self::with_dependencies(Value::Nil, deps)),
-                        }
-                    }
-                    _ => Ok(Self::tracked(Value::Nil)),
-                }
-            }
-            ast::Expr::Exception(exception_expr) => {
-                let exception_id = exception_expr.exception_id;
-                if exception_expr.ty.is_some() {
-                    let exc_fn = Value::ExternFn(ExternFnValue::new(Box::new(
-                        move |args: Vec<TrackedValue>, _ctx: &EvalCtx| {
-                            let payload = args
-                                .into_iter()
-                                .next()
-                                .map(|a| a.value)
-                                .unwrap_or(Value::Nil);
-                            Ok(TrackedValue::new(Value::Exception(ExceptionValue {
-                                exception_id,
-                                payload: Box::new(payload),
-                            })))
-                        },
-                    )));
-                    Ok(Self::tracked(exc_fn))
-                } else {
-                    Ok(Self::tracked(Value::Exception(ExceptionValue {
-                        exception_id,
-                        payload: Box::new(Value::Nil),
-                    })))
-                }
-            }
-            ast::Expr::Raise(raise_expr) => {
-                let value = self.eval_expr(env, raise_expr.expr.as_ref())?;
-                if matches!(value.value, Value::Pending(_)) {
-                    return Ok(Self::pending_with(value.dependencies));
-                }
-                let raise_frame = Some((
-                    env.module_id.cloned().unwrap_or_default(),
-                    expr.span(),
-                    "raise".to_string(),
-                ));
-                let exception_name = match raise_expr.expr.as_ref().as_ref() {
-                    ast::Expr::Var(var) => var.name.clone(),
-                    ast::Expr::Call(call) => match call.callee.as_ref().as_ref() {
-                        ast::Expr::Var(var) => var.name.clone(),
-                        _ => "exception".to_string(),
-                    },
-                    _ => "exception".to_string(),
-                };
-                match value.value {
-                    Value::Exception(exc) => Err(env.throw(
-                        EvalErrorKind::Exception(RaisedException {
-                            exception_id: exc.exception_id,
-                            payload: *exc.payload,
-                            name: exception_name,
-                        }),
-                        raise_frame,
-                    )),
-                    other => Err(env.throw(EvalErrorKind::UnexpectedValue(other), raise_frame)),
-                }
-            }
-            ast::Expr::Try(try_expr) => {
-                let try_module_id = env.module_id.cloned().unwrap_or_default();
-                match self.eval_expr(env, try_expr.expr.as_ref()) {
-                    Ok(value) => Ok(value),
-                    Err(EvalError {
-                        kind: EvalErrorKind::Exception(raised),
-                        stack_trace,
-                    }) => {
-                        for catch in &try_expr.catches {
-                            let catch_span = catch.exception_var.span();
-                            let catch_target = self.eval_expr(
-                                env,
-                                &crate::Loc::new(
-                                    ast::Expr::Var(catch.exception_var.clone()),
-                                    catch_span,
-                                ),
-                            )?;
-
-                            match catch_target.value {
-                                Value::Exception(exc) => {
-                                    if exc.exception_id == raised.exception_id {
-                                        return self.eval_expr(env, &catch.body);
-                                    }
-                                }
-                                Value::ExternFn(func) => {
-                                    let arg_value = TrackedValue::new(raised.payload.clone());
-                                    let call_result = func.call(vec![arg_value], &self.ctx)?;
-                                    match call_result.value {
-                                        Value::Exception(exc) => {
-                                            if exc.exception_id == raised.exception_id {
-                                                if let Some(catch_arg) = &catch.catch_arg {
-                                                    let inner_env = env.with_local(
-                                                        catch_arg.name.as_str(),
-                                                        TrackedValue::new(raised.payload.clone()),
-                                                    );
-                                                    return self.eval_expr(&inner_env, &catch.body);
-                                                } else {
-                                                    return self.eval_expr(env, &catch.body);
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            return Err(env.throw(
-                                                EvalErrorKind::UnexpectedValue(call_result.value),
-                                                Some((
-                                                    try_module_id.clone(),
-                                                    catch_span,
-                                                    "catch".to_string(),
-                                                )),
-                                            ));
-                                        }
-                                    }
-                                }
-                                Value::Fn(function) => {
-                                    let arg_value = TrackedValue::new(raised.payload.clone());
-                                    let frame = StackFrame {
-                                        module_id: try_module_id.clone(),
-                                        span: catch_span,
-                                        name: "[fn]".to_string(),
-                                        parent: env.stack,
-                                    };
-                                    let call_env = function.env.as_eval_env(
-                                        &function,
-                                        &[arg_value],
-                                        Some(&frame),
-                                    );
-                                    let call_result = self.eval_expr(&call_env, &function.body)?;
-                                    match call_result.value {
-                                        Value::Exception(exc) => {
-                                            if exc.exception_id == raised.exception_id {
-                                                if let Some(catch_arg) = &catch.catch_arg {
-                                                    let inner_env = env.with_local(
-                                                        catch_arg.name.as_str(),
-                                                        TrackedValue::new(raised.payload.clone()),
-                                                    );
-                                                    return self.eval_expr(&inner_env, &catch.body);
-                                                } else {
-                                                    return self.eval_expr(env, &catch.body);
-                                                }
-                                            }
-                                        }
-                                        _ => {
-                                            return Err(env.throw(
-                                                EvalErrorKind::UnexpectedValue(call_result.value),
-                                                Some((
-                                                    try_module_id.clone(),
-                                                    catch_span,
-                                                    "catch".to_string(),
-                                                )),
-                                            ));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    return Err(env.throw(
-                                        EvalErrorKind::UnexpectedValue(catch_target.value),
-                                        Some((
-                                            try_module_id.clone(),
-                                            catch_span,
-                                            "catch".to_string(),
-                                        )),
-                                    ));
-                                }
-                            }
-                        }
-                        // No catch matched, re-raise
-                        Err(EvalError {
-                            kind: EvalErrorKind::Exception(raised),
-                            stack_trace,
-                        })
-                    }
-                    Err(other) => Err(other),
-                }
-            }
+            ast::Expr::Record(record_expr) => record_expr.eval(self, env),
+            ast::Expr::Dict(dict_expr) => dict_expr.eval(self, env),
+            ast::Expr::List(list_expr) => list_expr.eval(self, env),
+            ast::Expr::Interp(interp_expr) => interp_expr.eval(self, env),
+            ast::Expr::TypeCast(cast) => cast.eval(self, env),
+            ast::Expr::PropertyAccess(pa) => pa.eval(self, env),
+            ast::Expr::IndexedAccess(ia) => ia.eval(self, env),
+            ast::Expr::Exception(exc) => exc.eval(self, env, expr),
+            ast::Expr::Raise(raise) => raise.eval(self, env, expr),
+            ast::Expr::Try(try_expr) => try_expr.eval(self, env, expr),
         }
     }
 
-    fn eval_binary_values(
+    pub(crate) fn eval_binary_values(
         &self,
         op: ast::BinaryOp,
         lhs: Value,
@@ -1292,7 +804,7 @@ impl Eval {
         }
     }
 
-    fn eval_list_item(
+    pub(crate) fn eval_list_item(
         &self,
         env: &EvalEnv<'_>,
         item: &ast::ListItem,
@@ -1357,7 +869,11 @@ impl Eval {
         }
     }
 
-    fn eval_var_name(&self, env: &EvalEnv<'_>, name: &str) -> Result<TrackedValue, EvalError> {
+    pub(crate) fn eval_var_name(
+        &self,
+        env: &EvalEnv<'_>,
+        name: &str,
+    ) -> Result<TrackedValue, EvalError> {
         if let Some(local_value) = env.lookup_local(name) {
             return Ok(local_value.clone());
         }
