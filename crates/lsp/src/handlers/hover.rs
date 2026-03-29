@@ -34,23 +34,33 @@ pub fn hover(
     };
 
     let info = cursor_info.lock().unwrap();
-    let result = match &info.ty {
-        Some(ty) => {
-            let hover = lsp::Hover {
-                contents: lsp::HoverContents::Scalar(lsp::MarkedString::LanguageString(
-                    lsp::LanguageString {
-                        language: "scl".to_string(),
-                        value: ty.to_string(),
-                    },
-                )),
-                range: None,
-            };
-            serde_json::to_value(hover).unwrap_or_else(|err| {
-                eprintln!("lsp: failed to serialize hover result: {err}");
-                serde_json::Value::Null
-            })
-        }
-        None => serde_json::Value::Null,
+    let mut parts = Vec::new();
+    let type_value = match (&info.identifier, &info.ty) {
+        (Some(sclc::CursorIdentifier::Let(name)), Some(ty)) => Some(format!("let {name}: {ty}")),
+        (Some(sclc::CursorIdentifier::Type(name)), Some(ty)) => Some(format!("type {name} {ty}")),
+        (None, Some(ty)) => Some(ty.to_string()),
+        _ => None,
+    };
+    if let Some(value) = type_value {
+        parts.push(lsp::MarkedString::LanguageString(lsp::LanguageString {
+            language: "scl".to_string(),
+            value,
+        }));
+    }
+    if let Some(description) = &info.description {
+        parts.push(lsp::MarkedString::String(description.clone()));
+    }
+    let result = if parts.is_empty() {
+        serde_json::Value::Null
+    } else {
+        let hover = lsp::Hover {
+            contents: lsp::HoverContents::Array(parts),
+            range: None,
+        };
+        serde_json::to_value(hover).unwrap_or_else(|err| {
+            eprintln!("lsp: failed to serialize hover result: {err}");
+            serde_json::Value::Null
+        })
     };
 
     vec![OutgoingMessage::response(id, result)]
