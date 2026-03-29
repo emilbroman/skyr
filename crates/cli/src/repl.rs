@@ -91,16 +91,14 @@ impl completion::Completer for ReplHelper {
             .map(|i| i + line[i..].chars().next().map_or(0, char::len_utf8))
             .unwrap_or(0);
 
-        let candidates =
-            info.completion_candidates
-                .iter()
-                .map(|c| match c {
-                    sclc::CompletionCandidate::Var(name) => CompletionEntry(name.clone()),
-                    sclc::CompletionCandidate::Member(member) => {
-                        CompletionEntry(member.name.clone())
-                    }
-                })
-                .collect();
+        let candidates = info
+            .completion_candidates
+            .iter()
+            .map(|c| match c {
+                sclc::CompletionCandidate::Var(name) => CompletionEntry(name.clone()),
+                sclc::CompletionCandidate::Member(member) => CompletionEntry(member.name.clone()),
+            })
+            .collect();
 
         Ok((start, candidates))
     }
