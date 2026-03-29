@@ -30,6 +30,9 @@ impl LetExpr {
             .check_expr(env, self.bind.expr.as_ref(), annotation_ty.as_ref())?
             .unpack(&mut diags);
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
+        if let Some((cursor, _)) = &self.bind.var.cursor {
+            cursor.set_type(bind_ty.clone());
+        }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let body_ty = checker
             .synth_expr(&inner_env, self.expr.as_ref())?
@@ -53,6 +56,9 @@ impl LetExpr {
             .check_expr(env, self.bind.expr.as_ref(), annotation_ty.as_ref())?
             .unpack(&mut diags);
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
+        if let Some((cursor, _)) = &self.bind.var.cursor {
+            cursor.set_type(bind_ty.clone());
+        }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let body_ty = checker
             .check_expr(&inner_env, self.expr.as_ref(), Some(expected))?
