@@ -120,9 +120,7 @@ pub async fn hover(source: &str, line: u32, col: u32) -> Option<String> {
     let info = cursor_info.lock().unwrap();
     let ty_str = match (&info.identifier, &info.ty) {
         (Some(sclc::CursorIdentifier::Let(name)), Some(ty)) => Some(format!("let {name}: {ty}")),
-        (Some(sclc::CursorIdentifier::Type(name)), Some(ty)) => {
-            Some(format!("type {name} {ty}"))
-        }
+        (Some(sclc::CursorIdentifier::Type(name)), Some(ty)) => Some(format!("type {name} {ty}")),
         (None, Some(ty)) => Some(ty.to_string()),
         _ => None,
     };
