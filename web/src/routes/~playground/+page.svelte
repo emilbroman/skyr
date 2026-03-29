@@ -7,40 +7,89 @@ import {
     registerProviders,
     setupDiagnostics,
     createEditor,
+    getOrCreateModel,
+    getModel,
+    disposeModel,
+    disposeAllModels,
+    renameModel,
 } from "$lib/playground/monaco.js";
+import { playgroundState } from "$lib/playground/state.svelte.js";
+import FileTree from "$lib/playground/FileTree.svelte";
+import DiagnosticsPanel from "$lib/playground/DiagnosticsPanel.svelte";
+import Repl from "$lib/playground/Repl.svelte";
+import { PanelLeft, PanelBottom, AlertCircle, AlertTriangle, Terminal, X } from "lucide-svelte";
 
 let editorContainer: HTMLDivElement;
-let editor: ReturnType<typeof createEditor> | undefined;
+let editor: monaco.editor.IStandaloneCodeEditor | undefined;
 let worker: SclWorker | undefined;
 let providersDisposable: { dispose(): void } | undefined;
 let diagnosticsDisposable: { dispose(): void } | undefined;
+
+// Panel visibility
+let showFileTree = $state(true);
+let showBottomPanel = $state(true);
+let activeBottomTab = $state<"diagnostics" | "repl">("diagnostics");
+
+// Mobile drawer state
+let mobileFileTreeOpen = $state(false);
+let mobileBottomOpen = $state(false);
+
+// Marker counts for status bar
 let errorCount = $state(0);
 let warningCount = $state(0);
 
-const defaultContent = `// Welcome to the SCL Playground!
-let greeting = "Hello, world!"
-`;
+function syncModelFromState() {
+    const file = playgroundState.activeFile;
+    const content = playgroundState.activeFileContent;
+    const model = getOrCreateModel(file, content);
+    if (editor && editor.getModel() !== model) {
+        editor.setModel(model);
+    }
+}
 
-onMount(() => {
+function syncStateFromModel() {
+    if (!editor) return;
+    const model = editor.getModel();
+    if (!model) return;
+    const path = model.uri.path.startsWith("/") ? model.uri.path.slice(1) : model.uri.path;
+    const content = model.getValue();
+    playgroundState.updateFileContent(path, content);
+}
+
+onMount(async () => {
     registerSclLanguage();
     worker = new SclWorker();
 
-    editor = createEditor(editorContainer, defaultContent);
-    providersDisposable = registerProviders(worker);
-    diagnosticsDisposable = setupDiagnostics(editor, worker);
+    // Create initial model and editor
+    const initialModel = getOrCreateModel(
+        playgroundState.activeFile,
+        playgroundState.activeFileContent,
+    );
+    editor = createEditor(editorContainer, initialModel);
 
-    // Track marker counts for the status bar
-    const markerListener = editor.onDidChangeModelDecorations(() => {
-        const model = editor?.getModel();
-        if (!model) return;
-        const markers = monaco.editor.getModelMarkers({ resource: model.uri });
-        errorCount = markers.filter((m) => m.severity === monaco.MarkerSeverity.Error).length;
-        warningCount = markers.filter((m) => m.severity === monaco.MarkerSeverity.Warning).length;
+    // Sync editor content back to state on change
+    editor.onDidChangeModelContent(() => {
+        syncStateFromModel();
     });
 
-    return () => {
-        markerListener.dispose();
-    };
+    providersDisposable = registerProviders(
+        worker,
+        () => playgroundState.files,
+        () => playgroundState.activeFile,
+    );
+
+    diagnosticsDisposable = setupDiagnostics(
+        worker,
+        () => playgroundState.files,
+        (diags) => {
+            playgroundState.setDiagnostics(diags);
+            errorCount = diags.filter((d) => d.severity === "error").length;
+            warningCount = diags.filter((d) => d.severity === "warning").length;
+        },
+    );
+
+    // Initialize REPL
+    await worker.replInit();
 });
 
 onDestroy(() => {
@@ -48,7 +97,80 @@ onDestroy(() => {
     providersDisposable?.dispose();
     editor?.dispose();
     worker?.dispose();
+    disposeAllModels();
 });
+
+function handleSelectFile(path: string) {
+    // Save current model content
+    syncStateFromModel();
+    playgroundState.setActiveFile(path);
+    syncModelFromState();
+    mobileFileTreeOpen = false;
+}
+
+function handleCreateFile(path: string) {
+    playgroundState.createFile(path);
+    syncModelFromState();
+}
+
+function handleDeleteEntry(path: string) {
+    // Dispose Monaco model(s) for deleted files
+    const files = playgroundState.files;
+    const isFolder = !path.endsWith(".scl");
+    if (isFolder) {
+        const prefix = path.endsWith("/") ? path : `${path}/`;
+        for (const filePath of Object.keys(files)) {
+            if (filePath.startsWith(prefix)) {
+                disposeModel(filePath);
+            }
+        }
+    } else {
+        disposeModel(path);
+    }
+
+    playgroundState.deleteEntry(path);
+    syncModelFromState();
+}
+
+function handleRenameEntry(oldPath: string, newPath: string) {
+    const content = playgroundState.files[oldPath] ?? "";
+    playgroundState.renameEntry(oldPath, newPath);
+    renameModel(oldPath, newPath, content);
+    syncModelFromState();
+}
+
+function handleDiagnosticNavigate(file: string, line: number, character: number) {
+    if (playgroundState.activeFile !== file) {
+        syncStateFromModel();
+        playgroundState.setActiveFile(file);
+        syncModelFromState();
+    }
+    editor?.revealLineInCenter(line + 1);
+    editor?.setPosition({ lineNumber: line + 1, column: character + 1 });
+    editor?.focus();
+    mobileBottomOpen = false;
+}
+
+async function handleReplEval(line: string) {
+    if (!worker) return;
+    const result = await worker.replEval(playgroundState.files, line);
+    playgroundState.addReplEntry({
+        input: line,
+        output: result.output,
+        effects: result.effects,
+        error: result.error,
+    });
+}
+
+async function handleReplReset() {
+    if (!worker) return;
+    await worker.replReset();
+    playgroundState.clearReplHistory();
+}
+
+function handleReplClear() {
+    playgroundState.clearReplHistory();
+}
 </script>
 
 <svelte:head>
@@ -56,23 +178,236 @@ onDestroy(() => {
 </svelte:head>
 
 <div class="flex flex-col flex-1 min-h-0">
+    <!-- Top bar -->
     <div
         class="h-10 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
     >
-        <span class="text-sm font-medium text-gray-700">SCL Playground</span>
-        <div class="flex items-center gap-3 text-xs">
-            {#if errorCount > 0}
-                <span class="text-red-600">{errorCount} error{errorCount !== 1 ? "s" : ""}</span>
-            {/if}
-            {#if warningCount > 0}
-                <span class="text-yellow-600"
-                    >{warningCount} warning{warningCount !== 1 ? "s" : ""}</span
+        <div class="flex items-center gap-2">
+            <!-- Mobile toggles -->
+            <button
+                class="md:hidden p-1 text-gray-500 hover:text-gray-700 rounded"
+                onclick={() => (mobileFileTreeOpen = !mobileFileTreeOpen)}
+                title="Toggle file tree"
+            >
+                <PanelLeft class="w-4 h-4" />
+            </button>
+            <span class="text-sm font-medium text-gray-700">SCL Playground</span>
+            <span class="text-xs text-gray-400 hidden sm:inline">
+                — {playgroundState.activeFile}
+            </span>
+        </div>
+        <div class="flex items-center gap-2">
+            <div class="flex items-center gap-3 text-xs">
+                {#if errorCount > 0}
+                    <span class="text-red-600 flex items-center gap-1">
+                        <AlertCircle class="w-3.5 h-3.5" />
+                        {errorCount}
+                    </span>
+                {/if}
+                {#if warningCount > 0}
+                    <span class="text-yellow-600 flex items-center gap-1">
+                        <AlertTriangle class="w-3.5 h-3.5" />
+                        {warningCount}
+                    </span>
+                {/if}
+                {#if errorCount === 0 && warningCount === 0}
+                    <span class="text-green-600 text-xs">No issues</span>
+                {/if}
+            </div>
+            <!-- Desktop panel toggles -->
+            <button
+                class="hidden md:block p-1 text-gray-400 hover:text-gray-600 rounded {showFileTree
+                    ? 'bg-gray-100'
+                    : ''}"
+                onclick={() => (showFileTree = !showFileTree)}
+                title="Toggle file tree"
+            >
+                <PanelLeft class="w-4 h-4" />
+            </button>
+            <button
+                class="hidden md:block p-1 text-gray-400 hover:text-gray-600 rounded {showBottomPanel
+                    ? 'bg-gray-100'
+                    : ''}"
+                onclick={() => (showBottomPanel = !showBottomPanel)}
+                title="Toggle bottom panel"
+            >
+                <PanelBottom class="w-4 h-4" />
+            </button>
+            <!-- Mobile bottom panel toggle -->
+            <button
+                class="md:hidden p-1 text-gray-500 hover:text-gray-700 rounded"
+                onclick={() => (mobileBottomOpen = !mobileBottomOpen)}
+                title="Toggle diagnostics/REPL"
+            >
+                <Terminal class="w-4 h-4" />
+            </button>
+        </div>
+    </div>
+
+    <!-- Main content area -->
+    <div class="flex flex-1 min-h-0 relative">
+        <!-- File tree sidebar (desktop) -->
+        {#if showFileTree}
+            <div class="hidden md:flex w-60 border-r border-gray-200 bg-white shrink-0">
+                <FileTree
+                    tree={playgroundState.fileTree}
+                    activeFile={playgroundState.activeFile}
+                    onSelectFile={handleSelectFile}
+                    onCreateFile={handleCreateFile}
+                    onDeleteEntry={handleDeleteEntry}
+                    onRenameEntry={handleRenameEntry}
+                />
+            </div>
+        {/if}
+
+        <!-- File tree drawer (mobile) -->
+        {#if mobileFileTreeOpen}
+            <div class="md:hidden absolute inset-0 z-30 flex">
+                <div class="w-64 bg-white border-r border-gray-200 shadow-lg flex flex-col">
+                    <div
+                        class="flex items-center justify-between px-3 py-2 border-b border-gray-200"
+                    >
+                        <span class="text-sm font-medium text-gray-700">Files</span>
+                        <button
+                            class="p-1 text-gray-400 hover:text-gray-600"
+                            onclick={() => (mobileFileTreeOpen = false)}
+                        >
+                            <X class="w-4 h-4" />
+                        </button>
+                    </div>
+                    <div class="flex-1 overflow-hidden">
+                        <FileTree
+                            tree={playgroundState.fileTree}
+                            activeFile={playgroundState.activeFile}
+                            onSelectFile={handleSelectFile}
+                            onCreateFile={handleCreateFile}
+                            onDeleteEntry={handleDeleteEntry}
+                            onRenameEntry={handleRenameEntry}
+                        />
+                    </div>
+                </div>
+                <button
+                    class="flex-1 bg-black/20"
+                    onclick={() => (mobileFileTreeOpen = false)}
+                    aria-label="Close file tree"
+                ></button>
+            </div>
+        {/if}
+
+        <!-- Editor + bottom panel -->
+        <div class="flex flex-col flex-1 min-w-0 min-h-0">
+            <!-- Editor -->
+            <div class="flex-1 min-h-0" bind:this={editorContainer}></div>
+
+            <!-- Bottom panel (desktop) -->
+            {#if showBottomPanel}
+                <div
+                    class="hidden md:flex flex-col h-60 border-t border-gray-200 bg-white shrink-0"
                 >
-            {/if}
-            {#if errorCount === 0 && warningCount === 0}
-                <span class="text-green-600">No issues</span>
+                    <!-- Tab bar -->
+                    <div class="flex border-b border-gray-200 shrink-0">
+                        <button
+                            class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
+                            'diagnostics'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700'}"
+                            onclick={() => (activeBottomTab = "diagnostics")}
+                        >
+                            Problems
+                            {#if errorCount + warningCount > 0}
+                                <span
+                                    class="ml-1 px-1.5 py-0.5 rounded-full text-xs {errorCount > 0
+                                        ? 'bg-red-100 text-red-700'
+                                        : 'bg-yellow-100 text-yellow-700'}"
+                                >
+                                    {errorCount + warningCount}
+                                </span>
+                            {/if}
+                        </button>
+                        <button
+                            class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
+                            'repl'
+                                ? 'border-blue-500 text-blue-600'
+                                : 'border-transparent text-gray-500 hover:text-gray-700'}"
+                            onclick={() => (activeBottomTab = "repl")}
+                        >
+                            REPL
+                        </button>
+                    </div>
+                    <!-- Tab content -->
+                    <div class="flex-1 min-h-0 overflow-hidden">
+                        {#if activeBottomTab === "diagnostics"}
+                            <DiagnosticsPanel
+                                diagnostics={playgroundState.diagnostics}
+                                onNavigate={handleDiagnosticNavigate}
+                            />
+                        {:else}
+                            <Repl
+                                history={playgroundState.replHistory}
+                                onEval={handleReplEval}
+                                onReset={handleReplReset}
+                                onClear={handleReplClear}
+                            />
+                        {/if}
+                    </div>
+                </div>
             {/if}
         </div>
     </div>
-    <div class="flex-1 min-h-0" bind:this={editorContainer}></div>
+
+    <!-- Mobile bottom drawer -->
+    {#if mobileBottomOpen}
+        <div class="md:hidden absolute bottom-0 left-0 right-0 z-30 flex flex-col h-[60vh]">
+            <button
+                class="h-8 bg-black/20"
+                onclick={() => (mobileBottomOpen = false)}
+                aria-label="Close panel"
+            ></button>
+            <div class="flex flex-col flex-1 bg-white border-t border-gray-200 shadow-lg">
+                <!-- Tab bar -->
+                <div class="flex border-b border-gray-200 shrink-0">
+                    <button
+                        class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
+                        'diagnostics'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+                        onclick={() => (activeBottomTab = "diagnostics")}
+                    >
+                        Problems
+                    </button>
+                    <button
+                        class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
+                        'repl'
+                            ? 'border-blue-500 text-blue-600'
+                            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+                        onclick={() => (activeBottomTab = "repl")}
+                    >
+                        REPL
+                    </button>
+                    <div class="flex-1"></div>
+                    <button
+                        class="px-2 text-gray-400 hover:text-gray-600"
+                        onclick={() => (mobileBottomOpen = false)}
+                    >
+                        <X class="w-4 h-4" />
+                    </button>
+                </div>
+                <div class="flex-1 min-h-0 overflow-hidden">
+                    {#if activeBottomTab === "diagnostics"}
+                        <DiagnosticsPanel
+                            diagnostics={playgroundState.diagnostics}
+                            onNavigate={handleDiagnosticNavigate}
+                        />
+                    {:else}
+                        <Repl
+                            history={playgroundState.replHistory}
+                            onEval={handleReplEval}
+                            onReset={handleReplReset}
+                            onClear={handleReplClear}
+                        />
+                    {/if}
+                </div>
+            </div>
+        </div>
+    {/if}
 </div>
