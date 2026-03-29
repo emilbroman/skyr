@@ -1,4 +1,5 @@
 export interface DiagnosticInfo {
+    file: string;
     line: number;
     character: number;
     end_line: number;
@@ -20,10 +21,17 @@ export interface CompletionItem {
 }
 
 export interface LocationInfo {
+    file?: string;
     line: number;
     character: number;
     end_line: number;
     end_character: number;
+}
+
+export interface ReplResult {
+    output?: string;
+    effects?: string[];
+    error?: string;
 }
 
 type PendingRequest = {
@@ -59,22 +67,44 @@ export class SclWorker {
         });
     }
 
-    async analyze(source: string): Promise<DiagnosticInfo[]> {
-        return (await this.request({ type: "analyze", source })) as DiagnosticInfo[];
+    async analyze(files: Record<string, string>): Promise<DiagnosticInfo[]> {
+        return (await this.request({ type: "analyze", files })) as DiagnosticInfo[];
     }
 
-    async hover(source: string, line: number, col: number): Promise<HoverInfo | null> {
-        return (await this.request({ type: "hover", source, line, col })) as HoverInfo | null;
+    async hover(
+        files: Record<string, string>,
+        file: string,
+        line: number,
+        col: number,
+    ): Promise<HoverInfo | null> {
+        return (await this.request({ type: "hover", files, file, line, col })) as HoverInfo | null;
     }
 
-    async completions(source: string, line: number, col: number): Promise<CompletionItem[]> {
-        return (await this.request({ type: "completions", source, line, col })) as CompletionItem[];
+    async completions(
+        files: Record<string, string>,
+        file: string,
+        line: number,
+        col: number,
+    ): Promise<CompletionItem[]> {
+        return (await this.request({
+            type: "completions",
+            files,
+            file,
+            line,
+            col,
+        })) as CompletionItem[];
     }
 
-    async gotoDefinition(source: string, line: number, col: number): Promise<LocationInfo | null> {
+    async gotoDefinition(
+        files: Record<string, string>,
+        file: string,
+        line: number,
+        col: number,
+    ): Promise<LocationInfo | null> {
         return (await this.request({
             type: "gotoDefinition",
-            source,
+            files,
+            file,
             line,
             col,
         })) as LocationInfo | null;
@@ -82,6 +112,18 @@ export class SclWorker {
 
     async format(source: string): Promise<string | null> {
         return (await this.request({ type: "format", source })) as string | null;
+    }
+
+    async replInit(): Promise<void> {
+        await this.request({ type: "replInit" });
+    }
+
+    async replEval(files: Record<string, string>, line: string): Promise<ReplResult> {
+        return (await this.request({ type: "replEval", files, line })) as ReplResult;
+    }
+
+    async replReset(): Promise<void> {
+        await this.request({ type: "replReset" });
     }
 
     dispose() {

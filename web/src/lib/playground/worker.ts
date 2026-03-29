@@ -4,14 +4,41 @@ import init, {
     format,
     goto_definition,
     hover,
+    repl_eval,
+    repl_init,
+    repl_reset,
 } from "$lib/sclc-wasm/sclc_wasm.js";
 
 type Request =
-    | { id: number; type: "analyze"; source: string }
-    | { id: number; type: "hover"; source: string; line: number; col: number }
-    | { id: number; type: "completions"; source: string; line: number; col: number }
-    | { id: number; type: "gotoDefinition"; source: string; line: number; col: number }
-    | { id: number; type: "format"; source: string };
+    | { id: number; type: "analyze"; files: Record<string, string> }
+    | {
+          id: number;
+          type: "hover";
+          files: Record<string, string>;
+          file: string;
+          line: number;
+          col: number;
+      }
+    | {
+          id: number;
+          type: "completions";
+          files: Record<string, string>;
+          file: string;
+          line: number;
+          col: number;
+      }
+    | {
+          id: number;
+          type: "gotoDefinition";
+          files: Record<string, string>;
+          file: string;
+          line: number;
+          col: number;
+      }
+    | { id: number; type: "format"; source: string }
+    | { id: number; type: "replInit" }
+    | { id: number; type: "replEval"; files: Record<string, string>; line: string }
+    | { id: number; type: "replReset" };
 
 let ready = false;
 const queue: Request[] = [];
@@ -28,25 +55,37 @@ async function initialize() {
 async function handleMessage(msg: Request) {
     try {
         let result: unknown;
+        const filesJson = "files" in msg ? JSON.stringify(msg.files) : "";
         switch (msg.type) {
             case "analyze":
-                result = JSON.parse(await analyze(msg.source));
+                result = JSON.parse(await analyze(filesJson));
                 break;
             case "hover": {
-                const h = await hover(msg.source, msg.line, msg.col);
+                const h = await hover(filesJson, msg.file, msg.line, msg.col);
                 result = h ? JSON.parse(h) : null;
                 break;
             }
             case "completions":
-                result = JSON.parse(await completions(msg.source, msg.line, msg.col));
+                result = JSON.parse(await completions(filesJson, msg.file, msg.line, msg.col));
                 break;
             case "gotoDefinition": {
-                const loc = await goto_definition(msg.source, msg.line, msg.col);
+                const loc = await goto_definition(filesJson, msg.file, msg.line, msg.col);
                 result = loc ? JSON.parse(loc) : null;
                 break;
             }
             case "format":
                 result = format(msg.source) ?? null;
+                break;
+            case "replInit":
+                repl_init();
+                result = null;
+                break;
+            case "replEval":
+                result = JSON.parse(await repl_eval(filesJson, msg.line));
+                break;
+            case "replReset":
+                repl_reset();
+                result = null;
                 break;
         }
         self.postMessage({ id: msg.id, result });

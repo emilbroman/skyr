@@ -113,15 +113,72 @@ export function registerSclLanguage() {
     });
 }
 
-export function registerProviders(worker: SclWorker): monaco.IDisposable {
+// ---------------------------------------------------------------------------
+// Multi-model management
+// ---------------------------------------------------------------------------
+
+const models = new Map<string, monaco.editor.ITextModel>();
+
+function fileUri(path: string): monaco.Uri {
+    return monaco.Uri.parse(`file:///${path}`);
+}
+
+export function getOrCreateModel(path: string, content: string): monaco.editor.ITextModel {
+    const existing = models.get(path);
+    if (existing && !existing.isDisposed()) {
+        return existing;
+    }
+    const model = monaco.editor.createModel(content, LANGUAGE_ID, fileUri(path));
+    models.set(path, model);
+    return model;
+}
+
+export function getModel(path: string): monaco.editor.ITextModel | undefined {
+    const model = models.get(path);
+    if (model && !model.isDisposed()) return model;
+    models.delete(path);
+    return undefined;
+}
+
+export function disposeModel(path: string) {
+    const model = models.get(path);
+    if (model) {
+        model.dispose();
+        models.delete(path);
+    }
+}
+
+export function disposeAllModels() {
+    for (const model of models.values()) {
+        model.dispose();
+    }
+    models.clear();
+}
+
+export function renameModel(oldPath: string, newPath: string, content: string) {
+    disposeModel(oldPath);
+    return getOrCreateModel(newPath, content);
+}
+
+// ---------------------------------------------------------------------------
+// Language providers (multi-file aware)
+// ---------------------------------------------------------------------------
+
+export function registerProviders(
+    worker: SclWorker,
+    getFiles: () => Record<string, string>,
+    _getActiveFile: () => string,
+): monaco.IDisposable {
     const disposables: monaco.IDisposable[] = [];
 
     // Hover provider
     disposables.push(
         monaco.languages.registerHoverProvider(LANGUAGE_ID, {
             async provideHover(model, position) {
+                const file = activeFileForModel(model);
                 const result = await worker.hover(
-                    model.getValue(),
+                    getFiles(),
+                    file,
                     position.lineNumber - 1,
                     position.column - 1,
                 );
@@ -142,8 +199,10 @@ export function registerProviders(worker: SclWorker): monaco.IDisposable {
         monaco.languages.registerCompletionItemProvider(LANGUAGE_ID, {
             triggerCharacters: ["."],
             async provideCompletionItems(model, position) {
+                const file = activeFileForModel(model);
                 const items = await worker.completions(
-                    model.getValue(),
+                    getFiles(),
+                    file,
                     position.lineNumber - 1,
                     position.column - 1,
                 );
@@ -175,14 +234,17 @@ export function registerProviders(worker: SclWorker): monaco.IDisposable {
     disposables.push(
         monaco.languages.registerDefinitionProvider(LANGUAGE_ID, {
             async provideDefinition(model, position) {
+                const file = activeFileForModel(model);
                 const loc = await worker.gotoDefinition(
-                    model.getValue(),
+                    getFiles(),
+                    file,
                     position.lineNumber - 1,
                     position.column - 1,
                 );
                 if (!loc) return null;
+                const targetUri = loc.file ? fileUri(loc.file) : model.uri;
                 return {
-                    uri: model.uri,
+                    uri: targetUri,
                     range: new monaco.Range(
                         loc.line + 1,
                         loc.character + 1,
@@ -213,34 +275,70 @@ export function registerProviders(worker: SclWorker): monaco.IDisposable {
     };
 }
 
+function activeFileForModel(model: monaco.editor.ITextModel): string {
+    // Extract file path from model URI: file:///Main.scl -> Main.scl
+    const path = model.uri.path;
+    return path.startsWith("/") ? path.slice(1) : path;
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostics (multi-file aware)
+// ---------------------------------------------------------------------------
+
 export function setupDiagnostics(
-    editor: monaco.editor.IStandaloneCodeEditor,
     worker: SclWorker,
+    getFiles: () => Record<string, string>,
+    onDiagnostics: (diags: DiagnosticInfo[]) => void,
 ): monaco.IDisposable {
     let timeout: ReturnType<typeof setTimeout> | undefined;
+    let lastFilesSnapshot = "";
 
     const updateDiagnostics = async () => {
-        const model = editor.getModel();
-        if (!model) return;
-        const source = model.getValue();
-        const diags = await worker.analyze(source);
-        // Only update if the source hasn't changed while we were analyzing
-        if (model.getValue() !== source) return;
-        monaco.editor.setModelMarkers(
-            model,
-            "scl",
-            diags.map((d: DiagnosticInfo) => ({
-                startLineNumber: d.line + 1,
-                startColumn: d.character + 1,
-                endLineNumber: d.end_line + 1,
-                endColumn: d.end_character + 1,
-                message: d.message,
-                severity:
-                    d.severity === "error"
-                        ? monaco.MarkerSeverity.Error
-                        : monaco.MarkerSeverity.Warning,
-            })),
-        );
+        const files = getFiles();
+        const snapshot = JSON.stringify(files);
+        lastFilesSnapshot = snapshot;
+
+        const diags = await worker.analyze(files);
+
+        // Only update if files haven't changed while we were analyzing
+        if (JSON.stringify(getFiles()) !== snapshot) return;
+
+        // Clear all existing markers
+        for (const model of monaco.editor.getModels()) {
+            if (model.getLanguageId() === LANGUAGE_ID) {
+                monaco.editor.setModelMarkers(model, "scl", []);
+            }
+        }
+
+        // Group diagnostics by file and set markers
+        const byFile = new Map<string, DiagnosticInfo[]>();
+        for (const d of diags) {
+            const existing = byFile.get(d.file) ?? [];
+            existing.push(d);
+            byFile.set(d.file, existing);
+        }
+
+        for (const [file, fileDiags] of byFile) {
+            const model = getModel(file);
+            if (!model) continue;
+            monaco.editor.setModelMarkers(
+                model,
+                "scl",
+                fileDiags.map((d) => ({
+                    startLineNumber: d.line + 1,
+                    startColumn: d.character + 1,
+                    endLineNumber: d.end_line + 1,
+                    endColumn: d.end_character + 1,
+                    message: d.message,
+                    severity:
+                        d.severity === "error"
+                            ? monaco.MarkerSeverity.Error
+                            : monaco.MarkerSeverity.Warning,
+                })),
+            );
+        }
+
+        onDiagnostics(diags);
     };
 
     const schedule = () => {
@@ -251,22 +349,43 @@ export function setupDiagnostics(
     // Run immediately on setup
     updateDiagnostics();
 
-    const disposable = editor.onDidChangeModelContent(schedule);
+    // Listen to content changes on ALL scl models
+    const disposables: monaco.IDisposable[] = [];
+
+    // Listen for new models being created
+    disposables.push(
+        monaco.editor.onDidCreateModel((model) => {
+            if (model.getLanguageId() === LANGUAGE_ID) {
+                disposables.push(model.onDidChangeContent(schedule));
+            }
+        }),
+    );
+
+    // Also listen on existing models
+    for (const model of monaco.editor.getModels()) {
+        if (model.getLanguageId() === LANGUAGE_ID) {
+            disposables.push(model.onDidChangeContent(schedule));
+        }
+    }
 
     return {
         dispose() {
             clearTimeout(timeout);
-            disposable.dispose();
+            for (const d of disposables) d.dispose();
         },
     };
 }
 
+// ---------------------------------------------------------------------------
+// Editor creation
+// ---------------------------------------------------------------------------
+
 export function createEditor(
     container: HTMLElement,
-    initialValue: string,
+    model: monaco.editor.ITextModel,
 ): monaco.editor.IStandaloneCodeEditor {
     return monaco.editor.create(container, {
-        value: initialValue,
+        model,
         language: LANGUAGE_ID,
         theme: "vs",
         automaticLayout: true,
