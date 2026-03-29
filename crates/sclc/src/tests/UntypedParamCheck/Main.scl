@@ -1,0 +1,2 @@
+let apply = fn(f: fn(Int) Int, x: Int) f(x)
+export let result = apply(fn(x) x, 42)

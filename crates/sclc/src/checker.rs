@@ -168,6 +168,19 @@ impl crate::Diag for InvalidUnaryOperand {
 }
 
 #[derive(Error, Debug)]
+#[error("type annotation required for parameter")]
+pub struct MissingParameterType {
+    pub module_id: crate::ModuleId,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for MissingParameterType {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("comparison between disjoint types: {lhs} and {rhs}")]
 pub struct DisjointEquality {
     pub module_id: crate::ModuleId,

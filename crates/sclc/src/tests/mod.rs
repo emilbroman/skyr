@@ -537,3 +537,5 @@ test_case!(DiagGenericAliasApp);
 test_case!(DiagNestedNamedType);
 test_case!(DiagRecordFieldNamedType);
 test_case!(DiagNamedRecordInFnType);
+test_case!(DiagUntypedParam);
+test_case!(UntypedParamCheck);
