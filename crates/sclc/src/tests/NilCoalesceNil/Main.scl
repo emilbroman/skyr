@@ -1,0 +1,2 @@
+let x: Str? = nil
+export let r = x ?? "default"

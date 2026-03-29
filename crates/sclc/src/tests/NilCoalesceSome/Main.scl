@@ -1,0 +1,2 @@
+let x: Str? = "hello"
+export let r = x ?? "default"

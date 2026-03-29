@@ -153,6 +153,34 @@ impl crate::Diag for InvalidBinaryOperands {
 }
 
 #[derive(Error, Debug)]
+#[error("optional chaining (?.) on non-optional type {ty}")]
+pub struct OptionalChainOnNonOptional {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for OptionalChainOnNonOptional {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("nil coalescing (??) on non-optional type {ty}")]
+pub struct NilCoalesceOnNonOptional {
+    pub module_id: crate::ModuleId,
+    pub ty: Type,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for NilCoalesceOnNonOptional {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("invalid operand for {op}: {operand}")]
 pub struct InvalidUnaryOperand {
     pub module_id: crate::ModuleId,

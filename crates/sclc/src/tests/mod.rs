@@ -546,3 +546,12 @@ test_case!(DiagRecordFieldNamedType);
 test_case!(DiagNamedRecordInFnType);
 test_case!(DiagUntypedParam);
 test_case!(UntypedParamCheck);
+
+// Optional chaining and nil coalescing
+test_case!(OptionalChainNil);
+test_case!(OptionalChainSome);
+test_case!(NilCoalesceNil);
+test_case!(NilCoalesceSome);
+test_case!(OptionalChainCoalesce);
+test_case!(DiagOptionalChainNonOptional);
+test_case!(DiagNilCoalesceNonOptional);
