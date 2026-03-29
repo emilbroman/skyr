@@ -61,6 +61,16 @@ pub fn completion(
                     .map(|desc| lsp::Documentation::String(desc.clone())),
                 ..Default::default()
             },
+            sclc::CompletionCandidate::Module(name) => lsp::CompletionItem {
+                label: name.clone(),
+                kind: Some(lsp::CompletionItemKind::MODULE),
+                ..Default::default()
+            },
+            sclc::CompletionCandidate::ModuleDir(name) => lsp::CompletionItem {
+                label: name.clone(),
+                kind: Some(lsp::CompletionItemKind::FOLDER),
+                ..Default::default()
+            },
         })
         .collect();
 

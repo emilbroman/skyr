@@ -472,6 +472,7 @@ test_case!(SelfImport);
 test_case!(SelfImportSubdir);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
+test_case!(DiagInvalidImport);
 test_case!(RandomInt);
 test_case!(RandomIntUpdate);
 test_case!(RandomIntTouch);

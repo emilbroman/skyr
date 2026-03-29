@@ -56,6 +56,40 @@ impl<S: sclc::SourceRepo> sclc::SourceRepo for OverlaySource<S> {
         }
         self.inner.read_file(path).await
     }
+
+    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
+        let mut entries = self.inner.list_children(path).await?;
+
+        // Merge entries from open documents in the editor
+        let prefix = self.root.join(path);
+        let prefix_str = prefix.to_string_lossy();
+        for doc_path in self.documents.paths() {
+            let doc_str = doc_path.to_string_lossy();
+            let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
+                doc_str.strip_prefix(prefix_str.as_ref())
+            } else {
+                doc_str
+                    .strip_prefix(prefix_str.as_ref())
+                    .and_then(|r| r.strip_prefix('/'))
+            };
+            if let Some(relative) = relative {
+                if let Some(slash_pos) = relative.find('/') {
+                    let dir_name = relative[..slash_pos].to_owned();
+                    let entry = sclc::ChildEntry::Directory(dir_name);
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                    }
+                } else if let Some(stem) = relative.strip_suffix(".scl") {
+                    let entry = sclc::ChildEntry::Module(stem.to_owned());
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+
+        Ok(entries)
+    }
 }
 
 /// Result of analyzing a workspace — diagnostics grouped by file URI string.

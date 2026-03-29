@@ -98,6 +98,8 @@ impl completion::Completer for ReplHelper {
             .map(|c| match c {
                 sclc::CompletionCandidate::Var(name) => CompletionEntry(name.clone()),
                 sclc::CompletionCandidate::Member(member) => CompletionEntry(member.name.clone()),
+                sclc::CompletionCandidate::Module(name) => CompletionEntry(name.clone()),
+                sclc::CompletionCandidate::ModuleDir(name) => CompletionEntry(name.clone()),
             })
             .collect();
 
@@ -364,9 +366,21 @@ impl Repl {
         };
         program.open_package(source).await;
         let Some(file_mod) = program.resolve_import(&import_path).await?.cloned() else {
+            let vars = &import_stmt.as_ref().vars;
+            let path_span = sclc::Span::new(
+                vars.first()
+                    .expect("import has at least one segment")
+                    .span()
+                    .start(),
+                vars.last()
+                    .expect("import has at least one segment")
+                    .span()
+                    .end(),
+            );
             let diag = sclc::InvalidImport {
-                module_id: import_path,
-                import: import_stmt.clone(),
+                source_module_id: ["Repl"].into(),
+                import_path,
+                path_span,
             };
             let (module_id, span) = diag.locate();
             println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
