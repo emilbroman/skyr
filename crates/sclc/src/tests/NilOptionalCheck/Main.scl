@@ -1,0 +1,2 @@
+let x: Int? = nil
+export let r = x

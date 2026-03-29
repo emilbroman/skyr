@@ -5,7 +5,7 @@ use ordered_float::NotNan;
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
     DiagList, Diagnosed, Loc, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    Value,
+    TypeKind, Value,
 };
 
 use super::{
@@ -133,6 +133,9 @@ impl Expr {
         expected: &Type,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match self {
+            Expr::Nil if matches!(expected.kind, TypeKind::Optional(_)) => {
+                Ok(Diagnosed::new(expected.clone(), DiagList::new()))
+            }
             Expr::Fn(fn_expr) => fn_expr.type_check(checker, env, expr, expected),
             Expr::Record(record_expr) => record_expr.type_check(checker, env, expr, expected),
             Expr::List(list_expr) => list_expr.type_check(checker, env, expr, expected),
