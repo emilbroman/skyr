@@ -74,10 +74,14 @@ impl RecordExpr {
             // Completion candidates for record field names
             if let Some((cursor, offset)) = &field.var.cursor {
                 let prefix = &field.var.name[..*offset];
-                for (name, _) in expected_record.iter() {
+                for (name, field_ty) in expected_record.iter() {
                     if name.starts_with(prefix) {
                         cursor.add_completion_candidate(crate::CompletionCandidate::Member(
-                            name.clone(),
+                            crate::CompletionMember {
+                                name: name.clone(),
+                                description: expected_record.get_doc(name).map(str::to_owned),
+                                ty: Some(field_ty.clone()),
+                            },
                         ));
                     }
                 }

@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    AnySource, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package, Program,
-    RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
+    AnySource, CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package,
+    Program, RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -1182,10 +1182,14 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 if let Some((cursor, offset)) = &prop_access.property.cursor {
                     let prefix = &prop_access.property.name[..*offset];
                     if let TypeKind::Record(record_ty) = &lhs_ty.kind {
-                        for (name, _) in record_ty.iter() {
+                        for (name, field_ty) in record_ty.iter() {
                             if name.starts_with(prefix) {
                                 cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::Member(name.clone()),
+                                    crate::CompletionCandidate::Member(CompletionMember {
+                                        name: name.clone(),
+                                        description: record_ty.get_doc(name).map(str::to_owned),
+                                        ty: Some(field_ty.clone()),
+                                    }),
                                 );
                             }
                         }

@@ -4,9 +4,16 @@ use std::sync::{Arc, Mutex};
 use crate::{Position, Span, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompletionMember {
+    pub name: String,
+    pub description: Option<String>,
+    pub ty: Option<Type>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompletionCandidate {
     Var(String),
-    Member(String),
+    Member(CompletionMember),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

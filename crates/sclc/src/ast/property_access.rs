@@ -53,10 +53,14 @@ impl PropertyAccessExpr {
         if let Some((cursor, offset)) = &self.property.cursor {
             let prefix = &self.property.name[..*offset];
             if let TypeKind::Record(record_ty) = &lhs_ty.kind {
-                for (name, _) in record_ty.iter() {
+                for (name, field_ty) in record_ty.iter() {
                     if name.starts_with(prefix) {
                         cursor.add_completion_candidate(crate::CompletionCandidate::Member(
-                            name.clone(),
+                            crate::CompletionMember {
+                                name: name.clone(),
+                                description: record_ty.get_doc(name).map(str::to_owned),
+                                ty: Some(field_ty.clone()),
+                            },
                         ));
                     }
                 }
