@@ -51,7 +51,7 @@ git push skyr main
 
 - [Syntax Reference](syntax.md) — Expressions, statements, and operators
 - [Type System](types.md) — Types, type inference, and type annotations
-- [Standard Library](stdlib.md) — Built-in modules and resources
+- [Standard Library](/~docs/scl/stdlib-ref/) — Built-in modules and resources
 
 ## Language Features at a Glance
 

@@ -42,7 +42,7 @@ This configuration:
 - [Language Overview](scl/index.md) — Introduction and quick start
 - [Syntax Reference](scl/syntax.md) — Expressions, statements, and operators
 - [Type System](scl/types.md) — Types, inference, and annotations
-- [Standard Library](scl/stdlib.md) — Built-in modules and resources
+- [Standard Library](/~docs/scl/stdlib-ref/) — Built-in modules and resources
 
 ## How Resources Work
 
