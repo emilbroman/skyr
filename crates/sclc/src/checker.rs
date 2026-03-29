@@ -1453,15 +1453,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             .unpack(&mut diags);
         let solved = constraints.borrow().solve(type_id, &resolved_ty);
         let resolved_ty = resolved_ty.substitute(&solved);
+        let binding_ty = annotation_ty.unwrap_or(resolved_ty);
         let cache_key = let_bind.expr.as_ref() as *const crate::Loc<ast::Expr>;
         self.global_cache
             .borrow_mut()
-            .insert(cache_key, resolved_ty.clone());
-        let ty = if let Some(ann_ty) = annotation_ty {
-            Type::IsoRec(type_id, Box::new(ann_ty))
-        } else {
-            Type::IsoRec(type_id, Box::new(resolved_ty))
-        };
+            .insert(cache_key, binding_ty.clone());
+        let ty = Type::IsoRec(type_id, Box::new(binding_ty));
         if let Some((cursor, _)) = &let_bind.var.cursor {
             cursor.set_type(ty.clone());
             cursor.set_identifier(CursorIdentifier::Let(let_bind.var.name.clone()));

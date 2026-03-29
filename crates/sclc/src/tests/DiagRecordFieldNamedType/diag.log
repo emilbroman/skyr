@@ -1,1 +1,1 @@
-DiagRecordFieldNamedType/Main 3:11,3:12: undefined member: b in type {a: Int}
+DiagRecordFieldNamedType/Main 3:11,3:12: undefined member: b in type X
