@@ -210,6 +210,25 @@ true && false   // false
 true || false   // true
 ```
 
+### Nil Coalescing Operator
+
+The `??` operator returns its left-hand side if it is not `nil`, otherwise returns its right-hand side. The left-hand side must be an optional type:
+
+```scl
+let name: Str? = nil
+name ?? "anonymous"           // "anonymous"
+
+let port: Int? = 8080
+port ?? 3000                  // 8080
+```
+
+This combines naturally with optional chaining:
+
+```scl
+let user: { name: Str }? = nil
+user?.name ?? "unknown"       // "unknown"
+```
+
 ### Type Cast Operator
 
 The `as` operator casts an expression to a target type:
@@ -225,14 +244,15 @@ The `as` operator has the highest precedence, binding tighter than any binary op
 
 From highest to lowest:
 
-1. Postfix: `.property`, `(args)`, `as Type`
+1. Postfix: `.property`, `?.property`, `(args)`, `as Type`
 2. Unary: `-x`
 3. Multiplicative: `*`, `/`
 4. Additive: `+`, `-`
 5. Comparison: `<`, `<=`, `>`, `>=`
 6. Equality: `==`, `!=`
 7. Logical AND: `&&`
-8. Logical OR: `||`
+8. Nil coalescing: `??`
+9. Logical OR: `||`
 
 All binary operators are left-associative.
 
@@ -257,6 +277,20 @@ config.port
 user.name
 pod.Port
 ```
+
+### Optional Chaining
+
+Use `?.` to safely access properties on optional values. If the left-hand side is `nil`, the entire expression evaluates to `nil` instead of producing an error:
+
+```scl
+let user: { name: Str }? = nil
+user?.name                    // nil (Str?)
+
+let config: { port: Int }? = { port: 8080 }
+config?.port                  // 8080 (Int?)
+```
+
+The result type is always optional. The left-hand side must be an optional type.
 
 ### Indexed Access
 

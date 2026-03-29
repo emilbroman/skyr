@@ -75,6 +75,16 @@ let x: Int? = 42
 let y: Int = x    // Error: Int? is not assignable to Int
 ```
 
+Use `?.` (optional chaining) to safely access fields on optional values, and `??` (nil coalescing) to provide a default when a value is `nil`:
+
+```scl
+let user: { name: Str }? = nil
+user?.name                    // nil (Str?)
+user?.name ?? "anonymous"     // "anonymous" (Str)
+```
+
+See the [Syntax Reference](syntax.md#optional-chaining) for details.
+
 ### Lists
 
 Ordered sequences of values with the same type. Written as `[Type]`:
