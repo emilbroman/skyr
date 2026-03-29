@@ -225,17 +225,27 @@ fn load_fixture(dir_name: &str) -> Fixture {
         "fixture directory does not exist: {fixture_dir}"
     );
 
-    // Collect .scl files
+    // Collect .scl files (recursively, preserving relative paths)
     let mut files = HashMap::new();
-    for entry in std::fs::read_dir(fixture_path).expect("read fixture dir") {
-        let entry = entry.expect("read dir entry");
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "scl") {
-            let filename = path.file_name().unwrap().to_string_lossy().to_string();
-            let content = std::fs::read(&path).expect("read .scl file");
-            files.insert(filename, content);
+    fn collect_scl_files(
+        dir: &std::path::Path,
+        base: &std::path::Path,
+        files: &mut HashMap<String, Vec<u8>>,
+    ) {
+        for entry in std::fs::read_dir(dir).expect("read fixture dir") {
+            let entry = entry.expect("read dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                collect_scl_files(&path, base, files);
+            } else if path.extension().is_some_and(|ext| ext == "scl") {
+                let relative = path.strip_prefix(base).unwrap();
+                let key = relative.to_string_lossy().replace('\\', "/");
+                let content = std::fs::read(&path).expect("read .scl file");
+                files.insert(key, content);
+            }
         }
     }
+    collect_scl_files(fixture_path, fixture_path, &mut files);
 
     assert!(
         files.contains_key("Main.scl"),
@@ -459,6 +469,7 @@ test_case!(MultiExport);
 test_case!(EmptyModule);
 test_case!(ImportModule);
 test_case!(SelfImport);
+test_case!(SelfImportSubdir);
 test_case!(DiagUndefinedVar);
 test_case!(DiagTypeMismatch);
 test_case!(RandomInt);

@@ -1,0 +1,2 @@
+import Self/Sub/Dir/Mod
+export let val = Mod.x
