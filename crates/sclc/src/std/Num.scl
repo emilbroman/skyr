@@ -1,2 +1,8 @@
 /// Convert an integer to a lowercase hexadecimal string without prefix.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let hex = Num.toHex(255)   // "ff"
+/// ```
 export let toHex = extern "Std/Num.toHex": fn(Int) Str

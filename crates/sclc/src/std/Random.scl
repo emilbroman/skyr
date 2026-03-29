@@ -2,6 +2,16 @@
 ///
 /// The value is generated when the resource is created and regenerated
 /// on updates (e.g., when `min` or `max` change).
+///
+/// ```scl
+/// import Std/Random
+///
+/// let roll = Random.Int({
+///     name: "dice",
+///     min: 1,
+///     max: 6,
+/// })
+/// ```
 export let Int = extern "Std/Random.Int": fn({
 	/// Resource identifier (must be unique)
 	name: Str,

@@ -1,10 +1,41 @@
 /// Convert any value to a JSON string.
 ///
+/// Value mappings:
+/// - `Int` → JSON `number`
+/// - `Float` → JSON `number`
+/// - `Str` → JSON `string`
+/// - `Bool` → JSON `true` / `false`
+/// - `Never?` (`nil`) → JSON `null`
+/// - `List` → JSON `array`
+/// - `Record` → JSON `object`
+/// - `Dict` → JSON `object` (non-string keys are stringified)
+///
 /// Functions cannot be serialized and will cause a runtime error.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let json = Encoding.toJson({ key: "value", count: 42 })
+/// ```
 export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
 
 /// Parse a JSON string into a value.
 ///
+/// Value mappings:
+/// - JSON `number` → `Float`
+/// - JSON `string` → `Str`
+/// - JSON `true` / `false` → `Bool`
+/// - JSON `null` → `Never?` (`nil`)
+/// - JSON `array` → `List`
+/// - JSON `object` → `Dict` (with `Str` keys)
+///
 /// Returns `Any`, so fields are accessed dynamically.
 /// Note: JSON numbers become `Float`, not `Int`.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let data = Encoding.fromJson("{\"key\":\"value\"}")
+/// let port = data.port   // Dynamically typed
+/// ```
 export let fromJson = extern "Std/Encoding.fromJson": fn(Str) Any

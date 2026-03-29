@@ -109,4 +109,16 @@ export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
 /// the given duration, aligned with the Unix epoch. The resource is volatile:
 /// the deployment engine periodically re-checks it. When the clock crosses
 /// a window boundary the output changes, triggering dependent resources to update.
+///
+/// Boundary calculation:
+///
+/// 1. Find the largest epoch-aligned month boundary at or before the current time.
+/// 2. From that month boundary, find the largest millisecond-aligned boundary at or before the current time.
+///
+/// ```scl
+/// import Std/Time
+///
+/// let hourly = Time.Clock({ milliseconds: 3600000 })
+/// let monthly = Time.Clock({ months: 1 })
+/// ```
 export let Clock = extern "Std/Time.Clock": fn(Duration) Instant

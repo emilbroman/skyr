@@ -1,8 +1,12 @@
 import Std/Time
 
-/// Generate an Ed25519 key pair.
+/// Generate an Ed25519 key pair. Keys persist across deployments.
 ///
-/// Keys persist across deployments.
+/// ```scl
+/// import Std/Crypto
+///
+/// let key = Crypto.ED25519PrivateKey({ name: "deploy-key" })
+/// ```
 export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
 	/// Key identifier (unique within environment)
 	name: Str,
@@ -13,9 +17,16 @@ export let ED25519PrivateKey = extern "Std/Crypto.ED25519PrivateKey": fn({
 	publicKeyPem: Str,
 }
 
-/// Generate an ECDSA key pair on a specified curve.
+/// Generate an ECDSA key pair on a specified curve. Keys persist across deployments.
 ///
-/// Keys persist across deployments.
+/// ```scl
+/// import Std/Crypto
+///
+/// let key = Crypto.ECDSAPrivateKey({
+///     name: "signing-key",
+///     curve: "P-384",
+/// })
+/// ```
 export let ECDSAPrivateKey = extern "Std/Crypto.ECDSAPrivateKey": fn({
 	/// Key identifier (unique within environment)
 	name: Str,
@@ -28,9 +39,16 @@ export let ECDSAPrivateKey = extern "Std/Crypto.ECDSAPrivateKey": fn({
 	publicKeyPem: Str,
 }
 
-/// Generate an RSA key pair.
+/// Generate an RSA key pair. Keys persist across deployments.
 ///
-/// Keys persist across deployments.
+/// ```scl
+/// import Std/Crypto
+///
+/// let key = Crypto.RSAPrivateKey({
+///     name: "tls-key",
+///     size: 4096,
+/// })
+/// ```
 export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
 	/// Key identifier (unique within environment)
 	name: Str,
@@ -49,6 +67,19 @@ export let RSAPrivateKey = extern "Std/Crypto.RSAPrivateKey": fn({
 /// so changing any input produces a new CSR.
 ///
 /// Note: P-521 keys are not currently supported for certification requests.
+///
+/// ```scl
+/// let csr = Crypto.CertificationRequest({
+///     privateKeyPem: key.pem,
+///     subject: {
+///         commonName: "example.com",
+///         organization: "My Corp",
+///     },
+///     subjectAlternativeNames: ["example.com", "*.example.com"],
+///     keyUsage: ["digitalSignature", "keyEncipherment"],
+///     extendedKeyUsage: ["serverAuth"],
+/// })
+/// ```
 export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
 	/// Private key PEM (from any `*PrivateKey` resource)
 	privateKeyPem: Str,
@@ -69,9 +100,14 @@ export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
 	},
 	/// Subject Alternative Names — auto-detected as DNS, IP, or email
 	subjectAlternativeNames: [Str]?,
-	/// Key usage flags (e.g., `"digitalSignature"`, `"keyEncipherment"`)
+	/// Key usage flags. Supported values: `"digitalSignature"`,
+	/// `"nonRepudiation"`, `"contentCommitment"`, `"keyEncipherment"`,
+	/// `"dataEncipherment"`, `"keyAgreement"`, `"keyCertSign"`, `"cRLSign"`,
+	/// `"encipherOnly"`, `"decipherOnly"`.
 	keyUsage: [Str]?,
-	/// Extended key usage OIDs (e.g., `"serverAuth"`, `"clientAuth"`)
+	/// Extended key usage OIDs. Supported values: `"serverAuth"`,
+	/// `"clientAuth"`, `"codeSigning"`, `"emailProtection"`,
+	/// `"timeStamping"`, `"ocspSigning"`.
 	extendedKeyUsage: [Str]?,
 }) {
 	/// Signed CSR in PEM format
@@ -87,6 +123,27 @@ export let CertificationRequest = extern "Std/Crypto.CertificationRequest": fn({
 /// so changing any input produces a new certificate.
 ///
 /// Note: P-521 keys are not currently supported for certificate signing.
+///
+/// ```scl
+/// // CA-signed certificate
+/// let cert = Crypto.CertificateSignature({
+///     csrPem: serverCsr.pem,
+///     privateKeyPem: caKey.pem,
+///     caCertPem: caCert.pem,
+///     validity: {
+///         before: Time.add(now, { months: 12 }),
+///     },
+/// })
+///
+/// // Self-signed certificate (omit caCertPem)
+/// let selfSigned = Crypto.CertificateSignature({
+///     csrPem: csr.pem,
+///     privateKeyPem: key.pem,
+///     validity: {
+///         before: Time.add(now, { months: 12 }),
+///     },
+/// })
+/// ```
 export let CertificateSignature = extern "Std/Crypto.CertificateSignature": fn({
 	/// CSR in PEM format (from a `CertificationRequest` resource)
 	csrPem: Str,

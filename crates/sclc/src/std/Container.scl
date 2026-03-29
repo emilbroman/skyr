@@ -19,6 +19,16 @@ export type Image {
 /// The image is built using BuildKit and pushed to Skyr's container registry.
 /// The resource ID is derived from the Git tree hash of the context directory,
 /// so rebuilds only happen when source files change.
+///
+/// ```scl
+/// import Std/Container
+///
+/// let image = Container.Image({
+///     name: "my-app",
+///     context: ".",
+///     containerfile: "Containerfile",
+/// })
+/// ```
 export let Image = extern "Std/Container.Image": fn({
 	/// Image name (without registry prefix)
 	name: Str,
@@ -74,6 +84,25 @@ export type Pod {
 /// denied, and egress to other cluster pods is blocked. Pods can always reach
 /// the internet. Use `Pod.Port` and `Pod.Attachment` to open communication
 /// between pods.
+///
+/// The resource name includes a hash of the inputs, so any change to the pod's
+/// configuration results in a new resource (the deployment engine handles the
+/// old-to-new transition as delete + create).
+///
+/// ```scl
+/// import Std/Container
+///
+/// let pod = Container.Pod({
+///     name: "my-pod",
+///     env: #{ "LOG_LEVEL": "info", "REGION": "eu-north-1" },
+///     containers: [
+///         {
+///             image: "nginx:latest",
+///             env: #{ "LOG_LEVEL": "debug" },
+///         },
+///     ],
+/// })
+/// ```
 export let Pod = extern "Std/Container.Pod": fn({
 	/// Pod name
 	name: Str,
@@ -101,6 +130,12 @@ export type HostPort {
 /// A Host is a virtual network appliance — it doesn't run any containers.
 /// It acts as a DNS entry and load balancer. Use `host.Port` to create
 /// load-balanced ports that route to backend pod ports.
+///
+/// ```scl
+/// import Std/Container
+///
+/// let apiHost = Container.Host({ name: "api" })
+/// ```
 export let Host = extern "Std/Container.Host": fn({
 	/// Host name (becomes `\{name}.internal` for DNS)
 	name: Str,

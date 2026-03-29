@@ -2,6 +2,16 @@
 ///
 /// Artifacts are stored in Skyr's object storage. The URL is a presigned
 /// link that allows downloading the file.
+///
+/// ```scl
+/// import Std/Artifact
+///
+/// let readme = Artifact.File({
+///     name: "readme.txt",
+///     contents: "Hello, world!",
+///     mediaType: "text/plain",
+/// })
+/// ```
 export let File = extern "Std/Artifact.File": fn({
 	/// Artifact name (unique within deployment)
 	name: Str,
