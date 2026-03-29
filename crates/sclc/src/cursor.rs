@@ -14,6 +14,10 @@ pub struct CompletionMember {
 pub enum CompletionCandidate {
     Var(String),
     Member(CompletionMember),
+    /// An importable `.scl` module.
+    Module(String),
+    /// A directory that may contain further modules.
+    ModuleDir(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -19,4 +19,26 @@ impl sclc::SourceRepo for FsSource {
             Err(err) => Err(err),
         }
     }
+
+    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
+        let dir = self.root.join(path);
+        let mut read_dir = match tokio::fs::read_dir(&dir).await {
+            Ok(rd) => rd,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+        let mut entries = Vec::new();
+        while let Some(entry) = read_dir.next_entry().await? {
+            let file_type = entry.file_type().await?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if file_type.is_dir() {
+                entries.push(sclc::ChildEntry::Directory(name));
+            } else if file_type.is_file()
+                && let Some(stem) = name.strip_suffix(".scl")
+            {
+                entries.push(sclc::ChildEntry::Module(stem.to_owned()));
+            }
+        }
+        Ok(entries)
+    }
 }

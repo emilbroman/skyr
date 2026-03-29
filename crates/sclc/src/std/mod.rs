@@ -1,6 +1,6 @@
 use std::{collections::HashMap, convert::Infallible, path::Path};
 
-use crate::{ModuleId, RecordType, SourceRepo, Type};
+use crate::{ChildEntry, ModuleId, RecordType, SourceRepo, Type};
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {
@@ -72,6 +72,27 @@ impl SourceRepo for StdSourceRepo {
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
         let key = Self::normalize(path);
         Ok(self.files.get(&key).map(|data| data.to_vec()))
+    }
+
+    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
+        let prefix = Self::normalize(path);
+        let mut entries = std::collections::BTreeSet::new();
+        for key in self.files.keys() {
+            let relative = if prefix.is_empty() {
+                key.as_str()
+            } else if let Some(rest) = key.strip_prefix(&prefix).and_then(|r| r.strip_prefix('/')) {
+                rest
+            } else {
+                continue;
+            };
+            // Take the first path segment of `relative`
+            if let Some(slash_pos) = relative.find('/') {
+                entries.insert(ChildEntry::Directory(relative[..slash_pos].to_owned()));
+            } else if let Some(stem) = relative.strip_suffix(".scl") {
+                entries.insert(ChildEntry::Module(stem.to_owned()));
+            }
+        }
+        Ok(entries.into_iter().collect())
     }
 
     fn register_extern(eval: &mut crate::Eval) {

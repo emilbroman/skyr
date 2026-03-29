@@ -179,6 +179,18 @@ pub async fn completions(source: &str, line: u32, col: u32) -> String {
                     .map(|ty| format!("let {}: {ty}", &member.name)),
                 description: member.description.clone(),
             },
+            sclc::CompletionCandidate::Module(name) => CompletionItem {
+                label: name.clone(),
+                kind: "module",
+                detail: None,
+                description: None,
+            },
+            sclc::CompletionCandidate::ModuleDir(name) => CompletionItem {
+                label: name.clone(),
+                kind: "folder",
+                detail: None,
+                description: None,
+            },
         })
         .collect();
 

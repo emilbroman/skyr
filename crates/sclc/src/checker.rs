@@ -1,7 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Component;
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -921,11 +920,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     ) -> Result<Diagnosed<Option<(String, Type, Option<String>)>>, TypeCheckError> {
         match stmt {
             ast::ModStmt::Import(import_stmt) => {
-                let alias = import_stmt
-                    .as_ref()
-                    .vars
+                let vars = &import_stmt.as_ref().vars;
+                let alias = vars
                     .last()
                     .expect("import path contains at least one segment");
+
+                // Set type on alias cursor when the import resolves
                 if let Some((cursor, _)) = &alias.cursor
                     && let Some((target_module_id, Some(import_file_mod))) =
                         env.lookup_import(alias.name.as_str())
@@ -948,6 +948,10 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                         cursor.set_type(ty);
                     }
                 }
+
+                // Add completion candidates for import path segments
+                self.add_import_completions(vars);
+
                 Ok(Diagnosed::new(None, DiagList::new()))
             }
             ast::ModStmt::Expr(expr) => {
@@ -1701,6 +1705,75 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
             .filter(|package_name| import_path.starts_with(package_name))
             .max_by_key(|package_name| package_name.len())
             .cloned()
+    }
+
+    /// Add Module/ModuleDir completion candidates for an import path.
+    fn add_import_completions(&self, vars: &[crate::Loc<ast::Var>]) {
+        for (i, var) in vars.iter().enumerate() {
+            let Some((cursor, offset)) = &var.cursor else {
+                continue;
+            };
+            let prefix = &var.name[..*offset];
+
+            if i == 0 {
+                // First segment: suggest package names and "Self"
+                for package_name in self.program.package_names() {
+                    if let Some(first) = package_name.as_slice().first()
+                        && first.starts_with(prefix)
+                    {
+                        cursor.add_completion_candidate(crate::CompletionCandidate::ModuleDir(
+                            first.clone(),
+                        ));
+                    }
+                }
+                if "Self".starts_with(prefix) && self.program.self_package_id().is_some() {
+                    cursor.add_completion_candidate(crate::CompletionCandidate::ModuleDir(
+                        "Self".to_owned(),
+                    ));
+                }
+            } else {
+                // Subsequent segments: resolve the package from prior segments,
+                // build the directory path, and suggest children.
+                let prior_segments: Vec<String> =
+                    vars[..i].iter().map(|v| v.name.clone()).collect();
+                let partial_path = prior_segments.iter().cloned().collect::<crate::ModuleId>();
+                let partial_path = self.resolve_self_import(partial_path);
+
+                let Some(package_name) = self.package_name_for_import(&partial_path) else {
+                    continue;
+                };
+                // The directory path within the package
+                let dir_segments = partial_path.suffix_after(&package_name).unwrap_or(&[]);
+                let mut dir_path = PathBuf::new();
+                for seg in dir_segments {
+                    dir_path.push(seg);
+                }
+
+                if let Some(children) = self
+                    .program
+                    .cached_children_for_import(&package_name, &dir_path)
+                {
+                    for entry in children {
+                        match entry {
+                            crate::ChildEntry::Module(name) => {
+                                if name.starts_with(prefix) {
+                                    cursor.add_completion_candidate(
+                                        crate::CompletionCandidate::Module(name.clone()),
+                                    );
+                                }
+                            }
+                            crate::ChildEntry::Directory(name) => {
+                                if name.starts_with(prefix) {
+                                    cursor.add_completion_candidate(
+                                        crate::CompletionCandidate::ModuleDir(name.clone()),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

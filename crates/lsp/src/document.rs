@@ -96,4 +96,10 @@ impl DocumentCache {
         let docs = read_lock(&self.inner);
         docs.get(path).map(|state| state.version)
     }
+
+    /// Returns all currently cached document paths.
+    pub fn paths(&self) -> Vec<PathBuf> {
+        let docs = read_lock(&self.inner);
+        docs.keys().cloned().collect()
+    }
 }

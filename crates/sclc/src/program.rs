@@ -1,13 +1,13 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use thiserror::Error;
 
 use crate::{
-    AnySource, Diag, DiagList, Diagnosed, ImportStmt, Loc, ModuleId, OpenError, Package,
-    SourceRepo, Value,
+    AnySource, ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo,
+    Value,
 };
 use crate::{TrackedValue, std::StdSourceRepo};
 
@@ -33,6 +33,20 @@ impl<S> Program<S> {
         S: SourceRepo,
     {
         crate::TypeChecker::new(self).check_program()
+    }
+
+    /// Look up cached children for an import path prefix within a package.
+    pub fn cached_children_for_import(
+        &self,
+        package_name: &ModuleId,
+        path: &Path,
+    ) -> Option<&[ChildEntry]> {
+        self.packages.get(package_name)?.cached_children(path)
+    }
+
+    /// Returns all known package names.
+    pub fn package_names(&self) -> impl Iterator<Item = &ModuleId> {
+        self.packages.keys()
     }
 }
 
@@ -64,15 +78,19 @@ pub enum EvaluateError {
 }
 
 #[derive(Error, Debug)]
-#[error("invalid import path: {module_id}")]
+#[error("module not found: {import_path}")]
 pub struct InvalidImport {
-    pub module_id: ModuleId,
-    pub import: Loc<ImportStmt>,
+    /// The module ID of the file containing the import statement.
+    pub source_module_id: ModuleId,
+    /// The target import path that could not be resolved.
+    pub import_path: ModuleId,
+    /// The span covering the import path (first segment start to last segment end).
+    pub path_span: crate::Span,
 }
 
 impl Diag for InvalidImport {
     fn locate(&self) -> (ModuleId, crate::Span) {
-        (self.module_id.clone(), self.import.span())
+        (self.source_module_id.clone(), self.path_span)
     }
 }
 
@@ -117,8 +135,8 @@ impl<S: SourceRepo> Program<S> {
             let discovered_imports = self
                 .packages
                 .values()
-                .flat_map(|package| package.imports())
-                .map(|import_stmt| {
+                .flat_map(|package| package.imports_with_source())
+                .map(|(source_module_id, import_stmt)| {
                     let import_path = import_stmt
                         .as_ref()
                         .vars
@@ -126,35 +144,101 @@ impl<S: SourceRepo> Program<S> {
                         .map(|var| var.as_ref().name.clone())
                         .collect::<ModuleId>();
                     let import_path = self.resolve_self_import(import_path);
-                    (import_path, import_stmt.clone())
+                    (source_module_id, import_path, import_stmt.clone())
                 })
                 .collect::<Vec<_>>();
 
             let pending_imports = discovered_imports
                 .into_iter()
-                .filter(|(import_path, _)| seen_import_paths.insert(import_path.clone()))
+                .filter(|(_, import_path, _)| seen_import_paths.insert(import_path.clone()))
                 .collect::<Vec<_>>();
 
             if pending_imports.is_empty() {
                 break;
             }
 
-            for (import_path, import_stmt) in pending_imports {
+            for (source_module_id, import_path, import_stmt) in pending_imports {
                 if self
                     .resolve_import(&import_path)
                     .await?
                     .unpack(&mut diags)
                     .is_none()
                 {
+                    let vars = &import_stmt.as_ref().vars;
+                    let path_span = crate::Span::new(
+                        vars.first()
+                            .expect("import has at least one segment")
+                            .span()
+                            .start(),
+                        vars.last()
+                            .expect("import has at least one segment")
+                            .span()
+                            .end(),
+                    );
                     diags.push(InvalidImport {
-                        module_id: import_path,
-                        import: import_stmt,
+                        source_module_id,
+                        import_path,
+                        path_span,
                     });
                 }
             }
         }
 
+        // Preload children listings for all packages at root level and at each
+        // prefix seen in import paths, so the type checker can offer completions
+        // synchronously.
+        self.preload_children_for_completions().await;
+
         Ok(Diagnosed::new((), diags))
+    }
+
+    /// Preload directory listings for each package so that import completions
+    /// can be resolved synchronously during type checking.
+    async fn preload_children_for_completions(&mut self) {
+        // Collect all import path prefixes to preload.
+        let mut prefixes_to_load: HashMap<ModuleId, HashSet<PathBuf>> = HashMap::new();
+
+        // Always preload root for every package.
+        for package_name in self.packages.keys() {
+            prefixes_to_load
+                .entry(package_name.clone())
+                .or_default()
+                .insert(PathBuf::new());
+        }
+
+        // For each import, preload parent directory paths.
+        for package in self.packages.values() {
+            for import_stmt in package.imports() {
+                let import_path = import_stmt
+                    .as_ref()
+                    .vars
+                    .iter()
+                    .map(|var| var.as_ref().name.clone())
+                    .collect::<ModuleId>();
+                let import_path = self.resolve_self_import(import_path);
+
+                if let Some(package_name) = self.package_name_for_import(&import_path)
+                    && let Some(module_segments) = import_path.suffix_after(&package_name)
+                {
+                    let paths = prefixes_to_load.entry(package_name).or_default();
+                    // Preload each directory prefix: for Std/Foo/Bar, preload "" and "Foo"
+                    let mut prefix = PathBuf::new();
+                    for segment in &module_segments[..module_segments.len().saturating_sub(1)] {
+                        prefix.push(segment);
+                        paths.insert(prefix.clone());
+                    }
+                }
+            }
+        }
+
+        // Actually load them.
+        for (package_name, paths) in prefixes_to_load {
+            if let Some(package) = self.packages.get_mut(&package_name) {
+                for path in paths {
+                    let _ = package.list_children(&path).await;
+                }
+            }
+        }
     }
 
     pub async fn resolve_import(
