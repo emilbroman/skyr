@@ -1,10 +1,16 @@
 <script lang="ts">
 import { page } from "$app/state";
 import { Menu, X } from "lucide-svelte";
+import { getStdlibModules } from "$lib/stdlib";
 
 let { children } = $props();
 
 let mobileNavOpen = $state(false);
+
+const stdlibRefChildren = getStdlibModules().map((m) => ({
+    title: m.shortName,
+    path: `/~docs/scl/stdlib-ref/${m.slug}/`,
+}));
 
 const nav = [
     { title: "Overview", path: "/~docs/" },
@@ -16,32 +22,42 @@ const nav = [
             { title: "Syntax", path: "/~docs/scl/syntax/" },
             { title: "Types", path: "/~docs/scl/types/" },
             { title: "Standard Library", path: "/~docs/scl/stdlib/" },
+            {
+                title: "Stdlib Reference",
+                path: "/~docs/scl/stdlib-ref/",
+                children: stdlibRefChildren,
+            },
         ],
     },
 ];
+
+interface NavItem {
+    title: string;
+    path: string;
+    children?: NavItem[];
+}
 
 function isActive(path: string): boolean {
     return page.url.pathname === path;
 }
 
-function findCurrentTitle(): string {
-    for (const item of nav) {
+function findCurrentTitle(items: NavItem[]): string | null {
+    for (const item of items) {
         if (isActive(item.path)) return item.title;
         if (item.children) {
-            for (const child of item.children) {
-                if (isActive(child.path)) return child.title;
-            }
+            const found = findCurrentTitle(item.children);
+            if (found) return found;
         }
     }
-    return "Docs";
+    return null;
 }
 
-let currentTitle = $derived(findCurrentTitle());
+let currentTitle = $derived(findCurrentTitle(nav) ?? "Docs");
 </script>
 
-{#snippet navLinks()}
+{#snippet navTree(items: NavItem[])}
     <ul class="space-y-1">
-        {#each nav as item}
+        {#each items as item}
             <li>
                 <a
                     href={item.path}
@@ -53,21 +69,9 @@ let currentTitle = $derived(findCurrentTitle());
                     {item.title}
                 </a>
                 {#if item.children}
-                    <ul class="ml-3 mt-1 space-y-1">
-                        {#each item.children as child}
-                            <li>
-                                <a
-                                    href={child.path}
-                                    onclick={() => (mobileNavOpen = false)}
-                                    class="block px-2 py-1 rounded {isActive(child.path)
-                                        ? 'bg-gray-100 text-gray-900 font-medium'
-                                        : 'text-gray-600 hover:text-gray-900'}"
-                                >
-                                    {child.title}
-                                </a>
-                            </li>
-                        {/each}
-                    </ul>
+                    <div class="ml-3 mt-1">
+                        {@render navTree(item.children)}
+                    </div>
                 {/if}
             </li>
         {/each}
@@ -99,7 +103,7 @@ let currentTitle = $derived(findCurrentTitle());
             </button>
         </div>
         <nav class="flex-1 p-4 text-sm overflow-y-auto">
-            {@render navLinks()}
+            {@render navTree(nav)}
         </nav>
     </div>
 {/if}
@@ -107,7 +111,7 @@ let currentTitle = $derived(findCurrentTitle());
 <div class="flex-1 bg-white flex">
     <!-- Desktop sidebar -->
     <nav class="hidden md:block w-56 shrink-0 border-r border-gray-200 p-4 text-sm sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">
-        {@render navLinks()}
+        {@render navTree(nav)}
     </nav>
 
     <main class="flex-1 min-w-0 max-w-3xl px-8 py-6">

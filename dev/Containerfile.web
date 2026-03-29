@@ -23,6 +23,7 @@ COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
 COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
 COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
+COPY crates/sclc-docgen/Cargo.toml crates/sclc-docgen/Cargo.toml
 COPY crates/sclc-wasm/Cargo.toml crates/sclc-wasm/Cargo.toml
 COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
 COPY crates/scop/Cargo.toml crates/scop/Cargo.toml
@@ -37,7 +38,7 @@ RUN set -eu; \
       crates/plugin_std_crypto/src crates/plugin_std_random/src \
       crates/plugin_std_time/src \
       crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src \
-      crates/cli/src crates/sclc/src crates/sclc-wasm/src \
+      crates/cli/src crates/sclc/src crates/sclc-docgen/src crates/sclc-wasm/src \
       crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
@@ -57,6 +58,7 @@ RUN set -eu; \
     printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
     printf 'fn main() {}\n' > crates/cli/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/sclc-docgen/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc-wasm/src/lib.rs; \
     printf 'fn main() {}\n' > crates/scs/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/scop/src/lib.rs; \
@@ -64,13 +66,15 @@ RUN set -eu; \
     printf 'pub fn _stub() {}\n' > crates/udb/src/lib.rs
 
 # Fetch dependencies with stubs (cached layer)
-RUN cargo fetch --target wasm32-unknown-unknown
+RUN cargo fetch --target wasm32-unknown-unknown && cargo fetch
 
-# Copy real sources for the crates we need and build WASM
+# Copy real sources for the crates we need and build WASM + docgen
 COPY crates/ids/ crates/ids/
 COPY crates/sclc/ crates/sclc/
+COPY crates/sclc-docgen/ crates/sclc-docgen/
 COPY crates/sclc-wasm/ crates/sclc-wasm/
 RUN wasm-pack build crates/sclc-wasm --target web --out-dir /tmp/wasm-out
+RUN cargo run -p sclc-docgen > /tmp/stdlib-types.json
 
 # Stage 2: build static files
 FROM node:25-alpine AS build
@@ -79,6 +83,7 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 COPY --from=wasm /tmp/wasm-out src/lib/sclc-wasm/
+COPY --from=wasm /tmp/stdlib-types.json src/lib/stdlib-types.json
 COPY docs/ /docs/
 RUN npm run build
 

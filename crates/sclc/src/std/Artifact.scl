@@ -19,7 +19,9 @@ export let File = extern "Std/Artifact.File": fn({
 	mediaType: Str?,
 	/// File contents
 	contents: Str,
-}) {
+}) File
+
+export type File {
 	/// The artifact namespace (derived from the environment)
 	namespace: Str,
 	/// The artifact name

@@ -39,6 +39,7 @@ jobs:
               - 'web/**'
               - 'crates/sclc/**'
               - 'crates/sclc-wasm/**'
+              - 'crates/sclc-docgen/**'
               - 'crates/ids/**'
 
   rust-check:
@@ -86,6 +87,9 @@ jobs:
 
       - name: Build WASM
         run: nix develop -c wasm-pack build crates/sclc-wasm --target web --out-dir ../../web/src/lib/sclc-wasm
+
+      - name: Build stdlib types
+        run: nix develop -c cargo run -p sclc-docgen > web/src/lib/stdlib-types.json
 
       - name: web install
         run: npm ci

@@ -2,3 +2,4 @@ node_modules/
 .svelte-kit/
 build/
 src/lib/sclc-wasm/
+src/lib/stdlib-types.json

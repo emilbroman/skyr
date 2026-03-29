@@ -152,10 +152,6 @@ export let Host = extern "Std/Container.Host": fn({
 		protocol: Str?,
 		/// Backend ports to load-balance across.
 		/// Both `Pod.Port` and `Host.Port` outputs satisfy this shape.
-		backends: [{
-			address: Str,
-			port: Int,
-			protocol: Str,
-		}],
+		backends: [Port],
 	}) HostPort,
 }
