@@ -49,21 +49,25 @@ impl FnExpr {
 
         let mut params = Vec::with_capacity(self.params.len());
         for param in &self.params {
-            let param_ty = if let Some(ty_expr) = &param.ty {
-                checker
+            let (body_ty, param_ty) = if let Some(ty_expr) = &param.ty {
+                let ty = checker
                     .resolve_type_expr(&fn_env, ty_expr)
-                    .unpack(&mut diags)
+                    .unpack(&mut diags);
+                (ty.clone(), ty)
             } else {
                 diags.push(MissingParameterType {
                     module_id: env.module_id()?,
                     span: param.var.span(),
                 });
-                Type::Any
+                // Never in body suppresses cascading errors from operations on
+                // the unknown param; Any in the signature avoids false positives
+                // at call sites.
+                (Type::Never, Type::Any)
             };
             if let Some((cursor, _)) = &param.var.cursor {
-                cursor.set_type(param_ty.clone());
+                cursor.set_type(body_ty.clone());
             }
-            fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), param_ty.clone());
+            fn_env = fn_env.with_local(param.var.name.as_str(), param.var.span(), body_ty);
             params.push(param_ty);
         }
 

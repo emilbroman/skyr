@@ -270,20 +270,6 @@ impl crate::Diag for WrongTypeArgCount {
 }
 
 #[derive(Error, Debug)]
-#[error("missing type arguments: expected {expected}")]
-pub struct MissingTypeArgs {
-    pub module_id: crate::ModuleId,
-    pub expected: usize,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for MissingTypeArgs {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
-    }
-}
-
-#[derive(Error, Debug)]
 #[error("type arguments provided to non-generic function")]
 pub struct UnexpectedTypeArgs {
     pub module_id: crate::ModuleId,
@@ -1364,30 +1350,8 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 })
             }
         } else if !fn_ty.type_params.is_empty() {
-            diags.push(MissingTypeArgs {
-                module_id: env.module_id()?,
-                expected: fn_ty.type_params.len(),
-                span: call_expr.callee.span(),
-            });
-            let param_replacements: Vec<(usize, Type)> = fn_ty
-                .type_params
-                .iter()
-                .map(|(id, _)| (*id, Type::Any))
-                .collect();
-            let ret_replacements: Vec<(usize, Type)> = fn_ty
-                .type_params
-                .iter()
-                .map(|(id, _)| (*id, Type::Never))
-                .collect();
-            Ok(FnType {
-                type_params: vec![],
-                params: fn_ty
-                    .params
-                    .iter()
-                    .map(|p| p.substitute(&param_replacements))
-                    .collect(),
-                ret: Box::new(fn_ty.ret.substitute(&ret_replacements)),
-            })
+            // Type params remain — caller will infer type arguments from arg types.
+            Ok(fn_ty)
         } else {
             Ok(fn_ty)
         }
