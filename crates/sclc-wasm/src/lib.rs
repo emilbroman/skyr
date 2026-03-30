@@ -630,6 +630,14 @@ async fn repl_process_import(
         .iter()
         .map(|var| var.as_ref().name.clone())
         .collect();
+    // Allow `Self` as an alias for the current package (`Playground`)
+    let import_path = if import_path.as_slice().first().map(String::as_str) == Some("Self") {
+        let mut segments = vec!["Playground".to_string()];
+        segments.extend(import_path.as_slice()[1..].iter().cloned());
+        sclc::ModuleId::new(segments)
+    } else {
+        import_path
+    };
     let Some(alias) = import_stmt
         .as_ref()
         .vars
@@ -653,6 +661,34 @@ async fn repl_process_import(
         }
     }
 
+    // Resolve all transitive imports (not just the direct one)
+    let mut diags = sclc::DiagList::new();
+    match program.resolve_imports().await {
+        Ok(diagnosed) => {
+            diagnosed.unpack(&mut diags);
+        }
+        Err(e) => {
+            return ReplResult {
+                output: None,
+                effects: Vec::new(),
+                error: Some(format!("{e}")),
+            };
+        }
+    }
+
+    // Evaluate the imported module (program.evaluate wires up transitive imports)
+    let value = match program.evaluate(&import_path, &state.eval).await {
+        Ok(diagnosed_val) => diagnosed_val.into_inner(),
+        Err(e) => {
+            return ReplResult {
+                output: None,
+                effects: drain_effects(&mut state.effects_rx),
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    // Get the file_mod (already loaded by resolve_imports above)
     let resolve_result = program.resolve_import(&import_path).await;
     let Ok(diagnosed) = resolve_result else {
         return ReplResult {
@@ -661,9 +697,7 @@ async fn repl_process_import(
             error: Some(format!("{}", resolve_result.unwrap_err())),
         };
     };
-    let mut diags = sclc::DiagList::new();
     let file_mod_opt = diagnosed.unpack(&mut diags);
-
     let Some(file_mod) = file_mod_opt.cloned() else {
         return ReplResult {
             output: None,
@@ -693,34 +727,23 @@ async fn repl_process_import(
         };
     }
 
-    // Evaluate the imported module
-    let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
-    match state.eval.eval_file_mod(&eval_env, &file_mod) {
-        Ok(value) => {
-            // Extract type-level exports
-            let type_exports = checker
-                .type_level_exports(&type_env, &file_mod)
-                .into_inner();
+    // Extract type-level exports
+    let type_exports = checker
+        .type_level_exports(&type_env, &file_mod)
+        .into_inner();
 
-            state.bindings.insert(alias.clone(), (ty, value));
-            if type_exports.iter().next().is_some() {
-                state
-                    .type_defs
-                    .insert(alias.clone(), sclc::Type::Record(type_exports));
-            }
+    state.bindings.insert(alias.clone(), (ty, value));
+    if type_exports.iter().next().is_some() {
+        state
+            .type_defs
+            .insert(alias.clone(), sclc::Type::Record(type_exports));
+    }
 
-            let effects = drain_effects(&mut state.effects_rx);
-            ReplResult {
-                output: Some(format!("import {import_path}")),
-                effects,
-                error: None,
-            }
-        }
-        Err(e) => ReplResult {
-            output: None,
-            effects: drain_effects(&mut state.effects_rx),
-            error: Some(e.to_string()),
-        },
+    let effects = drain_effects(&mut state.effects_rx);
+    ReplResult {
+        output: Some(format!("import {import_path}")),
+        effects,
+        error: None,
     }
 }
 
