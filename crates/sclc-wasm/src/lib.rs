@@ -127,7 +127,9 @@ async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program<Me
         }
     }
 
-    let _ = program.resolve_imports().await;
+    if let Ok(diagnosed) = program.resolve_imports().await {
+        diagnosed.unpack(&mut diags);
+    }
 
     if let Ok(diagnosed) = program.check_types() {
         diagnosed.unpack(&mut diags);
