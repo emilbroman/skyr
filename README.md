@@ -110,7 +110,7 @@ The RTQ carries four message types:
 | Crate | Resource Types | Description |
 |-------|---------------|-------------|
 | [plugin_std_random](crates/plugin_std_random/) | `Std/Random.Int` | Random number generation |
-| [plugin_std_time](crates/plugin_std_time/) | `Std/Time.Clock` | Clock resource (epoch-aligned time windows) |
+| [plugin_std_time](crates/plugin_std_time/) | `Std/Time.Schedule` | Schedule resource (epoch-aligned time windows) |
 | [plugin_std_artifact](crates/plugin_std_artifact/) | `Std/Artifact.File` | Artifact file storage via ADB |
 | [plugin_std_crypto](crates/plugin_std_crypto/) | `Std/Crypto.ED25519PrivateKey`, `ECDSAPrivateKey`, `RSAPrivateKey` | Cryptographic key pair generation |
 | [plugin_std_container](crates/plugin_std_container/) | `Std/Container.Image`, `Pod`, `Pod.Port` | Container management via SCOP/SCOC |

@@ -185,7 +185,7 @@ The built-in resource types have the following volatility:
 | Resource Type | Volatile |
 |---------------|----------|
 | `Std/Random.Int` | No |
-| `Std/Time.Clock` | Yes |
+| `Std/Time.Schedule` | Yes |
 | `Std/Crypto.ED25519PrivateKey` | No |
 | `Std/Crypto.ECDSAPrivateKey` | No |
 | `Std/Crypto.RSAPrivateKey` | No |

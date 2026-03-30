@@ -1,0 +1,2 @@
+import Std/Time
+export let now = Time.Schedule({ milliseconds: 60000 })

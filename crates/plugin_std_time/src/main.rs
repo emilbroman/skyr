@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, Months, Utc};
 use clap::Parser;
 use sclc::ValueAssertions;
 
-const CLOCK_RESOURCE_TYPE: &str = "Std/Time.Clock";
+const SCHEDULE_RESOURCE_TYPE: &str = "Std/Time.Schedule";
 
 #[derive(Parser)]
 struct Args {
@@ -19,21 +19,21 @@ impl TimePlugin {
         Self
     }
 
-    fn clock_resource(&self, inputs: sclc::Record) -> anyhow::Result<sclc::Resource> {
+    fn schedule_resource(&self, inputs: sclc::Record) -> anyhow::Result<sclc::Resource> {
         let months = *inputs.get("months").assert_int_ref()?;
         let milliseconds = *inputs.get("milliseconds").assert_int_ref()?;
 
         if months <= 0 && milliseconds <= 0 {
             anyhow::bail!(
-                "Clock duration must be positive: \
+                "Schedule duration must be positive: \
                  at least one of months or milliseconds must be greater than zero"
             );
         }
         if months < 0 {
-            anyhow::bail!("Clock months must be non-negative, got {months}");
+            anyhow::bail!("Schedule months must be non-negative, got {months}");
         }
         if milliseconds < 0 {
-            anyhow::bail!("Clock milliseconds must be non-negative, got {milliseconds}");
+            anyhow::bail!("Schedule milliseconds must be non-negative, got {milliseconds}");
         }
 
         let now = Utc::now();
@@ -137,7 +137,7 @@ impl rtp::Plugin for TimePlugin {
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         match id.typ.as_str() {
-            CLOCK_RESOURCE_TYPE => self.clock_resource(inputs),
+            SCHEDULE_RESOURCE_TYPE => self.schedule_resource(inputs),
             _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
@@ -152,7 +152,7 @@ impl rtp::Plugin for TimePlugin {
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         match id.typ.as_str() {
-            CLOCK_RESOURCE_TYPE => self.clock_resource(inputs),
+            SCHEDULE_RESOURCE_TYPE => self.schedule_resource(inputs),
             _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
@@ -165,7 +165,7 @@ impl rtp::Plugin for TimePlugin {
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
         match id.typ.as_str() {
-            CLOCK_RESOURCE_TYPE => self.clock_resource(resource.inputs),
+            SCHEDULE_RESOURCE_TYPE => self.schedule_resource(resource.inputs),
             _ => Ok(resource),
         }
     }
@@ -261,7 +261,7 @@ mod tests {
         let mut inputs = sclc::Record::default();
         inputs.insert(String::from("months"), sclc::Value::Int(0));
         inputs.insert(String::from("milliseconds"), sclc::Value::Int(0));
-        let result = plugin.clock_resource(inputs);
+        let result = plugin.schedule_resource(inputs);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("must be positive"));
     }
@@ -272,7 +272,7 @@ mod tests {
         let mut inputs = sclc::Record::default();
         inputs.insert(String::from("months"), sclc::Value::Int(-1));
         inputs.insert(String::from("milliseconds"), sclc::Value::Int(1000));
-        let result = plugin.clock_resource(inputs);
+        let result = plugin.schedule_resource(inputs);
         assert!(result.is_err());
         assert!(
             result
@@ -288,7 +288,7 @@ mod tests {
         let mut inputs = sclc::Record::default();
         inputs.insert(String::from("months"), sclc::Value::Int(1));
         inputs.insert(String::from("milliseconds"), sclc::Value::Int(-500));
-        let result = plugin.clock_resource(inputs);
+        let result = plugin.schedule_resource(inputs);
         assert!(result.is_err());
         assert!(
             result
@@ -304,7 +304,7 @@ mod tests {
         let mut inputs = sclc::Record::default();
         inputs.insert(String::from("months"), sclc::Value::Int(-1));
         inputs.insert(String::from("milliseconds"), sclc::Value::Int(-1));
-        let result = plugin.clock_resource(inputs);
+        let result = plugin.schedule_resource(inputs);
         assert!(result.is_err());
     }
 

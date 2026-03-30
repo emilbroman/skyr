@@ -511,8 +511,8 @@ test_case!(TimeToISO);
 test_case!(TimeUtc);
 test_case!(TimeAdd);
 test_case!(TimeSubtract);
-test_case!(TimeClock);
-test_case!(TimeClockWithRdb);
+test_case!(TimeSchedule);
+test_case!(TimeScheduleWithRdb);
 test_case!(TimeAddMonths);
 
 // Std/Artifact
