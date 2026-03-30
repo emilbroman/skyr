@@ -20,12 +20,13 @@ export interface FileTreeNode {
 
 function createPlaygroundState() {
     let files = $state<Record<string, string>>({ "Main.scl": defaultContent });
+    let emptyFolders = $state<Set<string>>(new Set());
     let activeFile = $state<string>("Main.scl");
     let diagnostics = $state<DiagnosticInfo[]>([]);
     let replHistory = $state<ReplEntry[]>([]);
 
     function getFiles(): Record<string, string> {
-        return files;
+        return $state.snapshot(files);
     }
 
     function getActiveFile(): string {
@@ -53,12 +54,22 @@ function createPlaygroundState() {
         }
         files = { ...files, [path]: "" };
         activeFile = path;
+        // Remove any ancestor empty-folder markers (they now have content)
+        const next = new Set(emptyFolders);
+        const parts = path.split("/");
+        for (let i = 1; i < parts.length; i++) {
+            next.delete(parts.slice(0, i).join("/"));
+        }
+        emptyFolders = next;
         return true;
     }
 
-    function createFolder(_path: string) {
-        // Folders are implicit from file paths — they appear once a file is created inside them.
-        // The UI prompts for a file name inside the folder via the file tree.
+    function createFolder(path: string) {
+        // Check if the folder already exists implicitly (has files inside it)
+        const prefix = path.endsWith("/") ? path : `${path}/`;
+        const alreadyExists = Object.keys(files).some((f) => f.startsWith(prefix));
+        if (alreadyExists || emptyFolders.has(path)) return;
+        emptyFolders = new Set([...emptyFolders, path]);
     }
 
     function deleteEntry(path: string) {
@@ -73,6 +84,16 @@ function createPlaygroundState() {
         }
 
         files = newFiles;
+
+        // Remove the folder itself and any nested empty folders
+        if (isFolder) {
+            const next = new Set(emptyFolders);
+            next.delete(path);
+            for (const f of emptyFolders) {
+                if (prefix && f.startsWith(prefix)) next.delete(f);
+            }
+            emptyFolders = next;
+        }
 
         // If active file was deleted, switch to first available
         if (!(activeFile in files)) {
@@ -100,6 +121,21 @@ function createPlaygroundState() {
         }
 
         files = newFiles;
+
+        // Rename empty folder entries
+        if (isFolder) {
+            const next = new Set(emptyFolders);
+            for (const f of emptyFolders) {
+                if (f === oldPath) {
+                    next.delete(f);
+                    next.add(newPath);
+                } else if (oldPrefix && newPrefix && f.startsWith(oldPrefix)) {
+                    next.delete(f);
+                    next.add(`${newPrefix}${f.slice(oldPrefix.length)}`);
+                }
+            }
+            emptyFolders = next;
+        }
 
         if (activeFile === oldPath) {
             activeFile = newPath;
@@ -132,6 +168,28 @@ function createPlaygroundState() {
         const root: FileTreeNode[] = [];
         const folderMap = new Map<string, FileTreeNode>();
 
+        function ensureFolder(path: string, children: FileTreeNode[]): FileTreeNode {
+            let folder = folderMap.get(path);
+            if (!folder) {
+                const name = path.includes("/") ? path.slice(path.lastIndexOf("/") + 1) : path;
+                folder = { name, path, type: "folder", children: [] };
+                folderMap.set(path, folder);
+                children.push(folder);
+            }
+            return folder;
+        }
+
+        // Create nodes for explicit empty folders first
+        for (const folderPath of [...emptyFolders].sort()) {
+            const parts = folderPath.split("/");
+            let currentChildren = root;
+            for (let i = 0; i < parts.length; i++) {
+                const currentPath = parts.slice(0, i + 1).join("/");
+                const folder = ensureFolder(currentPath, currentChildren);
+                currentChildren = folder.children!;
+            }
+        }
+
         const sortedPaths = Object.keys(files).sort();
 
         for (const filePath of sortedPaths) {
@@ -143,22 +201,11 @@ function createPlaygroundState() {
                 root.push({ name: fileName, path: filePath, type: "file" });
             } else {
                 // Nested file — ensure parent folders exist
-                let currentPath = "";
                 let currentChildren = root;
 
                 for (let i = 0; i < parts.length - 1; i++) {
-                    currentPath = currentPath ? `${currentPath}/${parts[i]}` : parts[i];
-                    let folder = folderMap.get(currentPath);
-                    if (!folder) {
-                        folder = {
-                            name: parts[i],
-                            path: currentPath,
-                            type: "folder",
-                            children: [],
-                        };
-                        folderMap.set(currentPath, folder);
-                        currentChildren.push(folder);
-                    }
+                    const currentPath = parts.slice(0, i + 1).join("/");
+                    const folder = ensureFolder(currentPath, currentChildren);
                     currentChildren = folder.children!;
                 }
 

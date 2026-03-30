@@ -1,21 +1,45 @@
 <script lang="ts">
-import { FileText, Folder, FolderPlus, FilePlus, Trash2, Pencil } from "lucide-svelte";
+import {
+    FileText,
+    Folder,
+    FolderOpen,
+    FolderPlus,
+    FilePlus,
+    Trash2,
+    Pencil,
+    X,
+} from "lucide-svelte";
 import type { FileTreeNode } from "./state.svelte.js";
+
+function autofocus(node: HTMLElement) {
+    node.focus();
+}
 
 type Props = {
     tree: FileTreeNode[];
     activeFile: string;
     onSelectFile: (path: string) => void;
     onCreateFile: (path: string) => void;
+    onCreateFolder: (path: string) => void;
     onDeleteEntry: (path: string) => void;
     onRenameEntry: (oldPath: string, newPath: string) => void;
+    onClose?: () => void;
 };
 
-let { tree, activeFile, onSelectFile, onCreateFile, onDeleteEntry, onRenameEntry }: Props =
-    $props();
+let {
+    tree,
+    activeFile,
+    onSelectFile,
+    onCreateFile,
+    onCreateFolder,
+    onDeleteEntry,
+    onRenameEntry,
+    onClose,
+}: Props = $props();
 
 let expandedFolders = $state<Set<string>>(new Set());
 let creatingIn = $state<string | null>(null);
+let creatingFolder = $state(false);
 let newFileName = $state("");
 let renamingPath = $state<string | null>(null);
 let renameValue = $state("");
@@ -30,8 +54,9 @@ function toggleFolder(path: string) {
     expandedFolders = next;
 }
 
-function startCreating(folderPath: string) {
+function startCreating(folderPath: string, isFolder = false) {
     creatingIn = folderPath;
+    creatingFolder = isFolder;
     newFileName = "";
     // Expand the folder
     if (folderPath) {
@@ -42,13 +67,22 @@ function startCreating(folderPath: string) {
 function confirmCreate() {
     if (!newFileName.trim()) {
         creatingIn = null;
+        creatingFolder = false;
         return;
     }
-    let name = newFileName.trim();
-    if (!name.endsWith(".scl")) name += ".scl";
+    const name = newFileName.trim();
     const path = creatingIn ? `${creatingIn}/${name}` : name;
-    onCreateFile(path);
+    if (creatingFolder) {
+        onCreateFolder(path);
+        expandedFolders = new Set([...expandedFolders, path]);
+    } else {
+        let fileName = name;
+        if (!fileName.endsWith(".scl")) fileName += ".scl";
+        const filePath = creatingIn ? `${creatingIn}/${fileName}` : fileName;
+        onCreateFile(filePath);
+    }
     creatingIn = null;
+    creatingFolder = false;
     newFileName = "";
 }
 
@@ -73,7 +107,10 @@ function confirmRename() {
 
 function handleCreateKeydown(e: KeyboardEvent) {
     if (e.key === "Enter") confirmCreate();
-    if (e.key === "Escape") creatingIn = null;
+    if (e.key === "Escape") {
+        creatingIn = null;
+        creatingFolder = false;
+    }
 }
 
 function handleRenameKeydown(e: KeyboardEvent) {
@@ -82,9 +119,9 @@ function handleRenameKeydown(e: KeyboardEvent) {
 }
 </script>
 
-<div class="flex flex-col h-full text-sm">
-    <div class="flex items-center justify-between px-3 py-2 border-b border-gray-200">
-        <span class="text-xs font-semibold text-gray-500 uppercase tracking-wide">Files</span>
+<div class="flex flex-col h-full w-full text-sm">
+    <div class="flex items-center justify-between px-3 h-10 shrink-0 border-b border-gray-200">
+        <span class="text-xs font-medium text-gray-700">Files</span>
         <div class="flex gap-1">
             <button
                 class="p-1 text-gray-400 hover:text-gray-600 rounded"
@@ -96,10 +133,19 @@ function handleRenameKeydown(e: KeyboardEvent) {
             <button
                 class="p-1 text-gray-400 hover:text-gray-600 rounded"
                 title="New folder"
-                onclick={() => startCreating("")}
+                onclick={() => startCreating("", true)}
             >
                 <FolderPlus class="w-3.5 h-3.5" />
             </button>
+            {#if onClose}
+                <button
+                    class="p-1 text-gray-400 hover:text-gray-600 rounded"
+                    onclick={onClose}
+                    title="Close"
+                >
+                    <X class="w-3.5 h-3.5" />
+                </button>
+            {/if}
         </div>
     </div>
     <div class="flex-1 overflow-y-auto py-1">
@@ -107,16 +153,19 @@ function handleRenameKeydown(e: KeyboardEvent) {
             {@render treeNode(node, 0)}
         {/each}
         {#if creatingIn === ""}
-            <div class="flex items-center gap-1 px-3 py-0.5" style="padding-left: 12px;">
-                <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                <!-- svelte-ignore a11y_autofocus -->
+            <div class="flex items-center gap-1.5 px-3 py-0.5" style="padding-left: 12px;">
+                {#if creatingFolder}
+                    <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                {:else}
+                    <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                {/if}
                 <input
-                    class="flex-1 text-xs bg-white border border-blue-400 rounded px-1 py-0.5 outline-none"
+                    use:autofocus
+                    class="flex-1 bg-transparent outline-none placeholder:text-gray-400"
                     bind:value={newFileName}
                     onkeydown={handleCreateKeydown}
                     onblur={confirmCreate}
-                    placeholder="filename.scl"
-                    autofocus
+                    placeholder={creatingFolder ? "folder name" : "filename.scl"}
                 />
             </div>
         {/if}
@@ -135,7 +184,11 @@ function handleRenameKeydown(e: KeyboardEvent) {
             onclick={() => toggleFolder(node.path)}
             onkeydown={(e) => { if (e.key === "Enter") toggleFolder(node.path); }}
         >
-            <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+            {#if isExpanded}
+                <FolderOpen class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+            {:else}
+                <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+            {/if}
             <span class="flex-1 truncate text-gray-700">{node.name}</span>
             <div class="hidden group-hover:flex gap-0.5">
                 <button
@@ -160,18 +213,21 @@ function handleRenameKeydown(e: KeyboardEvent) {
             {/each}
             {#if creatingIn === node.path}
                 <div
-                    class="flex items-center gap-1 px-3 py-0.5"
+                    class="flex items-center gap-1.5 px-3 py-0.5"
                     style="padding-left: {12 + (depth + 1) * 16}px;"
                 >
-                    <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                    <!-- svelte-ignore a11y_autofocus -->
+                    {#if creatingFolder}
+                        <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                    {:else}
+                        <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    {/if}
                     <input
-                        class="flex-1 text-xs bg-white border border-blue-400 rounded px-1 py-0.5 outline-none"
+                        use:autofocus
+                        class="flex-1 bg-transparent outline-none placeholder:text-gray-400"
                         bind:value={newFileName}
                         onkeydown={handleCreateKeydown}
                         onblur={confirmCreate}
-                        placeholder="filename.scl"
-                        autofocus
+                        placeholder={creatingFolder ? "folder name" : "filename.scl"}
                     />
                 </div>
             {/if}
@@ -183,13 +239,12 @@ function handleRenameKeydown(e: KeyboardEvent) {
                 style="padding-left: {12 + depth * 16}px;"
             >
                 <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
-                <!-- svelte-ignore a11y_autofocus -->
                 <input
-                    class="flex-1 text-xs bg-white border border-blue-400 rounded px-1 py-0.5 outline-none"
+                    use:autofocus
+                    class="flex-1 bg-transparent outline-none placeholder:text-gray-400"
                     bind:value={renameValue}
                     onkeydown={handleRenameKeydown}
                     onblur={confirmRename}
-                    autofocus
                 />
             </div>
         {:else}
