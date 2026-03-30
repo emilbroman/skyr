@@ -757,10 +757,10 @@ impl FromStr for ResourceId {
         }
         let typ = s[..sep].to_string();
         let name = s[sep + 1..].to_string();
-        // Disallow ':' in the name segment. A colon in the name would produce '::' in the
+        // Disallow ':' at the start of the name segment. A colon in the name would produce '::' in the
         // formatted ResourceId (e.g. "Type::name"), which breaks ResourceQid parsing since
         // it uses rsplit_once("::") to separate the environment QID from the resource ID.
-        if name.contains(':') {
+        if name.starts_with(':') || name.contains("::") {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         }
         Ok(Self { typ, name })
