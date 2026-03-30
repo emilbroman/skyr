@@ -303,7 +303,7 @@ impl std::fmt::Display for Value {
             Value::Int(value) => write!(f, "{value}"),
             Value::Float(value) => write!(f, "{value}"),
             Value::Bool(value) => write!(f, "{value}"),
-            Value::Str(value) => write!(f, "{value}"),
+            Value::Str(value) => write!(f, "{value:?}"),
             Value::List(values) => {
                 write!(f, "[")?;
                 let mut values = values.iter().peekable();

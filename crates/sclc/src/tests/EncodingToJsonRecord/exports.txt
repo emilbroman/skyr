@@ -1,1 +1,1 @@
-{r: {"name":"test","value":42}}
+{r: "{\"name\":\"test\",\"value\":42}"}

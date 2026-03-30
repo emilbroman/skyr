@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Host name=api inputs={name: api}
+CreateResource ty=Std/Container.Host name=api inputs={name: "api"}

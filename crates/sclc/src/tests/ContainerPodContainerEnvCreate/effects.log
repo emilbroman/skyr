@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Pod name=my-app-283953d916dc376a inputs={containers: [{env: #{LOG_LEVEL: debug}, image: my-app:latest}], env: nil, name: my-app-283953d916dc376a}
+CreateResource ty=Std/Container.Pod name=my-app-283953d916dc376a inputs={containers: [{env: #{"LOG_LEVEL": "debug"}, image: "my-app:latest"}], env: nil, name: "my-app-283953d916dc376a"}

@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Image name=myapp inputs={containerfile: Dockerfile, context: ., name: myapp}
+CreateResource ty=Std/Container.Image name=myapp inputs={containerfile: "Dockerfile", context: ".", name: "myapp"}
