@@ -1,2 +1,9 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
+
+input,
+textarea,
+select {
+    font-size: 16px;
+    touch-action: manipulation;
+}
