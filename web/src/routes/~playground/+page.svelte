@@ -46,33 +46,40 @@ let bottomPanelHeight = $state(240);
 // Resize dragging state
 let resizing = $state<"sidebar" | "bottom" | null>(null);
 
-function startResize(panel: "sidebar" | "bottom", e: MouseEvent) {
+function startResize(panel: "sidebar" | "bottom", e: MouseEvent | TouchEvent) {
     e.preventDefault();
     resizing = panel;
-    const startX = e.clientX;
-    const startY = e.clientY;
+    const isTouch = e instanceof TouchEvent;
+    const startX = isTouch ? e.touches[0].clientX : e.clientX;
+    const startY = isTouch ? e.touches[0].clientY : e.clientY;
     const startSidebarWidth = sidebarWidth;
     const startBottomHeight = bottomPanelHeight;
 
-    function onMouseMove(e: MouseEvent) {
+    function onPointerMove(e: MouseEvent | TouchEvent) {
+        const clientX = e instanceof TouchEvent ? e.touches[0].clientX : e.clientX;
+        const clientY = e instanceof TouchEvent ? e.touches[0].clientY : e.clientY;
         if (panel === "sidebar") {
-            sidebarWidth = Math.max(120, Math.min(600, startSidebarWidth + (e.clientX - startX)));
+            sidebarWidth = Math.max(120, Math.min(600, startSidebarWidth + (clientX - startX)));
         } else {
-            bottomPanelHeight = Math.max(
-                80,
-                Math.min(600, startBottomHeight - (e.clientY - startY)),
-            );
+            bottomPanelHeight = Math.max(80, Math.min(600, startBottomHeight - (clientY - startY)));
         }
     }
 
-    function onMouseUp() {
+    function onPointerUp() {
         resizing = null;
-        document.removeEventListener("mousemove", onMouseMove);
-        document.removeEventListener("mouseup", onMouseUp);
+        document.removeEventListener("mousemove", onPointerMove);
+        document.removeEventListener("mouseup", onPointerUp);
+        document.removeEventListener("touchmove", onPointerMove);
+        document.removeEventListener("touchend", onPointerUp);
     }
 
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", onMouseUp);
+    if (isTouch) {
+        document.addEventListener("touchmove", onPointerMove, { passive: false });
+        document.addEventListener("touchend", onPointerUp);
+    } else {
+        document.addEventListener("mousemove", onPointerMove);
+        document.addEventListener("mouseup", onPointerUp);
+    }
 }
 
 // Mobile drawer state
@@ -237,7 +244,7 @@ function handleReplClear() {
 
 {#if resizing}
     <div
-        class="fixed inset-0 z-50 {resizing === 'sidebar' ? 'cursor-col-resize' : 'cursor-row-resize'}"
+        class="fixed inset-0 z-50 touch-none {resizing === 'sidebar' ? 'cursor-col-resize' : 'cursor-row-resize'}"
     ></div>
 {/if}
 <div class="flex flex-1 min-h-0 relative" class:select-none={resizing}>
@@ -260,8 +267,9 @@ function handleReplClear() {
         <!-- Sidebar resize handle -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-            class="hidden md:block w-1 -ml-0.5 -mr-0.5 shrink-0 cursor-col-resize hover:bg-blue-400 transition-colors z-10 {resizing === 'sidebar' ? 'bg-blue-400' : ''}"
+            class="hidden md:block w-1 -ml-0.5 -mr-0.5 shrink-0 cursor-col-resize hover:bg-blue-400 transition-colors z-10 relative before:absolute before:inset-y-0 before:-inset-x-2 before:content-[''] {resizing === 'sidebar' ? 'bg-blue-400' : ''}"
             onmousedown={(e) => startResize("sidebar", e)}
+            ontouchstart={(e) => startResize("sidebar", e)}
         ></div>
     {/if}
 
@@ -363,8 +371,9 @@ function handleReplClear() {
                 <!-- Bottom panel resize handle -->
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                    class="h-1 -mt-0.5 -mb-0.5 shrink-0 cursor-row-resize hover:bg-blue-400 transition-colors z-10 {resizing === 'bottom' ? 'bg-blue-400' : ''}"
+                    class="h-1 -mt-0.5 -mb-0.5 shrink-0 cursor-row-resize hover:bg-blue-400 transition-colors z-10 relative before:absolute before:-inset-y-2 before:inset-x-0 before:content-[''] {resizing === 'bottom' ? 'bg-blue-400' : ''}"
                     onmousedown={(e) => startResize("bottom", e)}
+                    ontouchstart={(e) => startResize("bottom", e)}
                 ></div>
                 <div
                     class="flex flex-col border-t border-gray-200 bg-white shrink-0"
