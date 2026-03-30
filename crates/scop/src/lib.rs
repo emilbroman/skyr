@@ -109,6 +109,12 @@ pub use proto::{
     SetDnsRecordResponse,
 };
 
+// --- Port forwarding ---
+pub use proto::{
+    PortForwardInit, PortForwardRequest, PortForwardResponse,
+    port_forward_request::Payload as PortForwardPayload,
+};
+
 // Re-export the generated clients
 pub use proto::conduit_client::ConduitClient;
 pub use proto::orchestrator_client::OrchestratorClient;
@@ -529,6 +535,21 @@ pub trait Conduit: Send + Sync + 'static {
         &self,
         request: ConfigureServiceCidrRequest,
     ) -> Result<ConfigureServiceCidrResponse, tonic::Status>;
+
+    /// Establish a bidirectional TCP tunnel to a pod's port.
+    ///
+    /// The first message on the request stream must be a `PortForwardInit`
+    /// identifying the target pod and port. Subsequent messages carry raw TCP
+    /// data in each direction.
+    async fn port_forward(
+        &self,
+        request: tonic::Streaming<PortForwardRequest>,
+    ) -> Result<
+        std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<PortForwardResponse, tonic::Status>> + Send>,
+        >,
+        tonic::Status,
+    >;
 }
 
 #[derive(Clone)]
@@ -649,6 +670,18 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
             .configure_service_cidr(request.into_inner())
             .await?;
         Ok(tonic::Response::new(response))
+    }
+
+    type PortForwardStream = std::pin::Pin<
+        Box<dyn futures::Stream<Item = Result<PortForwardResponse, tonic::Status>> + Send>,
+    >;
+
+    async fn port_forward(
+        &self,
+        request: tonic::Request<tonic::Streaming<PortForwardRequest>>,
+    ) -> Result<tonic::Response<Self::PortForwardStream>, tonic::Status> {
+        let stream = self.conduit.port_forward(request.into_inner()).await?;
+        Ok(tonic::Response::new(stream))
     }
 }
 

@@ -1147,7 +1147,7 @@ mod tests {
         assert!("".parse::<ResourceId>().is_err());
         // Colon in name would produce "::" in formatted output, breaking ResourceQid parsing
         assert!("Std/Random.Int::seed".parse::<ResourceId>().is_err());
-        assert!("Type:na:me".parse::<ResourceId>().is_err());
+        assert!("Type:na::me".parse::<ResourceId>().is_err());
     }
 
     #[test]

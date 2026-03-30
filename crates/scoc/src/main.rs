@@ -684,6 +684,117 @@ impl scop::Conduit for CriConduit {
         })?;
         Ok(scop::ConfigureServiceCidrResponse {})
     }
+
+    async fn port_forward(
+        &self,
+        mut request_stream: scop::tonic::Streaming<scop::PortForwardRequest>,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures::Stream<Item = Result<scop::PortForwardResponse, scop::tonic::Status>>
+                    + Send,
+            >,
+        >,
+        scop::tonic::Status,
+    > {
+        use futures::StreamExt;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Read the first message which must be an init
+        let first = request_stream
+            .next()
+            .await
+            .ok_or_else(|| scop::tonic::Status::invalid_argument("empty request stream"))?
+            .map_err(|e| {
+                scop::tonic::Status::internal(format!("failed to read init message: {e}"))
+            })?;
+
+        let init = match first.payload {
+            Some(scop::PortForwardPayload::Init(init)) => init,
+            _ => {
+                return Err(scop::tonic::Status::invalid_argument(
+                    "first message must be PortForwardInit",
+                ));
+            }
+        };
+
+        scop::validate::name(&init.pod_name, "pod_name")?;
+        let port = scop::validate::port(init.port, "port")?;
+
+        // Look up the pod to get its IP address
+        let pod_ip = {
+            let pods = self.pods.lock().await;
+            let pod_info = pods.get(&init.pod_name).ok_or_else(|| {
+                scop::tonic::Status::not_found(format!("pod not found: {}", init.pod_name))
+            })?;
+            pod_info.ip
+        };
+
+        tracing::info!(
+            pod_name = %init.pod_name,
+            pod_ip = %pod_ip,
+            port = %port,
+            "establishing port-forward connection"
+        );
+
+        // Connect to the pod's IP and port
+        let tcp_stream =
+            tokio::net::TcpStream::connect(std::net::SocketAddr::new(pod_ip.into(), port))
+                .await
+                .map_err(|e| {
+                    scop::tonic::Status::unavailable(format!(
+                        "failed to connect to {pod_ip}:{port}: {e}"
+                    ))
+                })?;
+
+        let (mut tcp_read, mut tcp_write) = tcp_stream.into_split();
+
+        // Channel for sending responses back to the client
+        let (response_tx, response_rx) = tokio::sync::mpsc::channel::<
+            Result<scop::PortForwardResponse, scop::tonic::Status>,
+        >(32);
+
+        // Task: read from gRPC request stream → write to TCP socket
+        let response_tx_upstream = response_tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = request_stream.next().await {
+                match msg {
+                    Ok(req) => {
+                        if let Some(scop::PortForwardPayload::Data(data)) = req.payload
+                            && tcp_write.write_all(&data).await.is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = tcp_write.shutdown().await;
+            drop(response_tx_upstream);
+        });
+
+        // Task: read from TCP socket → send on gRPC response stream
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 32 * 1024];
+            loop {
+                match tcp_read.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let response = scop::PortForwardResponse {
+                            data: buf[..n].to_vec(),
+                        };
+                        if response_tx.send(Ok(response)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let output_stream = tokio_stream::wrappers::ReceiverStream::new(response_rx);
+        Ok(Box::pin(output_stream))
+    }
 }
 
 #[tokio::main]

@@ -11,7 +11,7 @@ use cdb::DeploymentState;
 use clap::Parser;
 use futures::AsyncWriteExt;
 use gix_ref::Reference;
-use ids::{EnvironmentId, RepoQid};
+use ids::{EnvironmentId, RepoQid, ResourceQid};
 use russh::{
     Channel, ChannelId, MethodKind,
     keys::{PrivateKey, ssh_key::PublicKey},
@@ -35,6 +35,14 @@ enum Program {
 
         #[clap(long = "udb-hostname", default_value = "localhost")]
         udb_hostname: String,
+
+        /// RDB hostname for resource lookups (port-forward).
+        #[clap(long = "rdb-hostname", default_value = "localhost")]
+        rdb_hostname: String,
+
+        /// Node registry hostname (Redis) for SCOC address lookups (port-forward).
+        #[clap(long = "node-registry-hostname", default_value = "localhost")]
+        node_registry_hostname: String,
     },
 }
 
@@ -53,6 +61,8 @@ async fn main() -> anyhow::Result<()> {
             key,
             cdb_hostname,
             udb_hostname,
+            rdb_hostname,
+            node_registry_hostname,
         } => {
             let client = cdb::ClientBuilder::new()
                 .known_node(cdb_hostname)
@@ -62,28 +72,41 @@ async fn main() -> anyhow::Result<()> {
                 .known_node(udb_hostname)
                 .build()
                 .await?;
+            let rdb_client = rdb::ClientBuilder::new()
+                .known_node(rdb_hostname)
+                .build()
+                .await?;
+            let node_registry_url = format!("redis://{node_registry_hostname}/");
+            let node_registry_redis = redis::Client::open(node_registry_url)?
+                .get_multiplexed_async_connection()
+                .await?;
 
             tracing::info!("listening on {address}");
-            ConfigServer { client, udb_client }
-                .run_on_address(
-                    Arc::new(Config {
-                        methods: (&[MethodKind::PublicKey][..]).into(),
-                        keys: vec![PrivateKey::from_openssh(
-                            std::fs::read_to_string(&key)
-                                .map_err(|e| {
-                                    anyhow::anyhow!(
-                                        "failed to load private key from {}: {}",
-                                        key.display(),
-                                        e
-                                    )
-                                })?
-                                .as_bytes(),
-                        )?],
-                        ..Default::default()
-                    }),
-                    address,
-                )
-                .await?;
+            ConfigServer {
+                client,
+                udb_client,
+                rdb_client,
+                node_registry_redis,
+            }
+            .run_on_address(
+                Arc::new(Config {
+                    methods: (&[MethodKind::PublicKey][..]).into(),
+                    keys: vec![PrivateKey::from_openssh(
+                        std::fs::read_to_string(&key)
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "failed to load private key from {}: {}",
+                                    key.display(),
+                                    e
+                                )
+                            })?
+                            .as_bytes(),
+                    )?],
+                    ..Default::default()
+                }),
+                address,
+            )
+            .await?;
             Ok(())
         }
     }
@@ -104,6 +127,8 @@ impl std::error::Error for UserFacingError {}
 struct ConfigServer {
     client: cdb::Client,
     udb_client: udb::Client,
+    rdb_client: rdb::Client,
+    node_registry_redis: redis::aio::MultiplexedConnection,
 }
 
 impl Server for ConfigServer {
@@ -117,6 +142,8 @@ impl Server for ConfigServer {
             user: None,
             client: self.client.clone(),
             udb_client: self.udb_client.clone(),
+            rdb_client: self.rdb_client.clone(),
+            node_registry_redis: self.node_registry_redis.clone(),
         }
     }
 }
@@ -133,14 +160,31 @@ enum ChannelCommand {
         #[arg()]
         repo: RepoQid,
     },
+    #[command(name = "port-forward")]
+    PortForward {
+        #[arg()]
+        resource_qid: String,
+    },
+}
+
+/// Messages sent from the SSH handler to per-channel tasks.
+enum ChannelMessage {
+    /// Initial command parsed from the exec request.
+    Command(Result<ChannelCommand, clap::Error>),
+    /// Data received on the channel (for port-forward).
+    Data(Vec<u8>),
+    /// EOF received on the channel.
+    Eof,
 }
 
 struct ConfigHandler {
     span: tracing::Span,
-    channels: BTreeMap<ChannelId, mpsc::Sender<Result<ChannelCommand, clap::Error>>>,
+    channels: BTreeMap<ChannelId, mpsc::Sender<ChannelMessage>>,
     user: Option<udb::User>,
     client: cdb::Client,
     udb_client: udb::Client,
+    rdb_client: rdb::Client,
+    node_registry_redis: redis::aio::MultiplexedConnection,
 }
 
 impl Handler for ConfigHandler {
@@ -196,23 +240,23 @@ impl Handler for ConfigHandler {
         mut channel: russh::Channel<server::Msg>,
         _session: &mut server::Session,
     ) -> Result<bool, Self::Error> {
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel(32);
         let channel_id = channel.id();
         self.channels.insert(channel_id, tx);
         let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
         let user = self.user.clone();
         let client = self.client.clone();
+        let rdb_client = self.rdb_client.clone();
+        let node_registry_redis = self.node_registry_redis.clone();
         task::spawn(
             async move {
-                loop {
-                    let client = client.clone();
-                    let result: anyhow::Result<()> = match (&user, rx.recv().await) {
-                        (None, _) => Err(UserFacingError("not authenticated".to_string()).into()),
-                        (Some(user), Some(Ok(cmd))) => {
-                            let repo = match &cmd {
-                                ChannelCommand::ReceivePack { repo }
-                                | ChannelCommand::UploadPack { repo } => repo,
-                            };
+                // Wait for the command message
+                let cmd_msg = rx.recv().await;
+                let result: anyhow::Result<()> = match (&user, cmd_msg) {
+                    (None, _) => Err(UserFacingError("not authenticated".to_string()).into()),
+                    (Some(user), Some(ChannelMessage::Command(Ok(cmd)))) => match cmd {
+                        ChannelCommand::ReceivePack { ref repo }
+                        | ChannelCommand::UploadPack { ref repo } => {
                             if let Err(err) = ensure_repo_access(user, repo) {
                                 Err(err)
                             } else if let Err(err) = ensure_repo_exists(&client, repo).await {
@@ -230,34 +274,44 @@ impl Handler for ConfigHandler {
                                     ChannelCommand::UploadPack { .. } => {
                                         handler.upload_pack().await
                                     }
+                                    _ => unreachable!(),
                                 }
                             }
                         }
-                        (_, Some(Err(e))) => Err(UserFacingError(format!("{e}")).into()),
-                        (_, None) => break,
-                    };
+                        ChannelCommand::PortForward { resource_qid } => {
+                            handle_port_forward(
+                                user,
+                                &resource_qid,
+                                &mut channel,
+                                &mut rx,
+                                &rdb_client,
+                                node_registry_redis,
+                            )
+                            .await
+                        }
+                    },
+                    (_, Some(ChannelMessage::Command(Err(e)))) => {
+                        Err(UserFacingError(format!("{e}")).into())
+                    }
+                    (_, _) => Err(UserFacingError("unexpected message".to_string()).into()),
+                };
 
-                    match result {
-                        Ok(()) => {
-                            channel.exit_status(0).await.unwrap_or_default();
-                        }
-                        Err(e) => {
-                            tracing::error!("command failed: {e:#}");
-                            // Send a generic message to avoid leaking internal details.
-                            // User-facing errors (permission denied, repo not found) are
-                            // already surfaced by ensure_repo_access / ensure_repo_exists
-                            // before the handler runs, so those get their own messages.
-                            let client_msg = if e.downcast_ref::<UserFacingError>().is_some() {
-                                format!("{e}\n")
-                            } else {
-                                "internal server error\n".to_string()
-                            };
-                            channel
-                                .extended_data(1, client_msg.as_bytes())
-                                .await
-                                .unwrap_or_default();
-                            channel.exit_status(1).await.unwrap_or_default();
-                        }
+                match result {
+                    Ok(()) => {
+                        channel.exit_status(0).await.unwrap_or_default();
+                    }
+                    Err(e) => {
+                        tracing::error!("command failed: {e:#}");
+                        let client_msg = if e.downcast_ref::<UserFacingError>().is_some() {
+                            format!("{e}\n")
+                        } else {
+                            "internal server error\n".to_string()
+                        };
+                        channel
+                            .extended_data(1, client_msg.as_bytes())
+                            .await
+                            .unwrap_or_default();
+                        channel.exit_status(1).await.unwrap_or_default();
                     }
                 }
 
@@ -278,6 +332,29 @@ impl Handler for ConfigHandler {
         Ok(())
     }
 
+    async fn data(
+        &mut self,
+        channel: ChannelId,
+        data: &[u8],
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(tx) = self.channels.get(&channel) {
+            let _ = tx.send(ChannelMessage::Data(data.to_vec())).await;
+        }
+        Ok(())
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        _session: &mut server::Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(tx) = self.channels.get(&channel) {
+            let _ = tx.send(ChannelMessage::Eof).await;
+        }
+        Ok(())
+    }
+
     async fn exec_request(
         &mut self,
         channel: ChannelId,
@@ -294,11 +371,196 @@ impl Handler for ConfigHandler {
             *repo_arg = stripped.to_string();
         }
         let result = ChannelCommand::try_parse_from(args);
-        if let Some(tx) = self.channels.remove(&channel) {
-            tx.send(result).await.unwrap_or_default();
+        if let Some(tx) = self.channels.get(&channel) {
+            let _ = tx.send(ChannelMessage::Command(result)).await;
         }
         Ok(())
     }
+}
+
+/// Port-forward resource types that we support.
+const POD_PORT_TYPE: &str = "Std/Container.Pod.Port";
+
+/// Handle a port-forward session: resolve the resource QID, connect to SCOC,
+/// and proxy data between the SSH channel and the gRPC stream.
+async fn handle_port_forward(
+    user: &udb::User,
+    resource_qid_str: &str,
+    channel: &mut Channel<server::Msg>,
+    rx: &mut mpsc::Receiver<ChannelMessage>,
+    rdb_client: &rdb::Client,
+    mut node_registry_redis: redis::aio::MultiplexedConnection,
+) -> anyhow::Result<()> {
+    use redis::AsyncCommands;
+
+    // Parse the resource QID
+    let resource_qid: ResourceQid = resource_qid_str
+        .parse()
+        .map_err(|_| UserFacingError(format!("invalid resource QID: {resource_qid_str}")))?;
+
+    // Access check: user must own the organization
+    let org = resource_qid.environment_qid().repo_qid().org.as_str();
+    if org != user.username {
+        return Err(UserFacingError(format!(
+            "permission denied: user '{}' cannot access resource '{}'",
+            user.username, resource_qid
+        ))
+        .into());
+    }
+
+    // Only Pod.Port is supported for now
+    let resource_type = &resource_qid.resource().typ;
+    if resource_type != POD_PORT_TYPE {
+        return Err(UserFacingError(format!(
+            "port-forward is only supported for {POD_PORT_TYPE}, got {resource_type}"
+        ))
+        .into());
+    }
+
+    // Look up the resource in RDB
+    let env_qid = resource_qid.environment_qid().to_string();
+    let resource = rdb_client
+        .namespace(env_qid)
+        .resource(
+            resource_qid.resource().typ.clone(),
+            resource_qid.resource().name.clone(),
+        )
+        .get()
+        .await
+        .map_err(|e| anyhow!("failed to query resource: {e}"))?
+        .ok_or_else(|| UserFacingError(format!("resource not found: {resource_qid}")))?;
+
+    // Extract port-forward target info from resource inputs
+    let inputs = resource
+        .inputs
+        .ok_or_else(|| anyhow!("resource has no inputs"))?;
+
+    let pod_name = match inputs.get("podName") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => return Err(anyhow!("resource inputs missing 'podName'")),
+    };
+    let node_name = match inputs.get("node") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => return Err(anyhow!("resource inputs missing 'node'")),
+    };
+    let port: i32 = match inputs.get("port") {
+        sclc::Value::Int(n) => *n as i32,
+        _ => return Err(anyhow!("resource inputs missing 'port'")),
+    };
+    let protocol = match inputs.get("protocol") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => "tcp".to_string(),
+    };
+
+    tracing::info!(
+        resource_qid = %resource_qid,
+        pod_name = %pod_name,
+        node = %node_name,
+        port = %port,
+        "resolving port-forward target"
+    );
+
+    // Look up the SCOC conduit address from the node registry
+    let node_key = format!("n:{node_name}");
+    let node_json: String = node_registry_redis
+        .get(&node_key)
+        .await
+        .map_err(|e| anyhow!("failed to look up node '{node_name}' in registry: {e}"))?;
+    let node_data: serde_json::Value = serde_json::from_str(&node_json)
+        .map_err(|e| anyhow!("failed to parse node registry data: {e}"))?;
+    let conduit_address = node_data["address"]
+        .as_str()
+        .ok_or_else(|| anyhow!("node '{node_name}' has no conduit address"))?;
+
+    tracing::info!(
+        conduit_address = %conduit_address,
+        "connecting to SCOC conduit"
+    );
+
+    // Connect to SCOC and initiate port-forward
+    let mut conduit = scop::ConduitClient::connect(conduit_address.to_string())
+        .await
+        .map_err(|e| anyhow!("failed to connect to SCOC at {conduit_address}: {e}"))?;
+
+    let (grpc_tx, grpc_rx) = mpsc::channel::<scop::PortForwardRequest>(32);
+
+    // Send the init message
+    grpc_tx
+        .send(scop::PortForwardRequest {
+            payload: Some(scop::PortForwardPayload::Init(scop::PortForwardInit {
+                pod_name,
+                port,
+                protocol,
+            })),
+        })
+        .await
+        .map_err(|e| anyhow!("failed to send init: {e}"))?;
+
+    let response_stream = conduit
+        .port_forward(tokio_stream::wrappers::ReceiverStream::new(grpc_rx))
+        .await
+        .map_err(|e| UserFacingError(format!("port-forward failed: {e}")))?
+        .into_inner();
+
+    tracing::info!("port-forward session established");
+
+    // Proxy data bidirectionally:
+    // SSH channel data → gRPC request stream
+    // gRPC response stream → SSH channel data
+    let mut response_stream = response_stream;
+
+    // Task: gRPC responses → SSH channel
+    let grpc_to_ssh = async {
+        use futures::TryStreamExt;
+        while let Some(response) = response_stream.try_next().await? {
+            if !response.data.is_empty() {
+                channel.data(&response.data[..]).await?;
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Task: SSH channel data → gRPC requests
+    let ssh_to_grpc = async {
+        loop {
+            match rx.recv().await {
+                Some(ChannelMessage::Data(data)) => {
+                    if grpc_tx
+                        .send(scop::PortForwardRequest {
+                            payload: Some(scop::PortForwardPayload::Data(data)),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Some(ChannelMessage::Eof) | None => break,
+                Some(ChannelMessage::Command(_)) => {
+                    // Ignore unexpected command messages during port-forward
+                }
+            }
+        }
+        // Drop the sender to signal the gRPC stream is done
+        drop(grpc_tx);
+        Ok::<(), anyhow::Error>(())
+    };
+
+    // Run both directions concurrently; finish when either side closes
+    tokio::select! {
+        result = grpc_to_ssh => {
+            if let Err(e) = result {
+                tracing::debug!("gRPC→SSH ended: {e}");
+            }
+        }
+        result = ssh_to_grpc => {
+            if let Err(e) = result {
+                tracing::debug!("SSH→gRPC ended: {e}");
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn ensure_repo_access(user: &udb::User, repo: &RepoQid) -> anyhow::Result<()> {

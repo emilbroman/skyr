@@ -220,6 +220,8 @@ resource "kubernetes_deployment" "scs" {
             "--key", "/secrets/host.pem",
             "--cdb-hostname", local.scylladb_hostname,
             "--udb-hostname", local.redis_hostname,
+            "--rdb-hostname", local.scylladb_hostname,
+            "--node-registry-hostname", local.redis_hostname,
           ]
 
           volume_mount {
