@@ -28,11 +28,17 @@ export function registerSclLanguage() {
             "else",
             "match",
             "fn",
-            "true",
-            "false",
             "type",
             "as",
+            "for",
+            "in",
+            "try",
+            "catch",
+            "raise",
+            "extern",
+            "exception",
         ],
+        constants: ["true", "false", "nil"],
         operators: [
             "=",
             "==",
@@ -63,18 +69,19 @@ export function registerSclLanguage() {
                 [/"/, "string", "@string"],
                 // Numbers
                 [/\b\d+(\.\d+)?\b/, "number"],
-                // Keywords and identifiers
+                // Uppercase identifiers (types/modules) — must be before lowercase
+                [/\b[A-Z]\w*\b/, "type.identifier"],
+                // Keywords, constants, and lowercase identifiers
                 [
-                    /\b[a-zA-Z_]\w*\b/,
+                    /\b[a-z_]\w*\b/,
                     {
                         cases: {
                             "@keywords": "keyword",
+                            "@constants": "constant",
                             "@default": "identifier",
                         },
                     },
                 ],
-                // Uppercase identifiers (types/modules)
-                [/\b[A-Z]\w*\b/, "type.identifier"],
                 // Operators
                 [/[=><!~?:&|+\-*/^%]+/, "operator"],
                 // Delimiters
@@ -380,6 +387,41 @@ export function setupDiagnostics(
 // Editor creation
 // ---------------------------------------------------------------------------
 
+const THEME_ID = "github-light";
+
+monaco.editor.defineTheme(THEME_ID, {
+    base: "vs",
+    inherit: false,
+    rules: [
+        { token: "", foreground: "24292e" },
+        { token: "comment", foreground: "6a737d", fontStyle: "italic" },
+        { token: "keyword", foreground: "d73a49" },
+        { token: "constant", foreground: "005cc5" },
+        { token: "string", foreground: "032f62" },
+        { token: "string.escape", foreground: "005cc5" },
+        { token: "string.interpolation", foreground: "d73a49" },
+        { token: "number", foreground: "005cc5" },
+        { token: "operator", foreground: "d73a49" },
+        { token: "type.identifier", foreground: "6f42c1" },
+        { token: "identifier", foreground: "24292e" },
+        { token: "delimiter", foreground: "24292e" },
+        { token: "delimiter.bracket", foreground: "24292e" },
+    ],
+    colors: {
+        "editor.background": "#ffffff",
+        "editor.foreground": "#24292e",
+        "editor.lineHighlightBackground": "#f6f8fa",
+        "editorLineNumber.foreground": "#babbbc",
+        "editorLineNumber.activeForeground": "#24292e",
+        "editor.selectionBackground": "#0366d625",
+        "editor.inactiveSelectionBackground": "#0366d611",
+        "editorCursor.foreground": "#24292e",
+        "editorWhitespace.foreground": "#d1d5da",
+        "editorIndentGuide.background": "#eff2f5",
+        "editorIndentGuide.activeBackground": "#d7dbe0",
+    },
+});
+
 export function createEditor(
     container: HTMLElement,
     model: monaco.editor.ITextModel,
@@ -387,10 +429,11 @@ export function createEditor(
     return monaco.editor.create(container, {
         model,
         language: LANGUAGE_ID,
-        theme: "vs",
-        automaticLayout: true,
+        theme: THEME_ID,
+        automaticLayout: false,
         minimap: { enabled: false },
-        fontSize: 14,
+        fontSize: 12,
+        lineHeight: 20,
         lineNumbers: "on",
         renderWhitespace: "selection",
         scrollBeyondLastLine: false,

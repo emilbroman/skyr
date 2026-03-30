@@ -17,10 +17,19 @@ import { playgroundState } from "$lib/playground/state.svelte.js";
 import FileTree from "$lib/playground/FileTree.svelte";
 import DiagnosticsPanel from "$lib/playground/DiagnosticsPanel.svelte";
 import Repl from "$lib/playground/Repl.svelte";
-import { PanelLeft, PanelBottom, AlertCircle, AlertTriangle, Terminal, X } from "lucide-svelte";
+import {
+    PanelLeft,
+    PanelBottom,
+    AlertCircle,
+    AlertTriangle,
+    X,
+    Trash2,
+    RotateCcw,
+} from "lucide-svelte";
 
 let editorContainer: HTMLDivElement;
 let editor: monaco.editor.IStandaloneCodeEditor | undefined;
+let editorResizeObserver: ResizeObserver | undefined;
 let worker: SclWorker | undefined;
 let providersDisposable: { dispose(): void } | undefined;
 let diagnosticsDisposable: { dispose(): void } | undefined;
@@ -32,7 +41,6 @@ let activeBottomTab = $state<"diagnostics" | "repl">("diagnostics");
 
 // Mobile drawer state
 let mobileFileTreeOpen = $state(false);
-let mobileBottomOpen = $state(false);
 
 // Marker counts for status bar
 let errorCount = $state(0);
@@ -67,6 +75,16 @@ onMount(async () => {
     );
     editor = createEditor(editorContainer, initialModel);
 
+    // Manually size Monaco to match its container
+    const editorRef = editor;
+    editorResizeObserver = new ResizeObserver((entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const { width, height } = entry.contentRect;
+        editorRef.layout({ width, height });
+    });
+    editorResizeObserver.observe(editorContainer);
+
     // Sync editor content back to state on change
     editor.onDidChangeModelContent(() => {
         syncStateFromModel();
@@ -93,6 +111,7 @@ onMount(async () => {
 });
 
 onDestroy(() => {
+    editorResizeObserver?.disconnect();
     diagnosticsDisposable?.dispose();
     providersDisposable?.dispose();
     editor?.dispose();
@@ -111,6 +130,10 @@ function handleSelectFile(path: string) {
 function handleCreateFile(path: string) {
     playgroundState.createFile(path);
     syncModelFromState();
+}
+
+function handleCreateFolder(path: string) {
+    playgroundState.createFolder(path);
 }
 
 function handleDeleteEntry(path: string) {
@@ -148,7 +171,6 @@ function handleDiagnosticNavigate(file: string, line: number, character: number)
     editor?.revealLineInCenter(line + 1);
     editor?.setPosition({ lineNumber: line + 1, column: character + 1 });
     editor?.focus();
-    mobileBottomOpen = false;
 }
 
 async function handleReplEval(line: string) {
@@ -177,132 +199,119 @@ function handleReplClear() {
     <title>SCL Playground</title>
 </svelte:head>
 
-<div class="flex flex-col flex-1 min-h-0">
-    <!-- Top bar -->
-    <div
-        class="h-10 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
-    >
-        <div class="flex items-center gap-2">
-            <!-- Mobile toggles -->
-            <button
-                class="md:hidden p-1 text-gray-500 hover:text-gray-700 rounded"
-                onclick={() => (mobileFileTreeOpen = !mobileFileTreeOpen)}
-                title="Toggle file tree"
-            >
-                <PanelLeft class="w-4 h-4" />
-            </button>
-            <span class="text-sm font-medium text-gray-700">SCL Playground</span>
-            <span class="text-xs text-gray-400 hidden sm:inline">
-                — {playgroundState.activeFile}
-            </span>
+<div class="flex flex-1 min-h-0 relative">
+    <!-- File tree sidebar (desktop) -->
+    {#if showFileTree}
+        <div class="hidden md:flex w-60 border-r border-gray-200 bg-white shrink-0">
+            <FileTree
+                tree={playgroundState.fileTree}
+                activeFile={playgroundState.activeFile}
+                onSelectFile={handleSelectFile}
+                onCreateFile={handleCreateFile}
+                onCreateFolder={handleCreateFolder}
+                onDeleteEntry={handleDeleteEntry}
+                onRenameEntry={handleRenameEntry}
+            />
         </div>
-        <div class="flex items-center gap-2">
-            <div class="flex items-center gap-3 text-xs">
-                {#if errorCount > 0}
-                    <span class="text-red-600 flex items-center gap-1">
-                        <AlertCircle class="w-3.5 h-3.5" />
-                        {errorCount}
-                    </span>
-                {/if}
-                {#if warningCount > 0}
-                    <span class="text-yellow-600 flex items-center gap-1">
-                        <AlertTriangle class="w-3.5 h-3.5" />
-                        {warningCount}
-                    </span>
-                {/if}
-                {#if errorCount === 0 && warningCount === 0}
-                    <span class="text-green-600 text-xs">No issues</span>
-                {/if}
-            </div>
-            <!-- Desktop panel toggles -->
-            <button
-                class="hidden md:block p-1 text-gray-400 hover:text-gray-600 rounded {showFileTree
-                    ? 'bg-gray-100'
-                    : ''}"
-                onclick={() => (showFileTree = !showFileTree)}
-                title="Toggle file tree"
-            >
-                <PanelLeft class="w-4 h-4" />
-            </button>
-            <button
-                class="hidden md:block p-1 text-gray-400 hover:text-gray-600 rounded {showBottomPanel
-                    ? 'bg-gray-100'
-                    : ''}"
-                onclick={() => (showBottomPanel = !showBottomPanel)}
-                title="Toggle bottom panel"
-            >
-                <PanelBottom class="w-4 h-4" />
-            </button>
-            <!-- Mobile bottom panel toggle -->
-            <button
-                class="md:hidden p-1 text-gray-500 hover:text-gray-700 rounded"
-                onclick={() => (mobileBottomOpen = !mobileBottomOpen)}
-                title="Toggle diagnostics/REPL"
-            >
-                <Terminal class="w-4 h-4" />
-            </button>
-        </div>
-    </div>
+    {/if}
 
-    <!-- Main content area -->
-    <div class="flex flex-1 min-h-0 relative">
-        <!-- File tree sidebar (desktop) -->
-        {#if showFileTree}
-            <div class="hidden md:flex w-60 border-r border-gray-200 bg-white shrink-0">
+    <!-- File tree drawer (mobile) -->
+    {#if mobileFileTreeOpen}
+        <div class="md:hidden absolute inset-0 z-30 flex">
+            <div class="w-64 bg-white border-r border-gray-200 shadow-lg flex">
                 <FileTree
                     tree={playgroundState.fileTree}
                     activeFile={playgroundState.activeFile}
                     onSelectFile={handleSelectFile}
                     onCreateFile={handleCreateFile}
+                    onCreateFolder={handleCreateFolder}
                     onDeleteEntry={handleDeleteEntry}
                     onRenameEntry={handleRenameEntry}
+                    onClose={() => (mobileFileTreeOpen = false)}
                 />
             </div>
-        {/if}
+            <button
+                class="flex-1 bg-black/20"
+                onclick={() => (mobileFileTreeOpen = false)}
+                aria-label="Close file tree"
+            ></button>
+        </div>
+    {/if}
 
-        <!-- File tree drawer (mobile) -->
-        {#if mobileFileTreeOpen}
-            <div class="md:hidden absolute inset-0 z-30 flex">
-                <div class="w-64 bg-white border-r border-gray-200 shadow-lg flex flex-col">
-                    <div
-                        class="flex items-center justify-between px-3 py-2 border-b border-gray-200"
-                    >
-                        <span class="text-sm font-medium text-gray-700">Files</span>
-                        <button
-                            class="p-1 text-gray-400 hover:text-gray-600"
-                            onclick={() => (mobileFileTreeOpen = false)}
-                        >
-                            <X class="w-4 h-4" />
-                        </button>
-                    </div>
-                    <div class="flex-1 overflow-hidden">
-                        <FileTree
-                            tree={playgroundState.fileTree}
-                            activeFile={playgroundState.activeFile}
-                            onSelectFile={handleSelectFile}
-                            onCreateFile={handleCreateFile}
-                            onDeleteEntry={handleDeleteEntry}
-                            onRenameEntry={handleRenameEntry}
-                        />
-                    </div>
-                </div>
+    <!-- Editor + top bar + bottom panel -->
+    <div class="flex flex-col flex-1 min-w-0 min-h-0">
+        <!-- Top bar -->
+        <div
+            class="h-10 bg-white border-b border-gray-200 flex items-center justify-between px-4 shrink-0"
+        >
+            <div class="flex items-center gap-2">
+                <!-- Mobile toggles -->
                 <button
-                    class="flex-1 bg-black/20"
-                    onclick={() => (mobileFileTreeOpen = false)}
-                    aria-label="Close file tree"
-                ></button>
+                    class="md:hidden p-1 text-gray-500 hover:text-gray-700 rounded"
+                    onclick={() => (mobileFileTreeOpen = !mobileFileTreeOpen)}
+                    title="Toggle file tree"
+                >
+                    <PanelLeft class="w-4 h-4" />
+                </button>
+                <span class="text-xs font-medium text-gray-700"
+                    >{playgroundState.activeFile}</span
+                >
             </div>
-        {/if}
+            <div class="flex items-center gap-2">
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                    class="flex items-center gap-3 text-xs cursor-pointer"
+                    class:hidden={showBottomPanel}
+                    onclick={() => { showBottomPanel = true; activeBottomTab = "diagnostics"; }}
+                    onkeydown={(e) => { if (e.key === "Enter") { showBottomPanel = true; activeBottomTab = "diagnostics"; } }}
+                    role="button"
+                    tabindex="0"
+                >
+                    {#if errorCount > 0}
+                        <span class="text-red-600 flex items-center gap-1">
+                            <AlertCircle class="w-3.5 h-3.5" />
+                            {errorCount}
+                        </span>
+                    {/if}
+                    {#if warningCount > 0}
+                        <span class="text-yellow-600 flex items-center gap-1">
+                            <AlertTriangle class="w-3.5 h-3.5" />
+                            {warningCount}
+                        </span>
+                    {/if}
+                </div>
+                <!-- Desktop panel toggles -->
+                <button
+                    class="hidden md:block p-1 text-gray-400 hover:text-gray-600 rounded {showFileTree
 
-        <!-- Editor + bottom panel -->
-        <div class="flex flex-col flex-1 min-w-0 min-h-0">
-            <!-- Editor -->
-            <div class="flex-1 min-h-0" bind:this={editorContainer}></div>
+                        ? 'bg-gray-100'
+                        : ''}"
+                    onclick={() => (showFileTree = !showFileTree)}
+                    title="Toggle file tree"
+                >
+                    <PanelLeft class="w-4 h-4" />
+                </button>
+                <button
+                    class="p-1 text-gray-400 hover:text-gray-600 rounded {showBottomPanel
+                        ? 'bg-gray-100'
+                        : ''}"
+                    onclick={() => (showBottomPanel = !showBottomPanel)}
+                    title="Toggle bottom panel"
+                >
+                    <PanelBottom class="w-4 h-4" />
+                </button>
+            </div>
+        </div>
+
+        <!-- Editor -->
+        <div class="flex-1 min-h-0 relative">
+            <div class="absolute inset-0" bind:this={editorContainer}></div>
+        </div>
 
             <!-- Bottom panel (desktop) -->
             {#if showBottomPanel}
                 <div
-                    class="hidden md:flex flex-col h-60 border-t border-gray-200 bg-white shrink-0"
+                    class="flex flex-col h-60 border-t border-gray-200 bg-white shrink-0"
                 >
                     <!-- Tab bar -->
                     <div class="flex border-b border-gray-200 shrink-0">
@@ -313,16 +322,16 @@ function handleReplClear() {
                                 : 'border-transparent text-gray-500 hover:text-gray-700'}"
                             onclick={() => (activeBottomTab = "diagnostics")}
                         >
-                            Problems
-                            {#if errorCount + warningCount > 0}
-                                <span
-                                    class="ml-1 px-1.5 py-0.5 rounded-full text-xs {errorCount > 0
-                                        ? 'bg-red-100 text-red-700'
-                                        : 'bg-yellow-100 text-yellow-700'}"
-                                >
-                                    {errorCount + warningCount}
-                                </span>
-                            {/if}
+                            Diagnostics
+                            <span
+                                class="ml-1 px-1.5 py-0.5 rounded-full text-xs {errorCount > 0
+                                    ? 'bg-red-100 text-red-700'
+                                    : warningCount > 0
+                                      ? 'bg-yellow-100 text-yellow-700'
+                                      : 'bg-green-100 text-green-700'}"
+                            >
+                                {errorCount + warningCount}
+                            </span>
                         </button>
                         <button
                             class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
@@ -333,6 +342,25 @@ function handleReplClear() {
                         >
                             REPL
                         </button>
+                        {#if activeBottomTab === "repl"}
+                            <div class="flex-1"></div>
+                            <div class="flex items-center gap-1 px-2">
+                                <button
+                                    class="p-1 text-gray-400 hover:text-gray-600 rounded"
+                                    title="Clear output"
+                                    onclick={handleReplClear}
+                                >
+                                    <Trash2 class="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                    class="p-1 text-gray-400 hover:text-gray-600 rounded"
+                                    title="Reset REPL state"
+                                    onclick={handleReplReset}
+                                >
+                                    <RotateCcw class="w-3.5 h-3.5" />
+                                </button>
+                            </div>
+                        {/if}
                     </div>
                     <!-- Tab content -->
                     <div class="flex-1 min-h-0 overflow-hidden">
@@ -345,8 +373,6 @@ function handleReplClear() {
                             <Repl
                                 history={playgroundState.replHistory}
                                 onEval={handleReplEval}
-                                onReset={handleReplReset}
-                                onClear={handleReplClear}
                             />
                         {/if}
                     </div>
@@ -354,60 +380,3 @@ function handleReplClear() {
             {/if}
         </div>
     </div>
-
-    <!-- Mobile bottom drawer -->
-    {#if mobileBottomOpen}
-        <div class="md:hidden absolute bottom-0 left-0 right-0 z-30 flex flex-col h-[60vh]">
-            <button
-                class="h-8 bg-black/20"
-                onclick={() => (mobileBottomOpen = false)}
-                aria-label="Close panel"
-            ></button>
-            <div class="flex flex-col flex-1 bg-white border-t border-gray-200 shadow-lg">
-                <!-- Tab bar -->
-                <div class="flex border-b border-gray-200 shrink-0">
-                    <button
-                        class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
-                        'diagnostics'
-                            ? 'border-blue-500 text-blue-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700'}"
-                        onclick={() => (activeBottomTab = "diagnostics")}
-                    >
-                        Problems
-                    </button>
-                    <button
-                        class="px-3 py-1.5 text-xs font-medium border-b-2 {activeBottomTab ===
-                        'repl'
-                            ? 'border-blue-500 text-blue-600'
-                            : 'border-transparent text-gray-500 hover:text-gray-700'}"
-                        onclick={() => (activeBottomTab = "repl")}
-                    >
-                        REPL
-                    </button>
-                    <div class="flex-1"></div>
-                    <button
-                        class="px-2 text-gray-400 hover:text-gray-600"
-                        onclick={() => (mobileBottomOpen = false)}
-                    >
-                        <X class="w-4 h-4" />
-                    </button>
-                </div>
-                <div class="flex-1 min-h-0 overflow-hidden">
-                    {#if activeBottomTab === "diagnostics"}
-                        <DiagnosticsPanel
-                            diagnostics={playgroundState.diagnostics}
-                            onNavigate={handleDiagnosticNavigate}
-                        />
-                    {:else}
-                        <Repl
-                            history={playgroundState.replHistory}
-                            onEval={handleReplEval}
-                            onReset={handleReplReset}
-                            onClear={handleReplClear}
-                        />
-                    {/if}
-                </div>
-            </div>
-        </div>
-    {/if}
-</div>

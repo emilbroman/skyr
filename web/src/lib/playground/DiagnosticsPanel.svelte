@@ -8,30 +8,9 @@ type Props = {
 };
 
 let { diagnostics, onNavigate }: Props = $props();
-
-let errorCount = $derived(diagnostics.filter((d) => d.severity === "error").length);
-let warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").length);
 </script>
 
-<div class="flex flex-col h-full text-sm">
-    <div class="flex items-center gap-3 px-3 py-1.5 border-b border-gray-200 text-xs shrink-0">
-        {#if errorCount > 0}
-            <span class="flex items-center gap-1 text-red-600">
-                <AlertCircle class="w-3.5 h-3.5" />
-                {errorCount}
-            </span>
-        {/if}
-        {#if warningCount > 0}
-            <span class="flex items-center gap-1 text-yellow-600">
-                <AlertTriangle class="w-3.5 h-3.5" />
-                {warningCount}
-            </span>
-        {/if}
-        {#if errorCount === 0 && warningCount === 0}
-            <span class="text-green-600">No issues</span>
-        {/if}
-    </div>
-    <div class="flex-1 overflow-y-auto">
+<div class="flex flex-col h-full text-sm overflow-y-auto">
         {#if diagnostics.length === 0}
             <div class="p-4 text-center text-gray-400 text-xs">No diagnostics</div>
         {:else}
@@ -54,5 +33,4 @@ let warningCount = $derived(diagnostics.filter((d) => d.severity === "warning").
                 </button>
             {/each}
         {/if}
-    </div>
 </div>
