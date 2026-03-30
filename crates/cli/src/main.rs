@@ -7,6 +7,7 @@ mod fmt;
 mod fs_source;
 mod lsp;
 mod output;
+mod port_forward;
 mod repl;
 mod repo;
 mod resource;
@@ -45,6 +46,7 @@ enum Command {
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
     Resources(resource::ResourcesArgs),
+    PortForward(port_forward::PortForwardArgs),
     Fmt(fmt::FmtArgs),
 }
 
@@ -86,6 +88,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Resources(args) => {
             resource::run_resources(args, program.format).await?;
+        }
+        Command::PortForward(args) => {
+            port_forward::run_port_forward(args).await?;
         }
         Command::Fmt(args) => {
             fmt::run_fmt(args)?;

@@ -160,6 +160,11 @@ service Conduit {
   // ConfigureServiceCidr tells the node about the service CIDR range
   // so it can be added as an allowed range in the bridge forwarding rules.
   rpc ConfigureServiceCidr(ConfigureServiceCidrRequest) returns (ConfigureServiceCidrResponse);
+
+  // PortForward establishes a bidirectional TCP tunnel to a pod's port.
+  // The first request message must contain a PortForwardInit specifying the
+  // target pod and port. Subsequent messages carry raw TCP data.
+  rpc PortForward(stream PortForwardRequest) returns (stream PortForwardResponse);
 }
 
 // ============================================================================
@@ -384,3 +389,36 @@ message ConfigureServiceCidrRequest {
 
 // Response from configuring the service CIDR.
 message ConfigureServiceCidrResponse {}
+
+// ============================================================================
+// Port Forwarding Messages
+// ============================================================================
+
+// Request message for the PortForward streaming RPC.
+// The first message must contain an `init` payload; subsequent messages carry
+// raw TCP data from the client to the pod.
+message PortForwardRequest {
+  oneof payload {
+    // Initialization message (must be the first message on the stream).
+    PortForwardInit init = 1;
+    // Raw TCP data from the client destined for the pod.
+    bytes data = 2;
+  }
+}
+
+// Initialization parameters for a port-forward session.
+message PortForwardInit {
+  // Full resource name (name + hash) of the pod.
+  string pod_name = 1;
+  // The port number to forward to on the pod.
+  int32 port = 2;
+  // The protocol: "tcp" (only TCP is supported for port-forwarding).
+  string protocol = 3;
+}
+
+// Response message for the PortForward streaming RPC.
+// Each message carries raw TCP data from the pod back to the client.
+message PortForwardResponse {
+  // Raw TCP data from the pod destined for the client.
+  bytes data = 1;
+}

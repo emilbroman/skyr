@@ -5443,6 +5443,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "futures",
  "hyper-util",
  "ids",
  "ipnet",
@@ -5453,6 +5454,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tonic 0.14.5",
  "tower 0.5.3",
@@ -5464,6 +5466,7 @@ dependencies = [
 name = "scop"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "http 1.4.0",
  "prost 0.13.5",
  "protoc-bin-vendored",
@@ -5508,8 +5511,14 @@ dependencies = [
  "gix-packetline",
  "gix-ref",
  "ids",
+ "rdb",
+ "redis",
  "russh",
+ "sclc",
+ "scop",
+ "serde_json",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tracing",
  "tracing-subscriber",

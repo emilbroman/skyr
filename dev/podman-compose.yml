@@ -142,6 +142,10 @@ services:
         "scylla",
         "--udb-hostname",
         "redis",
+        "--rdb-hostname",
+        "scylla",
+        "--node-registry-hostname",
+        "redis",
       ]
     restart: always
     ports:
