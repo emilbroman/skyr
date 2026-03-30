@@ -2,7 +2,7 @@ use chrono::{DateTime, Datelike, Months, Timelike};
 
 use crate::{EvalErrorKind, Record, Value, ValueAssertions};
 
-const CLOCK_RESOURCE_TYPE: &str = "Std/Time.Clock";
+const SCHEDULE_RESOURCE_TYPE: &str = "Std/Time.Schedule";
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn("Std/Time.toISO", |args, _ctx| {
@@ -87,7 +87,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         Ok(crate::TrackedValue::new(Value::Record(result)).with_dependencies(deps))
     });
 
-    eval.add_extern_fn(CLOCK_RESOURCE_TYPE, |args, eval_ctx| {
+    eval.add_extern_fn(SCHEDULE_RESOURCE_TYPE, |args, eval_ctx| {
         let mut args = args.into_iter();
         let duration_arg = args
             .next()
@@ -111,7 +111,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
 
         let id_str = format!("{months}/{milliseconds}");
         let resource_id = ids::ResourceId {
-            typ: CLOCK_RESOURCE_TYPE.to_string(),
+            typ: SCHEDULE_RESOURCE_TYPE.to_string(),
             name: id_str.clone(),
         };
 
@@ -120,7 +120,7 @@ pub fn register_extern(eval: &mut crate::Eval) {
         inputs.insert(String::from("milliseconds"), Value::Int(milliseconds));
 
         let Some(outputs) = eval_ctx.resource(
-            CLOCK_RESOURCE_TYPE,
+            SCHEDULE_RESOURCE_TYPE,
             &id_str,
             &inputs,
             argument_dependencies.clone(),

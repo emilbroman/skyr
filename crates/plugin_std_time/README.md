@@ -1,14 +1,14 @@
 # Std/Time Plugin
 
-An [RTP](../rtp/) plugin implementing the `Std/Time.Clock` resource type.
+An [RTP](../rtp/) plugin implementing the `Std/Time.Schedule` resource type.
 
 ## Role in the Architecture
 
-This is one of Skyr's standard library plugins, invoked by the [RTE](../rte/) when deployments use `Time.Clock` resources.
+This is one of Skyr's standard library plugins, invoked by the [RTE](../rte/) when deployments use `Time.Schedule` resources.
 
-## Resource: `Std/Time.Clock`
+## Resource: `Std/Time.Schedule`
 
-A volatile clock resource that truncates the current time to the closest past boundary of a given duration, aligned with the Unix epoch.
+A volatile schedule resource that truncates the current time to the closest past boundary of a given duration, aligned with the Unix epoch.
 
 | | Fields |
 |---|--------|
@@ -28,7 +28,7 @@ For example, with a duration of 1 month + 1 millisecond:
 
 ### Volatile Behavior
 
-The resource is marked `Volatile`, so the deployment engine periodically calls `check` to recompute the current window. When the clock crosses a boundary, the `epochMillis` output changes, which triggers dependent resources to update.
+The resource is marked `Volatile`, so the deployment engine periodically calls `check` to recompute the current window. When the schedule crosses a boundary, the `epochMillis` output changes, which triggers dependent resources to update.
 
 ## Running
 

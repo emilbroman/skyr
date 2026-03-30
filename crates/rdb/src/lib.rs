@@ -689,7 +689,7 @@ mod tests {
     fn encode_decode_dependencies_round_trip() {
         let deps = vec![
             ids::ResourceId::new("Std/Random.Int", "a"),
-            ids::ResourceId::new("Std/Time.Clock", "b"),
+            ids::ResourceId::new("Std/Time.Schedule", "b"),
         ];
         let json = encode_dependencies(&deps).unwrap();
         let decoded = decode_dependencies(Some(json)).unwrap();

@@ -103,11 +103,11 @@ export let add = extern "Std/Time.add": fn(Instant, Duration) Instant
 /// Subtract a `Duration` from an `Instant`.
 export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
 
-/// Create a volatile clock resource that produces a time-window `Instant`.
+/// Create a volatile schedule resource that produces a time-window `Instant`.
 ///
-/// The clock truncates the current time to the closest past boundary of
+/// The schedule truncates the current time to the closest past boundary of
 /// the given duration, aligned with the Unix epoch. The resource is volatile:
-/// the deployment engine periodically re-checks it. When the clock crosses
+/// the deployment engine periodically re-checks it. When the schedule crosses
 /// a window boundary the output changes, triggering dependent resources to update.
 ///
 /// Boundary calculation:
@@ -118,7 +118,7 @@ export let subtract = extern "Std/Time.subtract": fn(Instant, Duration) Instant
 /// ```scl
 /// import Std/Time
 ///
-/// let hourly = Time.Clock({ milliseconds: 3600000 })
-/// let monthly = Time.Clock({ months: 1 })
+/// let hourly = Time.Schedule({ milliseconds: 3600000 })
+/// let monthly = Time.Schedule({ months: 1 })
 /// ```
-export let Clock = extern "Std/Time.Clock": fn(Duration) Instant
+export let Schedule = extern "Std/Time.Schedule": fn(Duration) Instant
