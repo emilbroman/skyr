@@ -114,7 +114,9 @@ pub(crate) struct Client {
 }
 
 const PREFIX_NODE: &str = "n:";
+const PREFIX_VIP: &str = "vip:";
 const SET_NODES: &str = "nodes";
+const SET_VIPS: &str = "vips";
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -222,5 +224,48 @@ impl Client {
         }
 
         Ok(nodes)
+    }
+
+    /// List nodes whose last heartbeat is older than the given threshold (in seconds).
+    pub(crate) async fn stale_nodes(&mut self, max_age_secs: u64) -> Result<Vec<Node>, NodeError> {
+        let cutoff = now_secs().saturating_sub(max_age_secs);
+        let all = self.list().await?;
+        Ok(all
+            .into_iter()
+            .filter(|n| n.last_heartbeat < cutoff)
+            .collect())
+    }
+
+    /// Store a VIP allocation in Redis for persistence across restarts.
+    pub(crate) async fn store_vip(&mut self, host_name: &str, vip: &str) -> Result<(), NodeError> {
+        let _: () = self
+            .conn
+            .set(format!("{PREFIX_VIP}{host_name}"), vip)
+            .await?;
+        let _: () = self.conn.sadd(SET_VIPS, host_name).await?;
+        Ok(())
+    }
+
+    /// Remove a VIP allocation from Redis.
+    pub(crate) async fn remove_vip(&mut self, host_name: &str) -> Result<(), NodeError> {
+        let _: () = self.conn.del(format!("{PREFIX_VIP}{host_name}")).await?;
+        let _: () = self.conn.srem(SET_VIPS, host_name).await?;
+        Ok(())
+    }
+
+    /// List all stored VIP allocations (host_name → VIP address string).
+    pub(crate) async fn list_vips(&mut self) -> Result<Vec<(String, String)>, NodeError> {
+        let names: Vec<String> = self.conn.smembers(SET_VIPS).await?;
+        let mut vips = Vec::with_capacity(names.len());
+
+        for name in names {
+            let key = format!("{PREFIX_VIP}{name}");
+            let vip: Option<String> = self.conn.get(&key).await?;
+            if let Some(vip) = vip {
+                vips.push((name, vip));
+            }
+        }
+
+        Ok(vips)
     }
 }

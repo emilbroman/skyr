@@ -912,29 +912,142 @@ async fn main() -> Result<()> {
                 dns_records,
             );
 
-            // Spawn heartbeat task
+            // Spawn heartbeat task with exponential backoff and re-registration
             let node_name_heartbeat = node_name.clone();
             let orchestrator_address_heartbeat = orchestrator_address.clone();
+            let conduit_address_heartbeat = conduit_address.clone();
+            let pod_cidr_heartbeat = pod_cidr;
             let heartbeat_handle = tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(Duration::from_secs(30)).await;
+                const BASE_INTERVAL_SECS: u64 = 30;
+                const MAX_BACKOFF_SECS: u64 = 300;
+                const RE_REGISTER_THRESHOLD: u32 = 3;
 
+                let mut consecutive_failures: u32 = 0;
+
+                loop {
+                    // Calculate sleep duration with exponential backoff on failures
+                    let sleep_secs = if consecutive_failures == 0 {
+                        BASE_INTERVAL_SECS
+                    } else {
+                        let backoff =
+                            BASE_INTERVAL_SECS * 2u64.saturating_pow(consecutive_failures.min(10));
+                        // Add jitter: ±25% to prevent thundering herd
+                        let jitter_range = backoff / 4;
+                        let jitter = if jitter_range > 0 {
+                            // Simple pseudo-random jitter using timestamp nanos
+                            let nanos = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .subsec_nanos() as u64;
+                            nanos % (jitter_range * 2)
+                        } else {
+                            0
+                        };
+                        (backoff - jitter_range + jitter).min(MAX_BACKOFF_SECS)
+                    };
+                    tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+
+                    // After too many consecutive failures, attempt re-registration
+                    if consecutive_failures >= RE_REGISTER_THRESHOLD {
+                        tracing::warn!(
+                            consecutive_failures = consecutive_failures,
+                            "heartbeat failures exceeded threshold, attempting re-registration"
+                        );
+
+                        match scop::OrchestratorClient::connect(
+                            orchestrator_address_heartbeat.clone(),
+                        )
+                        .await
+                        {
+                            Ok(mut client) => {
+                                match client
+                                    .register_node(scop::RegisterNodeRequest {
+                                        node_name: node_name_heartbeat.clone(),
+                                        conduit_address: conduit_address_heartbeat.clone(),
+                                        capacity: Some(scop::NodeCapacity {
+                                            cpu_millis,
+                                            memory_bytes,
+                                            max_pods,
+                                        }),
+                                        labels: Default::default(),
+                                        pod_netmask,
+                                    })
+                                    .await
+                                {
+                                    Ok(response) => {
+                                        let resp = response.into_inner();
+                                        if resp.success {
+                                            // Verify pod_cidr matches our bridge configuration
+                                            if resp.pod_cidr != pod_cidr_heartbeat.to_string() {
+                                                tracing::error!(
+                                                    expected = %pod_cidr_heartbeat,
+                                                    received = %resp.pod_cidr,
+                                                    "re-registration returned different pod_cidr"
+                                                );
+                                            } else {
+                                                tracing::info!("re-registration successful");
+                                            }
+                                            consecutive_failures = 0;
+                                            continue;
+                                        }
+                                        tracing::warn!(
+                                            error = %resp.error,
+                                            "re-registration failed"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!("re-registration RPC failed: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!("failed to connect for re-registration: {}", e);
+                            }
+                        }
+                        consecutive_failures += 1;
+                        continue;
+                    }
+
+                    // Normal heartbeat
                     match scop::OrchestratorClient::connect(orchestrator_address_heartbeat.clone())
                         .await
                     {
                         Ok(mut client) => {
-                            if let Err(e) = client
+                            match client
                                 .heartbeat(scop::HeartbeatRequest {
                                     node_name: node_name_heartbeat.clone(),
                                     usage: None,
                                 })
                                 .await
                             {
-                                tracing::warn!("Heartbeat failed: {}", e);
+                                Ok(response) => {
+                                    if response.into_inner().acknowledged {
+                                        consecutive_failures = 0;
+                                    } else {
+                                        consecutive_failures += 1;
+                                        tracing::warn!(
+                                            consecutive_failures = consecutive_failures,
+                                            "heartbeat not acknowledged"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    consecutive_failures += 1;
+                                    tracing::warn!(
+                                        consecutive_failures = consecutive_failures,
+                                        "heartbeat failed: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to connect for heartbeat: {}", e);
+                            consecutive_failures += 1;
+                            tracing::warn!(
+                                consecutive_failures = consecutive_failures,
+                                "failed to connect for heartbeat: {}",
+                                e
+                            );
                         }
                     }
                 }

@@ -18,9 +18,10 @@ mod node_registry;
 mod subnet_allocator;
 mod vip_allocator;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -86,6 +87,13 @@ const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
 const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 
+/// How often the dead-node eviction task runs (seconds).
+const EVICTION_SCAN_INTERVAL_SECS: u64 = 60;
+/// Nodes with no heartbeat for this long are excluded from scheduling (seconds).
+const STALE_HEARTBEAT_THRESHOLD_SECS: u64 = 5 * 60;
+/// Nodes with no heartbeat for this long are fully evicted (seconds).
+const EVICTION_GRACE_PERIOD_SECS: u64 = 15 * 60;
+
 /// Inner state shared between Orchestrator and RTP servers.
 struct ContainerPluginInner {
     /// Node registry client for storing and looking up node addresses.
@@ -108,6 +116,8 @@ struct ContainerPluginInner {
     service_cidr: String,
     /// Allocates VIPs from the service CIDR for Host resources.
     vip_allocator: RwLock<vip_allocator::VipAllocator>,
+    /// Nodes that missed a broadcast and need reconciliation on next heartbeat.
+    nodes_needing_reconciliation: RwLock<HashSet<String>>,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -144,6 +154,7 @@ impl ContainerPlugin {
                 cluster_cidr,
                 service_cidr,
                 vip_allocator: RwLock::new(vip_allocator),
+                nodes_needing_reconciliation: RwLock::new(HashSet::new()),
             }),
         }
     }
@@ -185,13 +196,18 @@ impl ContainerPlugin {
 
     /// Select a node for scheduling a pod.
     ///
-    /// Currently uses a simple strategy: pick the first available node.
-    /// Future: implement proper scheduling based on capacity, usage, labels.
+    /// Picks the first available node that has a recent heartbeat.
+    /// Nodes whose last heartbeat exceeds the stale threshold are excluded.
     async fn select_node(&self) -> Result<node_registry::Node, PluginError> {
         let nodes = self.list_nodes().await?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cutoff = now.saturating_sub(STALE_HEARTBEAT_THRESHOLD_SECS);
         nodes
             .into_iter()
-            .next()
+            .find(|n| n.last_heartbeat >= cutoff)
             .ok_or(PluginError::NoAvailableNodes)
     }
 
@@ -923,6 +939,14 @@ impl ContainerPlugin {
             "creating host"
         );
 
+        // Persist VIP allocation in Redis for reconstruction after restart
+        {
+            let mut registry = self.inner.node_registry.write().await;
+            if let Err(e) = registry.store_vip(&hostname, &vip_str).await {
+                warn!(hostname = %hostname, error = %e, "failed to persist VIP allocation");
+            }
+        }
+
         // Broadcast DNS record to all nodes
         self.broadcast_dns_set(&hostname, &vip_str).await;
 
@@ -1002,6 +1026,12 @@ impl ContainerPlugin {
             // Release the VIP
             let mut allocator = self.inner.vip_allocator.write().await;
             allocator.release(&hostname);
+
+            // Remove VIP from Redis
+            let mut registry = self.inner.node_registry.write().await;
+            if let Err(e) = registry.remove_vip(&hostname).await {
+                warn!(hostname = %hostname, error = %e, "failed to remove VIP from registry");
+            }
         }
 
         Ok(())
@@ -1158,6 +1188,233 @@ impl ContainerPlugin {
     }
 
     // =========================================================================
+    // Resilience: network reconciliation and dead-node eviction
+    // =========================================================================
+
+    /// Reconcile cluster-wide network state after plugin restart.
+    /// Rebuilds the overlay mesh by notifying each node about all other nodes,
+    /// and re-broadcasts DNS records and service routes from stored VIP data.
+    async fn reconcile_network_state(&self) {
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for network reconciliation");
+                return;
+            }
+        };
+
+        if nodes.is_empty() {
+            info!("no registered nodes, skipping network reconciliation");
+            return;
+        }
+
+        info!(
+            node_count = nodes.len(),
+            "reconciling network state after startup"
+        );
+
+        // Rebuild overlay mesh: notify each node about every other node's overlay endpoint
+        for node in &nodes {
+            if node.overlay_endpoint.is_empty() {
+                continue;
+            }
+
+            let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!(
+                        node = %node.name,
+                        error = %e,
+                        "failed to connect to node during reconciliation"
+                    );
+                    continue;
+                }
+            };
+
+            for peer in &nodes {
+                if peer.name == node.name || peer.overlay_endpoint.is_empty() {
+                    continue;
+                }
+                if let Err(e) = client
+                    .add_overlay_peer(scop::AddOverlayPeerRequest {
+                        peer_host_ip: peer.overlay_endpoint.clone(),
+                    })
+                    .await
+                {
+                    warn!(
+                        node = %node.name,
+                        peer = %peer.overlay_endpoint,
+                        error = %e,
+                        "failed to reconcile overlay peer"
+                    );
+                }
+            }
+        }
+
+        // Re-broadcast DNS records and service routes from stored VIP data
+        let vips = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry.list_vips().await.unwrap_or_default()
+        };
+
+        for (host_name, vip_str) in &vips {
+            self.broadcast_dns_set(host_name, vip_str).await;
+        }
+
+        info!(
+            overlay_peers = nodes.len(),
+            dns_records = vips.len(),
+            "network state reconciliation complete"
+        );
+    }
+
+    /// Background task that periodically scans for dead nodes and evicts them.
+    async fn run_dead_node_eviction(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(EVICTION_SCAN_INTERVAL_SECS)).await;
+
+            let stale = {
+                let mut registry = self.inner.node_registry.write().await;
+                match registry.stale_nodes(EVICTION_GRACE_PERIOD_SECS).await {
+                    Ok(nodes) => nodes,
+                    Err(e) => {
+                        warn!(error = %e, "dead-node eviction scan failed");
+                        continue;
+                    }
+                }
+            };
+
+            for node in stale {
+                warn!(
+                    node = %node.name,
+                    last_heartbeat = node.last_heartbeat,
+                    "evicting dead node"
+                );
+                self.evict_node(&node.name).await;
+            }
+        }
+    }
+
+    /// Evict a dead node: release its subnet, unregister from Redis, notify peers.
+    async fn evict_node(&self, node_name: &str) {
+        // Read departing node info before unregistering
+        let departing_endpoint = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry
+                .get(node_name)
+                .await
+                .ok()
+                .map(|n| n.overlay_endpoint.clone())
+                .unwrap_or_default()
+        };
+
+        // Release subnet
+        {
+            let mut allocator = self.inner.subnet_allocator.write().await;
+            allocator.release(node_name);
+        }
+
+        // Unregister from Redis
+        {
+            let mut registry = self.inner.node_registry.write().await;
+            if let Err(e) = registry.unregister(node_name).await {
+                error!(node = %node_name, error = %e, "failed to unregister evicted node");
+                return;
+            }
+        }
+
+        info!(node = %node_name, "evicted dead node");
+
+        // Notify remaining nodes to remove the departing peer
+        if !departing_endpoint.is_empty() {
+            let departing = departing_endpoint.clone();
+            self.broadcast_to_nodes("remove_overlay_peer (eviction)", |mut client, _| {
+                let peer = departing.clone();
+                async move {
+                    client
+                        .remove_overlay_peer(scop::RemoveOverlayPeerRequest { peer_host_ip: peer })
+                        .await
+                        .map(|_| ())
+                }
+            })
+            .await;
+        }
+    }
+
+    /// Reconcile a single node by pushing all overlay peers and DNS records to it.
+    /// Called when a node that missed a broadcast sends a heartbeat.
+    async fn reconcile_single_node(&self, node_name: &str) {
+        let node = {
+            let mut registry = self.inner.node_registry.write().await;
+            match registry.get(node_name).await {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(node = %node_name, error = %e, "reconciliation: failed to get node");
+                    return;
+                }
+            }
+        };
+
+        let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(node = %node_name, error = %e, "reconciliation: failed to connect");
+                return;
+            }
+        };
+
+        // Push all overlay peers
+        let all_nodes = self.list_nodes().await.unwrap_or_default();
+        for peer in &all_nodes {
+            if peer.name == node.name || peer.overlay_endpoint.is_empty() {
+                continue;
+            }
+            if let Err(e) = client
+                .add_overlay_peer(scop::AddOverlayPeerRequest {
+                    peer_host_ip: peer.overlay_endpoint.clone(),
+                })
+                .await
+            {
+                warn!(
+                    node = %node_name,
+                    peer = %peer.overlay_endpoint,
+                    error = %e,
+                    "reconciliation: failed to push overlay peer"
+                );
+            }
+        }
+
+        // Push all DNS records
+        let vips = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry.list_vips().await.unwrap_or_default()
+        };
+        for (hostname, vip_str) in &vips {
+            if let Err(e) = client
+                .set_dns_record(scop::SetDnsRecordRequest {
+                    hostname: hostname.clone(),
+                    address: vip_str.clone(),
+                })
+                .await
+            {
+                warn!(
+                    node = %node_name,
+                    hostname = %hostname,
+                    error = %e,
+                    "reconciliation: failed to push DNS record"
+                );
+            }
+        }
+
+        info!(
+            node = %node_name,
+            peers = all_nodes.len().saturating_sub(1),
+            dns_records = vips.len(),
+            "reconciled node state"
+        );
+    }
+
+    // =========================================================================
     // Broadcast helpers (send to all registered nodes)
     // =========================================================================
 
@@ -1187,6 +1444,12 @@ impl ContainerPlugin {
                     error = %e,
                     "skipping node with invalid address in broadcast"
                 );
+                // Mark node for reconciliation
+                self.inner
+                    .nodes_needing_reconciliation
+                    .write()
+                    .await
+                    .insert(node.name.clone());
                 continue;
             }
 
@@ -1198,7 +1461,7 @@ impl ContainerPlugin {
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire().await;
                 match scop::ConduitClient::connect(address).await {
-                    Ok(client) => (node_name, Some(client)),
+                    Ok(client) => (node_name, Ok(client)),
                     Err(e) => {
                         warn!(
                             node = %node_name,
@@ -1206,22 +1469,38 @@ impl ContainerPlugin {
                             error = %e,
                             "failed to connect to node for broadcast"
                         );
-                        (node_name, None)
+                        (node_name, Err(()))
                     }
                 }
             }));
         }
 
+        let mut failed_nodes = Vec::new();
         for handle in handles {
-            if let Ok((node_name, Some(client))) = handle.await
-                && let Err(e) = f(client, node_name.clone()).await
-            {
-                warn!(
-                    node = %node_name,
-                    operation = %operation,
-                    error = %e,
-                    "broadcast operation failed on node"
-                );
+            match handle.await {
+                Ok((node_name, Ok(client))) => {
+                    if let Err(e) = f(client, node_name.clone()).await {
+                        warn!(
+                            node = %node_name,
+                            operation = %operation,
+                            error = %e,
+                            "broadcast operation failed on node"
+                        );
+                        failed_nodes.push(node_name);
+                    }
+                }
+                Ok((node_name, Err(()))) => {
+                    failed_nodes.push(node_name);
+                }
+                Err(_) => {}
+            }
+        }
+
+        // Track nodes that missed this broadcast for reconciliation on next heartbeat
+        if !failed_nodes.is_empty() {
+            let mut needs_reconciliation = self.inner.nodes_needing_reconciliation.write().await;
+            for name in failed_nodes {
+                needs_reconciliation.insert(name);
             }
         }
     }
@@ -1722,8 +2001,36 @@ impl scop::Orchestrator for ContainerPlugin {
             "registering node"
         );
 
-        // Allocate a pod subnet for this node at the requested size
-        let pod_cidr = {
+        // Check if this node was previously registered (re-registration after restart).
+        // If so, return the same pod_cidr to avoid misalignment with the node's bridge config.
+        let existing_node = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry.get(&request.node_name).await.ok()
+        };
+
+        let pod_cidr = if let Some(ref existing) = existing_node
+            && !existing.pod_cidr.is_empty()
+        {
+            // Re-registration: ensure the allocator knows about this existing allocation
+            if let Ok(cidr) = existing.pod_cidr.parse::<ipnet::Ipv4Net>() {
+                let mut allocator = self.inner.subnet_allocator.write().await;
+                // seed is idempotent if already present
+                if let Err(e) = allocator.seed(&request.node_name, cidr) {
+                    warn!(
+                        node_name = %request.node_name,
+                        error = %e,
+                        "failed to re-seed subnet during re-registration"
+                    );
+                }
+            }
+            info!(
+                node_name = %request.node_name,
+                pod_cidr = %existing.pod_cidr,
+                "re-registration: returning previously assigned pod_cidr"
+            );
+            existing.pod_cidr.clone()
+        } else {
+            // Fresh registration: allocate a new subnet
             let mut allocator = self.inner.subnet_allocator.write().await;
             match allocator.allocate(&request.node_name, request.pod_netmask as u8) {
                 Ok(subnet) => subnet.to_string(),
@@ -1884,7 +2191,24 @@ impl scop::Orchestrator for ContainerPlugin {
 
         let mut registry = self.inner.node_registry.write().await;
         match registry.heartbeat(&request.node_name, usage).await {
-            Ok(_) => Ok(scop::HeartbeatResponse { acknowledged: true }),
+            Ok(_) => {
+                drop(registry);
+
+                // Check if this node missed any broadcasts and needs reconciliation
+                let needs_reconciliation = {
+                    let mut set = self.inner.nodes_needing_reconciliation.write().await;
+                    set.remove(&request.node_name)
+                };
+                if needs_reconciliation {
+                    info!(
+                        node_name = %request.node_name,
+                        "reconciling node that missed previous broadcasts"
+                    );
+                    self.reconcile_single_node(&request.node_name).await;
+                }
+
+                Ok(scop::HeartbeatResponse { acknowledged: true })
+            }
             Err(e) => {
                 tracing::warn!(
                     node_name = %request.node_name,
@@ -2201,14 +2525,83 @@ async fn main() -> Result<()> {
         .cluster_cidr
         .parse()
         .expect("invalid --cluster-cidr, expected CIDR notation (e.g., 10.42.0.0/16)");
-    let subnet_allocator = subnet_allocator::SubnetAllocator::new(cluster_cidr);
+    let mut subnet_allocator = subnet_allocator::SubnetAllocator::new(cluster_cidr);
 
     // Set up VIP allocator for Host resources
     let service_cidr: ipnet::Ipv4Net = args
         .service_cidr
         .parse()
         .expect("invalid --service-cidr, expected CIDR notation (e.g., 10.43.0.0/16)");
-    let vip_alloc = vip_allocator::VipAllocator::new(service_cidr);
+    let mut vip_alloc = vip_allocator::VipAllocator::new(service_cidr);
+
+    // Reconstruct allocator state from Redis to prevent address collisions after restart
+    {
+        let mut registry = node_registry.clone();
+        match registry.list().await {
+            Ok(nodes) => {
+                let count = nodes.len();
+                for node in nodes {
+                    if !node.pod_cidr.is_empty() {
+                        if let Ok(cidr) = node.pod_cidr.parse::<ipnet::Ipv4Net>() {
+                            if let Err(e) = subnet_allocator.seed(&node.name, cidr) {
+                                warn!(
+                                    node = %node.name,
+                                    pod_cidr = %node.pod_cidr,
+                                    error = %e,
+                                    "failed to seed subnet allocation"
+                                );
+                            }
+                        } else {
+                            warn!(
+                                node = %node.name,
+                                pod_cidr = %node.pod_cidr,
+                                "invalid pod_cidr in registry, skipping seed"
+                            );
+                        }
+                    }
+                }
+                info!(
+                    seeded_nodes = count,
+                    "reconstructed subnet allocator state from registry"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for allocator reconstruction");
+            }
+        }
+
+        // Reconstruct VIP allocator state from Redis
+        match registry.list_vips().await {
+            Ok(vips) => {
+                let count = vips.len();
+                for (host_name, vip_str) in vips {
+                    if let Ok(vip) = vip_str.parse::<std::net::Ipv4Addr>() {
+                        if let Err(e) = vip_alloc.seed(&host_name, vip) {
+                            warn!(
+                                host = %host_name,
+                                vip = %vip_str,
+                                error = %e,
+                                "failed to seed VIP allocation"
+                            );
+                        }
+                    } else {
+                        warn!(
+                            host = %host_name,
+                            vip = %vip_str,
+                            "invalid VIP in registry, skipping seed"
+                        );
+                    }
+                }
+                info!(
+                    seeded_vips = count,
+                    "reconstructed VIP allocator state from registry"
+                );
+            }
+            Err(e) => {
+                warn!(error = %e, "failed to list VIPs for allocator reconstruction");
+            }
+        }
+    }
 
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
@@ -2224,9 +2617,19 @@ async fn main() -> Result<()> {
         vip_alloc,
     );
 
+    // Reconcile network state: rebuild overlay mesh and re-broadcast DNS/routes
+    // for nodes that were registered before plugin restart
+    plugin.reconcile_network_state().await;
+
     // Clone for the RTP server (since ContainerPlugin is Clone via Arc)
     let rtp_plugin = plugin.clone();
     let rtp_bind = args.rtp_bind.clone();
+
+    // Spawn dead-node eviction background task
+    let eviction_plugin = plugin.clone();
+    tokio::spawn(async move {
+        eviction_plugin.run_dead_node_eviction().await;
+    });
 
     // Start the Orchestrator server
     let orchestrator_target = format!("http://{}", args.bind);

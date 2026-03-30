@@ -71,6 +71,60 @@ impl Node {
         }
     }
 
+    /// Seed a known allocation into the trie at a specific subnet.
+    /// Splits Free nodes as needed to place the allocation at the correct position.
+    fn seed(
+        &mut self,
+        base_addr: u32,
+        current_prefix: u8,
+        subnet: Ipv4Net,
+        node_name: &str,
+    ) -> bool {
+        let target_prefix = subnet.prefix_len();
+        let target_addr = u32::from(subnet.network());
+
+        if current_prefix == target_prefix {
+            // We've reached the target depth — mark as allocated
+            match self {
+                Node::Free => {
+                    *self = Node::Allocated(node_name.to_string());
+                    true
+                }
+                Node::Allocated(_) => false, // already occupied
+                Node::Split(_, _) => false,  // conflict: children allocated within this block
+            }
+        } else if current_prefix < target_prefix {
+            // Need to descend deeper
+            let child_prefix = current_prefix + 1;
+            let right_base = base_addr | (1 << (31 - current_prefix));
+
+            match self {
+                Node::Allocated(_) => false, // parent block already allocated
+                Node::Free => {
+                    // Split and descend
+                    let mut left = Box::new(Node::Free);
+                    let mut right = Box::new(Node::Free);
+                    let result = if target_addr < right_base {
+                        left.seed(base_addr, child_prefix, subnet, node_name)
+                    } else {
+                        right.seed(right_base, child_prefix, subnet, node_name)
+                    };
+                    *self = Node::Split(left, right);
+                    result
+                }
+                Node::Split(left, right) => {
+                    if target_addr < right_base {
+                        left.seed(base_addr, child_prefix, subnet, node_name)
+                    } else {
+                        right.seed(right_base, child_prefix, subnet, node_name)
+                    }
+                }
+            }
+        } else {
+            false // block is too small for the target
+        }
+    }
+
     /// Release a subnet belonging to `node_name`. Returns true if found and released.
     fn release(&mut self, node_name: &str) -> bool {
         match self {
@@ -169,6 +223,45 @@ impl SubnetAllocator {
                 "no free /{prefix_len} subnet available in {}",
                 self.cluster_cidr
             )),
+        }
+    }
+
+    /// Seed a known allocation from an authoritative source (e.g., Redis).
+    /// Used during startup to reconstruct allocator state without assigning new subnets.
+    /// Returns Ok(()) if the subnet was successfully seeded, Err if it conflicts.
+    pub(crate) fn seed(&mut self, node_name: &str, subnet: Ipv4Net) -> Result<(), String> {
+        // Skip if already seeded with the same allocation
+        if let Some(&existing) = self.allocated.get(node_name) {
+            if existing == subnet {
+                return Ok(());
+            }
+            return Err(format!(
+                "node {node_name} already has allocation {existing}, cannot seed {subnet}"
+            ));
+        }
+
+        let base_addr = u32::from(self.cluster_cidr.network());
+        let cluster_prefix = self.cluster_cidr.prefix_len();
+
+        if !self.cluster_cidr.contains(&subnet) {
+            return Err(format!(
+                "subnet {subnet} is not within cluster CIDR {}",
+                self.cluster_cidr
+            ));
+        }
+
+        if self.root.seed(base_addr, cluster_prefix, subnet, node_name) {
+            tracing::info!(
+                node = %node_name,
+                subnet = %subnet,
+                "seeded existing subnet allocation"
+            );
+            self.allocated.insert(node_name.to_string(), subnet);
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to seed subnet {subnet} for {node_name}: conflicts with existing allocation"
+            ))
         }
     }
 
@@ -302,5 +395,90 @@ mod tests {
         // Allocate another /26 — now goes to the right /25
         let s4 = alloc.allocate("node-4", 26).unwrap();
         assert_eq!(s4, "10.0.0.128/26".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn seed_reconstructs_allocations() {
+        let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // Seed two known allocations
+        alloc
+            .seed("node-1", "10.42.0.0/24".parse().unwrap())
+            .unwrap();
+        alloc
+            .seed("node-2", "10.42.1.0/24".parse().unwrap())
+            .unwrap();
+
+        // Next allocation should skip seeded ranges
+        let s3 = alloc.allocate("node-3", 24).unwrap();
+        assert_eq!(s3, "10.42.2.0/24".parse::<Ipv4Net>().unwrap());
+
+        // Idempotent: re-seeding same allocation succeeds
+        alloc
+            .seed("node-1", "10.42.0.0/24".parse().unwrap())
+            .unwrap();
+
+        // Existing allocation returned via allocate is still correct
+        let s1 = alloc.allocate("node-1", 24).unwrap();
+        assert_eq!(s1, "10.42.0.0/24".parse::<Ipv4Net>().unwrap());
+    }
+
+    #[test]
+    fn seed_rejects_conflicts() {
+        let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        alloc
+            .seed("node-1", "10.42.0.0/24".parse().unwrap())
+            .unwrap();
+
+        // Seeding a different subnet for the same node fails
+        assert!(
+            alloc
+                .seed("node-1", "10.42.1.0/24".parse().unwrap())
+                .is_err()
+        );
+
+        // Seeding an overlapping subnet for a different node fails
+        assert!(
+            alloc
+                .seed("node-2", "10.42.0.0/24".parse().unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn seed_outside_cluster_cidr_rejected() {
+        let cluster: Ipv4Net = "10.42.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        assert!(
+            alloc
+                .seed("node-1", "192.168.0.0/24".parse().unwrap())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn seed_different_sizes() {
+        let cluster: Ipv4Net = "10.0.0.0/16".parse().unwrap();
+        let mut alloc = SubnetAllocator::new(cluster);
+
+        // Seed a /24 and a /28 in different regions
+        alloc
+            .seed("big-node", "10.0.0.0/24".parse().unwrap())
+            .unwrap();
+        alloc
+            .seed("small-node", "10.0.1.0/28".parse().unwrap())
+            .unwrap();
+
+        // Next /28 should go after the seeded /28
+        let s = alloc.allocate("node-3", 28).unwrap();
+        assert_eq!(s, "10.0.1.16/28".parse::<Ipv4Net>().unwrap());
+
+        // Next /24 should skip past the partially used /24 block at 10.0.1.0
+        let s = alloc.allocate("node-4", 24).unwrap();
+        assert_eq!(s, "10.0.2.0/24".parse::<Ipv4Net>().unwrap());
     }
 }
