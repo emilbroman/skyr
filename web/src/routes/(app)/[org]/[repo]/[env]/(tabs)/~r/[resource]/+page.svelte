@@ -4,6 +4,7 @@ import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
+import { Copy } from "lucide-svelte";
 import { ResourceDetailDocument, ResourceLogsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment, deploymentHref, resourceHref } from "$lib/paths";
@@ -75,6 +76,22 @@ function parseSpanStartLine(span: string): number {
   <!-- Metadata -->
   <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
     <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
+      {#if resourceQid}
+        <div>
+          <dt class="text-gray-400">QID</dt>
+          <dd class="font-mono text-xs text-gray-600 flex items-center gap-1.5">
+            {resourceQid}
+            <button
+              type="button"
+              class="text-gray-400 hover:text-gray-600 transition-colors"
+              title="Copy QID"
+              onclick={() => navigator.clipboard.writeText(resourceQid)}
+            >
+              <Copy class="w-3.5 h-3.5" />
+            </button>
+          </dd>
+        </div>
+      {/if}
       {#if resource.owner}
         <div>
           <dt class="text-gray-400">Owner</dt>
