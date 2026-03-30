@@ -39,6 +39,42 @@ let showFileTree = $state(true);
 let showBottomPanel = $state(true);
 let activeBottomTab = $state<"diagnostics" | "repl">("diagnostics");
 
+// Panel sizes (pixels)
+let sidebarWidth = $state(240);
+let bottomPanelHeight = $state(240);
+
+// Resize dragging state
+let resizing = $state<"sidebar" | "bottom" | null>(null);
+
+function startResize(panel: "sidebar" | "bottom", e: MouseEvent) {
+    e.preventDefault();
+    resizing = panel;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startSidebarWidth = sidebarWidth;
+    const startBottomHeight = bottomPanelHeight;
+
+    function onMouseMove(e: MouseEvent) {
+        if (panel === "sidebar") {
+            sidebarWidth = Math.max(120, Math.min(600, startSidebarWidth + (e.clientX - startX)));
+        } else {
+            bottomPanelHeight = Math.max(
+                80,
+                Math.min(600, startBottomHeight - (e.clientY - startY)),
+            );
+        }
+    }
+
+    function onMouseUp() {
+        resizing = null;
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+    }
+
+    document.addEventListener("mousemove", onMouseMove);
+    document.addEventListener("mouseup", onMouseUp);
+}
+
 // Mobile drawer state
 let mobileFileTreeOpen = $state(false);
 
@@ -199,10 +235,18 @@ function handleReplClear() {
     <title>SCL Playground</title>
 </svelte:head>
 
-<div class="flex flex-1 min-h-0 relative">
+{#if resizing}
+    <div
+        class="fixed inset-0 z-50 {resizing === 'sidebar' ? 'cursor-col-resize' : 'cursor-row-resize'}"
+    ></div>
+{/if}
+<div class="flex flex-1 min-h-0 relative" class:select-none={resizing}>
     <!-- File tree sidebar (desktop) -->
     {#if showFileTree}
-        <div class="hidden md:flex w-60 border-r border-gray-200 bg-white shrink-0">
+        <div
+            class="hidden md:flex border-r border-gray-200 bg-white shrink-0"
+            style="width: {sidebarWidth}px"
+        >
             <FileTree
                 tree={playgroundState.fileTree}
                 activeFile={playgroundState.activeFile}
@@ -213,6 +257,12 @@ function handleReplClear() {
                 onRenameEntry={handleRenameEntry}
             />
         </div>
+        <!-- Sidebar resize handle -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+            class="hidden md:block w-1 -ml-0.5 -mr-0.5 shrink-0 cursor-col-resize hover:bg-blue-400 transition-colors z-10 {resizing === 'sidebar' ? 'bg-blue-400' : ''}"
+            onmousedown={(e) => startResize("sidebar", e)}
+        ></div>
     {/if}
 
     <!-- File tree drawer (mobile) -->
@@ -310,8 +360,15 @@ function handleReplClear() {
 
             <!-- Bottom panel (desktop) -->
             {#if showBottomPanel}
+                <!-- Bottom panel resize handle -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                    class="flex flex-col h-60 border-t border-gray-200 bg-white shrink-0"
+                    class="h-1 -mt-0.5 -mb-0.5 shrink-0 cursor-row-resize hover:bg-blue-400 transition-colors z-10 {resizing === 'bottom' ? 'bg-blue-400' : ''}"
+                    onmousedown={(e) => startResize("bottom", e)}
+                ></div>
+                <div
+                    class="flex flex-col border-t border-gray-200 bg-white shrink-0"
+                    style="height: {bottomPanelHeight}px"
                 >
                     <!-- Tab bar -->
                     <div class="flex border-b border-gray-200 shrink-0">
