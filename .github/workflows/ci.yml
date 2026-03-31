@@ -263,6 +263,8 @@ jobs:
 
       - name: Build CLI
         run: nix develop -c cargo build --release --target ${{ matrix.target }} -p cli
+        env:
+          CC: ${{ endsWith(matrix.target, '-linux-musl') && 'musl-gcc' || '' }}
 
       - name: Prepare artifact
         run: |
@@ -310,6 +312,8 @@ jobs:
 
       - name: Build scoc
         run: nix develop -c cargo build --release --target ${{ matrix.target }} -p scoc
+        env:
+          CC: musl-gcc
 
       - name: Prepare artifact
         run: |
