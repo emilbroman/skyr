@@ -27,6 +27,11 @@ resource "kubernetes_deployment" "plugin_std_container" {
       }
 
       spec {
+        volume {
+          name = "tmp"
+          empty_dir {}
+        }
+
         container {
           name              = "plugin-std-container"
           image             = "ghcr.io/emilbroman/skyr-plugin_std_container:latest"
@@ -54,6 +59,11 @@ resource "kubernetes_deployment" "plugin_std_container" {
             name           = "rtp"
             container_port = 50054
             protocol       = "TCP"
+          }
+
+          volume_mount {
+            name       = "tmp"
+            mount_path = "/tmp"
           }
         }
       }
