@@ -173,10 +173,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Select Containerfile
+        id: containerfile
+        run: |
+          if [ -f "dev/Containerfile.${{ matrix.binary }}" ]; then
+            echo "path=dev/Containerfile.${{ matrix.binary }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=dev/Containerfile.service" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: dev/Containerfile.service
+          file: ${{ steps.containerfile.outputs.path }}
           push: true
           build-args: |
             BASE_IMAGE=${{ env.IMAGE_PREFIX }}/skyr:${{ github.sha }}

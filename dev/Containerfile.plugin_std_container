@@ -1,0 +1,8 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} AS base
+
+FROM scratch
+COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
+COPY --from=base /plugin_std_container /plugin_std_container
+COPY --from=base /usr/bin/buildctl /usr/bin/buildctl
+ENTRYPOINT ["/plugin_std_container"]
