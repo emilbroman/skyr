@@ -1130,6 +1130,129 @@ pub(crate) fn host_nameservers() -> Vec<String> {
 }
 
 // ============================================================================
+// VIP management (Internet Address exposure)
+// ============================================================================
+
+/// Detect the primary network interface by parsing the default route.
+///
+/// Runs `ip route show default` and extracts the `dev <iface>` field.
+pub(crate) fn detect_primary_interface() -> Result<String> {
+    let output = Command::new("ip")
+        .args(["route", "show", "default"])
+        .output()
+        .context("failed to run 'ip route show default'")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("'ip route show default' failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Typical output: "default via 192.168.2.1 dev eth0 proto static"
+    let iface = stdout
+        .split_whitespace()
+        .skip_while(|&token| token != "dev")
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("no 'dev' field in default route: {}", stdout.trim()))?
+        .to_string();
+
+    info!(interface = %iface, "detected primary network interface");
+    Ok(iface)
+}
+
+/// Add a virtual IP to the node's primary interface, send gratuitous ARP,
+/// and install a DNAT rule forwarding all traffic to a destination IP.
+pub(crate) fn add_vip(address: &str, destination: &str) -> Result<()> {
+    let addr = validate_ipv4(address)?;
+    let dest = validate_ipv4(destination)?;
+    let iface = detect_primary_interface()?;
+
+    let addr_cidr = format!("{addr}/32");
+
+    info!(vip = %addr, destination = %dest, interface = %iface, "adding VIP");
+
+    // Add the VIP to the interface
+    run_cmd("ip", &["addr", "add", &addr_cidr, "dev", &iface])?;
+
+    // Send gratuitous ARP (spawn in background so we don't block)
+    let addr_str = addr.to_string();
+    let iface_clone = iface.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = run_cmd("arping", &["-U", "-c", "3", "-I", &iface_clone, &addr_str]) {
+            warn!(vip = %addr_str, error = %e, "gratuitous ARP failed");
+        }
+    });
+
+    // DNAT all traffic destined for the VIP to the cluster-internal destination
+    let addr_s = addr.to_string();
+    let dest_s = dest.to_string();
+    run_cmd(
+        "iptables",
+        &[
+            "-t",
+            "nat",
+            "-A",
+            "PREROUTING",
+            "-d",
+            &addr_s,
+            "-j",
+            "DNAT",
+            "--to-destination",
+            &dest_s,
+        ],
+    )?;
+
+    // Allow forwarded traffic to the destination
+    run_cmd(
+        "iptables",
+        &["-A", "FORWARD", "-d", &dest_s, "-j", "ACCEPT"],
+    )?;
+
+    Ok(())
+}
+
+/// Remove a virtual IP from the node's primary interface and clean up DNAT rules.
+pub(crate) fn remove_vip(address: &str, destination: &str) -> Result<()> {
+    let addr = validate_ipv4(address)?;
+    let dest = validate_ipv4(destination)?;
+    let iface = detect_primary_interface()?;
+
+    let addr_cidr = format!("{addr}/32");
+
+    info!(vip = %addr, destination = %dest, interface = %iface, "removing VIP");
+
+    // Remove the VIP from the interface
+    run_cmd("ip", &["addr", "del", &addr_cidr, "dev", &iface])?;
+
+    // Remove DNAT rule
+    let addr_s = addr.to_string();
+    let dest_s = dest.to_string();
+    run_cmd(
+        "iptables",
+        &[
+            "-t",
+            "nat",
+            "-D",
+            "PREROUTING",
+            "-d",
+            &addr_s,
+            "-j",
+            "DNAT",
+            "--to-destination",
+            &dest_s,
+        ],
+    )?;
+
+    // Remove FORWARD rule
+    run_cmd(
+        "iptables",
+        &["-D", "FORWARD", "-d", &dest_s, "-j", "ACCEPT"],
+    )?;
+
+    Ok(())
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 

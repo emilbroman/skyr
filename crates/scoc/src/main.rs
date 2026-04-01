@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use clap::{Parser, Subcommand};
 use ipnet::Ipv4Net;
 use tokio::sync::Mutex;
@@ -675,6 +675,36 @@ impl scop::Conduit for CriConduit {
         Ok(scop::RemoveDnsRecordResponse {})
     }
 
+    async fn add_vip(
+        &self,
+        request: scop::AddVipRequest,
+    ) -> Result<scop::AddVipResponse, scop::tonic::Status> {
+        scop::validate::ip_address(&request.address, "address")?;
+        scop::validate::ip_address(&request.destination, "destination")?;
+
+        net::add_vip(&request.address, &request.destination)
+            .map_err(|e| scop::tonic::Status::internal(format!("add VIP failed: {e:#}")))?;
+        Ok(scop::AddVipResponse {})
+    }
+
+    async fn remove_vip(
+        &self,
+        request: scop::RemoveVipRequest,
+    ) -> Result<scop::RemoveVipResponse, scop::tonic::Status> {
+        scop::validate::ip_address(&request.address, "address")?;
+
+        // We need the destination to clean up DNAT rules. Look it up from iptables.
+        // For now, we store it in-memory or require the caller to provide it.
+        // Since RemoveVipRequest only has address, we search iptables for the DNAT rule.
+        let destination = find_vip_dnat_destination(&request.address).map_err(|e| {
+            scop::tonic::Status::internal(format!("failed to find DNAT destination for VIP: {e:#}"))
+        })?;
+
+        net::remove_vip(&request.address, &destination)
+            .map_err(|e| scop::tonic::Status::internal(format!("remove VIP failed: {e:#}")))?;
+        Ok(scop::RemoveVipResponse {})
+    }
+
     async fn configure_service_cidr(
         &self,
         request: scop::ConfigureServiceCidrRequest,
@@ -1240,6 +1270,33 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Find the DNAT destination for a VIP by searching iptables PREROUTING rules.
+fn find_vip_dnat_destination(vip: &str) -> anyhow::Result<String> {
+    let output = std::process::Command::new("iptables")
+        .args(["-t", "nat", "-S", "PREROUTING"])
+        .output()
+        .context("failed to list PREROUTING rules")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("iptables -S PREROUTING failed: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Lines look like: -A PREROUTING -d 10.20.2.64/32 -j DNAT --to-destination 10.43.0.5
+    let needle = format!("-d {vip}/32");
+    for line in stdout.lines() {
+        if line.contains(&needle)
+            && line.contains("DNAT")
+            && let Some(dest) = line.split("--to-destination").nth(1)
+        {
+            return Ok(dest.trim().to_string());
+        }
+    }
+
+    anyhow::bail!("no DNAT rule found for VIP {vip}")
 }
 
 /// Extract the host from a conduit address like "http://192.168.1.10:50054" or "http://scoc-1:50054".

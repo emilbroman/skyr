@@ -10,6 +10,7 @@
 //! - `Std/Container.Pod.Attachment` - Egress attachment from pod to a port
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
 //! - `Std/Container.Host.Port` - Load-balanced port routing to backend pod ports
+//! - `Std/Container.Host.InternetAddress` - Public internet exposure via floating IP
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 
@@ -23,6 +24,7 @@ const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
 const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
 const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
+const HOST_INTERNET_ADDRESS_RESOURCE_TYPE: &str = "Std/Container.Host.InternetAddress";
 
 pub fn register_extern(eval: &mut crate::Eval) {
     eval.add_extern_fn(IMAGE_RESOURCE_TYPE, image_extern_fn);
@@ -458,8 +460,16 @@ fn host_extern_fn(
     result.insert(String::from("hostname"), Value::Str(hostname.clone()));
 
     // Create the Port function that captures the host's context
-    let port_fn = create_host_port_fn(hostname, vip, resource_id.clone());
+    let port_fn = create_host_port_fn(hostname.clone(), vip.clone(), resource_id.clone());
     result.insert(String::from("Port"), Value::ExternFn(port_fn));
+
+    // Create the InternetAddress function that captures the host's context
+    let internet_address_fn =
+        create_host_internet_address_fn(hostname, vip, resource_id.clone());
+    result.insert(
+        String::from("InternetAddress"),
+        Value::ExternFn(internet_address_fn),
+    );
 
     Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
 }
@@ -560,4 +570,75 @@ fn create_host_port_fn(
 
         Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
     }))
+}
+
+/// Creates an ExternFnValue for exposing a Host on the public internet.
+///
+/// The returned function captures the host's context (hostname, vip)
+/// and uses them when creating Host.InternetAddress resources.
+fn create_host_internet_address_fn(
+    host_hostname: String,
+    host_vip: String,
+    host_resource_id: ResourceId,
+) -> ExternFnValue {
+    ExternFnValue::new(Box::new(
+        move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
+            let mut args = args.into_iter();
+            let config_arg = args
+                .next()
+                .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+            let mut argument_dependencies = config_arg.dependencies.clone();
+
+            // The internet address depends on the host
+            argument_dependencies.insert(host_resource_id.clone());
+
+            if config_arg.value.has_pending() {
+                return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
+            }
+
+            let config = config_arg.value.assert_record()?;
+
+            // Extract input
+            let name = config.get("name").assert_str_ref()?.to_owned();
+
+            // Build the resource ID: "{hostname}/{name}"
+            let resource_id_str = format!("{}/{}", host_hostname, name);
+            let resource_id = ResourceId {
+                typ: HOST_INTERNET_ADDRESS_RESOURCE_TYPE.to_string(),
+                name: resource_id_str.clone(),
+            };
+
+            // Build inputs for the RTP plugin
+            let mut inputs = Record::default();
+            inputs.insert(
+                String::from("hostHostname"),
+                Value::Str(host_hostname.clone()),
+            );
+            inputs.insert(String::from("hostVip"), Value::Str(host_vip.clone()));
+            inputs.insert(String::from("name"), Value::Str(name));
+
+            let Some(outputs) = eval_ctx.resource(
+                HOST_INTERNET_ADDRESS_RESOURCE_TYPE,
+                &resource_id_str,
+                &inputs,
+                argument_dependencies.clone(),
+            )?
+            else {
+                // Resource is pending
+                return Ok(TrackedValue::pending().with_dependency(resource_id));
+            };
+
+            // Only expose publicIp to SCL (lanIp and node are internal)
+            let public_ip = outputs
+                .get("publicIp")
+                .assert_str_ref()
+                .unwrap_or("")
+                .to_owned();
+
+            let mut result = Record::default();
+            result.insert(String::from("publicIp"), Value::Str(public_ip));
+
+            Ok(TrackedValue::new(Value::Record(result)).with_dependency(resource_id))
+        },
+    ))
 }

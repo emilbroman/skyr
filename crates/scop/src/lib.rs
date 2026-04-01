@@ -109,6 +109,9 @@ pub use proto::{
     SetDnsRecordResponse,
 };
 
+// --- VIP management ---
+pub use proto::{AddVipRequest, AddVipResponse, RemoveVipRequest, RemoveVipResponse};
+
 // --- Port forwarding ---
 pub use proto::{
     PortForwardInit, PortForwardRequest, PortForwardResponse,
@@ -530,6 +533,15 @@ pub trait Conduit: Send + Sync + 'static {
         request: RemoveDnsRecordRequest,
     ) -> Result<RemoveDnsRecordResponse, tonic::Status>;
 
+    /// Add a virtual IP to the node's primary interface with DNAT to a destination.
+    async fn add_vip(&self, request: AddVipRequest) -> Result<AddVipResponse, tonic::Status>;
+
+    /// Remove a virtual IP from the node's primary interface.
+    async fn remove_vip(
+        &self,
+        request: RemoveVipRequest,
+    ) -> Result<RemoveVipResponse, tonic::Status>;
+
     /// Configure the service CIDR for VIP routing.
     async fn configure_service_cidr(
         &self,
@@ -658,6 +670,22 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
         request: tonic::Request<RemoveDnsRecordRequest>,
     ) -> Result<tonic::Response<RemoveDnsRecordResponse>, tonic::Status> {
         let response = self.conduit.remove_dns_record(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn add_vip(
+        &self,
+        request: tonic::Request<AddVipRequest>,
+    ) -> Result<tonic::Response<AddVipResponse>, tonic::Status> {
+        let response = self.conduit.add_vip(request.into_inner()).await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn remove_vip(
+        &self,
+        request: tonic::Request<RemoveVipRequest>,
+    ) -> Result<tonic::Response<RemoveVipResponse>, tonic::Status> {
+        let response = self.conduit.remove_vip(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 
