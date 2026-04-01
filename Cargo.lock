@@ -4245,6 +4245,7 @@ dependencies = [
  "ipnet",
  "ldb",
  "redis",
+ "reqwest",
  "rtp",
  "sclc",
  "scop",

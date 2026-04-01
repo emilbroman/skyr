@@ -12,7 +12,9 @@
 //! - `Std/Container.Pod.Port` - Pod port (firewall opening / access token)
 //! - `Std/Container.Host` - Virtual load balancer with DNS name and VIP
 //! - `Std/Container.Host.Port` - Load-balanced port routing (supports pod and host port backends)
+//! - `Std/Container.Host.InternetAddress` - Public internet exposure for a Host via floating IP
 
+mod bb3_addr;
 mod buildkit;
 mod node_registry;
 mod subnet_allocator;
@@ -86,6 +88,7 @@ const PORT_RESOURCE_TYPE: &str = "Std/Container.Pod.Port";
 const ATTACHMENT_RESOURCE_TYPE: &str = "Std/Container.Pod.Attachment";
 const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
+const HOST_INTERNET_ADDRESS_RESOURCE_TYPE: &str = "Std/Container.Host.InternetAddress";
 
 /// How often the dead-node eviction task runs (seconds).
 const EVICTION_SCAN_INTERVAL_SECS: u64 = 60;
@@ -1182,6 +1185,188 @@ impl ContainerPlugin {
         if !host_vip.is_empty() {
             self.broadcast_service_route_remove(&host_vip, port as i32, &protocol)
                 .await;
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Host.InternetAddress Resource Handlers
+    // =========================================================================
+
+    /// Create a Host.InternetAddress resource (public internet exposure for a Host).
+    ///
+    /// Inputs:
+    /// - `name`: Address name / resource identifier (required)
+    /// - `hostHostname`: The parent Host's DNS hostname (required)
+    /// - `hostVip`: The parent Host's cluster VIP (required)
+    ///
+    /// Outputs:
+    /// - `publicIp`: The allocated public floating IP
+    /// - `lanIp`: The LAN VIP assigned to the SCOC node (internal)
+    /// - `node`: The node hosting the VIP (internal)
+    async fn create_internet_address(
+        &self,
+        _environment_qid: &str,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        let name = inputs
+            .get("name")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
+            .to_string();
+        let host_vip = inputs
+            .get("hostVip")
+            .assert_str_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("hostVip: {e}")))?
+            .to_string();
+
+        info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            name = %name,
+            host_vip = %host_vip,
+            "creating internet address"
+        );
+
+        // Allocate a floating IP + LAN VIP from the BB3 address service
+        let alloc = bb3_addr::allocate_address().await?;
+
+        // Pick a connected SCOC node to host the LAN VIP
+        let node = self.select_node().await?;
+
+        info!(
+            resource_name = %id.name,
+            floating_ip = %alloc.floating_ip,
+            lan_ip = %alloc.lan_ip,
+            node = %node.name,
+            "assigning VIP to node"
+        );
+
+        // Tell the node to add the VIP to its primary interface and DNAT to the Host VIP
+        let mut conduit = self.get_conduit(&node.name).await?;
+        conduit
+            .add_vip(scop::AddVipRequest {
+                address: alloc.lan_ip.clone(),
+                destination: host_vip,
+            })
+            .await
+            .map_err(|e| PluginError::ScopOperation(format!("add_vip: {e}")))?;
+
+        // Build outputs (lanIp and node are internal, not exposed to SCL)
+        let mut outputs = sclc::Record::default();
+        outputs.insert(String::from("publicIp"), Value::Str(alloc.floating_ip));
+        outputs.insert(String::from("lanIp"), Value::Str(alloc.lan_ip));
+        outputs.insert(String::from("node"), Value::Str(node.name));
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs,
+            dependencies: vec![],
+            markers: BTreeSet::new(),
+        })
+    }
+
+    /// Update a Host.InternetAddress resource.
+    ///
+    /// Internet addresses are immutable — input changes require recreation.
+    async fn update_internet_address(
+        &self,
+        environment_qid: &str,
+        id: ids::ResourceId,
+        prev_inputs: sclc::Record,
+        prev_outputs: sclc::Record,
+        inputs: sclc::Record,
+    ) -> anyhow::Result<sclc::Resource> {
+        if inputs_changed(&prev_inputs, &inputs) {
+            warn!(
+                resource_type = %id.typ,
+                resource_name = %id.name,
+                "internet address inputs changed, recreating"
+            );
+            self.delete_internet_address(id.clone(), prev_inputs, prev_outputs)
+                .await?;
+            return self
+                .create_internet_address(environment_qid, id, inputs)
+                .await;
+        }
+
+        info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            "internet address update is a no-op (no changes)"
+        );
+
+        Ok(sclc::Resource {
+            inputs,
+            outputs: prev_outputs,
+            dependencies: vec![],
+            markers: BTreeSet::new(),
+        })
+    }
+
+    /// Delete a Host.InternetAddress resource.
+    async fn delete_internet_address(
+        &self,
+        id: ids::ResourceId,
+        _inputs: sclc::Record,
+        outputs: sclc::Record,
+    ) -> anyhow::Result<()> {
+        let lan_ip = outputs
+            .get("lanIp")
+            .assert_str_ref()
+            .unwrap_or("")
+            .to_string();
+        let node_name = outputs
+            .get("node")
+            .assert_str_ref()
+            .unwrap_or("")
+            .to_string();
+
+        info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            lan_ip = %lan_ip,
+            node = %node_name,
+            "deleting internet address"
+        );
+
+        // Tell the node to remove the VIP
+        if !lan_ip.is_empty() && !node_name.is_empty() {
+            match self.get_conduit(&node_name).await {
+                Ok(mut conduit) => {
+                    if let Err(e) = conduit
+                        .remove_vip(scop::RemoveVipRequest {
+                            address: lan_ip.clone(),
+                        })
+                        .await
+                    {
+                        warn!(
+                            lan_ip = %lan_ip,
+                            node = %node_name,
+                            error = %e,
+                            "failed to remove VIP from node"
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        node = %node_name,
+                        error = %e,
+                        "failed to connect to node for VIP removal"
+                    );
+                }
+            }
+
+            // Release the address back to the BB3 service
+            if let Err(e) = bb3_addr::release_address(&lan_ip).await {
+                warn!(
+                    lan_ip = %lan_ip,
+                    error = %e,
+                    "failed to release address from BB3 service"
+                );
+            }
         }
 
         Ok(())
@@ -2343,6 +2528,10 @@ impl rtp::Plugin for ContainerPlugin {
                 self.create_host_port(environment_qid, id.clone(), inputs)
                     .await
             }
+            HOST_INTERNET_ADDRESS_RESOURCE_TYPE => {
+                self.create_internet_address(environment_qid, id.clone(), inputs)
+                    .await
+            }
             _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "create_resource")
@@ -2419,6 +2608,16 @@ impl rtp::Plugin for ContainerPlugin {
                 )
                 .await
             }
+            HOST_INTERNET_ADDRESS_RESOURCE_TYPE => {
+                self.update_internet_address(
+                    environment_qid,
+                    id.clone(),
+                    prev_inputs,
+                    prev_outputs,
+                    inputs,
+                )
+                .await
+            }
             _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "update_resource")
@@ -2440,6 +2639,10 @@ impl rtp::Plugin for ContainerPlugin {
             ATTACHMENT_RESOURCE_TYPE => self.delete_attachment(id.clone(), inputs, outputs).await,
             HOST_RESOURCE_TYPE => self.delete_host(id.clone(), inputs, outputs).await,
             HOST_PORT_RESOURCE_TYPE => self.delete_host_port(id.clone(), inputs, outputs).await,
+            HOST_INTERNET_ADDRESS_RESOURCE_TYPE => {
+                self.delete_internet_address(id.clone(), inputs, outputs)
+                    .await
+            }
             _ => return Err(PluginError::UnsupportedResourceType(id.typ.clone()).into()),
         };
         log_on_error!(result, id, "delete_resource")

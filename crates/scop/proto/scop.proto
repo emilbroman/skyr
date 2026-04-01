@@ -161,6 +161,14 @@ service Conduit {
   // so it can be added as an allowed range in the bridge forwarding rules.
   rpc ConfigureServiceCidr(ConfigureServiceCidrRequest) returns (ConfigureServiceCidrResponse);
 
+  // AddVip adds a virtual IP address to the node's primary network interface,
+  // sends gratuitous ARP announcements, and installs a DNAT rule forwarding
+  // traffic destined for the VIP to a cluster-internal destination IP.
+  rpc AddVip(AddVipRequest) returns (AddVipResponse);
+
+  // RemoveVip removes a previously-added virtual IP and its associated DNAT rule.
+  rpc RemoveVip(RemoveVipRequest) returns (RemoveVipResponse);
+
   // PortForward establishes a bidirectional TCP tunnel to a pod's port.
   // The first request message must contain a PortForwardInit specifying the
   // target pod and port. Subsequent messages carry raw TCP data.
@@ -389,6 +397,32 @@ message ConfigureServiceCidrRequest {
 
 // Response from configuring the service CIDR.
 message ConfigureServiceCidrResponse {}
+
+// ============================================================================
+// VIP Messages (Internet Address exposure)
+// ============================================================================
+
+// Request to add a virtual IP address to this node.
+// The node adds the address to its primary interface, sends gratuitous ARP,
+// and installs a DNAT rule forwarding all traffic to the destination IP.
+message AddVipRequest {
+  // The virtual IP address to add (e.g., "10.20.2.64").
+  string address = 1;
+  // The cluster-internal destination IP to DNAT traffic to (e.g., a Host VIP).
+  string destination = 2;
+}
+
+// Response from adding a VIP.
+message AddVipResponse {}
+
+// Request to remove a virtual IP address from this node.
+message RemoveVipRequest {
+  // The virtual IP address to remove.
+  string address = 1;
+}
+
+// Response from removing a VIP.
+message RemoveVipResponse {}
 
 // ============================================================================
 // Port Forwarding Messages

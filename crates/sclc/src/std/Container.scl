@@ -113,6 +113,12 @@ export let Pod = extern "Std/Container.Pod": fn({
 	env: #{Str: Str}?,
 }) Pod
 
+/// Output of `Host.InternetAddress` — a public internet address assigned to a Host.
+export type InternetAddress {
+	/// The public IP address (floating IP visible to the internet)
+	publicIp: Str,
+}
+
 /// Output of `Host.Port` — a load-balanced port on a virtual host.
 export type HostPort {
 	/// The host's DNS hostname
@@ -154,4 +160,10 @@ export let Host = extern "Std/Container.Host": fn({
 		/// Both `Pod.Port` and `Host.Port` outputs satisfy this shape.
 		backends: [Port],
 	}) HostPort,
+	/// Expose this host on the public internet via a floating IP.
+	/// Returns the public IP address that routes to this host's ports.
+	InternetAddress: fn({
+		/// Name for this address allocation (used as resource identifier)
+		name: Str,
+	}) InternetAddress,
 }
