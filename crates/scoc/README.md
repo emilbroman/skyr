@@ -86,8 +86,8 @@ Each `SKYR_SVC_<vip>_<port>_<proto>` chain contains backend rules:
 
 ```
 SKYR_SVC_10_43_0_1_80_tcp:
-  -m statistic --mode random --probability 0.5 -j DNAT --to-destination 10.42.0.5:80
-  -j DNAT --to-destination 10.42.0.6:80
+  -m statistic --mode random --probability 0.5 -p tcp -j DNAT --to-destination 10.42.0.5:80
+  -p tcp -j DNAT --to-destination 10.42.0.6:80
 ```
 
 - **Pod backends**: terminal `DNAT` to the pod IP.

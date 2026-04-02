@@ -945,15 +945,24 @@ pub(crate) fn add_service_route(
         }
 
         // Jump target: chain jump for VIP backends, DNAT for pod backends.
+        // Protocol is required for DNAT rules that specify a port in --to-destination.
         let backend_chain;
         let dest;
+        let backend_protocol = backend.protocol.as_str();
         if is_vip {
             backend_chain =
                 service_chain_name(&backend.address, backend.port as u16, &backend.protocol);
             args.extend_from_slice(&["-j", &backend_chain]);
         } else {
             dest = format!("{}:{}", backend.address, backend.port);
-            args.extend_from_slice(&["-j", "DNAT", "--to-destination", &dest]);
+            args.extend_from_slice(&[
+                "-p",
+                backend_protocol,
+                "-j",
+                "DNAT",
+                "--to-destination",
+                &dest,
+            ]);
         }
 
         run_cmd("iptables", &args)
