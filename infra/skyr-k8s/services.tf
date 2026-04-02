@@ -356,6 +356,7 @@ resource "kubernetes_deployment" "rte" {
             "--plugin", "Std/Random@unix://_/var/run/plugins/random.sock",
             "--plugin", "Std/Artifact@unix://_/var/run/plugins/artifact.sock",
             "--plugin", "Std/Crypto@unix://_/var/run/plugins/crypto.sock",
+            "--plugin", "Std/DNS@unix://_/var/run/plugins/dns.sock",
             "--plugin", "Std/Time@unix://_/var/run/plugins/time.sock",
             "--plugin", "Std/Container@tcp://plugin-std-container.${local.namespace}.svc.cluster.local:50054",
             "--worker-index", tostring(count.index),
@@ -433,6 +434,21 @@ resource "kubernetes_deployment" "rte" {
 
           command = ["/plugin_std_crypto"]
           args    = ["--bind", "unix://_/var/run/plugins/crypto.sock"]
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
+        }
+
+        # --- Sidecar: plugin-std-dns ---
+        container {
+          name              = "plugin-std-dns"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_dns:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_dns"]
+          args    = ["--bind", "unix://_/var/run/plugins/dns.sock"]
 
           volume_mount {
             name       = "plugin-sockets"
