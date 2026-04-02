@@ -111,7 +111,7 @@ generate "ingress" {
           name      = "skyr-api"
           namespace = "skyr"
           annotations = {
-            "kubernetes.io/ingress.class" = "external"
+            "kubernetes.io/ingress.class" = "skyr"
           }
         }
         spec = {
@@ -139,7 +139,7 @@ generate "ingress" {
           name      = "skyr-web"
           namespace = "skyr"
           annotations = {
-            "kubernetes.io/ingress.class" = "external"
+            "kubernetes.io/ingress.class" = "skyr"
           }
         }
         spec = {
@@ -168,7 +168,7 @@ generate "ingress" {
           name      = "skyr-scs"
           namespace = "skyr"
           annotations = {
-            "kubernetes.io/ingress.class" = "external"
+            "kubernetes.io/ingress.class" = "skyr"
           }
         }
         spec = {
@@ -192,7 +192,7 @@ generate "ingress" {
           name      = "skyr-dns"
           namespace = "skyr"
           annotations = {
-            "kubernetes.io/ingress.class" = "external"
+            "kubernetes.io/ingress.class" = "skyr"
           }
         }
         spec = {
