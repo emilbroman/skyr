@@ -1,4 +1,20 @@
 #cloud-config
+%{ if root_password != null ~}
+
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: ${root_password}
+      type: text
+%{ endif ~}
+%{ if length(ssh_authorized_keys) > 0 ~}
+
+ssh_authorized_keys:
+%{ for key in ssh_authorized_keys ~}
+  - ${key}
+%{ endfor ~}
+%{ endif ~}
 
 write_files:
   # DNS must be configured before package installation

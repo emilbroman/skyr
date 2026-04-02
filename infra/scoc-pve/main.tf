@@ -39,6 +39,8 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
       max_pods             = var.max_pods
       scoc_binary_url      = var.scoc_binary_url
       nameserver           = var.nameserver
+      root_password        = var.root_password
+      ssh_authorized_keys  = var.ssh_authorized_keys
     })
     file_name = "${var.vm_name}-cloud-config.yaml"
   }

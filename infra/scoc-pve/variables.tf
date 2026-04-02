@@ -152,6 +152,19 @@ variable "oci_registry_password" {
   sensitive   = true
 }
 
+variable "root_password" {
+  type        = string
+  description = "Root password for the VM. When null, password login is not configured."
+  default     = null
+  sensitive   = true
+}
+
+variable "ssh_authorized_keys" {
+  type        = set(string)
+  description = "SSH public keys to add to /root/.ssh/authorized_keys."
+  default     = []
+}
+
 variable "scoc_binary_url" {
   type        = string
   description = "URL to download the SCOC binary from."
