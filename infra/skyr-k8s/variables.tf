@@ -110,6 +110,14 @@ variable "oci_registry_password" {
   sensitive   = true
 }
 
+# --- DNS ---
+
+variable "dns_zone" {
+  type        = string
+  description = "DNS zone served by the DNS plugin (e.g. skyr.example.com)."
+  default     = "skyr.local"
+}
+
 # --- RTE Scaling ---
 
 variable "rte_worker_count" {
@@ -183,5 +191,11 @@ variable "ldb_service_type" {
 variable "oci_registry_service_type" {
   type        = string
   description = "Kubernetes Service type for the OCI registry (ClusterIP, LoadBalancer, or NodePort)."
+  default     = "ClusterIP"
+}
+
+variable "dns_service_type" {
+  type        = string
+  description = "Kubernetes Service type for the DNS plugin (ClusterIP, LoadBalancer, or NodePort)."
   default     = "ClusterIP"
 }

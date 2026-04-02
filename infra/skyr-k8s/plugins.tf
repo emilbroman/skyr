@@ -1,10 +1,10 @@
 # =============================================================================
 # plugin-std-container — Container orchestrator (ports 50053 + 50054 gRPC)
 #
-# Note: The random, artifact, and crypto plugins run as sidecar containers
+# Note: The random, artifact, crypto, and time plugins run as sidecar containers
 # inside the RTE pods (see services.tf), communicating via Unix sockets.
-# The container plugin remains a standalone deployment because it has its own
-# infrastructure dependencies (BuildKit, OCI registry, node registry).
+# The container and DNS plugins are standalone deployments because they have
+# their own infrastructure dependencies.
 # =============================================================================
 
 resource "kubernetes_deployment" "plugin_std_container" {
@@ -125,6 +125,94 @@ resource "kubernetes_service" "plugin_std_container" {
       port        = 50054
       target_port = 50054
       protocol    = "TCP"
+    }
+  }
+}
+
+# =============================================================================
+# plugin-std-dns — DNS server + RTP plugin (port 50057 gRPC + 53 UDP)
+#
+# Standalone deployment because it needs Redis for cross-namespace DNS lookups
+# and serves a UDP DNS server alongside the RTP gRPC server.
+# =============================================================================
+
+resource "kubernetes_deployment" "plugin_std_dns" {
+  metadata {
+    name      = "plugin-std-dns"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "plugin-std-dns" })
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "plugin-std-dns" }
+    }
+
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "plugin-std-dns" })
+      }
+
+      spec {
+        container {
+          name              = "plugin-std-dns"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_dns:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_dns"]
+          args = [
+            "--bind", "tcp://0.0.0.0:50057",
+            "--redis-hostname", local.redis_hostname,
+            "--zone", var.dns_zone,
+            "--dns-port", "53",
+          ]
+
+          port {
+            name           = "rtp"
+            container_port = 50057
+            protocol       = "TCP"
+          }
+
+          port {
+            name           = "dns"
+            container_port = 53
+            protocol       = "UDP"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [spec[0].template[0].spec[0].container[0].image]
+  }
+}
+
+resource "kubernetes_service" "plugin_std_dns" {
+  metadata {
+    name      = "plugin-std-dns"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "plugin-std-dns" })
+  }
+
+  spec {
+    type     = var.dns_service_type
+    selector = { "app.kubernetes.io/name" = "plugin-std-dns" }
+
+    port {
+      name        = "rtp"
+      port        = 50057
+      target_port = 50057
+      protocol    = "TCP"
+    }
+
+    port {
+      name        = "dns"
+      port        = 53
+      target_port = 53
+      protocol    = "UDP"
     }
   }
 }

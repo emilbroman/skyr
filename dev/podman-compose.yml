@@ -203,7 +203,15 @@ services:
   plugin-std-dns:
     image: skyr:latest
     entrypoint: ["/plugin_std_dns"]
-    command: ["--bind", "tcp://0.0.0.0:50057"]
+    command:
+      [
+        "--bind", "tcp://0.0.0.0:50057",
+        "--redis-hostname", "redis",
+        "--zone", "skyr.local",
+        "--dns-port", "5353",
+      ]
+    ports:
+      - 5353:5353/udp
     restart: always
 
   plugin-std-time:
