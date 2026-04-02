@@ -49,6 +49,7 @@ cargo run -p rte -- daemon \
   --plugin "Std/Random@localhost:50051" \
   --plugin "Std/Time@localhost:50056" \
   --plugin "Std/Artifact@localhost:50052" \
+  --plugin "Std/DNS@localhost:50057" \
   --plugin "Std/Container@localhost:50053"
 ```
 
