@@ -32,13 +32,23 @@ resource "kubernetes_deployment" "plugin_std_container" {
           empty_dir {}
         }
 
+        dynamic "volume" {
+          for_each = local.oci_registry_has_auth ? [1] : []
+          content {
+            name = "registry-auth"
+            secret {
+              secret_name = kubernetes_secret.oci_registry_auth[0].metadata[0].name
+            }
+          }
+        }
+
         container {
           name              = "plugin-std-container"
           image             = "ghcr.io/emilbroman/skyr-plugin_std_container:latest"
           image_pull_policy = var.image_pull_policy
 
           command = ["/plugin_std_container"]
-          args = [
+          args = concat([
             "--bind", "0.0.0.0:50053",
             "--rtp-bind", "tcp://0.0.0.0:50054",
             "--node-registry-hostname", local.redis_hostname,
@@ -47,7 +57,15 @@ resource "kubernetes_deployment" "plugin_std_container" {
             "--registry-url", local.oci_registry_url,
             "--ldb-hostname", local.redpanda_hostname,
             "--cluster-cidr", var.cluster_cidr,
-          ]
+          ], var.oci_registry_insecure ? ["--insecure-registry"] : [])
+
+          dynamic "env" {
+            for_each = local.oci_registry_has_auth ? [1] : []
+            content {
+              name  = "DOCKER_CONFIG"
+              value = "/root/.docker"
+            }
+          }
 
           port {
             name           = "orchestrator"
@@ -64,6 +82,15 @@ resource "kubernetes_deployment" "plugin_std_container" {
           volume_mount {
             name       = "tmp"
             mount_path = "/tmp"
+          }
+
+          dynamic "volume_mount" {
+            for_each = local.oci_registry_has_auth ? [1] : []
+            content {
+              name       = "registry-auth"
+              mount_path = "/root/.docker"
+              read_only  = true
+            }
           }
         }
       }

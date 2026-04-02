@@ -1,15 +1,49 @@
-# BuildKit needs a config file that references the OCI registry as insecure/HTTP.
-# This is dynamically generated based on the resolved registry URL.
+# BuildKit needs a config file that references the OCI registry.
+# For plain-HTTP registries, http=true is set. For HTTPS registries with
+# untrusted CAs (e.g. private CA), insecure=true skips TLS verification.
 
 locals {
   # Extract host:port from the OCI registry URL for buildkitd.toml
   oci_registry_host = replace(replace(local.oci_registry_url, "http://", ""), "https://", "")
+  oci_registry_http = startswith(local.oci_registry_url, "http://")
+
+  oci_registry_has_auth = var.oci_registry_username != null && var.oci_registry_password != null
 
   buildkitd_toml = <<-EOT
     [registry."${local.oci_registry_host}"]
+    %{if local.oci_registry_http~}
       http = true
       insecure = true
+    %{endif~}
+    %{if !local.oci_registry_http && var.oci_registry_insecure~}
+      insecure = true
+    %{endif~}
   EOT
+
+  # Docker config.json for registry basic auth (used by BuildKit to push)
+  docker_config_json = local.oci_registry_has_auth ? jsonencode({
+    auths = {
+      (local.oci_registry_host) = {
+        auth = base64encode("${var.oci_registry_username}:${var.oci_registry_password}")
+      }
+    }
+  }) : null
+}
+
+resource "kubernetes_secret" "oci_registry_auth" {
+  count = local.oci_registry_has_auth ? 1 : 0
+
+  metadata {
+    name      = "oci-registry-auth"
+    namespace = local.namespace
+    labels    = local.labels
+  }
+
+  type = "Opaque"
+
+  data = {
+    "config.json" = local.docker_config_json
+  }
 }
 
 resource "kubernetes_config_map" "buildkit" {
@@ -55,6 +89,16 @@ resource "kubernetes_deployment" "buildkit" {
           }
         }
 
+        dynamic "volume" {
+          for_each = local.oci_registry_has_auth ? [1] : []
+          content {
+            name = "registry-auth"
+            secret {
+              secret_name = kubernetes_secret.oci_registry_auth[0].metadata[0].name
+            }
+          }
+        }
+
         container {
           name  = "buildkit"
           image = "moby/buildkit:latest"
@@ -72,6 +116,15 @@ resource "kubernetes_deployment" "buildkit" {
             name       = "config"
             mount_path = "/etc/buildkit"
             read_only  = true
+          }
+
+          dynamic "volume_mount" {
+            for_each = local.oci_registry_has_auth ? [1] : []
+            content {
+              name       = "registry-auth"
+              mount_path = "/root/.docker"
+              read_only  = true
+            }
           }
 
           port {

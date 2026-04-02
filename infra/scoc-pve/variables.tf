@@ -132,6 +132,26 @@ variable "max_pods" {
   default     = 100
 }
 
+variable "oci_registry_insecure" {
+  type        = bool
+  description = "Skip TLS verification when pulling from the OCI registry (e.g. for registries using a private CA)."
+  default     = false
+}
+
+variable "oci_registry_username" {
+  type        = string
+  description = "Username for OCI registry basic auth. When null, no auth is configured."
+  default     = null
+  sensitive   = true
+}
+
+variable "oci_registry_password" {
+  type        = string
+  description = "Password for OCI registry basic auth. When null, no auth is configured."
+  default     = null
+  sensitive   = true
+}
+
 variable "scoc_binary_url" {
   type        = string
   description = "URL to download the SCOC binary from."

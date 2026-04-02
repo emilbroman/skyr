@@ -30,8 +30,11 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
       conduit_address      = "http://${local.vm_ip_bare}:${split(":", var.scoc_bind)[1]}"
       orchestrator_address = var.orchestrator_address
       ldb_brokers          = var.ldb_brokers
-      oci_registry         = var.oci_registry
-      cpu_millis           = var.cpu_millis
+      oci_registry          = var.oci_registry
+      oci_registry_insecure = var.oci_registry_insecure
+      oci_registry_username = var.oci_registry_username
+      oci_registry_password = var.oci_registry_password
+      cpu_millis            = var.cpu_millis
       memory_bytes         = var.memory_bytes
       max_pods             = var.max_pods
       scoc_binary_url      = var.scoc_binary_url

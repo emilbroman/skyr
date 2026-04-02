@@ -38,6 +38,13 @@ write_files:
 
       [host."https://${oci_registry}"]
         capabilities = ["pull", "resolve"]
+%{ if oci_registry_insecure ~}
+        skip_verify = true
+%{ endif ~}
+%{ if oci_registry_username != null && oci_registry_password != null ~}
+        [host."https://${oci_registry}".header]
+          Authorization = ["Basic ${base64encode("${oci_registry_username}:${oci_registry_password}")}"]
+%{ endif ~}
 
   # Minimal CNI config (loopback only — SCOC handles real networking)
   - path: /etc/cni/net.d/10-dummy.conflist

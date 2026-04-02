@@ -11,7 +11,8 @@ inputs = {
   image_pull_policy         = "Always"
   orchestrator_service_type = "NodePort"
   ldb_service_type          = "NodePort"
-  oci_registry_service_type = "NodePort"
+  oci_registry_url          = "https://cr.bb3.internal"
+  oci_registry_insecure     = true
   redpanda_advertise_host   = "node1.vm.bb3.internal"
 }
 
@@ -67,8 +68,14 @@ generate "scoc_pve" {
 
       orchestrator_address = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.plugin_std_container.spec[0].port[0].node_port}"
       ldb_brokers          = "node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.redpanda[0].spec[0].port[1].node_port}"
-      oci_registry         = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.oci_registry[0].spec[0].port[0].node_port}"
+      oci_registry          = "cr.bb3.internal"
+      oci_registry_insecure = true
+      oci_registry_username = var.oci_registry_username
+      oci_registry_password = var.oci_registry_password
     }
+
+    # The oci_registry_username/password variables are declared in the
+    # skyr-k8s module and shared with the scoc-pve module above.
   EOF
 }
 
