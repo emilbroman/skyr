@@ -8,7 +8,7 @@
           "addresses": ["1.2.3.4"]
         },
         "outputs": {
-          "name": "a.b.c",
+          "fqdn": "a.b.c",
           "ttl": { "milliseconds": 30000 },
           "addresses": ["1.2.3.4"]
         }

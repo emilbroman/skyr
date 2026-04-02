@@ -22,8 +22,8 @@ export let ARecord = extern "Std/DNS.ARecord": fn({
 }) ARecordOutput
 
 export type ARecordOutput {
-	/// Fully-qualified domain name
-	name: Str,
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
 	/// Time to live
 	ttl: Time.Duration,
 	/// IPv4 addresses

@@ -1,1 +1,1 @@
-{record: {addresses: ["1.2.3.4", "5.6.7.8"], name: "a.b.c", ttl: {milliseconds: 60000}}}
+{record: {addresses: ["1.2.3.4", "5.6.7.8"], fqdn: "a.b.c", name: "a.b.c", ttl: {milliseconds: 60000}}}
