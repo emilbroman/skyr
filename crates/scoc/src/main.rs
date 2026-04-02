@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ipnet::Ipv4Net;
 use tokio::sync::Mutex;
@@ -110,6 +110,9 @@ struct PodInfo {
     container_ids: Vec<String>,
 }
 
+/// Maps Host VIP → set of (port, protocol) for active service routes.
+type ServiceRouteMap = HashMap<String, HashSet<(i32, String)>>;
+
 /// SCOP Conduit implementation backed by CRI, with per-pod networking.
 struct CriConduit {
     cri: Arc<Mutex<CriClient>>,
@@ -129,6 +132,13 @@ struct CriConduit {
     dns_servers: Vec<String>,
     /// Shared DNS records for the internal DNS server.
     dns_records: dns::DnsRecords,
+    /// VIP aliases: maps LAN VIP address → Host VIP (destination).
+    /// Used to add SKYR-SERVICES dispatch rules for InternetAddress VIPs.
+    vip_aliases: Arc<Mutex<HashMap<String, String>>>,
+    /// Active service routes: maps Host VIP → set of (port, protocol).
+    /// Tracked so that VIP aliases added after service routes can retroactively
+    /// install dispatch rules.
+    service_routes: Arc<Mutex<ServiceRouteMap>>,
 }
 
 impl CriConduit {
@@ -154,6 +164,8 @@ impl CriConduit {
             service_cidr,
             dns_servers,
             dns_records,
+            vip_aliases: Arc::new(Mutex::new(HashMap::new())),
+            service_routes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -628,6 +640,31 @@ impl scop::Conduit for CriConduit {
             svc_cidr,
         )
         .map_err(|e| scop::tonic::Status::internal(format!("add service route failed: {e:#}")))?;
+
+        // Track this service route so future VIP alias additions can install dispatches.
+        {
+            let mut routes = self.service_routes.lock().await;
+            routes
+                .entry(request.vip.clone())
+                .or_default()
+                .insert((request.port, request.protocol.clone()));
+        }
+
+        // Add dispatch rules for any existing VIP aliases that point to this VIP.
+        {
+            let aliases = self.vip_aliases.lock().await;
+            for (alias, dest) in aliases.iter() {
+                if dest == &request.vip {
+                    net::add_vip_dispatch(alias, &request.vip, request.port, &request.protocol)
+                        .map_err(|e| {
+                            scop::tonic::Status::internal(format!(
+                                "add VIP dispatch for alias {alias} failed: {e:#}"
+                            ))
+                        })?;
+                }
+            }
+        }
+
         Ok(scop::AddServiceRouteResponse {})
     }
 
@@ -635,9 +672,36 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::RemoveServiceRouteRequest,
     ) -> Result<scop::RemoveServiceRouteResponse, scop::tonic::Status> {
+        // Remove dispatch rules for any VIP aliases that point to this VIP.
+        {
+            let aliases = self.vip_aliases.lock().await;
+            for (alias, dest) in aliases.iter() {
+                if dest == &request.vip {
+                    let _ = net::remove_vip_dispatch(
+                        alias,
+                        &request.vip,
+                        request.port,
+                        &request.protocol,
+                    );
+                }
+            }
+        }
+
         net::remove_service_route(&request.vip, request.port, &request.protocol).map_err(|e| {
             scop::tonic::Status::internal(format!("remove service route failed: {e:#}"))
         })?;
+
+        // Remove from tracked service routes.
+        {
+            let mut routes = self.service_routes.lock().await;
+            if let Some(ports) = routes.get_mut(&request.vip) {
+                ports.remove(&(request.port, request.protocol.clone()));
+                if ports.is_empty() {
+                    routes.remove(&request.vip);
+                }
+            }
+        }
+
         Ok(scop::RemoveServiceRouteResponse {})
     }
 
@@ -682,8 +746,32 @@ impl scop::Conduit for CriConduit {
         scop::validate::ip_address(&request.address, "address")?;
         scop::validate::ip_address(&request.destination, "destination")?;
 
-        net::add_vip(&request.address, &request.destination)
+        // Add the VIP address to the network interface (for ARP/reachability).
+        net::add_vip_address(&request.address)
             .map_err(|e| scop::tonic::Status::internal(format!("add VIP failed: {e:#}")))?;
+
+        // Store the alias mapping.
+        {
+            let mut aliases = self.vip_aliases.lock().await;
+            aliases.insert(request.address.clone(), request.destination.clone());
+        }
+
+        // Add dispatch rules for any existing service routes targeting the destination.
+        {
+            let routes = self.service_routes.lock().await;
+            if let Some(ports) = routes.get(&request.destination) {
+                for (port, protocol) in ports {
+                    net::add_vip_dispatch(&request.address, &request.destination, *port, protocol)
+                        .map_err(|e| {
+                            scop::tonic::Status::internal(format!(
+                                "add VIP dispatch for {}:{} failed: {e:#}",
+                                request.address, port
+                            ))
+                        })?;
+                }
+            }
+        }
+
         Ok(scop::AddVipResponse {})
     }
 
@@ -693,15 +781,32 @@ impl scop::Conduit for CriConduit {
     ) -> Result<scop::RemoveVipResponse, scop::tonic::Status> {
         scop::validate::ip_address(&request.address, "address")?;
 
-        // We need the destination to clean up DNAT rules. Look it up from iptables.
-        // For now, we store it in-memory or require the caller to provide it.
-        // Since RemoveVipRequest only has address, we search iptables for the DNAT rule.
-        let destination = find_vip_dnat_destination(&request.address).map_err(|e| {
-            scop::tonic::Status::internal(format!("failed to find DNAT destination for VIP: {e:#}"))
-        })?;
+        // Look up the destination from our tracked state.
+        let destination = {
+            let aliases = self.vip_aliases.lock().await;
+            aliases.get(&request.address).cloned()
+        };
 
-        net::remove_vip(&request.address, &destination)
+        // Remove all SKYR-SERVICES dispatch rules for this VIP alias.
+        if let Some(dest) = &destination {
+            let routes = self.service_routes.lock().await;
+            if let Some(ports) = routes.get(dest.as_str()) {
+                for (port, protocol) in ports {
+                    let _ = net::remove_vip_dispatch(&request.address, dest, *port, protocol);
+                }
+            }
+        }
+
+        // Remove the VIP address from the network interface.
+        net::remove_vip_address(&request.address)
             .map_err(|e| scop::tonic::Status::internal(format!("remove VIP failed: {e:#}")))?;
+
+        // Remove from tracked state.
+        {
+            let mut aliases = self.vip_aliases.lock().await;
+            aliases.remove(&request.address);
+        }
+
         Ok(scop::RemoveVipResponse {})
     }
 
@@ -1270,33 +1375,6 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Find the DNAT destination for a VIP by searching iptables PREROUTING rules.
-fn find_vip_dnat_destination(vip: &str) -> anyhow::Result<String> {
-    let output = std::process::Command::new("iptables")
-        .args(["-t", "nat", "-S", "PREROUTING"])
-        .output()
-        .context("failed to list PREROUTING rules")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("iptables -S PREROUTING failed: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Lines look like: -A PREROUTING -d 10.20.2.64/32 -j DNAT --to-destination 10.43.0.5
-    let needle = format!("-d {vip}/32");
-    for line in stdout.lines() {
-        if line.contains(&needle)
-            && line.contains("DNAT")
-            && let Some(dest) = line.split("--to-destination").nth(1)
-        {
-            return Ok(dest.trim().to_string());
-        }
-    }
-
-    anyhow::bail!("no DNAT rule found for VIP {vip}")
 }
 
 /// Extract the host from a conduit address like "http://192.168.1.10:50054" or "http://scoc-1:50054".

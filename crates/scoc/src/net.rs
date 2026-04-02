@@ -1160,16 +1160,19 @@ pub(crate) fn detect_primary_interface() -> Result<String> {
     Ok(iface)
 }
 
-/// Add a virtual IP to the node's primary interface, send gratuitous ARP,
-/// and install a DNAT rule forwarding all traffic to a destination IP.
-pub(crate) fn add_vip(address: &str, destination: &str) -> Result<()> {
+/// Add a virtual IP address to the node's primary interface and send gratuitous ARP.
+///
+/// This only handles L2 reachability (ARP). Service routing for the VIP is handled
+/// separately via `add_vip_dispatch`, which installs SKYR-SERVICES dispatch rules
+/// so that traffic to the VIP is routed through the same per-service chains as the
+/// Host VIP — achieving a single DNAT to backend pods.
+pub(crate) fn add_vip_address(address: &str) -> Result<()> {
     let addr = validate_ipv4(address)?;
-    let dest = validate_ipv4(destination)?;
     let iface = detect_primary_interface()?;
 
     let addr_cidr = format!("{addr}/32");
 
-    info!(vip = %addr, destination = %dest, interface = %iface, "adding VIP");
+    info!(vip = %addr, interface = %iface, "adding VIP address");
 
     // Enable arp_notify so the kernel sends a gratuitous ARP when the address is added
     let arp_notify_path = format!("/proc/sys/net/ipv4/conf/{iface}/arp_notify");
@@ -1179,71 +1182,124 @@ pub(crate) fn add_vip(address: &str, destination: &str) -> Result<()> {
     // Add the VIP to the interface (triggers gratuitous ARP via arp_notify)
     run_cmd("ip", &["addr", "add", &addr_cidr, "dev", &iface])?;
 
-    // DNAT all traffic destined for the VIP to the cluster-internal destination
-    let addr_s = addr.to_string();
-    let dest_s = dest.to_string();
-    run_cmd(
-        "iptables",
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "PREROUTING",
-            "-d",
-            &addr_s,
-            "-j",
-            "DNAT",
-            "--to-destination",
-            &dest_s,
-        ],
-    )?;
-
-    // Allow forwarded traffic to the destination
-    run_cmd(
-        "iptables",
-        &["-A", "FORWARD", "-d", &dest_s, "-j", "ACCEPT"],
-    )?;
-
     Ok(())
 }
 
-/// Remove a virtual IP from the node's primary interface and clean up DNAT rules.
-pub(crate) fn remove_vip(address: &str, destination: &str) -> Result<()> {
+/// Remove a virtual IP address from the node's primary interface.
+pub(crate) fn remove_vip_address(address: &str) -> Result<()> {
     let addr = validate_ipv4(address)?;
-    let dest = validate_ipv4(destination)?;
     let iface = detect_primary_interface()?;
 
     let addr_cidr = format!("{addr}/32");
 
-    info!(vip = %addr, destination = %dest, interface = %iface, "removing VIP");
+    info!(vip = %addr, interface = %iface, "removing VIP address");
 
-    // Remove the VIP from the interface
     run_cmd("ip", &["addr", "del", &addr_cidr, "dev", &iface])?;
 
-    // Remove DNAT rule
-    let addr_s = addr.to_string();
-    let dest_s = dest.to_string();
-    run_cmd(
+    Ok(())
+}
+
+/// Add a SKYR-SERVICES dispatch rule for a VIP alias.
+///
+/// This adds a rule that dispatches traffic destined for `alias_vip:port` to the
+/// same per-service chain used by `target_vip:port`. This avoids double-DNAT:
+/// traffic arriving at the LAN VIP goes directly through SKYR-SERVICES to the
+/// backend chain, resulting in a single DNAT to the actual backend pod.
+pub(crate) fn add_vip_dispatch(
+    alias_vip: &str,
+    target_vip: &str,
+    port: i32,
+    protocol: &str,
+) -> Result<()> {
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
+    let port_str = port.to_string();
+    let chain = service_chain_name(target_vip, port, protocol);
+
+    info!(
+        alias_vip = %alias_vip,
+        target_vip = %target_vip,
+        port = %port,
+        protocol = %protocol,
+        chain = %chain,
+        "adding VIP dispatch alias"
+    );
+
+    // Check if the rule already exists before adding.
+    let check_args = [
+        "-t",
+        "nat",
+        "-C",
+        SERVICES_CHAIN,
+        "-d",
+        alias_vip,
+        "-p",
+        protocol,
+        "--dport",
+        &port_str,
+        "-j",
+        &chain,
+    ];
+    if run_cmd("iptables", &check_args).is_err() {
+        let add_args = [
+            "-t",
+            "nat",
+            "-A",
+            SERVICES_CHAIN,
+            "-d",
+            alias_vip,
+            "-p",
+            protocol,
+            "--dport",
+            &port_str,
+            "-j",
+            &chain,
+        ];
+        run_cmd("iptables", &add_args)
+            .with_context(|| format!("failed to add VIP dispatch for {alias_vip}:{port}"))?;
+    }
+
+    Ok(())
+}
+
+/// Remove a SKYR-SERVICES dispatch rule for a VIP alias.
+pub(crate) fn remove_vip_dispatch(
+    alias_vip: &str,
+    target_vip: &str,
+    port: i32,
+    protocol: &str,
+) -> Result<()> {
+    let port = validate_port(port)?;
+    let protocol = validate_protocol(protocol)?;
+    let port_str = port.to_string();
+    let chain = service_chain_name(target_vip, port, protocol);
+
+    info!(
+        alias_vip = %alias_vip,
+        target_vip = %target_vip,
+        port = %port,
+        protocol = %protocol,
+        chain = %chain,
+        "removing VIP dispatch alias"
+    );
+
+    let _ = run_cmd(
         "iptables",
         &[
             "-t",
             "nat",
             "-D",
-            "PREROUTING",
+            SERVICES_CHAIN,
             "-d",
-            &addr_s,
+            alias_vip,
+            "-p",
+            protocol,
+            "--dport",
+            &port_str,
             "-j",
-            "DNAT",
-            "--to-destination",
-            &dest_s,
+            &chain,
         ],
-    )?;
-
-    // Remove FORWARD rule
-    run_cmd(
-        "iptables",
-        &["-D", "FORWARD", "-d", &dest_s, "-j", "ACCEPT"],
-    )?;
+    );
 
     Ok(())
 }
