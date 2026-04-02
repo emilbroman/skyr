@@ -1,0 +1,22 @@
+[package]
+name = "plugin_std_dns"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "plugin_std_dns"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.101"
+async-trait = "0.1.89"
+clap = { version = "4.5.57", features = ["derive"] }
+ids = { path = "../ids" }
+rtp = { path = "../rtp" }
+sclc = { path = "../sclc" }
+tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[lints]
+workspace = true

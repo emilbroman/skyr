@@ -4287,6 +4287,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "plugin_std_dns"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "clap",
+ "ids",
+ "rtp",
+ "sclc",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "plugin_std_random"
 version = "0.1.0"
 dependencies = [
