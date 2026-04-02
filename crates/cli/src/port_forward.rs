@@ -77,7 +77,8 @@ pub async fn run_port_forward(args: PortForwardArgs) -> anyhow::Result<()> {
     );
     eprintln!("Press Ctrl+C to stop.");
 
-    let resource_qid = args.resource_qid;
+    let resource_qid = Arc::new(args.resource_qid);
+    let handle = Arc::new(handle);
 
     loop {
         tokio::select! {
@@ -85,10 +86,14 @@ pub async fn run_port_forward(args: PortForwardArgs) -> anyhow::Result<()> {
                 let (tcp_stream, peer_addr) = accept.context("failed to accept connection")?;
                 eprintln!("Handling connection from {peer_addr}");
 
-                match proxy_connection(&handle, &resource_qid, tcp_stream).await {
-                    Ok(()) => eprintln!("Connection from {peer_addr} closed"),
-                    Err(e) => eprintln!("Connection from {peer_addr} error: {e:#}"),
-                }
+                let handle = Arc::clone(&handle);
+                let resource_qid = Arc::clone(&resource_qid);
+                tokio::spawn(async move {
+                    match proxy_connection(&handle, &resource_qid, tcp_stream).await {
+                        Ok(()) => eprintln!("Connection from {peer_addr} closed"),
+                        Err(e) => eprintln!("Connection from {peer_addr} error: {e:#}"),
+                    }
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nShutting down.");
