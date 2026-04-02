@@ -398,6 +398,18 @@ async fn handle_create(
                 error = %error,
                 "create_resource plugin call failed",
             );
+            log_event(
+                &ctx.ldb_publisher,
+                &dep_qid,
+                &res_qid,
+                Severity::Error,
+                format!(
+                    "Failed to create {} for {}: {}",
+                    message.resource.resource_id, dep_short, error,
+                ),
+                format!("Failed to create for {}: {}", dep_short, error),
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -435,6 +447,18 @@ async fn handle_create(
             error = %error,
             "failed to persist created resource state",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &dep_qid,
+            &res_qid,
+            Severity::Error,
+            format!(
+                "Failed to create {} for {}: {}",
+                message.resource.resource_id, dep_short, error,
+            ),
+            format!("Failed to create for {}: {}", dep_short, error),
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -592,6 +616,18 @@ async fn handle_destroy(
             error = %error,
             "delete_resource plugin call failed",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &dep_qid,
+            &res_qid,
+            Severity::Error,
+            format!(
+                "Failed to destroy {} for {}: {}",
+                message.resource.resource_id, dep_short, error,
+            ),
+            format!("Failed to destroy for {}: {}", dep_short, error),
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -604,6 +640,18 @@ async fn handle_destroy(
             error = %error,
             "failed to delete resource from rdb",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &dep_qid,
+            &res_qid,
+            Severity::Error,
+            format!(
+                "Failed to destroy {} for {}: {}",
+                message.resource.resource_id, dep_short, error,
+            ),
+            format!("Failed to destroy for {}: {}", dep_short, error),
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -757,11 +805,15 @@ async fn handle_update_inputs(
         }
     };
 
+    let res_qid = resource_qid_string(resource);
+    let dep_short = deployment_short(target_deployment_id);
+
     let mut inputs_to_persist = prev_inputs.clone();
     let mut outputs_to_persist = current.outputs.clone();
     let mut markers_to_persist = None;
 
     if prev_inputs != desired_inputs {
+        let id = resource_id_from_ref(resource);
         let Some((plugin_name, mut plugin)) =
             resolve_plugin(resource.resource_type(), &ctx.plugins)
         else {
@@ -775,11 +827,8 @@ async fn handle_update_inputs(
             return Ok(None);
         };
 
-        let id = resource_id_from_ref(resource);
-        let res_qid = resource_qid_string(resource);
         let target_dep_qid_for_log =
             deployment_qid(&resource.environment_qid, target_deployment_id);
-        let dep_short = deployment_short(target_deployment_id);
         let verb = match operation {
             "adopt" => "Adopting",
             "restore" => "Restoring",
@@ -825,6 +874,18 @@ async fn handle_update_inputs(
                     error = %error,
                     "update_resource plugin call failed",
                 );
+                log_event(
+                    &ctx.ldb_publisher,
+                    &target_dep_qid_for_log,
+                    &res_qid,
+                    Severity::Error,
+                    format!(
+                        "Failed to update {} for {}: {}",
+                        resource.resource_id, dep_short, error,
+                    ),
+                    format!("Failed to update for {}: {}", dep_short, error),
+                )
+                .await;
                 delivery.nack(false).await?;
                 return Ok(None);
             }
@@ -880,6 +941,18 @@ async fn handle_update_inputs(
             error = %error,
             "failed to persist resource state",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &target_dep_qid,
+            &res_qid,
+            Severity::Error,
+            format!(
+                "Failed to update {} for {}: {}",
+                resource.resource_id, dep_short, error,
+            ),
+            format!("Failed to update for {}: {}", dep_short, error),
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(None);
     }
@@ -1091,6 +1164,8 @@ async fn handle_check(
     };
 
     let id = resource_id_from_ref(&message.resource);
+    let res_qid = resource_qid_string(&message.resource);
+    let dep_short = deployment_short(&message.deployment_id);
     let resource = sclc::Resource {
         inputs,
         outputs,
@@ -1131,6 +1206,15 @@ async fn handle_check(
                 error = %error,
                 "check plugin call failed",
             );
+            log_event(
+                &ctx.ldb_publisher,
+                &dep_qid,
+                &res_qid,
+                Severity::Error,
+                format!("Failed to check {} for {}: {}", id, dep_short, error),
+                format!("Failed to check for {}: {}", dep_short, error),
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -1158,6 +1242,15 @@ async fn handle_check(
             error = %error,
             "failed to persist checked resource outputs",
         );
+        log_event(
+            &ctx.ldb_publisher,
+            &dep_qid,
+            &res_qid,
+            Severity::Error,
+            format!("Failed to check {} for {}: {}", id, dep_short, error),
+            format!("Failed to check for {}: {}", dep_short, error),
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
