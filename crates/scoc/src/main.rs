@@ -639,7 +639,10 @@ impl scop::Conduit for CriConduit {
             &request.backends,
             svc_cidr,
         )
-        .map_err(|e| scop::tonic::Status::internal(format!("add service route failed: {e:#}")))?;
+        .map_err(|e| {
+            tracing::error!("add service route failed: {e:#}");
+            scop::tonic::Status::internal(format!("add service route failed: {e:#}"))
+        })?;
 
         // Track this service route so future VIP alias additions can install dispatches.
         {
