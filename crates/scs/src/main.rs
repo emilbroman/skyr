@@ -380,6 +380,100 @@ impl Handler for ConfigHandler {
 
 /// Port-forward resource types that we support.
 const POD_PORT_TYPE: &str = "Std/Container.Pod.Port";
+const HOST_PORT_TYPE: &str = "Std/Container.Host.Port";
+const POD_TYPE: &str = "Std/Container.Pod";
+
+/// Extract port-forward target from a Pod.Port resource's inputs.
+fn resolve_pod_port_target(inputs: &sclc::Record) -> anyhow::Result<(String, String, i32, String)> {
+    let pod_name = match inputs.get("podName") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => return Err(anyhow!("resource inputs missing 'podName'")),
+    };
+    let node_name = match inputs.get("node") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => return Err(anyhow!("resource inputs missing 'node'")),
+    };
+    let port: i32 = match inputs.get("port") {
+        sclc::Value::Int(n) => *n as i32,
+        _ => return Err(anyhow!("resource inputs missing 'port'")),
+    };
+    let protocol = match inputs.get("protocol") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => "tcp".to_string(),
+    };
+    Ok((pod_name, node_name, port, protocol))
+}
+
+/// Resolve a Host.Port resource to a concrete pod target by picking the first
+/// backend and looking up the corresponding Pod resource to find the node.
+async fn resolve_host_port_target(
+    inputs: &sclc::Record,
+    ns: &rdb::NamespaceClient,
+) -> anyhow::Result<(String, String, i32, String)> {
+    let backends = match inputs.get("backends") {
+        sclc::Value::List(list) => list,
+        _ => return Err(anyhow!("Host.Port resource inputs missing 'backends'")),
+    };
+
+    let backend = backends
+        .first()
+        .ok_or_else(|| anyhow!("Host.Port has no backends"))?;
+
+    let backend = match backend {
+        sclc::Value::Record(r) => r,
+        _ => return Err(anyhow!("Host.Port backend is not a record")),
+    };
+
+    let address = match backend.get("address") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => return Err(anyhow!("Host.Port backend missing 'address'")),
+    };
+    let port: i32 = match backend.get("port") {
+        sclc::Value::Int(n) => *n as i32,
+        _ => return Err(anyhow!("Host.Port backend missing 'port'")),
+    };
+    let protocol = match backend.get("protocol") {
+        sclc::Value::Str(s) => s.clone(),
+        _ => "tcp".to_string(),
+    };
+
+    // Find the Pod resource whose output address matches the backend address.
+    // This gives us the pod name and the node it's running on.
+    use futures::TryStreamExt;
+    let mut resources = ns
+        .list_resources()
+        .await
+        .map_err(|e| anyhow!("failed to list resources: {e}"))?;
+
+    while let Some(resource) = resources.try_next().await.map_err(|e| anyhow!("{e}"))? {
+        if resource.resource_type != POD_TYPE {
+            continue;
+        }
+        let outputs = match &resource.outputs {
+            Some(o) => o,
+            None => continue,
+        };
+        if let sclc::Value::Str(addr) = outputs.get("address")
+            && addr == &address
+        {
+            let node_name = match outputs.get("node") {
+                sclc::Value::Str(s) => s.clone(),
+                _ => continue,
+            };
+            tracing::info!(
+                backend_address = %address,
+                pod_name = %resource.name,
+                node = %node_name,
+                "resolved Host.Port backend to pod"
+            );
+            return Ok((resource.name, node_name, port, protocol));
+        }
+    }
+
+    Err(anyhow!(
+        "no Pod resource found with address {address} for Host.Port backend"
+    ))
+}
 
 /// Handle a port-forward session: resolve the resource QID, connect to SCOC,
 /// and proxy data between the SSH channel and the gRPC stream.
@@ -408,19 +502,19 @@ async fn handle_port_forward(
         .into());
     }
 
-    // Only Pod.Port is supported for now
     let resource_type = &resource_qid.resource().typ;
-    if resource_type != POD_PORT_TYPE {
+    if resource_type != POD_PORT_TYPE && resource_type != HOST_PORT_TYPE {
         return Err(UserFacingError(format!(
-            "port-forward is only supported for {POD_PORT_TYPE}, got {resource_type}"
+            "port-forward is only supported for {POD_PORT_TYPE} and {HOST_PORT_TYPE}, \
+             got {resource_type}"
         ))
         .into());
     }
 
     // Look up the resource in RDB
     let env_qid = resource_qid.environment_qid().to_string();
-    let resource = rdb_client
-        .namespace(env_qid)
+    let ns = rdb_client.namespace(env_qid);
+    let resource = ns
         .resource(
             resource_qid.resource().typ.clone(),
             resource_qid.resource().name.clone(),
@@ -435,21 +529,13 @@ async fn handle_port_forward(
         .inputs
         .ok_or_else(|| anyhow!("resource has no inputs"))?;
 
-    let pod_name = match inputs.get("podName") {
-        sclc::Value::Str(s) => s.clone(),
-        _ => return Err(anyhow!("resource inputs missing 'podName'")),
-    };
-    let node_name = match inputs.get("node") {
-        sclc::Value::Str(s) => s.clone(),
-        _ => return Err(anyhow!("resource inputs missing 'node'")),
-    };
-    let port: i32 = match inputs.get("port") {
-        sclc::Value::Int(n) => *n as i32,
-        _ => return Err(anyhow!("resource inputs missing 'port'")),
-    };
-    let protocol = match inputs.get("protocol") {
-        sclc::Value::Str(s) => s.clone(),
-        _ => "tcp".to_string(),
+    // Resolve the target pod, node, port, and protocol.
+    // For Pod.Port, these come directly from inputs.
+    // For Host.Port, we pick the first backend and look up the corresponding Pod resource.
+    let (pod_name, node_name, port, protocol) = if resource_type == HOST_PORT_TYPE {
+        resolve_host_port_target(&inputs, &ns).await?
+    } else {
+        resolve_pod_port_target(&inputs)?
     };
 
     tracing::info!(
