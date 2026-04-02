@@ -38,6 +38,93 @@ SCOC manages per-pod networking on each node:
 - **VXLAN overlay**: Cross-node pod communication uses a VXLAN overlay. Peers are added/removed as nodes join and leave the cluster.
 - **Firewall**: Ingress ports are opened/closed per pod via `open_port`/`close_port`. Egress rules enforce an allow-list scoped to the cluster CIDR.
 
+## iptables Architecture
+
+SCOC configures iptables rules at two levels: the **host** (node-wide rules for bridging, NAT, and service routing) and **per-pod network namespaces** (firewall and egress control).
+
+### Host: filter table
+
+```
+FORWARD chain:
+  -i skyr0 -j ACCEPT                          # Pod egress: allow all traffic from bridge
+  -o skyr0 -j ACCEPT                          # Pod ingress: allow all traffic to bridge
+                                               #   (pods enforce their own INPUT firewalls)
+```
+
+The first rule allows pods to send traffic out. The second allows DNAT'd service traffic (and return traffic) to reach pods — this must be unconditional because after DNAT rewrites the destination to a pod IP, the packet appears as a NEW connection to the bridge.
+
+### Host: nat table
+
+```
+POSTROUTING chain:
+  -s <pod_cidr> ! -o skyr0 -j MASQUERADE      # Internet NAT for pod egress
+
+PREROUTING chain:
+  -j SKYR-SERVICES                             # Dispatch inbound traffic to service chains
+
+OUTPUT chain:
+  -j SKYR-SERVICES                             # Dispatch locally-originated traffic too
+```
+
+#### SKYR-SERVICES chain (nat)
+
+Central dispatch for all Host.Port and InternetAddress routing. Contains one rule per exposed VIP:port:
+
+```
+SKYR-SERVICES:
+  -d <vip> -p <proto> --dport <port> -j SKYR_SVC_<vip>_<port>_<proto>
+  -d <alias_vip> -p <proto> --dport <port> -j SKYR_SVC_<target_vip>_<port>_<proto>
+  ...
+```
+
+- **Host.Port VIPs** (service CIDR): dispatch rule jumps to the VIP's own per-service chain.
+- **InternetAddress alias VIPs** (LAN IPs): dispatch rule jumps directly to the *target* Host.Port's per-service chain, achieving a single DNAT to the backend pod.
+
+#### Per-service chains (nat)
+
+Each `SKYR_SVC_<vip>_<port>_<proto>` chain contains backend rules:
+
+```
+SKYR_SVC_10_43_0_1_80_tcp:
+  -m statistic --mode random --probability 0.5 -j DNAT --to-destination 10.42.0.5:80
+  -j DNAT --to-destination 10.42.0.6:80
+```
+
+- **Pod backends**: terminal `DNAT` to the pod IP.
+- **VIP backends** (Host.Port chaining): `-j SKYR_SVC_<backend_vip>_...` to jump to another service chain.
+- Load balancing uses the `statistic` module with `--probability 1/N` for N backends.
+
+### Per-pod network namespace: filter table
+
+Each pod has its own iptables rules inside its network namespace:
+
+```
+INPUT chain (default DROP):
+  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT   # Return traffic
+  -i lo -j ACCEPT                                         # Loopback
+  -p <proto> --dport <port> -j ACCEPT                     # Explicitly opened ports (Pod.Port)
+
+OUTPUT chain (default ACCEPT):
+  -o lo -j ACCEPT                                         # Loopback
+  -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT    # Return traffic
+  -j SKYR-EGRESS                                          # Attachment-managed rules
+  -d <cluster_cidr> -j DROP                               # Block cluster-internal
+  -d <service_cidr> -j DROP                               # Block Host VIPs
+                                                          # (internet falls through to ACCEPT)
+
+SKYR-EGRESS chain:
+  -d <addr> -p <proto> --dport <port> -j ACCEPT           # Per-attachment egress allows
+```
+
+Pods are deny-all ingress by default. Ports are opened explicitly via `open_port` (for Pod.Port resources). Egress blocks cluster-internal and service VIP traffic by default — attachments can punch holes via the SKYR-EGRESS chain.
+
+### InternetAddress: L2 + L3
+
+InternetAddress resources combine two mechanisms:
+
+1. **L2 (ARP)**: The LAN VIP is added to the node's primary interface (`ip addr add <vip>/32 dev <iface>`) with `arp_notify` enabled for gratuitous ARP.
+2. **L3 (routing)**: A dispatch rule in SKYR-SERVICES routes `<alias_vip>:port` directly to the target Host.Port's per-service chain — single DNAT, no double-DNAT.
+
 ## Container Log Streaming
 
 SCOC streams container logs to [LDB](../ldb/) using a per-container namespace format: `{environment_qid}::{pod_name}/{container_name}`. Each container gets a dedicated log publisher that follows the container's log file.
