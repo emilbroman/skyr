@@ -196,23 +196,16 @@ pub(crate) fn setup_bridge(subnet: &Ipv4Net) -> Result<()> {
     )
     .context("failed to add FORWARD accept rule for bridge")?;
 
-    // Allow forwarding to bridge (for return traffic)
+    // Allow forwarding to bridge (for DNAT'd service traffic and return traffic).
+    // Pods have their own INPUT firewalls (DROP by default + explicit port opens),
+    // so we don't need to restrict at the FORWARD level. This is necessary because
+    // after DNAT rewrites the destination to a pod IP, the packet needs to be
+    // forwarded through the bridge as a NEW connection.
     run_cmd(
         "iptables",
-        &[
-            "-A",
-            "FORWARD",
-            "-o",
-            BRIDGE_NAME,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "RELATED,ESTABLISHED",
-            "-j",
-            "ACCEPT",
-        ],
+        &["-A", "FORWARD", "-o", BRIDGE_NAME, "-j", "ACCEPT"],
     )
-    .context("failed to add FORWARD return traffic rule")?;
+    .context("failed to add FORWARD rule for bridge")?;
 
     info!("pod bridge setup complete");
     Ok(())
@@ -245,18 +238,7 @@ pub(crate) fn teardown_bridge(subnet: &Ipv4Net) -> Result<()> {
     );
     let _ = run_cmd(
         "iptables",
-        &[
-            "-D",
-            "FORWARD",
-            "-o",
-            BRIDGE_NAME,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "RELATED,ESTABLISHED",
-            "-j",
-            "ACCEPT",
-        ],
+        &["-D", "FORWARD", "-o", BRIDGE_NAME, "-j", "ACCEPT"],
     );
 
     // Delete bridge (this also removes attached veth host-side interfaces)
@@ -1059,36 +1041,6 @@ pub(crate) fn remove_service_route(vip: &str, port: i32, protocol: &str) -> Resu
     Ok(())
 }
 
-/// Configure the service CIDR for FORWARD rules.
-///
-/// Allows forwarding of traffic destined to the service CIDR through the bridge,
-/// so DNAT'd packets can reach their backend pods.
-pub(crate) fn configure_service_cidr_forwarding(service_cidr: &str) -> Result<()> {
-    validate_cidr(service_cidr)?;
-    info!(
-        service_cidr = %service_cidr,
-        "configuring service CIDR forwarding"
-    );
-
-    // Allow forwarding from bridge to service CIDR destinations
-    // (after DNAT rewrites the destination, traffic needs to be forwarded)
-    run_cmd(
-        "iptables",
-        &[
-            "-A",
-            "FORWARD",
-            "-o",
-            BRIDGE_NAME,
-            "-d",
-            service_cidr,
-            "-j",
-            "ACCEPT",
-        ],
-    )
-    .context("failed to add FORWARD rule for service CIDR")?;
-
-    Ok(())
-}
 
 // ============================================================================
 // DNS

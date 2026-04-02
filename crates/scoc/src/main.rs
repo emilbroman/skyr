@@ -812,11 +812,10 @@ impl scop::Conduit for CriConduit {
 
     async fn configure_service_cidr(
         &self,
-        request: scop::ConfigureServiceCidrRequest,
+        _request: scop::ConfigureServiceCidrRequest,
     ) -> Result<scop::ConfigureServiceCidrResponse, scop::tonic::Status> {
-        net::configure_service_cidr_forwarding(&request.service_cidr).map_err(|e| {
-            scop::tonic::Status::internal(format!("configure service CIDR failed: {e:#}"))
-        })?;
+        // No-op: service CIDR forwarding is now handled by the bridge FORWARD rule
+        // which allows all traffic to the bridge. Pods have their own INPUT firewalls.
         Ok(scop::ConfigureServiceCidrResponse {})
     }
 
@@ -1118,13 +1117,6 @@ async fn main() -> Result<()> {
 
             // Set up the DNAT services chain for Host.Port load balancing
             net::setup_services_chain()?;
-
-            // Configure service CIDR forwarding if available
-            if let Some(ref svc_cidr) = service_cidr
-                && let Err(e) = net::configure_service_cidr_forwarding(svc_cidr)
-            {
-                tracing::warn!("failed to configure service CIDR forwarding: {e:#}");
-            }
 
             // Set up the internal DNS server for *.internal resolution
             let dns_records = dns::new_records();
