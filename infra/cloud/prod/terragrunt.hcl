@@ -182,5 +182,28 @@ generate "ingress" {
         }
       }
     }
+
+    resource "kubernetes_manifest" "ingress_route_udp_dns" {
+      manifest = {
+        apiVersion = "traefik.io/v1alpha1"
+        kind       = "IngressRouteUDP"
+        metadata = {
+          name      = "skyr-dns"
+          namespace = "skyr"
+          annotations = {
+            "kubernetes.io/ingress.class" = "external"
+          }
+        }
+        spec = {
+          entryPoints = ["dns"]
+          routes = [{
+            services = [{
+              name = kubernetes_service.plugin_std_dns.metadata[0].name
+              port = 53
+            }]
+          }]
+        }
+      }
+    }
   EOF
 }
