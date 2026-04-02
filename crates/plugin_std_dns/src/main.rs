@@ -9,6 +9,16 @@ mod dns_store;
 
 const A_RECORD_RESOURCE_TYPE: &str = "Std/DNS.ARecord";
 
+/// Normalize a string for use as a DNS label: lowercase and replace non-alphanumeric
+/// characters with hyphens.
+fn normalize_dns_label(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_lowercase()
+}
+
 #[derive(Parser)]
 struct Args {
     #[arg(long)]
@@ -41,8 +51,11 @@ impl DnsPlugin {
         }
     }
 
-    fn fqdn(&self, name: &str) -> String {
-        format!("{}.{}", name, self.inner.zone).to_lowercase()
+    fn fqdn(&self, name: &str, environment_qid: &ids::EnvironmentQid) -> String {
+        let org = normalize_dns_label(environment_qid.repo.org.as_str());
+        let repo = normalize_dns_label(environment_qid.repo.repo.as_str());
+        let env = normalize_dns_label(environment_qid.environment.as_str());
+        format!("{name}.{env}.{repo}.{org}.{}", self.inner.zone).to_lowercase()
     }
 
     fn extract_addresses(inputs: &sclc::Record) -> Vec<String> {
@@ -72,6 +85,7 @@ impl DnsPlugin {
 
     async fn dispatch(
         &self,
+        environment_qid: &ids::EnvironmentQid,
         id: &ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -83,7 +97,7 @@ impl DnsPlugin {
                 };
                 let addresses = Self::extract_addresses(&inputs);
                 let ttl_seconds = Self::extract_ttl_seconds(&inputs);
-                let fqdn = self.fqdn(&name);
+                let fqdn = self.fqdn(&name, environment_qid);
 
                 self.inner
                     .store
@@ -111,18 +125,21 @@ impl DnsPlugin {
 impl rtp::Plugin for DnsPlugin {
     async fn create_resource(
         &mut self,
-        _environment_qid: &str,
+        environment_qid: &str,
         _deployment_id: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(resource_type = %id.typ, "creating DNS resource");
-        self.dispatch(&id, inputs).await
+        let env_qid: ids::EnvironmentQid = environment_qid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
+        self.dispatch(&env_qid, &id, inputs).await
     }
 
     async fn update_resource(
         &mut self,
-        _environment_qid: &str,
+        environment_qid: &str,
         _deployment_id: &str,
         id: ids::ResourceId,
         _prev_inputs: sclc::Record,
@@ -130,25 +147,31 @@ impl rtp::Plugin for DnsPlugin {
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(resource_type = %id.typ, "updating DNS resource");
-        self.dispatch(&id, inputs).await
+        let env_qid: ids::EnvironmentQid = environment_qid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
+        self.dispatch(&env_qid, &id, inputs).await
     }
 
     async fn delete_resource(
         &mut self,
-        _environment_qid: &str,
+        environment_qid: &str,
         _deployment_id: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
         debug!(resource_type = %id.typ, "deleting DNS resource");
+        let env_qid: ids::EnvironmentQid = environment_qid
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
         match id.typ.as_str() {
             A_RECORD_RESOURCE_TYPE => {
                 let name = match inputs.get("name") {
                     sclc::Value::Str(s) => s.clone(),
                     _ => anyhow::bail!("missing or invalid 'name' input"),
                 };
-                let fqdn = self.fqdn(&name);
+                let fqdn = self.fqdn(&name, &env_qid);
                 self.inner.store.delete_a_record(&fqdn).await?;
                 Ok(())
             }
