@@ -14,6 +14,7 @@ inputs = {
   oci_registry_url          = "https://cr.bb3.internal"
   oci_registry_insecure     = true
   redpanda_advertise_host   = "node1.vm.bb3.internal"
+  dns_zone                  = "host.dev.skyr.cloud"
 }
 
 generate "proxmox_provider" {
