@@ -4,7 +4,7 @@ import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import { Copy } from "lucide-svelte";
+import { Copy, ExternalLink } from "lucide-svelte";
 import { ResourceDetailDocument, ResourceLogsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment, deploymentHref, resourceHref } from "$lib/paths";
@@ -36,6 +36,54 @@ function parseSpanStartLine(span: string): number {
     const line = parseInt(startPart.split(":")[0], 10);
     return Number.isNaN(line) ? 1 : line;
 }
+
+/** Extract a string from a serde-tagged Value ({"Str": "..."} or bare string). */
+function extractStr(val: unknown): string | null {
+    if (typeof val === "string") return val;
+    if (val && typeof val === "object" && "Str" in val) return (val as { Str: string }).Str;
+    return null;
+}
+
+/** Extract an integer from a serde-tagged Value ({"Int": N} or bare number). */
+function extractInt(val: unknown): number | null {
+    if (typeof val === "number") return val;
+    if (val && typeof val === "object" && "Int" in val) return (val as { Int: number }).Int;
+    return null;
+}
+
+/** Get a field from a bare record ({fields: {...}}) or a tagged Record. */
+function getField(record: unknown, key: string): unknown | null {
+    if (!record || typeof record !== "object") return null;
+    const obj = record as Record<string, unknown>;
+    if (obj.fields && typeof obj.fields === "object" && !Array.isArray(obj.fields)) {
+        return (obj.fields as Record<string, unknown>)[key] ?? null;
+    }
+    if (obj.Record && typeof obj.Record === "object") {
+        const inner = obj.Record as Record<string, unknown>;
+        if (inner.fields && typeof inner.fields === "object") {
+            return (inner.fields as Record<string, unknown>)[key] ?? null;
+        }
+    }
+    return null;
+}
+
+const PORT_TYPES = ["Std/Container.Pod.Port", "Std/Container.Host.Port"];
+const DNS_A_RECORD_TYPE = "Std/DNS.ARecord";
+
+let isPortResource = $derived(resource ? PORT_TYPES.includes(resource.type) : false);
+let isDnsARecord = $derived(resource?.type === DNS_A_RECORD_TYPE);
+
+let portForwardPort = $derived.by(() => {
+    if (!isPortResource || !resource?.inputs) return null;
+    const port = extractInt(getField(resource.inputs, "port"));
+    if (port == null) return null;
+    return port > 1024 ? port : port + 5000;
+});
+
+let aRecordFqdn = $derived.by(() => {
+    if (!isDnsARecord || !resource?.outputs) return null;
+    return extractStr(getField(resource.outputs, "fqdn"));
+});
 </script>
 
 <svelte:head>
@@ -140,6 +188,45 @@ function parseSpanStartLine(span: string): number {
       {/if}
     </dl>
   </div>
+
+  <!-- Resource Widgets -->
+  {#if isPortResource && resourceQid && portForwardPort != null}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Port Forward</h3>
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="flex items-center gap-2 font-mono text-xs text-gray-600 bg-gray-50 rounded px-3 py-2">
+          <code class="flex-1 select-all">skyr port-forward {resourceQid} {portForwardPort}</code>
+          <button
+            type="button"
+            class="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+            title="Copy command"
+            onclick={() => navigator.clipboard.writeText(`skyr port-forward ${resourceQid} ${portForwardPort}`)}
+          >
+            <Copy class="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </section>
+  {/if}
+  {#if isDnsARecord && aRecordFqdn}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">DNS</h3>
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-sm text-gray-600">{aRecordFqdn}</span>
+          <a
+            href="http://{aRecordFqdn}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-orange-600 hover:text-orange-500 transition-colors"
+            title="Open in browser"
+          >
+            <ExternalLink class="w-4 h-4" />
+          </a>
+        </div>
+      </div>
+    </section>
+  {/if}
 
   <!-- Dependencies -->
   {#if resource.dependencies.length > 0}
