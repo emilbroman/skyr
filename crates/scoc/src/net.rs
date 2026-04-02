@@ -1171,17 +1171,13 @@ pub(crate) fn add_vip(address: &str, destination: &str) -> Result<()> {
 
     info!(vip = %addr, destination = %dest, interface = %iface, "adding VIP");
 
-    // Add the VIP to the interface
-    run_cmd("ip", &["addr", "add", &addr_cidr, "dev", &iface])?;
+    // Enable arp_notify so the kernel sends a gratuitous ARP when the address is added
+    let arp_notify_path = format!("/proc/sys/net/ipv4/conf/{iface}/arp_notify");
+    std::fs::write(&arp_notify_path, "1")
+        .with_context(|| format!("failed to enable arp_notify on {iface}"))?;
 
-    // Send gratuitous ARP (spawn in background so we don't block)
-    let addr_str = addr.to_string();
-    let iface_clone = iface.clone();
-    std::thread::spawn(move || {
-        if let Err(e) = run_cmd("arping", &["-U", "-c", "3", "-I", &iface_clone, &addr_str]) {
-            warn!(vip = %addr_str, error = %e, "gratuitous ARP failed");
-        }
-    });
+    // Add the VIP to the interface (triggers gratuitous ARP via arp_notify)
+    run_cmd("ip", &["addr", "add", &addr_cidr, "dev", &iface])?;
 
     // DNAT all traffic destined for the VIP to the cluster-internal destination
     let addr_s = addr.to_string();
