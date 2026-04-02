@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "Std/DNS.ARecord": {
+      "a.b.c": {
+        "inputs": {
+          "name": "a.b.c",
+          "ttl": { "milliseconds": 60000 },
+          "addresses": ["1.2.3.4", "5.6.7.8"]
+        },
+        "outputs": {
+          "name": "a.b.c",
+          "ttl": { "milliseconds": 60000 },
+          "addresses": ["1.2.3.4", "5.6.7.8"]
+        }
+      }
+    }
+  }
+}

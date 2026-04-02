@@ -1,0 +1,31 @@
+import Std/Time
+
+/// Create a DNS A record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.ARecord({
+///     name: "a.b.c",
+///     ttl: Time.minute,
+///     addresses: ["123.123.123.123"],
+/// })
+/// ```
+export let ARecord = extern "Std/DNS.ARecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// IPv4 addresses
+	addresses: [Str],
+}) ARecordOutput
+
+export type ARecordOutput {
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// IPv4 addresses
+	addresses: [Str],
+}

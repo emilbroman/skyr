@@ -529,6 +529,11 @@ test_case!(ContainerPodEnvMergeCreate);
 test_case!(ContainerAttachment);
 test_case!(ContainerHost);
 
+// Std/DNS
+test_case!(DNSARecord);
+test_case!(DNSARecordTouch);
+test_case!(DNSARecordUpdate);
+
 // Std/Crypto
 test_case!(CryptoED25519);
 test_case!(CryptoECDSA);

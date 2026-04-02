@@ -28,6 +28,7 @@ std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",
     crypto => "Crypto.scl",
+    dns => "DNS.scl",
     encoding => "Encoding.scl",
     list => "List.scl",
     num => "Num.scl",
