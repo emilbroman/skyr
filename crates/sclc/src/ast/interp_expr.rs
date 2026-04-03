@@ -42,7 +42,11 @@ impl InterpExpr {
             if matches!(value.value, crate::Value::Pending(_)) {
                 return Ok(crate::eval::pending_with(dependencies));
             }
-            out.push_str(&value.value.to_string());
+            if let crate::Value::Str(s) = &value.value {
+                out.push_str(s);
+            } else {
+                out.push_str(&value.value.to_string());
+            }
         }
         Ok(crate::eval::with_dependencies(
             crate::Value::Str(out),
