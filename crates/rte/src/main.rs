@@ -379,8 +379,8 @@ async fn handle_create(
         &dep_qid,
         &res_qid,
         Severity::Info,
-        format!("Creating {} for {}", id, dep_short),
-        format!("Creating for {}", dep_short),
+        format!("{}: Creating {}", dep_short, id),
+        format!("{}: Creating", dep_short),
     )
     .await;
 
@@ -404,10 +404,10 @@ async fn handle_create(
                 &res_qid,
                 Severity::Error,
                 format!(
-                    "Failed to create {} for {}: {}",
-                    message.resource.resource_id, dep_short, error,
+                    "{}: Failed to create {}: {}",
+                    dep_short, message.resource.resource_id, error,
                 ),
-                format!("Failed to create for {}: {}", dep_short, error),
+                format!("{}: Failed to create: {}", dep_short, error),
             )
             .await;
             delivery.nack(false).await?;
@@ -453,10 +453,10 @@ async fn handle_create(
             &res_qid,
             Severity::Error,
             format!(
-                "Failed to create {} for {}: {}",
-                message.resource.resource_id, dep_short, error,
+                "{}: Failed to create {}: {}",
+                dep_short, message.resource.resource_id, error,
             ),
-            format!("Failed to create for {}: {}", dep_short, error),
+            format!("{}: Failed to create: {}", dep_short, error),
         )
         .await;
         delivery.nack(false).await?;
@@ -475,11 +475,11 @@ async fn handle_create(
         &res_qid,
         Severity::Info,
         format!(
-            "Created {} for {}",
-            message.resource.resource_id.clone(),
+            "{}: Created {}",
             dep_short,
+            message.resource.resource_id.clone(),
         ),
-        format!("Created for {}", dep_short),
+        format!("{}: Created", dep_short),
     )
     .await;
     Ok(())
@@ -593,8 +593,8 @@ async fn handle_destroy(
         &dep_qid,
         &res_qid,
         Severity::Info,
-        format!("Destroying {} for {}", id, dep_short),
-        format!("Destroying for {}", dep_short),
+        format!("{}: Destroying {}", dep_short, id),
+        format!("{}: Destroying", dep_short),
     )
     .await;
 
@@ -622,10 +622,10 @@ async fn handle_destroy(
             &res_qid,
             Severity::Error,
             format!(
-                "Failed to destroy {} for {}: {}",
-                message.resource.resource_id, dep_short, error,
+                "{}: Failed to destroy {}: {}",
+                dep_short, message.resource.resource_id, error,
             ),
-            format!("Failed to destroy for {}: {}", dep_short, error),
+            format!("{}: Failed to destroy: {}", dep_short, error),
         )
         .await;
         delivery.nack(false).await?;
@@ -646,10 +646,10 @@ async fn handle_destroy(
             &res_qid,
             Severity::Error,
             format!(
-                "Failed to destroy {} for {}: {}",
-                message.resource.resource_id, dep_short, error,
+                "{}: Failed to destroy {}: {}",
+                dep_short, message.resource.resource_id, error,
             ),
-            format!("Failed to destroy for {}: {}", dep_short, error),
+            format!("{}: Failed to destroy: {}", dep_short, error),
         )
         .await;
         delivery.nack(false).await?;
@@ -668,11 +668,11 @@ async fn handle_destroy(
         &res_qid,
         Severity::Info,
         format!(
-            "Destroyed {} for {}",
+            "{}: Destroyed {}",
+            dep_short,
             message.resource.resource_id.clone(),
-            dep_short
         ),
-        format!("Destroyed for {}", dep_short),
+        format!("{}: Destroyed", dep_short),
     )
     .await;
     Ok(())
@@ -847,8 +847,8 @@ async fn handle_update_inputs(
             &target_dep_qid_for_log,
             &res_qid,
             Severity::Info,
-            format!("{} {} for {}", verb, id, dep_short),
-            format!("{} for {}", verb, dep_short),
+            format!("{}: {} {}", dep_short, verb, id),
+            format!("{}: {}", dep_short, verb),
         )
         .await;
 
@@ -880,10 +880,10 @@ async fn handle_update_inputs(
                     &res_qid,
                     Severity::Error,
                     format!(
-                        "Failed to update {} for {}: {}",
-                        resource.resource_id, dep_short, error,
+                        "{}: Failed to update {}: {}",
+                        dep_short, resource.resource_id, error,
                     ),
-                    format!("Failed to update for {}: {}", dep_short, error),
+                    format!("{}: Failed to update: {}", dep_short, error),
                 )
                 .await;
                 delivery.nack(false).await?;
@@ -947,10 +947,10 @@ async fn handle_update_inputs(
             &res_qid,
             Severity::Error,
             format!(
-                "Failed to update {} for {}: {}",
-                resource.resource_id, dep_short, error,
+                "{}: Failed to update {}: {}",
+                dep_short, resource.resource_id, error,
             ),
-            format!("Failed to update for {}: {}", dep_short, error),
+            format!("{}: Failed to update: {}", dep_short, error),
         )
         .await;
         delivery.nack(false).await?;
@@ -1061,11 +1061,11 @@ async fn handle_restore(
         &res_qid,
         Severity::Info,
         format!(
-            "Restored {} for {}",
-            message.resource.resource_id.clone(),
+            "{}: Restored {}",
             dep_short,
+            message.resource.resource_id.clone(),
         ),
-        format!("Restored for {}", dep_short),
+        format!("{}: Restored", dep_short),
     )
     .await;
     Ok(())
@@ -1211,8 +1211,8 @@ async fn handle_check(
                 &dep_qid,
                 &res_qid,
                 Severity::Error,
-                format!("Failed to check {} for {}: {}", id, dep_short, error),
-                format!("Failed to check for {}: {}", dep_short, error),
+                format!("{}: Failed to check {}: {}", dep_short, id, error),
+                format!("{}: Failed to check: {}", dep_short, error),
             )
             .await;
             delivery.nack(false).await?;
@@ -1247,8 +1247,8 @@ async fn handle_check(
             &dep_qid,
             &res_qid,
             Severity::Error,
-            format!("Failed to check {} for {}: {}", id, dep_short, error),
-            format!("Failed to check for {}: {}", dep_short, error),
+            format!("{}: Failed to check {}: {}", dep_short, id, error),
+            format!("{}: Failed to check: {}", dep_short, error),
         )
         .await;
         delivery.nack(false).await?;
