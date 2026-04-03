@@ -7,7 +7,6 @@ use thiserror::Error;
 
 use crate::{
     AnySource, ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo,
-    Value,
 };
 use crate::{TrackedValue, std::StdSourceRepo};
 
@@ -64,14 +63,8 @@ pub enum ResolveImportError {
 
 #[derive(Error, Debug)]
 pub enum EvaluateError {
-    #[error("module id has no module path after package: {0}")]
-    MissingModulePath(ModuleId),
-
     #[error("module not loaded: {0}")]
     ModuleNotLoaded(ModuleId),
-
-    #[error("failed to open module {0}: {1}")]
-    Open(ModuleId, #[source] OpenError),
 
     #[error("failed to evaluate module {0}: {1}")]
     Eval(ModuleId, #[source] crate::EvalError),
@@ -290,58 +283,23 @@ impl<S: SourceRepo> Program<S> {
             .cloned()
     }
 
-    pub async fn evaluate(
-        &mut self,
+    pub fn evaluate(
+        &self,
         module_id: &ModuleId,
-        eval: &crate::Eval,
+        eval: &crate::Eval<'_, S>,
     ) -> Result<Diagnosed<TrackedValue>, EvaluateError> {
-        let mut diags = DiagList::new();
-
-        let Some(package_name) = self.package_name_for_import(module_id) else {
+        let Some(file_mod) = self.resolve_import_path(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
         };
 
-        let Some(module_segments) = module_id.suffix_after(&package_name) else {
-            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
-        };
-        if module_segments.is_empty() {
-            return Err(EvaluateError::MissingModulePath(module_id.clone()));
-        }
-
-        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
-
-        if !module_id_from_segments.is_safe_path() {
-            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
-        }
-
-        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
-
-        let file_mod = {
-            let Some(package) = self.packages.get_mut(&package_name) else {
-                return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
-            };
-            let open_result = package
-                .open(&module_path)
-                .await
-                .map_err(|err| EvaluateError::Open(module_id.clone(), err))?
-                .unpack(&mut diags);
-            match open_result {
-                Some(file_mod) => file_mod.clone(),
-                None => return Ok(Diagnosed::new(TrackedValue::new(Value::Nil), diags)),
-            }
-        };
-        let imports = self.find_imports(&file_mod);
-
-        let env = crate::EvalEnv::new()
-            .with_module_id(module_id)
-            .with_imports(&imports);
+        let env = crate::EvalEnv::new().with_module_id(module_id);
         let result = eval
-            .eval_file_mod(&env, &file_mod)
+            .eval_file_mod(&env, file_mod)
             .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
-        Ok(Diagnosed::new(result, diags))
+        Ok(Diagnosed::new(result, DiagList::new()))
     }
 
-    fn find_imports<'a>(
+    pub fn find_imports<'a>(
         &'a self,
         file_mod: &'a crate::ast::FileMod,
     ) -> HashMap<&'a str, (ModuleId, &'a crate::ast::FileMod)> {

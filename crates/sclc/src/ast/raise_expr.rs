@@ -36,15 +36,15 @@ impl RaiseExpr {
         Ok(Diagnosed::new(Type::Never, diags))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {
         let value = evaluator.eval_expr(env, self.expr.as_ref())?;
         if matches!(value.value, Value::Pending(_)) {
-            return Ok(Eval::pending_with(value.dependencies));
+            return Ok(crate::eval::pending_with(value.dependencies));
         }
         let raise_frame = Some((
             env.module_id.cloned().unwrap_or_default(),

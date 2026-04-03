@@ -132,9 +132,9 @@ impl TryExpr {
         Ok(())
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

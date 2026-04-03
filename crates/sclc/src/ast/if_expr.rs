@@ -73,9 +73,9 @@ impl IfExpr {
         Ok(Diagnosed::new(result_ty, diags))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {
@@ -90,7 +90,7 @@ impl IfExpr {
                 if let Some(else_expr) = &self.else_expr {
                     evaluator.eval_expr(env, else_expr.as_ref())
                 } else {
-                    Ok(Eval::tracked(Value::Nil))
+                    Ok(crate::eval::tracked(Value::Nil))
                 }
             }
             other => Err(env.throw(

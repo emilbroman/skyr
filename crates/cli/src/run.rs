@@ -13,7 +13,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         root,
         package_id: package_id.clone(),
     };
-    let Some(mut program) = report_diagnostics(sclc::compile(source).await?) else {
+    let Some(program) = report_diagnostics(sclc::compile(source).await?) else {
         return Ok(());
     };
 
@@ -25,10 +25,10 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .collect::<sclc::ModuleId>();
 
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let eval = sclc::Eval::new::<FsSource>(effects_tx, package_id.to_string());
+    let eval = sclc::Eval::new(&program, effects_tx, package_id.to_string());
     let effects_task = spawn_effect_printer(effects_rx);
 
-    if let Some(result) = report_diagnostics(program.evaluate(&module_id, &eval).await?) {
+    if let Some(result) = report_diagnostics(program.evaluate(&module_id, &eval)?) {
         println!("{}", result.value);
     }
 

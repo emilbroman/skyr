@@ -1,0 +1,2 @@
+import TransitiveImport/B
+export let result = B.value + 1

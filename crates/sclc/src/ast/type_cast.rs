@@ -43,9 +43,9 @@ impl TypeCastExpr {
         Ok(crate::Diagnosed::new(target_ty, diags))
     }
 
-    pub fn eval(
+    pub fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         evaluator.eval_expr(env, &self.expr)

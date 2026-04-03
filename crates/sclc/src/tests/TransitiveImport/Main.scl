@@ -1,0 +1,2 @@
+import TransitiveImport/A
+export let val = A.result

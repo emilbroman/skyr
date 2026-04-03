@@ -169,9 +169,9 @@ impl FnExpr {
         Ok(Diagnosed::new(ty, diags))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {
@@ -179,7 +179,7 @@ impl FnExpr {
         for name in expr.as_ref().free_vars() {
             captures.insert(name.to_owned(), evaluator.eval_var_name(env, name)?);
         }
-        Ok(Eval::tracked(Value::Fn(FnValue {
+        Ok(crate::eval::tracked(Value::Fn(FnValue {
             env: FnEnv {
                 module_id: env.module_id()?,
                 captures,

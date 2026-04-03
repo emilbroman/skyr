@@ -23,9 +23,9 @@ impl ExternExpr {
         Ok(Diagnosed::new(resolved_ty, diags))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {
@@ -33,7 +33,7 @@ impl ExternExpr {
             .externs
             .get(self.name.as_str())
             .cloned()
-            .map(Eval::tracked)
+            .map(crate::eval::tracked)
             .ok_or_else(|| {
                 env.throw(
                     EvalErrorKind::MissingExtern(self.name.clone()),

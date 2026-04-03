@@ -274,9 +274,9 @@ use crate::{TrackedValue, Value};
 
 impl CallExpr {
     #[inline(never)]
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
@@ -335,7 +335,7 @@ impl CallExpr {
                 evaluator.ctx.source_trace.lock().unwrap().clear();
                 result
             }
-            _ => Ok(Eval::tracked(Value::Nil).with_dependencies(callee_dependencies)),
+            _ => Ok(crate::eval::tracked(Value::Nil).with_dependencies(callee_dependencies)),
         }
     }
 }

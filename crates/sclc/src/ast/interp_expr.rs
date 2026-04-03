@@ -29,9 +29,9 @@ impl InterpExpr {
         Ok(crate::Diagnosed::new(crate::Type::Str, diags))
     }
 
-    pub fn eval(
+    pub fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         let mut out = String::new();
@@ -40,11 +40,11 @@ impl InterpExpr {
             let value = evaluator.eval_expr(env, part)?;
             dependencies.extend(value.dependencies.clone());
             if matches!(value.value, crate::Value::Pending(_)) {
-                return Ok(crate::eval::Eval::pending_with(dependencies));
+                return Ok(crate::eval::pending_with(dependencies));
             }
             out.push_str(&value.value.to_string());
         }
-        Ok(crate::eval::Eval::with_dependencies(
+        Ok(crate::eval::with_dependencies(
             crate::Value::Str(out),
             dependencies,
         ))

@@ -68,9 +68,9 @@ impl LetExpr {
         Ok(Diagnosed::new(body_ty, diags))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
     ) -> Result<TrackedValue, EvalError> {
         let bind_value = evaluator.eval_expr(env, self.bind.expr.as_ref())?;

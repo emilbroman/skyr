@@ -385,7 +385,8 @@ fn query_cursor(
 
 struct ReplState {
     line_number: usize,
-    eval: sclc::Eval,
+    program: sclc::Program<MemSourceRepo>,
+    effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>,
     bindings: HashMap<String, (sclc::Type, sclc::TrackedValue)>,
     type_defs: HashMap<String, sclc::Type>,
     effects_rx: tokio::sync::mpsc::UnboundedReceiver<sclc::Effect>,
@@ -399,11 +400,12 @@ thread_local! {
 #[wasm_bindgen]
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let eval = sclc::Eval::new::<MemSourceRepo>(effects_tx, "Playground".to_string());
+    let program = sclc::Program::<MemSourceRepo>::new();
     REPL_STATE.with(|cell| {
         *cell.borrow_mut() = Some(ReplState {
             line_number: 0,
-            eval,
+            program,
+            effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
             effects_rx,
@@ -517,13 +519,17 @@ async fn repl_process(state: &mut ReplState, files_json: &str, line: &str) -> Re
         return repl_process_import(state, files_json, import_stmt).await;
     }
 
-    let program = sclc::Program::<MemSourceRepo>::new();
     let type_env = repl_type_env(&state.bindings, &state.type_defs, &module_id);
+    let eval = sclc::Eval::new(
+        &state.program,
+        state.effects_tx.clone(),
+        "Playground".to_string(),
+    );
 
     match statement {
         sclc::ModStmt::Import(_) => unreachable!(),
         sclc::ModStmt::Let(let_bind) | sclc::ModStmt::Export(let_bind) => {
-            let checker = sclc::TypeChecker::new(&program);
+            let checker = sclc::TypeChecker::new(&state.program);
             let type_result = checker.check_global_let_bind(&type_env, let_bind);
             let Ok(diagnosed) = type_result else {
                 return ReplResult {
@@ -542,7 +548,7 @@ async fn repl_process(state: &mut ReplState, files_json: &str, line: &str) -> Re
             }
 
             let eval_env = repl_eval_env(&state.bindings, &module_id);
-            match state.eval.eval_expr(&eval_env, &let_bind.expr) {
+            match eval.eval_expr(&eval_env, &let_bind.expr) {
                 Ok(value) => {
                     let output = format!("{} : {ty}", let_bind.var.name);
                     state
@@ -563,7 +569,7 @@ async fn repl_process(state: &mut ReplState, files_json: &str, line: &str) -> Re
             }
         }
         sclc::ModStmt::Expr(expr) => {
-            let checker = sclc::TypeChecker::new(&program);
+            let checker = sclc::TypeChecker::new(&state.program);
             let type_result = checker.check_stmt(&type_env, statement);
             let Ok(diagnosed) = type_result else {
                 return ReplResult {
@@ -582,7 +588,7 @@ async fn repl_process(state: &mut ReplState, files_json: &str, line: &str) -> Re
             }
 
             let eval_env = repl_eval_env(&state.bindings, &module_id);
-            match state.eval.eval_expr(&eval_env, expr) {
+            match eval.eval_expr(&eval_env, expr) {
                 Ok(value) => {
                     let effects = drain_effects(&mut state.effects_rx);
                     ReplResult {
@@ -599,7 +605,7 @@ async fn repl_process(state: &mut ReplState, files_json: &str, line: &str) -> Re
             }
         }
         sclc::ModStmt::TypeDef(type_def) | sclc::ModStmt::ExportTypeDef(type_def) => {
-            let checker = sclc::TypeChecker::new(&program);
+            let checker = sclc::TypeChecker::new(&state.program);
             let diagnosed = checker.resolve_type_def(&type_env, type_def);
             let ty = diagnosed.unpack(&mut diags);
             if diags.iter().any(|d| d.level() == sclc::DiagLevel::Error) {
@@ -653,8 +659,7 @@ async fn repl_process_import(
 
     let file_map = parse_files_json(files_json);
     let repo = make_repo(files_json);
-    let mut program = sclc::Program::new();
-    let package = program.open_package(repo).await;
+    let package = state.program.open_package(repo).await;
     for name in file_map.keys() {
         if name.ends_with(".scl") {
             let _ = package.open(name).await;
@@ -663,7 +668,7 @@ async fn repl_process_import(
 
     // Resolve all transitive imports (not just the direct one)
     let mut diags = sclc::DiagList::new();
-    match program.resolve_imports().await {
+    match state.program.resolve_imports().await {
         Ok(diagnosed) => {
             diagnosed.unpack(&mut diags);
         }
@@ -676,8 +681,13 @@ async fn repl_process_import(
         }
     }
 
-    // Evaluate the imported module (program.evaluate wires up transitive imports)
-    let value = match program.evaluate(&import_path, &state.eval).await {
+    // Evaluate the imported module
+    let eval = sclc::Eval::new(
+        &state.program,
+        state.effects_tx.clone(),
+        "Playground".to_string(),
+    );
+    let value = match state.program.evaluate(&import_path, &eval) {
         Ok(diagnosed_val) => diagnosed_val.into_inner(),
         Err(e) => {
             return ReplResult {
@@ -689,7 +699,7 @@ async fn repl_process_import(
     };
 
     // Get the file_mod (already loaded by resolve_imports above)
-    let resolve_result = program.resolve_import(&import_path).await;
+    let resolve_result = state.program.resolve_import(&import_path).await;
     let Ok(diagnosed) = resolve_result else {
         return ReplResult {
             output: None,
@@ -707,7 +717,7 @@ async fn repl_process_import(
     };
 
     // Type-check the imported module
-    let checker = sclc::TypeChecker::new(&program);
+    let checker = sclc::TypeChecker::new(&state.program);
     let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
     let type_result = checker.check_file_mod(&type_env, &file_mod);
     let Ok(diagnosed_ty) = type_result else {

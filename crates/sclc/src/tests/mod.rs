@@ -4,7 +4,7 @@ use std::path::Path;
 
 use ids::ResourceId;
 
-use crate::{Effect, Eval, EvalEnv, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value};
+use crate::{Effect, Eval, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value};
 
 /// An in-memory source repository for testing.
 struct MemSourceRepo {
@@ -324,60 +324,22 @@ async fn run_test_case(dir_name: &str) {
 
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut eval = Eval::new::<MemSourceRepo>(tx, "test");
+    let mut eval = Eval::new(&result, tx, "test");
 
     // Load existing resources from rdb.json
     for (id, resource) in rdb {
         eval.add_resource(id, resource);
     }
 
-    // Find the user package and Main module
-    let package_id: ModuleId = [dir_name.to_string()].into_iter().collect();
+    // Find the main module
     let main_module_id: ModuleId = [dir_name.to_string(), "Main".to_string()]
         .into_iter()
         .collect();
 
-    // Get Main.scl FileMod from the compiled program
-    let main_file_mod = result
-        .packages()
-        .find(|(name, _)| **name == package_id)
-        .and_then(|(_, package)| {
-            package
-                .modules()
-                .find(|(path, _)| path.to_string_lossy() == "Main.scl")
-                .map(|(_, file_mod)| file_mod)
-        })
-        .unwrap_or_else(|| panic!("Main.scl not found in compiled program for {dir_name}"));
-
-    // Build import map by scanning Main.scl import statements
-    let imports: HashMap<&str, (ModuleId, &crate::ast::FileMod)> = main_file_mod
-        .statements
-        .iter()
-        .filter_map(|stmt| {
-            if let crate::ast::ModStmt::Import(import_stmt) = stmt {
-                let alias = import_stmt.as_ref().vars.last()?;
-                let import_path: ModuleId = import_stmt
-                    .as_ref()
-                    .vars
-                    .iter()
-                    .map(|var| var.as_ref().name.clone())
-                    .collect();
-                // Resolve: look through all packages for matching module
-                let destination = resolve_import(&result, &import_path)?;
-                Some((alias.as_ref().name.as_str(), (import_path, destination)))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let env = EvalEnv::new()
-        .with_module_id(&main_module_id)
-        .with_imports(&imports);
-
-    let tracked_value: TrackedValue = eval
-        .eval_file_mod(&env, main_file_mod)
-        .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"));
+    let tracked_value: TrackedValue = result
+        .evaluate(&main_module_id, &eval)
+        .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"))
+        .into_inner();
 
     // Check exports
     let expected_exports = exports_txt.as_deref().map(|s| s.trim()).unwrap_or("{}");
@@ -408,52 +370,6 @@ async fn run_test_case(dir_name: &str) {
     );
 }
 
-/// Resolve an import path to a FileMod within the compiled program.
-/// Resolve `Self/…` import paths by replacing the `Self` prefix with the
-/// program's own package ID.
-fn resolve_self_import(program: &crate::Program<MemSourceRepo>, import_path: ModuleId) -> ModuleId {
-    if import_path.as_slice().first().map(String::as_str) == Some("Self")
-        && let Some(self_id) = program.self_package_id()
-    {
-        let mut segments: Vec<String> = self_id.as_slice().to_vec();
-        segments.extend(import_path.as_slice()[1..].iter().cloned());
-        return ModuleId::new(segments);
-    }
-    import_path
-}
-
-fn resolve_import<'a>(
-    program: &'a crate::Program<MemSourceRepo>,
-    import_path: &ModuleId,
-) -> Option<&'a crate::ast::FileMod> {
-    let import_path = resolve_self_import(program, import_path.clone());
-
-    // Find matching package by longest prefix
-    let package_name = program
-        .packages()
-        .map(|(name, _)| name)
-        .filter(|name| import_path.starts_with(name))
-        .max_by_key(|name| name.len())?;
-
-    let (_, package) = program.packages().find(|(name, _)| *name == package_name)?;
-
-    let suffix = import_path.suffix_after(package_name)?;
-    if suffix.is_empty() {
-        return None;
-    }
-
-    let module_path = suffix
-        .iter()
-        .cloned()
-        .collect::<ModuleId>()
-        .to_path_buf_with_extension("scl");
-
-    package
-        .modules()
-        .find(|(path, _)| **path == module_path)
-        .map(|(_, file_mod)| file_mod)
-}
-
 macro_rules! test_case {
     ($name:ident) => {
         #[allow(non_snake_case)]
@@ -468,6 +384,7 @@ test_case!(BasicExport);
 test_case!(MultiExport);
 test_case!(EmptyModule);
 test_case!(ImportModule);
+test_case!(TransitiveImport);
 test_case!(SelfImport);
 test_case!(SelfImportSubdir);
 test_case!(DiagUndefinedVar);

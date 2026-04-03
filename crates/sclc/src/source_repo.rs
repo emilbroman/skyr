@@ -26,7 +26,7 @@ pub trait SourceRepo {
         Ok(Vec::new())
     }
 
-    fn register_extern(_eval: &mut crate::Eval) {}
+    fn register_extern<S2: SourceRepo>(_eval: &mut crate::Eval<'_, S2>) {}
 }
 
 #[derive(Clone)]
@@ -71,7 +71,7 @@ impl<S: SourceRepo> SourceRepo for AnySource<S> {
         }
     }
 
-    fn register_extern(eval: &mut crate::Eval) {
+    fn register_extern<S2: SourceRepo>(eval: &mut crate::Eval<'_, S2>) {
         S::register_extern(eval);
         StdSourceRepo::register_extern(eval);
     }

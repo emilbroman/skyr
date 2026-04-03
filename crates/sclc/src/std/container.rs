@@ -26,7 +26,7 @@ const HOST_RESOURCE_TYPE: &str = "Std/Container.Host";
 const HOST_PORT_RESOURCE_TYPE: &str = "Std/Container.Host.Port";
 const HOST_INTERNET_ADDRESS_RESOURCE_TYPE: &str = "Std/Container.Host.InternetAddress";
 
-pub fn register_extern(eval: &mut crate::Eval) {
+pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
     eval.add_extern_fn(IMAGE_RESOURCE_TYPE, image_extern_fn);
     eval.add_extern_fn(POD_RESOURCE_TYPE, pod_extern_fn);
     eval.add_extern_fn(HOST_RESOURCE_TYPE, host_extern_fn);

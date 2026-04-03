@@ -213,7 +213,7 @@ impl FnEnv {
         if let Some(self_name) = &self.self_name {
             env = env.with_local(
                 self_name.as_str(),
-                Eval::tracked(crate::Value::Fn(fn_value.clone())),
+                TrackedValue::new(crate::Value::Fn(fn_value.clone())),
             );
         }
         for (name, value) in self.parameters.iter().zip(args.iter()) {
@@ -224,7 +224,8 @@ impl FnEnv {
     }
 }
 
-pub struct Eval {
+pub struct Eval<'p, S> {
+    pub(crate) program: &'p crate::Program<S>,
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
 }
@@ -532,12 +533,26 @@ impl ValueAssertions for Option<Value> {
     }
 }
 
-impl Eval {
-    pub fn new<S: crate::SourceRepo>(
+pub(crate) fn tracked(value: Value) -> TrackedValue {
+    TrackedValue::new(value)
+}
+
+pub(crate) fn pending_with(dependencies: BTreeSet<ResourceId>) -> TrackedValue {
+    TrackedValue::pending().with_dependencies(dependencies)
+}
+
+pub(crate) fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>) -> TrackedValue {
+    TrackedValue::new(value).with_dependencies(dependencies)
+}
+
+impl<'p, S: crate::SourceRepo> Eval<'p, S> {
+    pub fn new(
+        program: &'p crate::Program<S>,
         effects: mpsc::UnboundedSender<Effect>,
         namespace: impl Into<String>,
     ) -> Self {
         let mut eval = Self {
+            program,
             ctx: EvalCtx {
                 effects,
                 resources: HashMap::new(),
@@ -579,21 +594,6 @@ impl Eval {
         + 'static,
     ) {
         self.add_extern(name, Value::ExternFn(ExternFnValue::new(Box::new(f))));
-    }
-
-    pub(crate) fn tracked(value: Value) -> TrackedValue {
-        TrackedValue::new(value)
-    }
-
-    pub(crate) fn pending_with(dependencies: BTreeSet<ResourceId>) -> TrackedValue {
-        TrackedValue::pending().with_dependencies(dependencies)
-    }
-
-    pub(crate) fn with_dependencies(
-        value: Value,
-        dependencies: BTreeSet<ResourceId>,
-    ) -> TrackedValue {
-        TrackedValue::new(value).with_dependencies(dependencies)
     }
 
     pub fn eval_expr(
@@ -898,7 +898,7 @@ impl Eval {
                         },
                         body,
                     };
-                    return Ok(Self::tracked(crate::Value::Fn(fn_val)));
+                    return Ok(tracked(crate::Value::Fn(fn_val)));
                 }
             }
             return self.eval_expr(&global_env, global_expr);
@@ -907,7 +907,7 @@ impl Eval {
             let import_env = EvalEnv::new().with_module_id(&target_module_id);
             return self.eval_file_mod(&import_env, import_file_mod);
         }
-        Ok(Self::tracked(Value::Nil))
+        Ok(tracked(Value::Nil))
     }
 
     pub fn eval_stmt(
@@ -937,7 +937,8 @@ impl Eval {
         file_mod: &ast::FileMod,
     ) -> Result<TrackedValue, EvalError> {
         let globals = file_mod.find_globals();
-        let env = env.with_globals(&globals);
+        let imports = self.program.find_imports(file_mod);
+        let env = env.with_globals(&globals).with_imports(&imports);
         let mut exports = Record::default();
         let mut dependencies = BTreeSet::new();
 
@@ -948,10 +949,7 @@ impl Eval {
             }
         }
 
-        Ok(Self::with_dependencies(
-            Value::Record(exports),
-            dependencies,
-        ))
+        Ok(with_dependencies(Value::Record(exports), dependencies))
     }
 }
 
@@ -980,7 +978,8 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1002,7 +1001,8 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1047,7 +1047,8 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1093,7 +1094,8 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1135,7 +1137,8 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
@@ -1182,7 +1185,8 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval = Eval::new::<crate::std::StdSourceRepo>(tx, String::from("test/namespace"));
+        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),

@@ -78,15 +78,15 @@ use crate::{TrackedValue, Value};
 
 impl UnaryExpr {
     #[inline(never)]
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
         let value = evaluator.eval_expr(env, self.expr.as_ref())?;
         if matches!(value.value, Value::Pending(_)) {
-            return Ok(Eval::pending_with(value.dependencies));
+            return Ok(crate::eval::pending_with(value.dependencies));
         }
         let unary_span = expr.span();
         let unary_module_id = env.module_id.cloned().unwrap_or_default();

@@ -58,26 +58,25 @@ impl IndexedAccessExpr {
         Ok(Diagnosed::new(result_ty, diags))
     }
 
-    pub fn eval(
+    pub fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::Value;
-        use crate::eval::Eval;
 
         let container = evaluator.eval_expr(env, self.expr.as_ref())?;
         match container.value {
-            Value::Pending(_) => Ok(Eval::pending_with(container.dependencies)),
+            Value::Pending(_) => Ok(crate::eval::pending_with(container.dependencies)),
             Value::Dict(dict) => {
                 let index = evaluator.eval_expr(env, self.index.as_ref())?;
                 let mut deps = container.dependencies;
                 deps.extend(index.dependencies);
                 match index.value {
-                    Value::Pending(_) => Ok(Eval::pending_with(deps)),
+                    Value::Pending(_) => Ok(crate::eval::pending_with(deps)),
                     _ => {
                         let result = dict.get(&index.value).cloned().unwrap_or(Value::Nil);
-                        Ok(Eval::with_dependencies(result, deps))
+                        Ok(crate::eval::with_dependencies(result, deps))
                     }
                 }
             }
@@ -86,19 +85,19 @@ impl IndexedAccessExpr {
                 let mut deps = container.dependencies;
                 deps.extend(index.dependencies);
                 match index.value {
-                    Value::Pending(_) => Ok(Eval::pending_with(deps)),
+                    Value::Pending(_) => Ok(crate::eval::pending_with(deps)),
                     Value::Int(i) => {
                         let result = if i >= 0 {
                             list.get(i as usize).cloned().unwrap_or(Value::Nil)
                         } else {
                             Value::Nil
                         };
-                        Ok(Eval::with_dependencies(result, deps))
+                        Ok(crate::eval::with_dependencies(result, deps))
                     }
-                    _ => Ok(Eval::with_dependencies(Value::Nil, deps)),
+                    _ => Ok(crate::eval::with_dependencies(Value::Nil, deps)),
                 }
             }
-            _ => Ok(Eval::tracked(Value::Nil)),
+            _ => Ok(crate::eval::tracked(Value::Nil)),
         }
     }
 }

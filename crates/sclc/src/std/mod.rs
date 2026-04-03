@@ -16,7 +16,7 @@ macro_rules! std_modules {
             )),*
         ];
 
-        fn register_std_externs(eval: &mut crate::Eval) {
+        fn register_std_externs<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
             $(
                 $module::register_extern(eval);
             )*
@@ -96,7 +96,7 @@ impl SourceRepo for StdSourceRepo {
         Ok(entries.into_iter().collect())
     }
 
-    fn register_extern(eval: &mut crate::Eval) {
+    fn register_extern<S2: SourceRepo>(eval: &mut crate::Eval<'_, S2>) {
         register_std_externs(eval);
     }
 }

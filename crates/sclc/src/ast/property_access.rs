@@ -161,25 +161,25 @@ impl PropertyAccessExpr {
         Ok(Diagnosed::new(Type::Never, diags))
     }
 
-    pub fn eval(
+    pub fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::Value;
-        use crate::eval::Eval;
 
         let value = evaluator.eval_expr(env, self.expr.as_ref())?;
         match value.value {
-            Value::Pending(_) => Ok(Eval::pending_with(value.dependencies)),
-            Value::Nil if self.optional => {
-                Ok(Eval::with_dependencies(Value::Nil, value.dependencies))
-            }
-            Value::Record(record) => Ok(Eval::with_dependencies(
+            Value::Pending(_) => Ok(crate::eval::pending_with(value.dependencies)),
+            Value::Nil if self.optional => Ok(crate::eval::with_dependencies(
+                Value::Nil,
+                value.dependencies,
+            )),
+            Value::Record(record) => Ok(crate::eval::with_dependencies(
                 record.get(self.property.name.as_str()).clone(),
                 value.dependencies,
             )),
-            _ => Ok(Eval::tracked(Value::Nil)),
+            _ => Ok(crate::eval::tracked(Value::Nil)),
         }
     }
 }

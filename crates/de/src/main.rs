@@ -626,7 +626,7 @@ impl Worker {
             });
         }
 
-        let mut program = diagnosed.into_inner();
+        let program = diagnosed.into_inner();
         let module_id = SourceRepo::package_id(&self.client)
             .as_slice()
             .iter()
@@ -647,7 +647,7 @@ impl Worker {
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
-        let mut eval = sclc::Eval::new::<DeploymentClient>(effects_tx, environment_qid_str);
+        let mut eval = sclc::Eval::new(&program, effects_tx, environment_qid_str);
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
@@ -942,7 +942,7 @@ impl Worker {
             .instrument(tracing::Span::current()),
         );
 
-        match program.evaluate(&module_id, &eval).await {
+        match program.evaluate(&module_id, &eval) {
             Ok(eval_diagnosed) => {
                 for diag in eval_diagnosed.diags().iter() {
                     let (module_id, span) = diag.locate();

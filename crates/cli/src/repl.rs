@@ -245,18 +245,25 @@ impl Helper for ReplHelper {}
 
 struct Repl {
     line_number: usize,
-    eval: sclc::Eval,
     root: PathBuf,
     package_id: sclc::ModuleId,
+    program: sclc::Program<FsSource>,
+    effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>,
 }
 
 impl Repl {
-    fn new(eval: sclc::Eval, root: PathBuf, package_id: sclc::ModuleId) -> Self {
+    fn new(
+        root: PathBuf,
+        package_id: sclc::ModuleId,
+        program: sclc::Program<FsSource>,
+        effects_tx: tokio::sync::mpsc::UnboundedSender<sclc::Effect>,
+    ) -> Self {
         Self {
             line_number: 0,
-            eval,
             root,
             package_id,
+            program,
+            effects_tx,
         }
     }
 
@@ -274,54 +281,58 @@ impl Repl {
             return Ok(());
         };
 
-        // Handle imports separately to avoid holding the RefCell borrow across .await
+        // Handle imports separately — they mutate the program
         if let sclc::ModStmt::Import(import_stmt) = statement {
             return self.process_import(import_stmt, helper).await;
         }
 
+        let eval = sclc::Eval::new(
+            &self.program,
+            self.effects_tx.clone(),
+            self.package_id.to_string(),
+        );
         let mut state = helper.state.borrow_mut();
-        let program = sclc::Program::<FsSource>::new();
         let type_env = Self::type_env(&state.bindings, &state.type_defs, &module_id);
         let pending_binding = match statement {
             sclc::ModStmt::Import(_) => unreachable!(),
             sclc::ModStmt::Let(let_bind) => {
-                let checker = sclc::TypeChecker::new(&program);
+                let checker = sclc::TypeChecker::new(&self.program);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let Some(ty) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
                 let eval_env = Self::eval_env(&state.bindings, &module_id);
-                let value = self.eval.eval_expr(&eval_env, &let_bind.expr)?;
+                let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
                 println!("{} : {}", let_bind.var.name, ty);
                 Some((let_bind.var.name.clone(), (ty, value)))
             }
             sclc::ModStmt::Expr(expr) => {
-                let checker = sclc::TypeChecker::new(&program);
+                let checker = sclc::TypeChecker::new(&self.program);
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
                 let Some(_) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
                 let eval_env = Self::eval_env(&state.bindings, &module_id);
-                let value = self.eval.eval_expr(&eval_env, expr)?;
+                let value = eval.eval_expr(&eval_env, expr)?;
                 println!("{}", value.value);
                 None
             }
             sclc::ModStmt::Export(let_bind) => {
-                let checker = sclc::TypeChecker::new(&program);
+                let checker = sclc::TypeChecker::new(&self.program);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let Some(ty) = report_diagnostics(diagnosed) else {
                     return Ok(());
                 };
 
                 let eval_env = Self::eval_env(&state.bindings, &module_id);
-                let value = self.eval.eval_expr(&eval_env, &let_bind.expr)?;
+                let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
                 println!("{} : {}", let_bind.var.name, ty);
                 Some((let_bind.var.name.clone(), (ty, value)))
             }
             sclc::ModStmt::TypeDef(type_def) | sclc::ModStmt::ExportTypeDef(type_def) => {
-                let checker = sclc::TypeChecker::new(&program);
+                let checker = sclc::TypeChecker::new(&self.program);
                 let Some(ty) = report_diagnostics(checker.resolve_type_def(&type_env, type_def))
                 else {
                     return Ok(());
@@ -359,13 +370,13 @@ impl Repl {
             return Ok(());
         };
 
-        let mut program = sclc::Program::<FsSource>::new();
+        // Open the user package if not already loaded and resolve imports
         let source = FsSource {
             root: self.root.clone(),
             package_id: self.package_id.clone(),
         };
-        program.open_package(source).await;
-        let Some(file_mod) = program.resolve_import(&import_path).await?.cloned() else {
+        self.program.open_package(source).await;
+        let Some(file_mod) = self.program.resolve_import(&import_path).await?.cloned() else {
             let vars = &import_stmt.as_ref().vars;
             let path_span = sclc::Span::new(
                 vars.first()
@@ -387,15 +398,23 @@ impl Repl {
             return Ok(());
         };
 
-        let checker = sclc::TypeChecker::new(&program);
+        // Resolve transitive imports
+        let _ = self.program.resolve_imports().await;
+
+        let checker = sclc::TypeChecker::new(&self.program);
         let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
         let diagnosed_ty = checker.check_file_mod(&type_env, &file_mod)?;
         let Some(ty) = report_diagnostics(diagnosed_ty) else {
             return Ok(());
         };
 
-        let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
-        let value = self.eval.eval_file_mod(&eval_env, &file_mod)?;
+        // Create a temporary eval for this import evaluation
+        let eval = sclc::Eval::new(
+            &self.program,
+            self.effects_tx.clone(),
+            self.package_id.to_string(),
+        );
+        let value = self.program.evaluate(&import_path, &eval)?.into_inner();
 
         // Extract type-level exports so that imported types are available in subsequent lines.
         let type_exports = checker
@@ -446,8 +465,16 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
         .collect::<sclc::ModuleId>();
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
-    let eval = sclc::Eval::new::<FsSource>(effects_tx, package_id.to_string());
-    let mut repl = Repl::new(eval, root, package_id);
+
+    // Create a persistent program for the REPL session
+    let mut program = sclc::Program::<FsSource>::new();
+    let source = FsSource {
+        root: root.clone(),
+        package_id: package_id.clone(),
+    };
+    program.open_package(source).await;
+
+    let mut repl = Repl::new(root, package_id, program, effects_tx);
     let helper = ReplHelper::new();
     let mut editor = Editor::new()?;
     editor.set_helper(Some(helper));

@@ -102,9 +102,9 @@ impl DictExpr {
         ))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         let mut dict = crate::Dict::default();
@@ -117,11 +117,11 @@ impl DictExpr {
             if matches!(key.value, crate::Value::Pending(_))
                 || matches!(value.value, crate::Value::Pending(_))
             {
-                return Ok(crate::eval::Eval::pending_with(dependencies));
+                return Ok(crate::eval::pending_with(dependencies));
             }
             dict.insert(key.value, value.value);
         }
-        Ok(crate::eval::Eval::with_dependencies(
+        Ok(crate::eval::with_dependencies(
             crate::Value::Dict(dict),
             dependencies,
         ))

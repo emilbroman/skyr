@@ -115,9 +115,9 @@ impl ListExpr {
         ))
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &crate::eval::Eval,
+        evaluator: &crate::eval::Eval<'_, S>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         let mut values = Vec::new();
@@ -127,7 +127,7 @@ impl ListExpr {
                 crate::eval::ListItemOutcome::Complete => {}
                 crate::eval::ListItemOutcome::Pending(pending_dependencies) => {
                     dependencies.extend(pending_dependencies);
-                    return Ok(crate::eval::Eval::pending_with(dependencies));
+                    return Ok(crate::eval::pending_with(dependencies));
                 }
             }
         }
@@ -136,7 +136,7 @@ impl ListExpr {
             dependencies.extend(value.dependencies.clone());
         }
 
-        Ok(crate::eval::Eval::with_dependencies(
+        Ok(crate::eval::with_dependencies(
             crate::Value::List(values.into_iter().map(|value| value.value).collect()),
             dependencies,
         ))

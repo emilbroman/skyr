@@ -34,9 +34,9 @@ impl ExceptionExpr {
         }
     }
 
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        _evaluator: &Eval,
+        _evaluator: &Eval<'_, S>,
         _env: &EvalEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {
@@ -55,9 +55,9 @@ impl ExceptionExpr {
                     })))
                 },
             )));
-            Ok(Eval::tracked(exc_fn))
+            Ok(crate::eval::tracked(exc_fn))
         } else {
-            Ok(Eval::tracked(Value::Exception(ExceptionValue {
+            Ok(crate::eval::tracked(Value::Exception(ExceptionValue {
                 exception_id,
                 payload: Box::new(Value::Nil),
             })))

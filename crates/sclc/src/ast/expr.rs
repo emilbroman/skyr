@@ -150,18 +150,18 @@ impl Expr {
     }
 
     /// Evaluate the expression.
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
         match self {
-            Expr::Int(int) => Ok(Eval::tracked(Value::Int(int.value))),
-            Expr::Float(float) => Ok(Eval::tracked(Value::Float(float.value))),
-            Expr::Bool(bool) => Ok(Eval::tracked(Value::Bool(bool.value))),
-            Expr::Nil => Ok(Eval::tracked(Value::Nil)),
-            Expr::Str(str) => Ok(Eval::tracked(Value::Str(str.value.clone()))),
+            Expr::Int(int) => Ok(crate::eval::tracked(Value::Int(int.value))),
+            Expr::Float(float) => Ok(crate::eval::tracked(Value::Float(float.value))),
+            Expr::Bool(bool) => Ok(crate::eval::tracked(Value::Bool(bool.value))),
+            Expr::Nil => Ok(crate::eval::tracked(Value::Nil)),
+            Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
             Expr::Extern(extern_expr) => extern_expr.eval(evaluator, env, expr),
             Expr::If(if_expr) => if_expr.eval(evaluator, env, expr),
             Expr::Let(let_expr) => let_expr.eval(evaluator, env),

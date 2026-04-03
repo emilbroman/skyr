@@ -1,4 +1,4 @@
-pub fn register_extern(eval: &mut crate::Eval) {
+pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
     eval.add_extern_fn("Std/Num.toHex", |args, _ctx| {
         use crate::ValueAssertions;
 

@@ -178,15 +178,15 @@ use crate::{TrackedValue, Value};
 
 impl BinaryExpr {
     #[inline(never)]
-    pub(crate) fn eval(
+    pub(crate) fn eval<S: crate::SourceRepo>(
         &self,
-        evaluator: &Eval,
+        evaluator: &Eval<'_, S>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
         let lhs = evaluator.eval_expr(env, self.lhs.as_ref())?;
         if matches!(lhs.value, Value::Pending(_)) {
-            return Ok(Eval::pending_with(lhs.dependencies));
+            return Ok(crate::eval::pending_with(lhs.dependencies));
         }
 
         let binary_span = expr.span();
@@ -244,7 +244,7 @@ impl BinaryExpr {
             _ => {
                 let rhs = evaluator.eval_expr(env, self.rhs.as_ref())?;
                 if matches!(rhs.value, Value::Pending(_)) {
-                    return Ok(Eval::pending_with(rhs.dependencies));
+                    return Ok(crate::eval::pending_with(rhs.dependencies));
                 }
 
                 lhs.try_flat_map(|lhs| {
