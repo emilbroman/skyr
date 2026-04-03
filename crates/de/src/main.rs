@@ -493,6 +493,13 @@ impl Worker {
                         self.client
                             .mark_superseded_by(&superseding_deployment.deployment)
                             .await?;
+
+                        // If the superseding deployment is already Up, it won't
+                        // re-check its superseded list, so transition ourselves.
+                        if superseding_deployment.state == DeploymentState::Up {
+                            self.client.set(DeploymentState::Undesired).await?;
+                        }
+
                         break;
                     }
 
