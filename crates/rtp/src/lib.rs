@@ -339,7 +339,7 @@ where
                         err = %error,
                         "plugin create_resource failed"
                     );
-                    tonic::Status::internal("create_resource failed")
+                    tonic::Status::internal(error.to_string())
                 })?
         };
         info!(
@@ -411,7 +411,7 @@ where
                         err = %error,
                         "plugin update_resource failed"
                     );
-                    tonic::Status::internal("update_resource failed")
+                    tonic::Status::internal(error.to_string())
                 })?
         };
         info!(
@@ -475,7 +475,7 @@ where
                         err = %error,
                         "plugin delete_resource failed"
                     );
-                    tonic::Status::internal("delete_resource failed")
+                    tonic::Status::internal(error.to_string())
                 })?;
         }
 
@@ -516,7 +516,7 @@ where
                     err = %error,
                     "plugin check failed"
                 );
-                tonic::Status::internal("check failed")
+                tonic::Status::internal(error.to_string())
             })?;
 
         Ok(tonic::Response::new(CheckResponse {
