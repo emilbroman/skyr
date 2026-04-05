@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub(crate) struct FsSource {
     pub(crate) root: PathBuf,
     pub(crate) package_id: sclc::ModuleId,
@@ -33,10 +34,12 @@ impl sclc::SourceRepo for FsSource {
             let name = entry.file_name().to_string_lossy().into_owned();
             if file_type.is_dir() {
                 entries.push(sclc::ChildEntry::Directory(name));
-            } else if file_type.is_file()
-                && let Some(stem) = name.strip_suffix(".scl")
-            {
-                entries.push(sclc::ChildEntry::Module(stem.to_owned()));
+            } else if file_type.is_file() {
+                if let Some(stem) = name.strip_suffix(".scl") {
+                    entries.push(sclc::ChildEntry::Module(stem.to_owned()));
+                } else {
+                    entries.push(sclc::ChildEntry::File(name));
+                }
             }
         }
         Ok(entries)
