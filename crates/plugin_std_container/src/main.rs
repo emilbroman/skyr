@@ -1230,11 +1230,12 @@ impl ContainerPlugin {
             "creating internet address"
         );
 
-        // Allocate a floating IP + LAN VIP from the BB3 address service
-        let alloc = bb3_addr::allocate_address().await?;
-
         // Pick a connected SCOC node to host the LAN VIP
         let node = self.select_node().await?;
+        let mut conduit = self.get_conduit(&node.name).await?;
+
+        // Allocate a floating IP + LAN VIP from the BB3 address service
+        let alloc = bb3_addr::allocate_address().await?;
 
         info!(
             resource_name = %id.name,
@@ -1245,14 +1246,25 @@ impl ContainerPlugin {
         );
 
         // Tell the node to add the VIP to its primary interface and DNAT to the Host VIP
-        let mut conduit = self.get_conduit(&node.name).await?;
-        conduit
+        if let Err(e) = conduit
             .add_vip(scop::AddVipRequest {
                 address: alloc.lan_ip.clone(),
                 destination: host_vip,
             })
             .await
-            .map_err(|e| PluginError::ScopOperation(format!("add_vip: {e}")))?;
+        {
+            if let Err(er) = bb3_addr::release_address(&alloc.lan_ip).await {
+                info!(
+                    resource_name = %id.name,
+                    floating_ip = %alloc.floating_ip,
+                    lan_ip = %alloc.lan_ip,
+                    node = %node.name,
+                    "failed to release address after failed add_vip: {er}"
+                );
+            }
+
+            anyhow::bail!(PluginError::ScopOperation(format!("add_vip: {e}")));
+        }
 
         // Build outputs (lanIp and node are internal, not exposed to SCL)
         let mut outputs = sclc::Record::default();
