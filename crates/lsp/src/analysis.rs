@@ -84,6 +84,11 @@ impl<S: sclc::SourceRepo> sclc::SourceRepo for OverlaySource<S> {
                     if !entries.contains(&entry) {
                         entries.push(entry);
                     }
+                } else {
+                    let entry = sclc::ChildEntry::File(relative.to_owned());
+                    if !entries.contains(&entry) {
+                        entries.push(entry);
+                    }
                 }
             }
         }
@@ -168,6 +173,7 @@ pub async fn load_program<S: sclc::SourceRepo>(source: S) -> sclc::Program<S> {
     let package = program.open_package(source).await;
     let _ = package.open("Main.scl").await;
     let _ = program.resolve_imports().await;
+    let _ = program.resolve_paths().await;
     program
 }
 
