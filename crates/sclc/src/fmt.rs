@@ -379,7 +379,7 @@ impl Formatter {
             }
             Expr::Path(p) => {
                 let mut first = true;
-                for segment in &p.value {
+                for segment in p.values() {
                     if !first {
                         self.write("/");
                     }

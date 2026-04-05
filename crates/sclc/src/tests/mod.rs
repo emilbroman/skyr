@@ -23,6 +23,34 @@ impl SourceRepo for MemSourceRepo {
         let key = path.to_string_lossy().replace('\\', "/");
         Ok(self.files.get(&key).cloned())
     }
+
+    async fn list_children(&self, path: &Path) -> Result<Vec<crate::ChildEntry>, Self::Err> {
+        let prefix = if path.as_os_str().is_empty() {
+            String::new()
+        } else {
+            format!("{}/", path.to_string_lossy().replace('\\', "/"))
+        };
+        let mut entries = std::collections::BTreeSet::new();
+        for key in self.files.keys() {
+            let relative = if prefix.is_empty() {
+                key.as_str()
+            } else if let Some(rest) = key.strip_prefix(&prefix) {
+                rest
+            } else {
+                continue;
+            };
+            // Only direct children
+            if let Some(slash_pos) = relative.find('/') {
+                let dir_name = &relative[..slash_pos];
+                entries.insert(crate::ChildEntry::Directory(dir_name.to_string()));
+            } else if let Some(stem) = relative.strip_suffix(".scl") {
+                entries.insert(crate::ChildEntry::Module(stem.to_string()));
+            } else {
+                entries.insert(crate::ChildEntry::File(relative.to_string()));
+            }
+        }
+        Ok(entries.into_iter().collect())
+    }
 }
 
 /// Format an effect in compact form.
@@ -225,27 +253,40 @@ fn load_fixture(dir_name: &str) -> Fixture {
         "fixture directory does not exist: {fixture_dir}"
     );
 
-    // Collect .scl files (recursively, preserving relative paths)
+    // Collect .scl and other fixture files (recursively, preserving relative paths).
+    // Only top-level expectation files are skipped (exports.txt, effects.log, diag.log, rdb.json).
     let mut files = HashMap::new();
-    fn collect_scl_files(
+    fn collect_fixture_files(
         dir: &std::path::Path,
         base: &std::path::Path,
         files: &mut HashMap<String, Vec<u8>>,
+        is_root: bool,
     ) {
+        /// Top-level files that are test expectations, not source data.
+        const EXPECTATION_FILES: &[&str] = &["exports.txt", "effects.log", "diag.log", "rdb.json"];
+
         for entry in std::fs::read_dir(dir).expect("read fixture dir") {
             let entry = entry.expect("read dir entry");
             let path = entry.path();
             if path.is_dir() {
-                collect_scl_files(&path, base, files);
-            } else if path.extension().is_some_and(|ext| ext == "scl") {
+                collect_fixture_files(&path, base, files, false);
+            } else {
+                // Skip known expectation files at the fixture root
+                if is_root {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if EXPECTATION_FILES.contains(&name) {
+                            continue;
+                        }
+                    }
+                }
                 let relative = path.strip_prefix(base).unwrap();
                 let key = relative.to_string_lossy().replace('\\', "/");
-                let content = std::fs::read(&path).expect("read .scl file");
+                let content = std::fs::read(&path).expect("read fixture file");
                 files.insert(key, content);
             }
         }
     }
-    collect_scl_files(fixture_path, fixture_path, &mut files);
+    collect_fixture_files(fixture_path, fixture_path, &mut files, true);
 
     assert!(
         files.contains_key("Main.scl"),
@@ -496,6 +537,11 @@ test_case!(DiagRecordFieldNamedType);
 test_case!(DiagNamedRecordInFnType);
 test_case!(DiagUntypedParam);
 test_case!(UntypedParamCheck);
+
+// Path validation
+test_case!(PathValid);
+test_case!(PathInvalid);
+test_case!(PathTraverseFile);
 
 // Optional chaining and nil coalescing
 test_case!(OptionalChainNil);
