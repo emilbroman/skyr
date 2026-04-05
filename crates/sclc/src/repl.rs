@@ -7,6 +7,7 @@ use crate::{
     SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
+#[derive(Clone)]
 pub struct ReplState<S: SourceRepo> {
     line_number: usize,
     program: Program<S>,
@@ -80,9 +81,18 @@ impl<S: SourceRepo> ReplState<S> {
     }
 
     /// Increment the line counter and return a module ID for this REPL line.
+    ///
+    /// The module ID is scoped under the package ID so that relative path
+    /// expressions (e.g. `./file`) resolve correctly against the repo root.
     pub fn next_line_module_id(&mut self) -> ModuleId {
         self.line_number += 1;
-        [format!("Repl{}", self.line_number)].into()
+        let mut segments = self
+            .program
+            .self_package_id()
+            .map(|id| id.as_slice().to_vec())
+            .unwrap_or_default();
+        segments.push(format!("Repl{}", self.line_number));
+        ModuleId::new(segments)
     }
 
     /// Build a `TypeEnv` from current bindings and type defs.

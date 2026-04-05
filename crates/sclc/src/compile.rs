@@ -25,6 +25,7 @@ pub async fn compile<S: SourceRepo>(source: S) -> Result<Diagnosed<Program<S>>, 
     }
 
     program.resolve_imports().await?.unpack(&mut diags);
+    program.resolve_paths().await?.unpack(&mut diags);
     program.check_types()?.unpack(&mut diags);
 
     Ok(Diagnosed::new(program, diags))

@@ -195,6 +195,20 @@ impl crate::Diag for InvalidUnaryOperand {
 }
 
 #[derive(Error, Debug)]
+#[error("path not found: {resolved_path}")]
+pub struct InvalidPath {
+    pub module_id: crate::ModuleId,
+    pub resolved_path: String,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for InvalidPath {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 #[error("type annotation required for parameter")]
 pub struct MissingParameterType {
     pub module_id: crate::ModuleId,
@@ -706,7 +720,7 @@ impl<'a> TypeEnv<'a> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct TypeChecker<'p, S> {
-    program: &'p Program<S>,
+    pub(crate) program: &'p Program<S>,
     /// Cache for resolved global expression types (keyed by expression pointer).
     /// Avoids re-checking the same global expression multiple times within a
     /// single type-checking pass. Diagnostics are not cached — they are only
@@ -1768,6 +1782,83 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                                         crate::CompletionCandidate::ModuleDir(name.clone()),
                                     );
                                 }
+                            }
+                            crate::ChildEntry::File(_) => {
+                                // Files are not importable; skip them.
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Add file/directory completion candidates for path expressions.
+    pub(crate) fn add_path_completions(&self, env: &TypeEnv<'_>, path_expr: &ast::PathExpr) {
+        for (i, segment) in path_expr.segments.iter().enumerate() {
+            let Some((cursor, offset)) = &segment.cursor else {
+                continue;
+            };
+            let prefix = &segment.value[..*offset];
+
+            // Resolve prefix segments to a parent directory path
+            let Ok(module_id) = env.module_id() else {
+                continue;
+            };
+
+            // Build a partial PathExpr from segments before the cursor segment
+            let prior_segments: Vec<&str> = path_expr.values().take(i).collect();
+
+            // Determine the parent directory in the repo
+            let is_relative = prior_segments
+                .first()
+                .is_some_and(|s| *s == "." || *s == "..");
+            let mut components: Vec<&str> = if is_relative {
+                let module_segments = module_id.as_slice();
+                let package_len = self.program.self_package_id().map(|p| p.len()).unwrap_or(0);
+                let repo_path = &module_segments[package_len..];
+                let dir = &repo_path[..repo_path.len().saturating_sub(1)];
+                dir.iter().map(|s| s.as_str()).collect()
+            } else {
+                Vec::new()
+            };
+
+            for seg in &prior_segments {
+                match *seg {
+                    "." => {}
+                    ".." => {
+                        components.pop();
+                    }
+                    s => components.push(s),
+                }
+            }
+
+            let dir_path = PathBuf::from(components.join("/"));
+
+            if let Some(children) = self.program.cached_children_for_path(&dir_path) {
+                for entry in children {
+                    match entry {
+                        crate::ChildEntry::File(name) => {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::PathFile(name.clone()),
+                                );
+                            }
+                        }
+                        crate::ChildEntry::Directory(name) => {
+                            if name.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::PathDir(name.clone()),
+                                );
+                            }
+                        }
+                        crate::ChildEntry::Module(name) => {
+                            // Also suggest .scl modules (with extension) for path completion
+                            let with_ext = format!("{name}.scl");
+                            if with_ext.starts_with(prefix) {
+                                cursor.add_completion_candidate(
+                                    crate::CompletionCandidate::PathFile(with_ext),
+                                );
                             }
                         }
                     }

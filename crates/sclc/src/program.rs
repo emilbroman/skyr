@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    AnySource, ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo,
+    AnySource, ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo, ast,
 };
 use crate::{TrackedValue, std::StdSourceRepo};
 
@@ -46,6 +46,69 @@ impl<S> Program<S> {
     /// Returns all known package names.
     pub fn package_names(&self) -> impl Iterator<Item = &ModuleId> {
         self.packages.keys()
+    }
+
+    /// Look up cached children for a path within the user's own package.
+    pub fn cached_children_for_path(&self, path: &Path) -> Option<&[ChildEntry]> {
+        let pkg = self.self_package_id.as_ref()?;
+        self.packages.get(pkg)?.cached_children(path)
+    }
+
+    /// Check whether a resolved path exists by consulting the cached directory
+    /// listings. Returns `None` if any ancestor directory hasn't been cached yet
+    /// (unknown), `Some(true)` if the full path is valid, `Some(false)` if any
+    /// intermediate component is a file (not a directory) or the final component
+    /// is missing.
+    pub fn path_exists_cached(&self, resolved: &str) -> Option<bool> {
+        let resolved_path = Path::new(resolved);
+
+        // Strip the leading `/` to get repo-relative components.
+        let rel = resolved.strip_prefix('/')?;
+        let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if components.is_empty() {
+            return Some(true);
+        }
+
+        // Walk each component, checking that intermediates are directories
+        // and the final component exists.
+        let mut dir = PathBuf::new();
+        for (i, component) in components.iter().enumerate() {
+            let is_last = i == components.len() - 1;
+            let children = self.cached_children_for_path(&dir)?;
+
+            if is_last {
+                // Final component: just needs to exist (file, module, or directory).
+                let exists = children.iter().any(|entry| match entry {
+                    ChildEntry::File(name)
+                    | ChildEntry::Module(name)
+                    | ChildEntry::Directory(name) => name == component,
+                });
+                return Some(exists);
+            }
+
+            // Intermediate component: must be a directory.
+            let is_dir = children
+                .iter()
+                .any(|entry| matches!(entry, ChildEntry::Directory(name) if name == component));
+            if !is_dir {
+                // It might be a file/module — that means traversing through
+                // a non-directory, which is invalid.
+                let exists_as_non_dir = children.iter().any(|entry| {
+                    matches!(entry, ChildEntry::File(name) | ChildEntry::Module(name) if name == component)
+                });
+                if exists_as_non_dir {
+                    return Some(false);
+                }
+                // Not cached or doesn't exist at all — unknown.
+                return None;
+            }
+
+            dir.push(component);
+        }
+
+        // Shouldn't reach here, but treat as unknown.
+        let _ = resolved_path;
+        None
     }
 }
 
@@ -230,6 +293,80 @@ impl<S: SourceRepo> Program<S> {
                 for path in paths {
                     let _ = package.list_children(&path).await;
                 }
+            }
+        }
+    }
+
+    /// Preload directory listings for all path expressions found in loaded
+    /// modules. This populates the children cache so the type checker can
+    /// validate paths synchronously via [`path_exists_cached`](Program::path_exists_cached).
+    pub async fn resolve_paths(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
+        let diags = DiagList::new();
+
+        // Collect all PathExprs from every module, along with their module context.
+        let mut collected: Vec<(ModuleId, ast::PathExpr)> = Vec::new();
+        for (package_name, package) in &self.packages {
+            for (path, file_mod) in package.modules() {
+                let module_id = {
+                    let mut segments = package_name.as_slice().to_vec();
+                    if let Some(parent) = path.parent() {
+                        for seg in parent.components() {
+                            if let std::path::Component::Normal(part) = seg {
+                                segments.push(part.to_string_lossy().into_owned());
+                            }
+                        }
+                    }
+                    if let Some(stem) = path.file_stem() {
+                        segments.push(stem.to_string_lossy().into_owned());
+                    }
+                    ModuleId::new(segments)
+                };
+                let mut collector = ast::CollectPaths::new();
+                ast::visit_file_mod(&mut collector, file_mod);
+                for path_expr in collector.paths {
+                    collected.push((module_id.clone(), path_expr));
+                }
+            }
+        }
+
+        // Resolve each path and determine all ancestor directories to preload.
+        let mut dirs_to_preload: HashSet<PathBuf> = HashSet::new();
+
+        for (module_id, path_expr) in &collected {
+            let resolved = path_expr.resolve_with_context(module_id, self.self_package_id.as_ref());
+
+            // Strip leading `/` and preload every ancestor directory.
+            let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
+            let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+            let mut prefix = PathBuf::new();
+            // Preload root + each intermediate directory (all except the final component).
+            dirs_to_preload.insert(PathBuf::new());
+            for component in &components[..components.len().saturating_sub(1)] {
+                prefix.push(component);
+                dirs_to_preload.insert(prefix.clone());
+            }
+        }
+
+        // Preload directory listings in the user's package
+        if let Some(pkg_id) = &self.self_package_id
+            && let Some(package) = self.packages.get_mut(pkg_id)
+        {
+            for dir in &dirs_to_preload {
+                let _ = package.list_children(dir).await;
+            }
+        }
+
+        Ok(Diagnosed::new((), diags))
+    }
+
+    /// Preload directory listings for a set of repo-relative directory paths.
+    /// Useful for the REPL where `resolve_paths` doesn't cover ad-hoc lines.
+    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
+        if let Some(pkg_id) = &self.self_package_id
+            && let Some(package) = self.packages.get_mut(pkg_id)
+        {
+            for dir in dirs {
+                let _ = package.list_children(&dir).await;
             }
         }
     }

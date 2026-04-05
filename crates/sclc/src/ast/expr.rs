@@ -1,11 +1,12 @@
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 
 use ordered_float::NotNan;
 
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
-    DiagList, Diagnosed, Loc, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    TypeKind, Value,
+    DiagList, Diagnosed, Loc, ModuleId, SourceRepo, TrackedValue, Type, TypeCheckError,
+    TypeChecker, TypeEnv, TypeKind, Value,
 };
 
 use super::{
@@ -62,31 +63,49 @@ pub struct StrExpr {
     pub value: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
+pub struct PathSegment {
+    pub value: String,
+    pub cursor: Option<(crate::Cursor, usize)>,
+}
+
+impl PartialEq for PathSegment {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+impl Eq for PathSegment {}
+
+impl Hash for PathSegment {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct PathExpr {
-    pub value: Vec<String>,
+    pub segments: Vec<PathSegment>,
 }
 
 impl PathExpr {
+    /// Iterate over segment values as `&str`.
+    pub fn values(&self) -> impl Iterator<Item = &str> {
+        self.segments.iter().map(|s| s.value.as_str())
+    }
+
     /// Resolve the path expression to an absolute path string relative to the
-    /// repository root. Relative paths (starting with `.` or `..`) are resolved
-    /// against the directory containing the current module. Absolute paths are
-    /// returned as-is after normalisation.
-    fn resolve<S: SourceRepo>(&self, evaluator: &Eval<'_, S>, env: &EvalEnv<'_>) -> String {
-        let is_relative = self.value.first().is_some_and(|s| s == "." || s == "..");
+    /// repository root using the provided module and package context.
+    pub fn resolve_with_context(
+        &self,
+        module_id: &ModuleId,
+        self_package_id: Option<&ModuleId>,
+    ) -> String {
+        let is_relative = self.values().next().is_some_and(|s| s == "." || s == "..");
 
         let mut components: Vec<&str> = if is_relative {
-            // Determine the directory of the current module within the repo.
-            let module_id = env
-                .module_id
-                .expect("module_id should be set during evaluation");
             let module_segments = module_id.as_slice();
-            let package_len = evaluator
-                .program
-                .self_package_id()
-                .map(|p| p.len())
-                .unwrap_or(0);
-            // Segments after the package prefix, minus the last (module name) = directory
+            let package_len = self_package_id.map(|p| p.len()).unwrap_or(0);
             let repo_path = &module_segments[package_len..];
             let dir = &repo_path[..repo_path.len().saturating_sub(1)];
             dir.iter().map(|s| s.as_str()).collect()
@@ -94,8 +113,8 @@ impl PathExpr {
             Vec::new()
         };
 
-        for segment in &self.value {
-            match segment.as_str() {
+        for segment in self.values() {
+            match segment {
                 "." => {}
                 ".." => {
                     components.pop();
@@ -105,6 +124,17 @@ impl PathExpr {
         }
 
         format!("/{}", components.join("/"))
+    }
+
+    /// Resolve the path expression to an absolute path string relative to the
+    /// repository root. Relative paths (starting with `.` or `..`) are resolved
+    /// against the directory containing the current module. Absolute paths are
+    /// returned as-is after normalisation.
+    fn resolve<S: SourceRepo>(&self, evaluator: &Eval<'_, S>, env: &EvalEnv<'_>) -> String {
+        let module_id = env
+            .module_id
+            .expect("module_id should be set during evaluation");
+        self.resolve_with_context(module_id, evaluator.program.self_package_id())
     }
 }
 
@@ -153,7 +183,25 @@ impl Expr {
                 DiagList::new(),
             )),
             Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
-            Expr::Path(_) => Ok(Diagnosed::new(Type::Path, DiagList::new())),
+            Expr::Path(path_expr) => {
+                let mut diags = DiagList::new();
+                if let Ok(module_id) = env.module_id() {
+                    let resolved = path_expr
+                        .resolve_with_context(&module_id, checker.program.self_package_id());
+                    // `path_exists_cached` returns None when the parent directory
+                    // hasn't been cached — in that case we skip validation rather
+                    // than emit a false positive.
+                    if checker.program.path_exists_cached(&resolved) == Some(false) {
+                        diags.push(crate::InvalidPath {
+                            module_id,
+                            resolved_path: resolved,
+                            span: expr.span(),
+                        });
+                    }
+                }
+                checker.add_path_completions(env, path_expr);
+                Ok(Diagnosed::new(Type::Path, diags))
+            }
             Expr::Extern(extern_expr) => extern_expr.type_synth(checker, env),
             Expr::If(if_expr) => if_expr.type_synth(checker, env, expr),
             Expr::Let(let_expr) => let_expr.type_synth(checker, env),

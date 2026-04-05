@@ -10,6 +10,8 @@ pub enum ChildEntry {
     Module(String),
     /// A subdirectory that may contain further modules.
     Directory(String),
+    /// A non-`.scl` file (filename WITH extension).
+    File(String),
 }
 
 #[allow(async_fn_in_trait)]
@@ -19,11 +21,16 @@ pub trait SourceRepo {
     fn package_id(&self) -> ModuleId;
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err>;
 
-    /// List child entries (modules and directories) under the given path
+    /// List child entries (modules, directories, and files) under the given path
     /// within this source repository.
     async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
         let _ = path;
         Ok(Vec::new())
+    }
+
+    /// Check whether a path exists in this source repository.
+    async fn path_exists(&self, path: &Path) -> Result<bool, Self::Err> {
+        Ok(self.read_file(path).await?.is_some())
     }
 
     fn register_extern<S2: SourceRepo>(_eval: &mut crate::Eval<'_, S2>) {}
@@ -71,6 +78,16 @@ impl<S: SourceRepo> SourceRepo for AnySource<S> {
         }
     }
 
+    async fn path_exists(&self, path: &Path) -> Result<bool, Self::Err> {
+        match self {
+            AnySource::User(source) => source.path_exists(path).await.map_err(AnySourceError::User),
+            AnySource::Std(source) => source
+                .path_exists(path)
+                .await
+                .map_err(|never| match never {}),
+        }
+    }
+
     fn register_extern<S2: SourceRepo>(eval: &mut crate::Eval<'_, S2>) {
         S::register_extern(eval);
         StdSourceRepo::register_extern(eval);
@@ -109,10 +126,12 @@ impl SourceRepo for cdb::DeploymentClient {
                     let name = String::from_utf8_lossy(&entry.filename).into_owned();
                     if entry.mode.is_tree() {
                         entries.push(ChildEntry::Directory(name));
-                    } else if entry.mode.is_blob()
-                        && let Some(stem) = name.strip_suffix(".scl")
-                    {
-                        entries.push(ChildEntry::Module(stem.to_owned()));
+                    } else if entry.mode.is_blob() {
+                        if let Some(stem) = name.strip_suffix(".scl") {
+                            entries.push(ChildEntry::Module(stem.to_owned()));
+                        } else {
+                            entries.push(ChildEntry::File(name));
+                        }
                     }
                 }
                 Ok(entries)

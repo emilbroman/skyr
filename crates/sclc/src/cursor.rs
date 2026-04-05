@@ -18,6 +18,10 @@ pub enum CompletionCandidate {
     Module(String),
     /// A directory that may contain further modules.
     ModuleDir(String),
+    /// A file (with extension) for path completion.
+    PathFile(String),
+    /// A directory for path completion.
+    PathDir(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

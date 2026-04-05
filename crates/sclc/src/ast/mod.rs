@@ -18,6 +18,7 @@ mod type_cast;
 mod type_expr;
 mod unary_expr;
 pub(crate) mod var_expr;
+mod visitor;
 
 pub use binary_expr::*;
 pub use call_expr::*;
@@ -38,6 +39,7 @@ pub use try_expr::*;
 pub use type_cast::*;
 pub use type_expr::*;
 pub use unary_expr::*;
+pub use visitor::*;
 
 use std::collections::HashMap;
 
