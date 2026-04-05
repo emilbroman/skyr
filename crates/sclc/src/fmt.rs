@@ -377,6 +377,27 @@ impl Formatter {
                 self.write(&encode_string(&s.value));
                 self.write("\"");
             }
+            Expr::Path(p) => {
+                let mut first = true;
+                for segment in &p.value {
+                    if !first {
+                        self.write("/");
+                    }
+                    first = false;
+                    let needs_quoting = segment != "."
+                        && segment != ".."
+                        && !segment
+                            .chars()
+                            .all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '-');
+                    if needs_quoting {
+                        self.write("\"");
+                        self.write(&encode_string(segment));
+                        self.write("\"");
+                    } else {
+                        self.write(segment);
+                    }
+                }
+            }
             Expr::Interp(interp) => self.emit_interp(interp),
             Expr::Var(var) => self.write(&var.name),
             Expr::Unary(unary) => {

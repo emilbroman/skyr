@@ -10,6 +10,7 @@ pub enum Value {
     Float(NotNan<f64>),
     Bool(bool),
     Str(String),
+    Path(String),
     List(Vec<Value>),
     ExternFn(ExternFnValue),
     Fn(FnValue),
@@ -304,6 +305,7 @@ impl std::fmt::Display for Value {
             Value::Float(value) => write!(f, "{value}"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Str(value) => write!(f, "{value:?}"),
+            Value::Path(value) => write!(f, "{value}"),
             Value::List(values) => {
                 write!(f, "[")?;
                 let mut values = values.iter().peekable();

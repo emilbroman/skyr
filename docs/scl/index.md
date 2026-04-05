@@ -63,6 +63,7 @@ let ratio = 3.14                           // Float
 let name = "my-app"                        // Str
 let enabled = true                         // Bool
 let nothing = nil                          // Never?
+let path = ./config.json                   // Path
 let items = [1, 2, 3]                      // [Int]
 let config = { port: 8080, debug: false }  // { port: Int, debug: Bool }
 let lookup = #{ "key": "value" }           // #{ Str: Str }

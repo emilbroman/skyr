@@ -9,9 +9,9 @@ use crate::{
     BinaryExpr, BinaryOp, Bool, CallExpr, CatchClause, Diag, DiagList, Diagnosed, DictEntry,
     DictExpr, DictTypeExpr, ExceptionExpr, Expr, FileMod, Float, FnExpr, FnParam, IfExpr,
     ImportStmt, IndexedAccessExpr, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem,
-    ListIfItem, ListItem, Loc, ModStmt, ModuleId, Position, PropertyAccessExpr, RaiseExpr,
-    RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span, StrExpr, Token,
-    TryExpr, TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr, TypeParam,
+    ListIfItem, ListItem, Loc, ModStmt, ModuleId, PathExpr, Position, PropertyAccessExpr,
+    RaiseExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr, ReplLine, Span,
+    StrExpr, Token, TryExpr, TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr, TypeParam,
     TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
 };
 
@@ -721,6 +721,7 @@ peg::parser! {
             = open_paren_span:open_paren() expr:expr() close_paren_span:close_paren() {
                 Loc::new(expr.into_inner(), Span::new(open_paren_span.start(), close_paren_span.end()))
             }
+            / path_expr:path_expr() { path_expr }
             / string_expr:string_expr() { string_expr }
             / dict_expr:dict_expr() { dict_expr }
             / record_expr:record_expr() { record_expr }
@@ -1134,6 +1135,11 @@ peg::parser! {
             [token if matches!(token.as_ref(), Token::Slash)]
         }
         / expected!("/")
+        rule slash_span() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Slash)] { token.span() }
+            }
+            / expected!("/")
         rule plus() -> Span
             = quiet!{
                 [token if matches!(token.as_ref(), Token::Plus)] { token.span() }
@@ -1294,6 +1300,58 @@ peg::parser! {
                 } }
             }
             / expected!("string interpolation continue")
+
+        rule path_segment() -> String
+            = quiet!{
+                [token] {? match *token.as_ref() {
+                    Token::Symbol(s) => Ok(s.to_string()),
+                    Token::StrSimple(raw) => Ok(decode_string(raw)),
+                    Token::Dot => Ok(".".to_string()),
+                    _ => Err("path segment"),
+                } }
+            }
+            / expected!("path segment")
+
+        rule path_link() -> (String, Span)
+            = s:slash_span() segments:path_segment()+ {
+                let value = segments.join("");
+                (value, s)
+            }
+
+        rule path_expr() -> Loc<Expr>
+            // Two dots + links
+            = dot1:dot() dot2:dot() links:path_link()+ {
+                let mut segments = vec!["..".to_string()];
+                let end = links.last().unwrap().1;
+                for (value, _) in links {
+                    segments.push(value);
+                }
+                Loc::new(Expr::Path(PathExpr { value: segments }), Span::new(dot1.start(), end.end()))
+            }
+            // One dot + links
+            / dot1:dot() links:path_link()+ {
+                let mut segments = vec![".".to_string()];
+                let end = links.last().unwrap().1;
+                for (value, _) in links {
+                    segments.push(value);
+                }
+                Loc::new(Expr::Path(PathExpr { value: segments }), Span::new(dot1.start(), end.end()))
+            }
+            // Two dots (standalone)
+            / dot1:dot() dot2:dot() {
+                Loc::new(Expr::Path(PathExpr { value: vec!["..".to_string()] }), Span::new(dot1.start(), dot2.end()))
+            }
+            // One dot (standalone)
+            / dot1:dot() {
+                Loc::new(Expr::Path(PathExpr { value: vec![".".to_string()] }), Span::new(dot1.start(), dot1.end()))
+            }
+            // Absolute path (no dots)
+            / links:path_link()+ {
+                let start = links.first().unwrap().1;
+                let end = links.last().unwrap().1;
+                let segments: Vec<String> = links.into_iter().map(|(value, _)| value).collect();
+                Loc::new(Expr::Path(PathExpr { value: segments }), Span::new(start.start(), end.end()))
+            }
 
         rule str_end() -> (String, Span)
             = quiet!{

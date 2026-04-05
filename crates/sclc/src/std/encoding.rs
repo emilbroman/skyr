@@ -46,10 +46,9 @@ pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
 fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
     match value {
         Value::Nil => Ok(JsonValue::Null),
-        Value::Pending(_) => Err(EvalErrorKind::Custom(
-            "cannot encode pending value as JSON".into(),
-        )
-        .into()),
+        Value::Pending(_) => {
+            Err(EvalErrorKind::Custom("cannot encode pending value as JSON".into()).into())
+        }
         Value::Int(value) => Ok(JsonValue::Number(Number::from(*value))),
         Value::Float(value) => Number::from_f64(value.into_inner())
             .map(JsonValue::Number)
@@ -63,14 +62,13 @@ fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
             }
             Ok(JsonValue::Array(out))
         }
-        Value::ExternFn(_) | Value::Fn(_) => Err(EvalErrorKind::Custom(
-            "cannot encode function value as JSON".into(),
-        )
-        .into()),
-        Value::Exception(_) => Err(EvalErrorKind::Custom(
-            "cannot encode exception value as JSON".into(),
-        )
-        .into()),
+        Value::ExternFn(_) | Value::Fn(_) => {
+            Err(EvalErrorKind::Custom("cannot encode function value as JSON".into()).into())
+        }
+        Value::Exception(_) => {
+            Err(EvalErrorKind::Custom("cannot encode exception value as JSON".into()).into())
+        }
+        Value::Path(value) => Ok(JsonValue::String(value.clone())),
         Value::Record(record) => Ok(JsonValue::Object(record_to_map(record)?)),
         Value::Dict(dict) => Ok(JsonValue::Object(dict_to_map(dict)?)),
     }
@@ -92,7 +90,8 @@ fn dict_to_map(dict: &Dict) -> Result<Map<String, JsonValue>, EvalError> {
             other => {
                 let json_key = to_json_value(other)?;
                 serde_json::to_string(&json_key).map_err(|err| -> EvalError {
-                    EvalErrorKind::Custom(format!("failed to encode dict key as JSON: {err}")).into()
+                    EvalErrorKind::Custom(format!("failed to encode dict key as JSON: {err}"))
+                        .into()
                 })?
             }
         };
@@ -106,11 +105,12 @@ fn from_json_value(value: JsonValue) -> Result<Value, EvalError> {
         JsonValue::Null => Ok(Value::Nil),
         JsonValue::Bool(value) => Ok(Value::Bool(value)),
         JsonValue::Number(value) => {
-            let value = value
-                .as_f64()
-                .ok_or_else(|| -> EvalError { EvalErrorKind::Custom("JSON number is out of range for f64".into()).into() })?;
-            let value =
-                NotNan::new(value).map_err(|_| -> EvalError { EvalErrorKind::Custom("JSON number is NaN".into()).into() })?;
+            let value = value.as_f64().ok_or_else(|| -> EvalError {
+                EvalErrorKind::Custom("JSON number is out of range for f64".into()).into()
+            })?;
+            let value = NotNan::new(value).map_err(|_| -> EvalError {
+                EvalErrorKind::Custom("JSON number is NaN".into()).into()
+            })?;
             Ok(Value::Float(value))
         }
         JsonValue::String(value) => Ok(Value::Str(value)),

@@ -99,6 +99,10 @@ impl Type {
         kind: TypeKind::Str,
         name: None,
     };
+    pub const Path: Self = Self {
+        kind: TypeKind::Path,
+        name: None,
+    };
     pub const Never: Self = Self {
         kind: TypeKind::Never,
         name: None,
@@ -137,6 +141,7 @@ pub enum TypeKind {
     Float,
     Bool,
     Str,
+    Path,
     Optional(Box<Type>),
     List(Box<Type>),
     Fn(FnType),
@@ -243,6 +248,7 @@ impl Type {
             | TypeKind::Float
             | TypeKind::Bool
             | TypeKind::Str
+            | TypeKind::Path
             | TypeKind::Never => self.clone(),
             TypeKind::Exception(id) => Type::Exception(*id),
             TypeKind::Optional(ty) => Type::Optional(Box::new(ty.substitute(replacements))),
@@ -285,6 +291,7 @@ impl Type {
             | TypeKind::Float
             | TypeKind::Bool
             | TypeKind::Str
+            | TypeKind::Path
             | TypeKind::Never => false,
             TypeKind::Exception(_) => false,
             TypeKind::Optional(ty) | TypeKind::List(ty) => ty.contains_var(var_id),
@@ -818,6 +825,7 @@ impl std::fmt::Display for TypeKind {
             TypeKind::Float => write!(f, "Float"),
             TypeKind::Bool => write!(f, "Bool"),
             TypeKind::Str => write!(f, "Str"),
+            TypeKind::Path => write!(f, "Path"),
             TypeKind::Optional(ty) => write!(f, "{ty}?"),
             TypeKind::List(ty) => write!(f, "[{ty}]"),
             TypeKind::Fn(fn_ty) => write!(f, "{fn_ty}"),

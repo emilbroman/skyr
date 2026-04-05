@@ -62,6 +62,26 @@ The `nil` literal represents the absence of a value:
 nil
 ```
 
+### Paths
+
+Path literals reference files and directories within the repository. Paths can be relative (starting with `./` or `../`) or absolute (starting with `/`):
+
+```scl
+./config.json
+../shared/utils
+/absolute/path/to/file.txt
+```
+
+Relative paths are resolved against the directory of the current module at evaluation time. The result is always an absolute, repo-relative path string (e.g., `/Dir/my/file.txt`).
+
+Path segments that contain special characters can be quoted:
+
+```scl
+./my-dir/"file with spaces.txt"
+```
+
+Standalone `.` and `..` are also valid path expressions, resolving to the current module's directory and its parent, respectively.
+
 ### Strings
 
 Strings are enclosed in double quotes:
@@ -608,6 +628,7 @@ Type annotations appear after colons in function parameters, let bindings, and `
 Int
 Float
 Str
+Path
 Bool
 Any
 ```

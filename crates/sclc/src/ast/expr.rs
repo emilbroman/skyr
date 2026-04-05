@@ -21,6 +21,7 @@ pub enum Expr {
     Bool(Bool),
     Nil,
     Str(StrExpr),
+    Path(PathExpr),
     Extern(ExternExpr),
     If(IfExpr),
     Let(LetExpr),
@@ -61,12 +62,61 @@ pub struct StrExpr {
     pub value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathExpr {
+    pub value: Vec<String>,
+}
+
+impl PathExpr {
+    /// Resolve the path expression to an absolute path string relative to the
+    /// repository root. Relative paths (starting with `.` or `..`) are resolved
+    /// against the directory containing the current module. Absolute paths are
+    /// returned as-is after normalisation.
+    fn resolve<S: SourceRepo>(&self, evaluator: &Eval<'_, S>, env: &EvalEnv<'_>) -> String {
+        let is_relative = self.value.first().is_some_and(|s| s == "." || s == "..");
+
+        let mut components: Vec<&str> = if is_relative {
+            // Determine the directory of the current module within the repo.
+            let module_id = env
+                .module_id
+                .expect("module_id should be set during evaluation");
+            let module_segments = module_id.as_slice();
+            let package_len = evaluator
+                .program
+                .self_package_id()
+                .map(|p| p.len())
+                .unwrap_or(0);
+            // Segments after the package prefix, minus the last (module name) = directory
+            let repo_path = &module_segments[package_len..];
+            let dir = &repo_path[..repo_path.len().saturating_sub(1)];
+            dir.iter().map(|s| s.as_str()).collect()
+        } else {
+            Vec::new()
+        };
+
+        for segment in &self.value {
+            match segment.as_str() {
+                "." => {}
+                ".." => {
+                    components.pop();
+                }
+                s => components.push(s),
+            }
+        }
+
+        format!("/{}", components.join("/"))
+    }
+}
+
 impl Expr {
     pub fn free_vars(&self) -> HashSet<&str> {
         match self {
-            Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Nil | Expr::Str(_) => {
-                HashSet::new()
-            }
+            Expr::Int(_)
+            | Expr::Float(_)
+            | Expr::Bool(_)
+            | Expr::Nil
+            | Expr::Str(_)
+            | Expr::Path(_) => HashSet::new(),
             Expr::Extern(_) | Expr::Exception(_) => HashSet::new(),
             Expr::If(e) => e.free_vars(),
             Expr::Let(e) => e.free_vars(),
@@ -103,6 +153,7 @@ impl Expr {
                 DiagList::new(),
             )),
             Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
+            Expr::Path(_) => Ok(Diagnosed::new(Type::Path, DiagList::new())),
             Expr::Extern(extern_expr) => extern_expr.type_synth(checker, env),
             Expr::If(if_expr) => if_expr.type_synth(checker, env, expr),
             Expr::Let(let_expr) => let_expr.type_synth(checker, env),
@@ -162,6 +213,10 @@ impl Expr {
             Expr::Bool(bool) => Ok(crate::eval::tracked(Value::Bool(bool.value))),
             Expr::Nil => Ok(crate::eval::tracked(Value::Nil)),
             Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
+            Expr::Path(path) => {
+                let resolved = path.resolve(evaluator, env);
+                Ok(crate::eval::tracked(Value::Path(resolved)))
+            }
             Expr::Extern(extern_expr) => extern_expr.eval(evaluator, env, expr),
             Expr::If(if_expr) => if_expr.eval(evaluator, env, expr),
             Expr::Let(let_expr) => let_expr.eval(evaluator, env),

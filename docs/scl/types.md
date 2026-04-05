@@ -40,6 +40,18 @@ let enabled = true
 let disabled = false
 ```
 
+### Path
+
+Repository-relative file paths. Path literals use slash-separated syntax and can be relative (`./`, `../`) or absolute (`/`):
+
+```scl
+let config = ./config.json
+let parent = ../shared/utils
+let absolute = /some/path
+```
+
+Relative paths are resolved against the current module's directory at evaluation time. The resolved value is always an absolute repo-relative string (e.g., `/Dir/my/file.txt`).
+
 ### Any
 
 The dynamic type. Values of type `Any` bypass static type checking:
@@ -262,6 +274,7 @@ SCL infers types from values and context. You rarely need explicit annotations.
 let x = 42           // Int
 let y = 3.14         // Float
 let s = "hello"      // Str
+let p = ./foo.txt    // Path
 let b = true         // Bool
 let n = nil          // Never?, only compatible with optional types
 ```
