@@ -292,6 +292,18 @@ pub async fn completions(files_json: &str, file: &str, line: u32, col: u32) -> S
                 detail: None,
                 description: None,
             },
+            sclc::CompletionCandidate::PathFile(name) => CompletionItem {
+                label: name.clone(),
+                kind: "file",
+                detail: None,
+                description: None,
+            },
+            sclc::CompletionCandidate::PathDir(name) => CompletionItem {
+                label: name.clone(),
+                kind: "folder",
+                detail: None,
+                description: None,
+            },
         })
         .collect();
 
