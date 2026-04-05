@@ -71,6 +71,16 @@ pub fn completion(
                 kind: Some(lsp::CompletionItemKind::FOLDER),
                 ..Default::default()
             },
+            sclc::CompletionCandidate::PathFile(name) => lsp::CompletionItem {
+                label: name.clone(),
+                kind: Some(lsp::CompletionItemKind::FILE),
+                ..Default::default()
+            },
+            sclc::CompletionCandidate::PathDir(name) => lsp::CompletionItem {
+                label: name.clone(),
+                kind: Some(lsp::CompletionItemKind::FOLDER),
+                ..Default::default()
+            },
         })
         .collect();
 
