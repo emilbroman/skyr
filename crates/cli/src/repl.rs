@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
 use rustyline::completion::{self, Candidate};
@@ -12,7 +13,13 @@ use sclc::{Diag, Lexer, Token};
 use crate::fs_source::FsSource;
 use crate::output::{report_diagnostics, spawn_effect_printer};
 
-struct ReplHelper;
+struct ReplHelper {
+    /// Snapshot of the REPL state used for completions.
+    /// Updated before each `readline()` call.
+    state: RefCell<Option<sclc::ReplState<FsSource>>>,
+    /// Filesystem root for path completions.
+    root: PathBuf,
+}
 
 struct CompletionEntry(String);
 
@@ -35,11 +42,136 @@ impl completion::Completer for ReplHelper {
         pos: usize,
         _ctx: &Context<'_>,
     ) -> rustyline::Result<(usize, Vec<Self::Candidate>)> {
-        // Completions require access to the ReplState, which is not available
-        // from the rustyline helper. Completion is handled in the main loop
-        // via the ReplState's type_env method. For now, return empty.
-        let _ = (line, pos);
-        Ok((0, Vec::new()))
+        // Check if the cursor is inside a path expression and handle it
+        // with direct filesystem access (no async cache needed).
+        if let Some(result) = self.complete_path(line, pos) {
+            return Ok(result);
+        }
+
+        let state_opt = self.state.borrow();
+        let Some(state) = state_opt.as_ref() else {
+            return Ok((0, Vec::new()));
+        };
+
+        // Build a cursor at the given position (1-based line/column).
+        let position = sclc::Position::new(1, pos as u32 + 1);
+        let cursor = sclc::Cursor::new(position);
+
+        // Use a peek module ID (don't increment the line counter).
+        let module_id = state
+            .program()
+            .self_package_id()
+            .map(|id| {
+                let mut segments = id.as_slice().to_vec();
+                segments.push("ReplCompletion".to_string());
+                sclc::ModuleId::new(segments)
+            })
+            .unwrap_or_else(|| ["ReplCompletion"].into());
+
+        let diagnosed = sclc::parse_repl_line_with_cursor(line, &module_id, Some(cursor.clone()));
+        let repl_line = match diagnosed.into_inner() {
+            Some(rl) => rl,
+            None => return Ok((0, Vec::new())),
+        };
+        let Some(statement) = &repl_line.statement else {
+            return Ok((0, Vec::new()));
+        };
+
+        // Type-check the statement to populate completion candidates.
+        let type_env = state.type_env(&module_id);
+        let checker = sclc::TypeChecker::new(state.program());
+        let _ = checker.check_stmt(&type_env, statement);
+
+        // Extract candidates from the cursor.
+        let info = cursor.info();
+        let info = info.lock().unwrap();
+
+        // Determine the prefix the user has typed so far for replacement range.
+        // Walk backwards from `pos` to find the start of the current token.
+        let before = &line[..pos];
+        let token_start = before
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        let candidates: Vec<CompletionEntry> = info
+            .completion_candidates
+            .iter()
+            .map(|c| match c {
+                sclc::CompletionCandidate::Var(name) => CompletionEntry(name.clone()),
+                sclc::CompletionCandidate::Member(m) => CompletionEntry(m.name.clone()),
+                sclc::CompletionCandidate::Module(name) => CompletionEntry(name.clone()),
+                sclc::CompletionCandidate::ModuleDir(name) => CompletionEntry(format!("{name}/")),
+                sclc::CompletionCandidate::PathFile(name) => CompletionEntry(name.clone()),
+                sclc::CompletionCandidate::PathDir(name) => CompletionEntry(format!("{name}/")),
+            })
+            .collect();
+
+        Ok((token_start, candidates))
+    }
+}
+
+impl ReplHelper {
+    /// Try to complete a filesystem path expression. Returns `None` if the
+    /// cursor isn't inside a path expression.
+    fn complete_path(&self, line: &str, pos: usize) -> Option<(usize, Vec<CompletionEntry>)> {
+        let before = &line[..pos];
+
+        // Find the start of the path expression by scanning backwards for
+        // the `./` or `../` or leading `/` that begins a path literal.
+        // Path tokens are: alphanumeric, `.`, `_`, `-`, `/`
+        let path_char = |c: char| c.is_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
+        let token_start = before
+            .rfind(|c: char| !path_char(c))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let path_text = &before[token_start..];
+
+        // Only handle path expressions (starting with `./ `, `../ `, or `/`).
+        if !path_text.starts_with("./")
+            && !path_text.starts_with("../")
+            && !path_text.starts_with('/')
+        {
+            return None;
+        }
+
+        // Split into directory prefix and filename prefix at the last `/`.
+        let last_slash = path_text.rfind('/')?;
+        let dir_part = &path_text[..=last_slash]; // includes trailing /
+        let name_prefix = &path_text[last_slash + 1..];
+
+        // Resolve the directory to a filesystem path.
+        let fs_dir = self.root.join(
+            dir_part
+                .strip_prefix("./")
+                .or_else(|| dir_part.strip_prefix('/'))
+                .unwrap_or(dir_part),
+        );
+
+        // Read the directory synchronously.
+        let read_dir = std::fs::read_dir(&fs_dir).ok()?;
+
+        let completion_start = token_start + last_slash + 1;
+        let mut candidates = Vec::new();
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // Skip hidden files
+            if name.starts_with('.') {
+                continue;
+            }
+            if !name.starts_with(name_prefix) {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+            if is_dir {
+                candidates.push(CompletionEntry(format!("{name}/")));
+            } else {
+                candidates.push(CompletionEntry(name));
+            }
+        }
+        candidates.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Some((completion_start, candidates))
     }
 }
 
@@ -213,6 +345,10 @@ async fn process_line(
         return process_import(state, root, import_stmt).await;
     }
 
+    // Preload directory listings for any path expressions in this line so
+    // that the type checker can validate them synchronously.
+    preload_paths_for_statement(state, statement, &module_id).await;
+
     match state.process_statement(statement, &module_id) {
         Ok(sclc::ReplOutcome::Binding { name, ty }) => {
             println!("{name} : {ty}");
@@ -307,6 +443,40 @@ async fn process_import(
     Ok(())
 }
 
+/// Collect path expressions from a statement, resolve them, and preload
+/// parent directory listings so the type checker can validate paths.
+async fn preload_paths_for_statement(
+    state: &mut sclc::ReplState<FsSource>,
+    statement: &sclc::ModStmt,
+    module_id: &sclc::ModuleId,
+) {
+    // Build a temporary FileMod containing just this statement so we can
+    // use the visitor.
+    let file_mod = sclc::FileMod {
+        statements: vec![statement.clone()],
+    };
+    let mut collector = sclc::CollectPaths::new();
+    sclc::visit_file_mod(&mut collector, &file_mod);
+
+    let self_package_id = state.program().self_package_id().cloned();
+    let dirs: std::collections::HashSet<PathBuf> = collector
+        .paths
+        .iter()
+        .filter_map(|path_expr| {
+            let resolved = path_expr.resolve_with_context(module_id, self_package_id.as_ref());
+            let resolved_path = std::path::Path::new(&resolved);
+            let parent = resolved_path.parent()?;
+            let parent_str = parent.to_string_lossy();
+            let parent_rel = parent_str.strip_prefix('/').unwrap_or(&parent_str);
+            Some(PathBuf::from(parent_rel))
+        })
+        .collect();
+
+    if !dirs.is_empty() {
+        state.program_mut().preload_path_dirs(dirs).await;
+    }
+}
+
 pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     let package_id = package
         .split('/')
@@ -323,12 +493,22 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
         package_id: package_id.clone(),
     };
     program.open_package(source).await;
+    // Preload root directory listing so path validation works for REPL lines
+    program.preload_path_dirs([PathBuf::new()]).await;
 
     let mut state = sclc::ReplState::new(program, effects_tx, package_id.to_string());
     let mut editor = Editor::new()?;
-    editor.set_helper(Some(ReplHelper));
+    editor.set_helper(Some(ReplHelper {
+        state: RefCell::new(None),
+        root: root.clone(),
+    }));
 
     loop {
+        // Snapshot the state into the helper so completions work during readline.
+        if let Some(helper) = editor.helper() {
+            *helper.state.borrow_mut() = Some(state.clone());
+        }
+
         match editor.readline("scl> ") {
             Ok(line) => {
                 editor.add_history_entry(&line)?;
@@ -342,6 +522,10 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
         }
     }
 
+    // Clear the helper's snapshot so its cloned effects_tx sender is dropped.
+    if let Some(helper) = editor.helper() {
+        *helper.state.borrow_mut() = None;
+    }
     drop(state);
     effects_task.await?;
 
