@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-sclc = { path = "../sclc" }
+async-trait = "0.1"
+sclc = { path = "../sclc", features = ["fs"] }
 lsp-types = "0.97"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

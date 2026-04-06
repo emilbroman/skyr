@@ -25,30 +25,33 @@ pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
 }
 
 /// Overlay source that checks the document cache before delegating to an inner source.
-pub struct OverlaySource<S> {
-    inner: S,
+pub struct OverlaySource {
+    inner: Box<dyn sclc::SourceRepo>,
     documents: DocumentCache,
     root: PathBuf,
 }
 
-impl<S> OverlaySource<S> {
-    pub fn new(inner: S, documents: DocumentCache, root: PathBuf) -> Self {
+impl OverlaySource {
+    pub fn new(
+        inner: impl sclc::SourceRepo + 'static,
+        documents: DocumentCache,
+        root: PathBuf,
+    ) -> Self {
         Self {
-            inner,
+            inner: Box::new(inner),
             documents,
             root,
         }
     }
 }
 
-impl<S: sclc::SourceRepo> sclc::SourceRepo for OverlaySource<S> {
-    type Err = S::Err;
-
+#[async_trait::async_trait]
+impl sclc::SourceRepo for OverlaySource {
     fn package_id(&self) -> sclc::ModuleId {
         self.inner.package_id()
     }
 
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, sclc::SourceError> {
         // Check if the document is open in the editor
         let absolute = self.root.join(path);
         if let Some(content) = self.documents.get(&absolute) {
@@ -57,7 +60,7 @@ impl<S: sclc::SourceRepo> sclc::SourceRepo for OverlaySource<S> {
         self.inner.read_file(path).await
     }
 
-    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
+    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, sclc::SourceError> {
         let mut entries = self.inner.list_children(path).await?;
 
         // Merge entries from open documents in the editor
@@ -103,8 +106,8 @@ pub struct AnalysisResult {
 }
 
 /// Run compilation and collect diagnostics.
-pub async fn analyze<S: sclc::SourceRepo>(
-    source: S,
+pub async fn analyze(
+    source: impl sclc::SourceRepo + 'static,
     root: &Path,
     package_id: &sclc::ModuleId,
 ) -> AnalysisResult {
@@ -113,12 +116,6 @@ pub async fn analyze<S: sclc::SourceRepo>(
     match sclc::compile(source).await {
         Ok(diagnosed) => {
             // Track seen diagnostics per URI to avoid duplicates.
-            // Duplicates can arise from the type checker processing the same
-            // module multiple times (e.g. two-pass type def resolution and
-            // type_level_exports re-checking imported modules).
-            // Dedup key includes range, message, and severity. We encode
-            // severity as a string because DiagnosticSeverity does not
-            // implement Hash.
             let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
             for diag in diagnosed.diags().iter() {
                 let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
@@ -164,11 +161,7 @@ pub async fn analyze<S: sclc::SourceRepo>(
 }
 
 /// Load a program with resolved imports (best-effort).
-///
-/// Opens the entry file (`Main.scl`) and recursively resolves all imports.
-/// Errors during loading are silently ignored so the caller gets whatever
-/// context was successfully loaded.
-pub async fn load_program<S: sclc::SourceRepo>(source: S) -> sclc::Program<S> {
+pub async fn load_program(source: impl sclc::SourceRepo + 'static) -> sclc::Program {
     let mut program = sclc::Program::new();
     let package = program.open_package(source).await;
     let _ = package.open("Main.scl").await;
@@ -178,13 +171,8 @@ pub async fn load_program<S: sclc::SourceRepo>(source: S) -> sclc::Program<S> {
 }
 
 /// Query cursor information at a specific position in a file.
-///
-/// This parses the file with a cursor at the given position, then type-checks
-/// against the provided program to populate cursor info (type, declaration,
-/// references, completions). The program should have imports resolved so that
-/// cross-module lookups work.
-pub fn query_cursor<S: sclc::SourceRepo>(
-    program: &sclc::Program<S>,
+pub fn query_cursor(
+    program: &sclc::Program,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
