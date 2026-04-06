@@ -76,22 +76,13 @@ impl sclc::SourceRepo for OverlaySource {
                     .and_then(|r| r.strip_prefix('/'))
             };
             if let Some(relative) = relative {
-                if let Some(slash_pos) = relative.find('/') {
-                    let dir_name = relative[..slash_pos].to_owned();
-                    let entry = sclc::ChildEntry::Directory(dir_name);
-                    if !entries.contains(&entry) {
-                        entries.push(entry);
-                    }
-                } else if let Some(stem) = relative.strip_suffix(".scl") {
-                    let entry = sclc::ChildEntry::Module(stem.to_owned());
-                    if !entries.contains(&entry) {
-                        entries.push(entry);
-                    }
+                let entry = if let Some(slash_pos) = relative.find('/') {
+                    sclc::ChildEntry::Directory(relative[..slash_pos].to_owned())
                 } else {
-                    let entry = sclc::ChildEntry::File(relative.to_owned());
-                    if !entries.contains(&entry) {
-                        entries.push(entry);
-                    }
+                    sclc::ChildEntry::File(relative.to_owned())
+                };
+                if !entries.contains(&entry) {
+                    entries.push(entry);
                 }
             }
         }
