@@ -1,84 +1,20 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::convert::Infallible;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-/// In-memory source repository holding multiple `.scl` files.
-struct MemSourceRepo {
-    files: HashMap<PathBuf, Vec<u8>>,
-}
-
-impl sclc::SourceRepo for MemSourceRepo {
-    type Err = Infallible;
-
-    fn package_id(&self) -> sclc::ModuleId {
-        ["Playground"].into_iter().map(String::from).collect()
-    }
-
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
-        Ok(self.files.get(path).cloned())
-    }
-
-    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
-        let mut modules = HashSet::new();
-        let mut dirs = HashSet::new();
-        let mut files = HashSet::new();
-
-        for file_path in self.files.keys() {
-            let relative = if path == Path::new("") {
-                Some(file_path.as_path())
-            } else {
-                file_path.strip_prefix(path).ok()
-            };
-
-            let Some(relative) = relative else {
-                continue;
-            };
-
-            let components: Vec<_> = relative.components().collect();
-            match components.len() {
-                1 => {
-                    if relative.extension().and_then(|e| e.to_str()) == Some("scl") {
-                        if let Some(stem) = relative.file_stem() {
-                            modules.insert(stem.to_string_lossy().into_owned());
-                        }
-                    } else {
-                        let name = relative.to_string_lossy().into_owned();
-                        files.insert(name);
-                    }
-                }
-                n if n > 1 => {
-                    if let Some(dir) = components.first() {
-                        dirs.insert(dir.as_os_str().to_string_lossy().into_owned());
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let mut entries: Vec<sclc::ChildEntry> = dirs
-            .into_iter()
-            .map(sclc::ChildEntry::Directory)
-            .chain(modules.into_iter().map(sclc::ChildEntry::Module))
-            .chain(files.into_iter().map(sclc::ChildEntry::File))
-            .collect();
-        entries.sort();
-        Ok(entries)
-    }
-}
-
-fn make_repo(files_json: &str) -> MemSourceRepo {
+fn make_repo(files_json: &str) -> sclc::MemSourceRepo {
     let file_map: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
-    MemSourceRepo {
-        files: file_map
+    sclc::MemSourceRepo::new(
+        ["Playground"].into_iter().map(String::from).collect(),
+        file_map
             .into_iter()
-            .map(|(name, content)| (PathBuf::from(name), content.into_bytes()))
+            .map(|(name, content)| (name, content.into_bytes()))
             .collect(),
-    }
+    )
 }
 
 fn parse_files_json(files_json: &str) -> HashMap<String, String> {
@@ -118,7 +54,7 @@ fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
 }
 
 /// Load a program from multiple files (compile + type check), returning diagnostics.
-async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program<MemSourceRepo>) {
+async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program) {
     let repo = make_repo(files_json);
     let file_map = parse_files_json(files_json);
     let mut diags = sclc::DiagList::new();
@@ -380,7 +316,7 @@ pub fn format(source: &str) -> Option<String> {
 }
 
 fn query_cursor(
-    program: &sclc::Program<MemSourceRepo>,
+    program: &sclc::Program,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
@@ -405,7 +341,7 @@ fn query_cursor(
 // ---------------------------------------------------------------------------
 
 struct WasmReplState {
-    state: sclc::ReplState<MemSourceRepo>,
+    state: sclc::ReplState,
     effects_rx: tokio::sync::mpsc::UnboundedReceiver<sclc::Effect>,
 }
 
@@ -417,7 +353,7 @@ thread_local! {
 #[wasm_bindgen]
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let program = sclc::Program::<MemSourceRepo>::new();
+    let program = sclc::Program::new();
     let state = sclc::ReplState::new(program, effects_tx, "Playground".to_string());
     REPL_STATE.with(|cell| {
         *cell.borrow_mut() = Some(WasmReplState { state, effects_rx });
