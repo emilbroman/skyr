@@ -6,8 +6,10 @@ edition = "2024"
 [features]
 default = ["cdb"]
 cdb = ["dep:cdb"]
+fs = ["tokio/fs"]
 
 [dependencies]
+async-trait = "0.1"
 thiserror = "2.0.18"
 ids = { path = "../ids" }
 cdb = { path = "../cdb", optional = true }

@@ -9,14 +9,14 @@ pub struct ExceptionExpr {
 
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
-    DiagList, Diagnosed, ExceptionValue, ExternFnValue, SourceRepo, TrackedValue, Type,
-    TypeCheckError, TypeChecker, TypeEnv, Value,
+    DiagList, Diagnosed, ExceptionValue, ExternFnValue, TrackedValue, Type, TypeCheckError,
+    TypeChecker, TypeEnv, Value,
 };
 
 impl ExceptionExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -34,9 +34,9 @@ impl ExceptionExpr {
         }
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        _evaluator: &Eval<'_, S>,
+        _evaluator: &Eval<'_>,
         _env: &EvalEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

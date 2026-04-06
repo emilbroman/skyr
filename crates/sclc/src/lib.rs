@@ -5,8 +5,11 @@ mod cursor;
 mod diag;
 mod eval;
 pub mod fmt;
+#[cfg(feature = "fs")]
+mod fs_source;
 mod lexer;
 mod loc;
+mod mem_source;
 mod module_id;
 mod package;
 mod parser;
@@ -26,8 +29,11 @@ pub use cursor::*;
 pub use diag::*;
 pub use eval::*;
 pub use fmt::*;
+#[cfg(feature = "fs")]
+pub use fs_source::*;
 pub use lexer::*;
 pub use loc::*;
+pub use mem_source::*;
 pub use module_id::*;
 pub use package::*;
 pub use parser::*;

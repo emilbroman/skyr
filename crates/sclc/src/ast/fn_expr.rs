@@ -19,14 +19,14 @@ pub struct FnParam {
 use crate::checker::{MissingParameterType, next_type_id};
 use crate::eval::{Eval, EvalEnv, EvalError, FnEnv};
 use crate::{
-    DiagList, Diagnosed, FnType, FnValue, SourceRepo, TrackedValue, Type, TypeCheckError,
-    TypeChecker, TypeEnv, Value,
+    DiagList, Diagnosed, FnType, FnValue, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    Value,
 };
 
 impl FnExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -85,9 +85,9 @@ impl FnExpr {
         ))
     }
 
-    pub(crate) fn type_check<S: SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
@@ -169,9 +169,9 @@ impl FnExpr {
         Ok(Diagnosed::new(ty, diags))
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

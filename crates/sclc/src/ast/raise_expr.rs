@@ -11,14 +11,13 @@ pub struct RaiseExpr {
 use crate::checker::NotAnException;
 use crate::eval::{Eval, EvalEnv, EvalError, EvalErrorKind, RaisedException};
 use crate::{
-    DiagList, Diagnosed, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    TypeKind, Value,
+    DiagList, Diagnosed, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, TypeKind, Value,
 };
 
 impl RaiseExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -36,9 +35,9 @@ impl RaiseExpr {
         Ok(Diagnosed::new(Type::Never, diags))
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

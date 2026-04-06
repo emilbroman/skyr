@@ -224,8 +224,8 @@ impl FnEnv {
     }
 }
 
-pub struct Eval<'p, S> {
-    pub(crate) program: &'p crate::Program<S>,
+pub struct Eval<'p> {
+    pub(crate) program: &'p crate::Program,
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
 }
@@ -573,9 +573,9 @@ pub(crate) fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>
     TrackedValue::new(value).with_dependencies(dependencies)
 }
 
-impl<'p, S: crate::SourceRepo> Eval<'p, S> {
+impl<'p> Eval<'p> {
     pub fn new(
-        program: &'p crate::Program<S>,
+        program: &'p crate::Program,
         effects: mpsc::UnboundedSender<Effect>,
         namespace: impl Into<String>,
     ) -> Self {
@@ -589,7 +589,7 @@ impl<'p, S: crate::SourceRepo> Eval<'p, S> {
             },
             externs: HashMap::new(),
         };
-        <crate::AnySource<S> as crate::SourceRepo>::register_extern(&mut eval);
+        crate::std::register_std_externs(&mut eval);
         eval
     }
 
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
@@ -1029,7 +1029,7 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1075,7 +1075,7 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let eval = Eval::new(&program, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1165,7 +1165,7 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1213,7 +1213,7 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let program = crate::Program::<crate::std::StdSourceRepo>::new();
+        let program = crate::Program::new();
         let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),

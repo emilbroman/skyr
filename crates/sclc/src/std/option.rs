@@ -1,4 +1,4 @@
-pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
+pub fn register_extern(eval: &mut crate::Eval<'_>) {
     eval.add_extern_fn("Std/Option.uncheckedUnwrap", |args, _ctx| {
         let mut args = args.into_iter();
         Ok(args

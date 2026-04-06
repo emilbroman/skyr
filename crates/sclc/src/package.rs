@@ -1,15 +1,17 @@
 use std::path::{Component, Path};
+use std::sync::Arc;
 use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
 
 use crate::{
-    ChildEntry, DiagList, Diagnosed, FileMod, ImportStmt, Loc, ModStmt, SourceRepo, parse_file_mod,
+    ChildEntry, DiagList, Diagnosed, FileMod, ImportStmt, Loc, ModStmt, SourceError, SourceRepo,
+    parse_file_mod,
 };
 
 #[derive(Clone)]
-pub struct Package<S> {
-    source: S,
+pub struct Package {
+    source: Arc<dyn SourceRepo>,
     files: HashMap<PathBuf, FileMod>,
     /// Cached directory listings, keyed by the directory path within the package.
     children_cache: HashMap<PathBuf, Vec<ChildEntry>>,
@@ -24,14 +26,14 @@ pub enum OpenError {
     PathTraversal(PathBuf),
 
     #[error("failed to load source file: {0}")]
-    Source(Box<dyn std::error::Error + Send + Sync>),
+    Source(#[from] SourceError),
 
     #[error("encoding error: {0}")]
     Encoding(#[from] std::string::FromUtf8Error),
 }
 
-impl<S> Package<S> {
-    pub fn new(source: S) -> Self {
+impl Package {
+    pub fn new(source: Arc<dyn SourceRepo>) -> Self {
         Self {
             source,
             files: HashMap::new(),
@@ -39,7 +41,7 @@ impl<S> Package<S> {
         }
     }
 
-    pub fn replace_source(&mut self, source: S) {
+    pub fn replace_source(&mut self, source: Arc<dyn SourceRepo>) {
         self.source = source;
         self.files.clear();
         self.children_cache.clear();
@@ -63,11 +65,8 @@ impl<S> Package<S> {
 
     /// Like [`imports`](Self::imports), but also returns the source module ID
     /// for each import statement (the module that contains the import).
-    pub fn imports_with_source(&self) -> impl Iterator<Item = (crate::ModuleId, &Loc<ImportStmt>)>
-    where
-        S: SourceRepo,
-    {
-        let package_id = SourceRepo::package_id(&self.source);
+    pub fn imports_with_source(&self) -> impl Iterator<Item = (crate::ModuleId, &Loc<ImportStmt>)> {
+        let package_id = self.source.package_id();
         self.files.iter().flat_map(move |(path, file_mod)| {
             let module_id = module_id_for_path(&package_id, path);
             file_mod
@@ -91,14 +90,12 @@ impl<S> Package<S> {
     }
 
     /// Access the underlying source repo.
-    pub fn source(&self) -> &S {
-        &self.source
+    pub fn source(&self) -> &dyn SourceRepo {
+        &*self.source
     }
-}
 
-impl<S: SourceRepo> Package<S> {
     pub fn package_id(&self) -> crate::ModuleId {
-        SourceRepo::package_id(&self.source)
+        self.source.package_id()
     }
 
     pub async fn open(
@@ -127,9 +124,10 @@ impl<S: SourceRepo> Package<S> {
             ));
         }
 
-        let source_data = SourceRepo::read_file(&self.source, &path)
-            .await
-            .map_err(|err| OpenError::Source(Box::new(err)))?
+        let source_data = self
+            .source
+            .read_file(&path)
+            .await?
             .ok_or_else(|| OpenError::NotFound(path.clone()))?;
         let source = String::from_utf8(source_data)?;
         let package_id = self.package_id();
@@ -150,9 +148,7 @@ impl<S: SourceRepo> Package<S> {
         if let Some(cached) = self.children_cache.get(&path) {
             return Ok(cached.clone());
         }
-        let entries = SourceRepo::list_children(&self.source, &path)
-            .await
-            .map_err(|err| OpenError::Source(Box::new(err)))?;
+        let entries = self.source.list_children(&path).await?;
         self.children_cache.insert(path, entries.clone());
         Ok(entries)
     }

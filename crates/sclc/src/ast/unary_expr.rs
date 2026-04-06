@@ -35,9 +35,9 @@ use crate::{DiagList, Diagnosed, Type, TypeKind};
 
 impl UnaryExpr {
     #[inline(never)]
-    pub(crate) fn type_synth<S: crate::SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -78,9 +78,9 @@ use crate::{TrackedValue, Value};
 
 impl UnaryExpr {
     #[inline(never)]
-    pub(crate) fn eval<S: crate::SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {

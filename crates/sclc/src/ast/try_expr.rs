@@ -19,14 +19,13 @@ pub struct CatchClause {
 use crate::checker::{InvalidCatchTarget, UnexpectedCatchArg};
 use crate::eval::{Eval, EvalEnv, EvalError, EvalErrorKind, StackFrame};
 use crate::{
-    DiagList, Diagnosed, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    TypeKind, Value,
+    DiagList, Diagnosed, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, TypeKind, Value,
 };
 
 impl TryExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -40,9 +39,9 @@ impl TryExpr {
         Ok(Diagnosed::new(try_ty, diags))
     }
 
-    pub(crate) fn type_check<S: SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
@@ -59,9 +58,9 @@ impl TryExpr {
         Ok(Diagnosed::new(try_ty, diags))
     }
 
-    fn check_catch_clauses<S: SourceRepo>(
+    fn check_catch_clauses(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         try_ty: &Type,
         diags: &mut DiagList,
@@ -132,9 +131,9 @@ impl TryExpr {
         Ok(())
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

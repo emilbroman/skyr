@@ -15,9 +15,9 @@ impl PropertyAccessExpr {
         self.expr.as_ref().free_vars()
     }
 
-    pub fn type_synth<S: crate::SourceRepo>(
+    pub fn type_synth(
         &self,
-        checker: &crate::checker::TypeChecker<'_, S>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
         use crate::{DiagList, Diagnosed, RecordType, Type, TypeKind};
@@ -161,9 +161,9 @@ impl PropertyAccessExpr {
         Ok(Diagnosed::new(Type::Never, diags))
     }
 
-    pub fn eval<S: crate::SourceRepo>(
+    pub fn eval(
         &self,
-        evaluator: &crate::eval::Eval<'_, S>,
+        evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::Value;

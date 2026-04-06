@@ -60,7 +60,7 @@ impl ListExpr {
     #[inline(never)]
     pub(crate) fn type_synth(
         &self,
-        checker: &crate::checker::TypeChecker<'_, impl crate::SourceRepo>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
@@ -84,7 +84,7 @@ impl ListExpr {
     #[inline(never)]
     pub(crate) fn type_check(
         &self,
-        checker: &crate::checker::TypeChecker<'_, impl crate::SourceRepo>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &crate::Type,
@@ -98,7 +98,7 @@ impl ListExpr {
     #[inline(never)]
     fn check_list_against(
         &self,
-        checker: &crate::checker::TypeChecker<'_, impl crate::SourceRepo>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expected_item_ty: &crate::Type,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
@@ -115,9 +115,9 @@ impl ListExpr {
         ))
     }
 
-    pub(crate) fn eval<S: crate::SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &crate::eval::Eval<'_, S>,
+        evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         let mut values = Vec::new();

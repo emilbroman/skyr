@@ -10,14 +10,12 @@ pub struct LetExpr {
 }
 
 use crate::eval::{Eval, EvalEnv, EvalError};
-use crate::{
-    DiagList, Diagnosed, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-};
+use crate::{DiagList, Diagnosed, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv};
 
 impl LetExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -41,9 +39,9 @@ impl LetExpr {
         Ok(Diagnosed::new(body_ty, diags))
     }
 
-    pub(crate) fn type_check<S: SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expected: &Type,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -68,9 +66,9 @@ impl LetExpr {
         Ok(Diagnosed::new(body_ty, diags))
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
     ) -> Result<TrackedValue, EvalError> {
         let bind_value = evaluator.eval_expr(env, self.bind.expr.as_ref())?;

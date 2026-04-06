@@ -29,7 +29,7 @@ fn content_addressed_name(name: &str, contents: &str, media_type: &str) -> Strin
     }
 }
 
-pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
+pub fn register_extern(eval: &mut crate::Eval<'_>) {
     eval.add_extern_fn(FILE_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 
