@@ -122,11 +122,10 @@ fn to_json_value(value: &impl Serialize) -> serde_json::Value {
     })
 }
 
-type SourceFactory =
-    Box<dyn Fn(&sclc::ModuleId, DocumentCache, &PathBuf) -> OverlaySource<FsLike> + Send>;
+type SourceFactory = Box<dyn Fn(&sclc::ModuleId, DocumentCache, &PathBuf) -> OverlaySource + Send>;
 
 /// The concrete program type used in the LSP server.
-pub type LspProgram = sclc::Program<OverlaySource<FsLike>>;
+pub type LspProgram = sclc::Program;
 
 /// The main LSP server.
 pub struct LanguageServer {
@@ -147,59 +146,9 @@ pub struct LanguageServer {
     published_uris: HashSet<String>,
 }
 
-/// A filesystem-based source that the LSP wraps with OverlaySource.
-pub struct FsLike {
-    pub root: PathBuf,
-    pub package_id: sclc::ModuleId,
-}
-
-impl sclc::SourceRepo for FsLike {
-    type Err = std::io::Error;
-
-    fn package_id(&self) -> sclc::ModuleId {
-        self.package_id.clone()
-    }
-
-    async fn read_file(&self, path: &std::path::Path) -> Result<Option<Vec<u8>>, Self::Err> {
-        let result: Result<Vec<u8>, std::io::Error> = tokio::fs::read(self.root.join(path)).await;
-        match result {
-            Ok(data) => Ok(Some(data)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn list_children(
-        &self,
-        path: &std::path::Path,
-    ) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
-        let dir = self.root.join(path);
-        let mut read_dir = match tokio::fs::read_dir(&dir).await {
-            Ok(rd) => rd,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => return Err(err),
-        };
-        let mut entries = Vec::new();
-        while let Some(entry) = read_dir.next_entry().await? {
-            let file_type = entry.file_type().await?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if file_type.is_dir() {
-                entries.push(sclc::ChildEntry::Directory(name));
-            } else if file_type.is_file() {
-                if let Some(stem) = name.strip_suffix(".scl") {
-                    entries.push(sclc::ChildEntry::Module(stem.to_owned()));
-                } else {
-                    entries.push(sclc::ChildEntry::File(name));
-                }
-            }
-        }
-        Ok(entries)
-    }
-}
-
 fn default_source_factory() -> SourceFactory {
     Box::new(|package_id, documents, root| {
-        let inner = FsLike {
+        let inner = sclc::FsSource {
             root: root.clone(),
             package_id: package_id.clone(),
         };
