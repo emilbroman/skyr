@@ -13,6 +13,7 @@
         { "include": "#constants" },
         { "include": "#number" },
         { "include": "#string" },
+        { "include": "#path" },
         { "include": "#function-definition" },
         { "include": "#operator" },
         { "include": "#punctuation" },
@@ -131,6 +132,18 @@
                         { "include": "#type-name" },
                         { "include": "#identifier" }
                     ]
+                }
+            ]
+        },
+        "path": {
+            "patterns": [
+                {
+                    "match": "\\.{1,2}(?:/[\\w.@-]+)+",
+                    "name": "string.unquoted.path.scl"
+                },
+                {
+                    "match": "/[\\w.@-]+(?:/[\\w.@-]+)*",
+                    "name": "string.unquoted.path.scl"
                 }
             ]
         },

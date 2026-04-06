@@ -65,6 +65,9 @@ export function registerSclLanguage() {
             root: [
                 // Comments
                 [/\/\/.*$/, "comment"],
+                // Paths (before strings and operators so `./ ` and `/` are matched correctly)
+                [/\.{1,2}\/[\w.@-]+(?:\/[\w.@-]+)*/, "string"],
+                [/\/[\w.@-]+(?:\/[\w.@-]+)*/, "string"],
                 // Strings
                 [/"/, "string", "@string"],
                 // Numbers
