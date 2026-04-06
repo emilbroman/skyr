@@ -1771,12 +1771,15 @@ impl<'p> TypeChecker<'p> {
                 {
                     for entry in children {
                         match entry {
-                            crate::ChildEntry::Module(name) => {
-                                if name.starts_with(prefix) {
+                            crate::ChildEntry::File(name) => {
+                                if let Some(stem) = name.strip_suffix(".scl")
+                                    && stem.starts_with(prefix)
+                                {
                                     cursor.add_completion_candidate(
-                                        crate::CompletionCandidate::Module(name.clone()),
+                                        crate::CompletionCandidate::Module(stem.to_owned()),
                                     );
                                 }
+                                // Non-.scl files are not importable; skip them.
                             }
                             crate::ChildEntry::Directory(name) => {
                                 if name.starts_with(prefix) {
@@ -1784,9 +1787,6 @@ impl<'p> TypeChecker<'p> {
                                         crate::CompletionCandidate::ModuleDir(name.clone()),
                                     );
                                 }
-                            }
-                            crate::ChildEntry::File(_) => {
-                                // Files are not importable; skip them.
                             }
                         }
                     }
@@ -1851,15 +1851,6 @@ impl<'p> TypeChecker<'p> {
                             if name.starts_with(prefix) {
                                 cursor.add_completion_candidate(
                                     crate::CompletionCandidate::PathDir(name.clone()),
-                                );
-                            }
-                        }
-                        crate::ChildEntry::Module(name) => {
-                            // Also suggest .scl modules (with extension) for path completion
-                            let with_ext = format!("{name}.scl");
-                            if with_ext.starts_with(prefix) {
-                                cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::PathFile(with_ext),
                                 );
                             }
                         }

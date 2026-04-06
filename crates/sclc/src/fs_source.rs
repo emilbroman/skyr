@@ -39,11 +39,7 @@ impl SourceRepo for FsSource {
             if file_type.is_dir() {
                 entries.push(ChildEntry::Directory(name));
             } else if file_type.is_file() {
-                if let Some(stem) = name.strip_suffix(".scl") {
-                    entries.push(ChildEntry::Module(stem.to_owned()));
-                } else {
-                    entries.push(ChildEntry::File(name));
-                }
+                entries.push(ChildEntry::File(name));
             }
         }
         Ok(entries)

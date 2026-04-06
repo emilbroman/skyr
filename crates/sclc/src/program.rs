@@ -6,7 +6,10 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo, ast};
+use crate::{
+    ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, PackageLoader, SourceRepo,
+    ast,
+};
 use crate::{TrackedValue, std::StdSourceRepo};
 
 #[derive(Clone)]
@@ -16,6 +19,8 @@ pub struct Program {
     self_package_id: Option<ModuleId>,
     /// Map from resolved path string (e.g. `/data.txt`) to Git object hash.
     path_hashes: HashMap<String, gix_hash::ObjectId>,
+    /// Optional loader for dynamically discovering packages during import resolution.
+    package_loader: Option<Arc<dyn PackageLoader>>,
 }
 
 impl Default for Program {
@@ -86,12 +91,8 @@ impl Program {
             let children = self.cached_children_for_path(&dir)?;
 
             if is_last {
-                // Final component: just needs to exist (file, module, or directory).
-                let exists = children.iter().any(|entry| match entry {
-                    ChildEntry::File(name)
-                    | ChildEntry::Module(name)
-                    | ChildEntry::Directory(name) => name == component,
-                });
+                // Final component: just needs to exist (file or directory).
+                let exists = children.iter().any(|entry| entry.name() == *component);
                 return Some(exists);
             }
 
@@ -100,11 +101,11 @@ impl Program {
                 .iter()
                 .any(|entry| matches!(entry, ChildEntry::Directory(name) if name == component));
             if !is_dir {
-                // It might be a file/module — that means traversing through
+                // It might be a file — that means traversing through
                 // a non-directory, which is invalid.
-                let exists_as_non_dir = children.iter().any(|entry| {
-                    matches!(entry, ChildEntry::File(name) | ChildEntry::Module(name) if name == component)
-                });
+                let exists_as_non_dir = children
+                    .iter()
+                    .any(|entry| matches!(entry, ChildEntry::File(name) if name == component));
                 if exists_as_non_dir {
                     return Some(false);
                 }
@@ -129,7 +130,14 @@ impl Program {
             packages,
             self_package_id: None,
             path_hashes: HashMap::new(),
+            package_loader: None,
         }
+    }
+
+    /// Set the package loader used to dynamically discover packages during
+    /// import resolution. See [`PackageLoader`] for details.
+    pub fn set_package_loader(&mut self, loader: Arc<dyn PackageLoader>) {
+        self.package_loader = Some(loader);
     }
 
     pub async fn open_package(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
@@ -377,6 +385,27 @@ impl Program {
         &mut self,
         import_path: &ModuleId,
     ) -> Result<Diagnosed<Option<&crate::ast::FileMod>>, ResolveImportError> {
+        // If no loaded package matches, try the package loader.
+        if self.package_name_for_import(import_path).is_none()
+            && let Some(loader) = self.package_loader.clone()
+        {
+            match loader.load_package(import_path).await {
+                Ok(Some(source)) => {
+                    let pkg_id = source.package_id();
+                    self.packages
+                        .entry(pkg_id)
+                        .or_insert_with(|| Package::new(source));
+                }
+                Ok(None) => {}
+                Err(source) => {
+                    return Err(ResolveImportError::Loader {
+                        import_path: import_path.clone(),
+                        source,
+                    });
+                }
+            }
+        }
+
         let Some(package_name) = self.package_name_for_import(import_path) else {
             return Ok(Diagnosed::new(None, DiagList::new()));
         };
@@ -496,6 +525,13 @@ pub enum ResolveImportError {
         module_path: PathBuf,
         #[source]
         source: OpenError,
+    },
+
+    #[error("package loader failed for {import_path}: {source}")]
+    Loader {
+        import_path: ModuleId,
+        #[source]
+        source: crate::SourceError,
     },
 }
 

@@ -88,8 +88,8 @@ impl SourceRepo for StdSourceRepo {
             // Take the first path segment of `relative`
             if let Some(slash_pos) = relative.find('/') {
                 entries.insert(ChildEntry::Directory(relative[..slash_pos].to_owned()));
-            } else if let Some(stem) = relative.strip_suffix(".scl") {
-                entries.insert(ChildEntry::Module(stem.to_owned()));
+            } else {
+                entries.insert(ChildEntry::File(relative.to_owned()));
             }
         }
         Ok(entries.into_iter().collect())

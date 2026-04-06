@@ -1,7 +1,10 @@
 use thiserror::Error;
 
+use std::sync::Arc;
+
 use crate::{
-    DiagList, Diagnosed, OpenError, Program, ResolveImportError, SourceRepo, TypeCheckError,
+    DiagList, Diagnosed, OpenError, PackageLoader, Program, ResolveImportError, SourceRepo,
+    TypeCheckError,
 };
 
 #[derive(Error, Debug)]
@@ -19,8 +22,27 @@ pub enum CompileError {
 pub async fn compile(
     source: impl SourceRepo + 'static,
 ) -> Result<Diagnosed<Program>, CompileError> {
+    compile_inner(source, None).await
+}
+
+/// Like [`compile`], but with a [`PackageLoader`] for dynamically
+/// discovering packages during import resolution.
+pub async fn compile_with_loader(
+    source: impl SourceRepo + 'static,
+    loader: Arc<dyn PackageLoader>,
+) -> Result<Diagnosed<Program>, CompileError> {
+    compile_inner(source, Some(loader)).await
+}
+
+async fn compile_inner(
+    source: impl SourceRepo + 'static,
+    loader: Option<Arc<dyn PackageLoader>>,
+) -> Result<Diagnosed<Program>, CompileError> {
     let mut diags = DiagList::new();
     let mut program = Program::new();
+    if let Some(loader) = loader {
+        program.set_package_loader(loader);
+    }
     let package = program.open_package(source).await;
     if package.open("Main.scl").await?.unpack(&mut diags).is_none() {
         return Ok(Diagnosed::new(program, diags));

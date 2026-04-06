@@ -9,12 +9,27 @@ pub type SourceError = Box<dyn Error + Send + Sync>;
 /// An entry returned by [`SourceRepo::list_children`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ChildEntry {
-    /// A `.scl` module (name without extension).
-    Module(String),
-    /// A subdirectory that may contain further modules.
-    Directory(String),
-    /// A non-`.scl` file (filename WITH extension).
+    /// A file (filename with extension).
     File(String),
+    /// A subdirectory.
+    Directory(String),
+}
+
+impl ChildEntry {
+    /// Return the name of this entry.
+    pub fn name(&self) -> &str {
+        match self {
+            ChildEntry::File(name) | ChildEntry::Directory(name) => name,
+        }
+    }
+
+    /// If this is an `.scl` file, return the module name (stem without extension).
+    pub fn as_module(&self) -> Option<&str> {
+        match self {
+            ChildEntry::File(name) => name.strip_suffix(".scl"),
+            ChildEntry::Directory(_) => None,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -79,11 +94,7 @@ impl SourceRepo for cdb::DeploymentClient {
                     if entry.mode.is_tree() {
                         entries.push(ChildEntry::Directory(name));
                     } else if entry.mode.is_blob() {
-                        if let Some(stem) = name.strip_suffix(".scl") {
-                            entries.push(ChildEntry::Module(stem.to_owned()));
-                        } else {
-                            entries.push(ChildEntry::File(name));
-                        }
+                        entries.push(ChildEntry::File(name));
                     }
                 }
                 Ok(entries)
