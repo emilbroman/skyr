@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use ids::ResourceId;
 
-use crate::{ExternFnValue, Record, TrackedValue, Value, ast};
+use crate::{ExternFnValue, PathValue, Record, TrackedValue, Value, ast};
 
 #[derive(Debug)]
 pub struct StackFrame<'a> {
@@ -446,9 +446,11 @@ pub trait ValueAssertions {
     fn assert_int(self) -> Result<i64, EvalError>;
     fn assert_str(self) -> Result<String, EvalError>;
     fn assert_record(self) -> Result<Record, EvalError>;
+    fn assert_path(self) -> Result<PathValue, EvalError>;
     fn assert_int_ref(&self) -> Result<&i64, EvalError>;
     fn assert_str_ref(&self) -> Result<&str, EvalError>;
     fn assert_record_ref(&self) -> Result<&Record, EvalError>;
+    fn assert_path_ref(&self) -> Result<&PathValue, EvalError>;
 }
 
 impl ValueAssertions for Value {
@@ -473,6 +475,13 @@ impl ValueAssertions for Value {
         }
     }
 
+    fn assert_path(self) -> Result<PathValue, EvalError> {
+        match self {
+            Value::Path(value) => Ok(value),
+            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
+        }
+    }
+
     fn assert_int_ref(&self) -> Result<&i64, EvalError> {
         match self {
             Value::Int(value) => Ok(value),
@@ -493,6 +502,13 @@ impl ValueAssertions for Value {
             other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
         }
     }
+
+    fn assert_path_ref(&self) -> Result<&PathValue, EvalError> {
+        match self {
+            Value::Path(value) => Ok(value),
+            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+        }
+    }
 }
 
 impl ValueAssertions for Option<Value> {
@@ -506,6 +522,10 @@ impl ValueAssertions for Option<Value> {
 
     fn assert_record(self) -> Result<Record, EvalError> {
         self.unwrap_or(Value::Nil).assert_record()
+    }
+
+    fn assert_path(self) -> Result<PathValue, EvalError> {
+        self.unwrap_or(Value::Nil).assert_path()
     }
 
     fn assert_int_ref(&self) -> Result<&i64, EvalError> {
@@ -527,6 +547,14 @@ impl ValueAssertions for Option<Value> {
     fn assert_record_ref(&self) -> Result<&Record, EvalError> {
         match self {
             Some(Value::Record(value)) => Ok(value),
+            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
+        }
+    }
+
+    fn assert_path_ref(&self) -> Result<&PathValue, EvalError> {
+        match self {
+            Some(Value::Path(value)) => Ok(value),
             Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
             None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
         }

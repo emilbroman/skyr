@@ -1036,6 +1036,12 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                 }
                 Type::Str
             }
+            ast::TypeExpr::Var(var) if var.name == "Path" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Path);
+                }
+                Type::Path
+            }
             ast::TypeExpr::Var(var) => {
                 let (resolved, doc_comment) = if let Some(ty) =
                     env.lookup_type_var(var.name.as_str())

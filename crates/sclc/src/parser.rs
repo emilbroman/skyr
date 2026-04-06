@@ -1380,6 +1380,10 @@ peg::parser! {
                 let segments: Vec<PathSegment> = links.into_iter().map(|(seg, _, _)| seg).collect();
                 Loc::new(Expr::Path(PathExpr { segments }), Span::new(start.start(), end))
             }
+            // Root path (standalone `/`)
+            / s:slash_span() {
+                Loc::new(Expr::Path(PathExpr { segments: vec![] }), Span::new(s.start(), s.end()))
+            }
 
         rule str_end() -> (String, Span)
             = quiet!{

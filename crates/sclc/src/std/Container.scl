@@ -17,25 +17,26 @@ export type Image {
 /// Build a container image from a directory in your repository.
 ///
 /// The image is built using BuildKit and pushed to Skyr's container registry.
-/// The resource ID is derived from the Git tree hash of the context directory,
-/// so rebuilds only happen when source files change.
+/// The resource name is content-addressed: it includes a hash of the context
+/// directory and containerfile Git object hashes, so rebuilds only happen when
+/// source files change.
 ///
 /// ```scl
 /// import Std/Container
 ///
 /// let image = Container.Image({
 ///     name: "my-app",
-///     context: ".",
-///     containerfile: "Containerfile",
+///     context: /,
+///     containerfile: /Containerfile,
 /// })
 /// ```
 export let Image = extern "Std/Container.Image": fn({
 	/// Image name (without registry prefix)
 	name: Str,
-	/// Path to build context directory, relative to repo root
-	context: Str,
-	/// Path to Containerfile/Dockerfile, relative to context
-	containerfile: Str,
+	/// Build context directory
+	context: Path,
+	/// Containerfile path (relative to repo root)
+	containerfile: Path,
 }) Image
 
 /// Output of `Pod.Port` — an open ingress port on a pod.

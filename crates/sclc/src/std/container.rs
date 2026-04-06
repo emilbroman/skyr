@@ -15,6 +15,7 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use ids::ResourceId;
+use sha1::Digest;
 
 use crate::{EvalCtx, ExternFnValue, Record, TrackedValue, Value, ValueAssertions};
 
@@ -34,7 +35,7 @@ pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
 
 /// Extern function for building container images via BuildKit.
 ///
-/// Input: `{ name: Str, context: Str, containerfile: Str }`
+/// Input: `{ name: Str, context: Path, containerfile: Path }`
 /// Output: `{ fullname: Str, digest: Str }`
 fn image_extern_fn(
     args: Vec<TrackedValue>,
@@ -54,25 +55,30 @@ fn image_extern_fn(
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
-    let context = config.get("context").assert_str_ref()?.to_owned();
-    let containerfile = config.get("containerfile").assert_str_ref()?.to_owned();
+    let context = config.get("context").assert_path_ref()?.clone();
+    let containerfile = config.get("containerfile").assert_path_ref()?.clone();
 
-    // The resource ID is based on the image name
-    // (the plugin will compute a content-based ID from the Git tree hash)
+    // Compute content-addressed resource name from Git object hashes
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(context.hash.to_hex().to_string().as_bytes());
+    hasher.update(containerfile.hash.to_hex().to_string().as_bytes());
+    let hash = hex::encode(hasher.finalize());
+    let resource_name = format!("{name}-{hash}");
+
     let resource_id = ResourceId {
         typ: IMAGE_RESOURCE_TYPE.to_string(),
-        name: name.clone(),
+        name: resource_name.clone(),
     };
 
     // Build inputs for the RTP plugin
     let mut inputs = Record::default();
-    inputs.insert(String::from("name"), Value::Str(name.clone()));
-    inputs.insert(String::from("context"), Value::Str(context));
-    inputs.insert(String::from("containerfile"), Value::Str(containerfile));
+    inputs.insert(String::from("name"), Value::Str(name));
+    inputs.insert(String::from("context"), Value::Path(context));
+    inputs.insert(String::from("containerfile"), Value::Path(containerfile));
 
     let Some(outputs) = eval_ctx.resource(
         IMAGE_RESOURCE_TYPE,
-        &name,
+        &resource_name,
         &inputs,
         argument_dependencies.clone(),
     )?
