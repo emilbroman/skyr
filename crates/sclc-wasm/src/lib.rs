@@ -26,6 +26,7 @@ impl sclc::SourceRepo for MemSourceRepo {
     async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, Self::Err> {
         let mut modules = HashSet::new();
         let mut dirs = HashSet::new();
+        let mut files = HashSet::new();
 
         for file_path in self.files.keys() {
             let relative = if path == Path::new("") {
@@ -41,10 +42,13 @@ impl sclc::SourceRepo for MemSourceRepo {
             let components: Vec<_> = relative.components().collect();
             match components.len() {
                 1 => {
-                    if let Some(stem) = relative.file_stem()
-                        && relative.extension().and_then(|e| e.to_str()) == Some("scl")
-                    {
-                        modules.insert(stem.to_string_lossy().into_owned());
+                    if relative.extension().and_then(|e| e.to_str()) == Some("scl") {
+                        if let Some(stem) = relative.file_stem() {
+                            modules.insert(stem.to_string_lossy().into_owned());
+                        }
+                    } else {
+                        let name = relative.to_string_lossy().into_owned();
+                        files.insert(name);
                     }
                 }
                 n if n > 1 => {
@@ -60,6 +64,7 @@ impl sclc::SourceRepo for MemSourceRepo {
             .into_iter()
             .map(sclc::ChildEntry::Directory)
             .chain(modules.into_iter().map(sclc::ChildEntry::Module))
+            .chain(files.into_iter().map(sclc::ChildEntry::File))
             .collect();
         entries.sort();
         Ok(entries)
@@ -128,6 +133,10 @@ async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program<Me
     }
 
     if let Ok(diagnosed) = program.resolve_imports().await {
+        diagnosed.unpack(&mut diags);
+    }
+
+    if let Ok(diagnosed) = program.resolve_paths().await {
         diagnosed.unpack(&mut diags);
     }
 
@@ -527,6 +536,46 @@ async fn repl_process(wasm_state: &mut WasmReplState, files_json: &str, line: &s
         return repl_process_import(wasm_state, files_json, import_stmt).await;
     }
 
+    // Preload path directory listings so the type checker can validate paths.
+    {
+        let repo = make_repo(files_json);
+        let file_map = parse_files_json(files_json);
+        let package = wasm_state.state.program_mut().replace_user_source(repo);
+        for name in file_map.keys() {
+            if name.ends_with(".scl") {
+                let _ = package.open(name).await;
+            }
+        }
+
+        let file_mod = sclc::FileMod {
+            statements: vec![statement.clone()],
+        };
+        let mut collector = sclc::CollectPaths::new();
+        sclc::visit_file_mod(&mut collector, &file_mod);
+
+        let self_package_id = wasm_state.state.program().self_package_id().cloned();
+        let dirs: HashSet<PathBuf> = collector
+            .paths
+            .iter()
+            .flat_map(|path_expr| {
+                let resolved = path_expr.resolve_with_context(&module_id, self_package_id.as_ref());
+                let rel = resolved.strip_prefix('/').unwrap_or(&resolved).to_string();
+                let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+                let mut result = vec![PathBuf::new()];
+                let mut prefix = PathBuf::new();
+                for component in &components[..components.len().saturating_sub(1)] {
+                    prefix.push(component);
+                    result.push(prefix.clone());
+                }
+                result
+            })
+            .collect();
+
+        if !dirs.is_empty() {
+            wasm_state.state.program_mut().preload_path_dirs(dirs).await;
+        }
+    }
+
     let result = wasm_state.state.process_statement(statement, &module_id);
     let effects = drain_effects(&mut wasm_state.effects_rx);
 
@@ -588,7 +637,7 @@ async fn repl_process_import(
 
     let file_map = parse_files_json(files_json);
     let repo = make_repo(files_json);
-    let package = wasm_state.state.program_mut().open_package(repo).await;
+    let package = wasm_state.state.program_mut().replace_user_source(repo);
     for name in file_map.keys() {
         if name.ends_with(".scl") {
             let _ = package.open(name).await;
