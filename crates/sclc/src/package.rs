@@ -39,6 +39,12 @@ impl<S> Package<S> {
         }
     }
 
+    pub fn replace_source(&mut self, source: S) {
+        self.source = source;
+        self.files.clear();
+        self.children_cache.clear();
+    }
+
     pub fn imports(&self) -> impl Iterator<Item = &Loc<ImportStmt>> {
         self.files.values().flat_map(|file_mod| {
             file_mod

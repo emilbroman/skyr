@@ -177,6 +177,21 @@ impl<S: SourceRepo> Program<S> {
             .or_insert_with(|| Package::new(AnySource::User(source)))
     }
 
+    pub fn replace_user_source(&mut self, source: S) -> &mut Package<AnySource<S>> {
+        let name = SourceRepo::package_id(&source);
+        self.self_package_id = Some(name.clone());
+        self.path_hashes.clear();
+        if self.packages.contains_key(&name) {
+            let pkg = self.packages.get_mut(&name).unwrap();
+            pkg.replace_source(AnySource::User(source));
+            pkg
+        } else {
+            self.packages
+                .entry(name)
+                .or_insert_with(|| Package::new(AnySource::User(source)))
+        }
+    }
+
     /// If `import_path` starts with `Self`, replace that prefix with the
     /// user package ID so that the rest of the resolution machinery can find
     /// it in the package map.
