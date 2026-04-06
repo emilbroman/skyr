@@ -199,7 +199,84 @@ impl highlight::Highlighter for ReplHelper {
             }};
         }
 
-        for token in Lexer::new(line) {
+        // Collect tokens into a Vec for lookahead-based path detection.
+        let tokens: Vec<_> = Lexer::new(line).collect();
+
+        // Pre-compute which token indices are part of a path expression.
+        // A path starts with:
+        //   - Dot Slash (relative: ./...)
+        //   - Dot Dot Slash (relative: ../...)
+        //   - Slash Symbol (absolute: /foo...)
+        // and continues with Slash, Symbol, StrSimple, Dot sequences.
+        let mut in_path = vec![false; tokens.len()];
+        let mut i = 0;
+        while i < tokens.len() {
+            let starts_path = if matches!(*tokens[i].as_ref(), Token::Dot) {
+                if i + 1 < tokens.len() && matches!(*tokens[i + 1].as_ref(), Token::Slash) {
+                    // ./ — check there's a segment after
+                    i + 2 < tokens.len()
+                        && matches!(
+                            *tokens[i + 2].as_ref(),
+                            Token::Symbol(_) | Token::StrSimple(_)
+                        )
+                } else if i + 2 < tokens.len()
+                    && matches!(*tokens[i + 1].as_ref(), Token::Dot)
+                    && matches!(*tokens[i + 2].as_ref(), Token::Slash)
+                {
+                    // ../ — check there's a segment after
+                    i + 3 < tokens.len()
+                        && matches!(
+                            *tokens[i + 3].as_ref(),
+                            Token::Symbol(_) | Token::StrSimple(_)
+                        )
+                } else {
+                    false
+                }
+            } else if matches!(*tokens[i].as_ref(), Token::Slash) {
+                // /segment — absolute path
+                i + 1 < tokens.len()
+                    && matches!(
+                        *tokens[i + 1].as_ref(),
+                        Token::Symbol(_) | Token::StrSimple(_)
+                    )
+            } else {
+                false
+            };
+
+            if starts_path {
+                // Mark all tokens in this path expression.
+                while i < tokens.len() {
+                    match *tokens[i].as_ref() {
+                        Token::Dot | Token::Slash | Token::Symbol(_) | Token::StrSimple(_) => {
+                            in_path[i] = true;
+                            i += 1;
+                        }
+                        _ => break,
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        for (idx, token) in tokens.iter().enumerate() {
+            if in_path[idx] {
+                // Emit path tokens in green (same as strings).
+                match *token.as_ref() {
+                    Token::Dot => emit!(".", "\x1b[32m"),
+                    Token::Slash => emit!("/", "\x1b[32m"),
+                    Token::Symbol(s) => emit!(s, "\x1b[32m"),
+                    Token::StrSimple(s) => {
+                        source_bytes_covered += 1 + s.len() + 1;
+                        result.push_str("\x1b[32m\"");
+                        result.push_str(s);
+                        result.push_str("\"\x1b[0m");
+                    }
+                    _ => unreachable!(),
+                }
+                continue;
+            }
+
             match *token.as_ref() {
                 // Keywords
                 Token::ImportKeyword => emit!("import", "\x1b[35m"),
