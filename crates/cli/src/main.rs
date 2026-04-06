@@ -4,7 +4,6 @@ use std::path::PathBuf;
 mod auth;
 mod deployment;
 mod fmt;
-mod fs_source;
 mod lsp;
 mod output;
 mod port_forward;

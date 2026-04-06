@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use crate::fs_source::FsSource;
 use crate::output::{report_diagnostics, spawn_effect_printer};
 
 pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
@@ -9,7 +8,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
         .collect::<sclc::ModuleId>();
-    let source = FsSource {
+    let source = sclc::FsSource {
         root,
         package_id: package_id.clone(),
     };

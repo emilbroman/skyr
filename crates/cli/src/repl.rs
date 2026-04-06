@@ -10,13 +10,12 @@ use rustyline::validate;
 use rustyline::{Context, Editor, Helper};
 use sclc::{Diag, Lexer, Token};
 
-use crate::fs_source::FsSource;
 use crate::output::{report_diagnostics, spawn_effect_printer};
 
 struct ReplHelper {
     /// Snapshot of the REPL state used for completions.
     /// Updated before each `readline()` call.
-    state: RefCell<Option<sclc::ReplState<FsSource>>>,
+    state: RefCell<Option<sclc::ReplState>>,
     /// Filesystem root for path completions.
     root: PathBuf,
 }
@@ -401,11 +400,7 @@ fn report_repl_error(err: &sclc::ReplError) {
     }
 }
 
-async fn process_line(
-    state: &mut sclc::ReplState<FsSource>,
-    root: &Path,
-    line: &str,
-) -> anyhow::Result<()> {
+async fn process_line(state: &mut sclc::ReplState, root: &Path, line: &str) -> anyhow::Result<()> {
     let module_id = state.next_line_module_id();
     let Some(repl_line) =
         report_diagnostics(sclc::parse_repl_line(line, &module_id)).and_then(|line| line)
@@ -441,7 +436,7 @@ async fn process_line(
 }
 
 async fn process_import(
-    state: &mut sclc::ReplState<FsSource>,
+    state: &mut sclc::ReplState,
     root: &Path,
     import_stmt: &sclc::Loc<sclc::ImportStmt>,
 ) -> anyhow::Result<()> {
@@ -466,7 +461,7 @@ async fn process_import(
         .self_package_id()
         .cloned()
         .unwrap_or_default();
-    let source = FsSource {
+    let source = sclc::FsSource {
         root: root.to_path_buf(),
         package_id,
     };
@@ -523,7 +518,7 @@ async fn process_import(
 /// Collect path expressions from a statement, resolve them, and preload
 /// parent directory listings so the type checker can validate paths.
 async fn preload_paths_for_statement(
-    state: &mut sclc::ReplState<FsSource>,
+    state: &mut sclc::ReplState,
     statement: &sclc::ModStmt,
     module_id: &sclc::ModuleId,
 ) {
@@ -564,8 +559,8 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     let effects_task = spawn_effect_printer(effects_rx);
 
     // Create a persistent program for the REPL session
-    let mut program = sclc::Program::<FsSource>::new();
-    let source = FsSource {
+    let mut program = sclc::Program::new();
+    let source = sclc::FsSource {
         root: root.clone(),
         package_id: package_id.clone(),
     };
