@@ -947,6 +947,35 @@ impl DeploymentClient {
         Ok(self.repo.read_blob(entry.oid).await?.data)
     }
 
+    /// Return the Git object hash (blob or tree OID) for a path, or `None`
+    /// if the path does not exist.
+    pub async fn path_hash(&self, path: impl AsRef<Path>) -> Result<Option<ObjectId>, FileError> {
+        let path = path.as_ref();
+
+        // Root path → return the commit's tree OID.
+        if path.as_os_str().is_empty() {
+            let commit = self.repo.read_commit(self.commit_hash()).await?;
+            return Ok(Some(commit.tree));
+        }
+
+        let filename = match path.file_name() {
+            Some(f) => f,
+            None => return Ok(None),
+        };
+
+        let dir = match self.read_dir(path.parent()).await {
+            Ok(tree) => tree,
+            Err(FileError::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        Ok(dir
+            .entries
+            .iter()
+            .find(|e| e.filename.as_slice() == filename.as_encoded_bytes())
+            .map(|e| e.oid))
+    }
+
     pub async fn mark_superseded_by(
         &self,
         superseding_commit: &DeploymentId,
