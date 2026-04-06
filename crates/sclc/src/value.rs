@@ -2,6 +2,45 @@ use ordered_float::NotNan;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathValue {
+    pub path: String,
+    pub hash: gix_hash::ObjectId,
+}
+
+impl Serialize for PathValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("PathValue", 2)?;
+        s.serialize_field("path", &self.path)?;
+        s.serialize_field("hash", &self.hash.to_hex().to_string())?;
+        s.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for PathValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Raw {
+            path: String,
+            hash: String,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let hash =
+            gix_hash::ObjectId::from_hex(raw.hash.as_bytes()).map_err(serde::de::Error::custom)?;
+        Ok(PathValue {
+            path: raw.path,
+            hash,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Value {
     Nil,
@@ -10,7 +49,7 @@ pub enum Value {
     Float(NotNan<f64>),
     Bool(bool),
     Str(String),
-    Path(String),
+    Path(PathValue),
     List(Vec<Value>),
     ExternFn(ExternFnValue),
     Fn(FnValue),
@@ -305,7 +344,7 @@ impl std::fmt::Display for Value {
             Value::Float(value) => write!(f, "{value}"),
             Value::Bool(value) => write!(f, "{value}"),
             Value::Str(value) => write!(f, "{value:?}"),
-            Value::Path(value) => write!(f, "{value}"),
+            Value::Path(pv) => write!(f, "{}", pv.path),
             Value::List(values) => {
                 write!(f, "[")?;
                 let mut values = values.iter().peekable();

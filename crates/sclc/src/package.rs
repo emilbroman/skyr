@@ -83,6 +83,11 @@ impl<S> Package<S> {
     pub fn cached_children(&self, path: &Path) -> Option<&[ChildEntry]> {
         self.children_cache.get(path).map(Vec::as_slice)
     }
+
+    /// Access the underlying source repo.
+    pub fn source(&self) -> &S {
+        &self.source
+    }
 }
 
 impl<S: SourceRepo> Package<S> {

@@ -28,9 +28,17 @@ pub trait SourceRepo {
         Ok(Vec::new())
     }
 
-    /// Check whether a path exists in this source repository.
-    async fn path_exists(&self, path: &Path) -> Result<bool, Self::Err> {
-        Ok(self.read_file(path).await?.is_some())
+    /// Return the Git object hash for a path in this source repository,
+    /// or `None` if the path does not exist.
+    ///
+    /// The default implementation returns a null SHA-1 hash when the path
+    /// exists (sufficient for non-CDB backends). CDB overrides this with
+    /// the real tree/blob OID.
+    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
+        Ok(self
+            .read_file(path)
+            .await?
+            .map(|_| gix_hash::ObjectId::null(gix_hash::Kind::Sha1)))
     }
 
     fn register_extern<S2: SourceRepo>(_eval: &mut crate::Eval<'_, S2>) {}
@@ -78,13 +86,10 @@ impl<S: SourceRepo> SourceRepo for AnySource<S> {
         }
     }
 
-    async fn path_exists(&self, path: &Path) -> Result<bool, Self::Err> {
+    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
         match self {
-            AnySource::User(source) => source.path_exists(path).await.map_err(AnySourceError::User),
-            AnySource::Std(source) => source
-                .path_exists(path)
-                .await
-                .map_err(|never| match never {}),
+            AnySource::User(source) => source.path_hash(path).await.map_err(AnySourceError::User),
+            AnySource::Std(source) => source.path_hash(path).await.map_err(|never| match never {}),
         }
     }
 
@@ -111,6 +116,10 @@ impl SourceRepo for cdb::DeploymentClient {
             Err(cdb::FileError::NotFound(_)) => Ok(None),
             Err(source) => Err(source),
         }
+    }
+
+    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
+        self.path_hash(path).await
     }
 
     async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {

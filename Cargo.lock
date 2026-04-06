@@ -5469,6 +5469,7 @@ version = "0.1.0"
 dependencies = [
  "cdb",
  "chrono",
+ "gix-hash",
  "hex",
  "ids",
  "ordered-float",

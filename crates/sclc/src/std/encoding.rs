@@ -68,7 +68,7 @@ fn to_json_value(value: &Value) -> Result<JsonValue, EvalError> {
         Value::Exception(_) => {
             Err(EvalErrorKind::Custom("cannot encode exception value as JSON".into()).into())
         }
-        Value::Path(value) => Ok(JsonValue::String(value.clone())),
+        Value::Path(pv) => Ok(JsonValue::String(pv.path.clone())),
         Value::Record(record) => Ok(JsonValue::Object(record_to_map(record)?)),
         Value::Dict(dict) => Ok(JsonValue::Object(dict_to_map(dict)?)),
     }

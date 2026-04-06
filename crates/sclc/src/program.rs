@@ -15,6 +15,8 @@ pub struct Program<S> {
     packages: HashMap<ModuleId, Package<AnySource<S>>>,
     /// The package ID of the user's own package, used to resolve `Self/…` imports.
     self_package_id: Option<ModuleId>,
+    /// Map from resolved path string (e.g. `/data.txt`) to Git object hash.
+    path_hashes: HashMap<String, gix_hash::ObjectId>,
 }
 
 impl<S> Program<S> {
@@ -46,6 +48,11 @@ impl<S> Program<S> {
     /// Returns all known package names.
     pub fn package_names(&self) -> impl Iterator<Item = &ModuleId> {
         self.packages.keys()
+    }
+
+    /// Look up the Git object hash for a resolved path string.
+    pub fn path_hash(&self, resolved: &str) -> Option<&gix_hash::ObjectId> {
+        self.path_hashes.get(resolved)
     }
 
     /// Look up cached children for a path within the user's own package.
@@ -158,6 +165,7 @@ impl<S: SourceRepo> Program<S> {
         Self {
             packages,
             self_package_id: None,
+            path_hashes: HashMap::new(),
         }
     }
 
@@ -300,6 +308,10 @@ impl<S: SourceRepo> Program<S> {
     /// Preload directory listings for all path expressions found in loaded
     /// modules. This populates the children cache so the type checker can
     /// validate paths synchronously via [`path_exists_cached`](Program::path_exists_cached).
+    ///
+    /// Also queries the source repo for Git object hashes of each resolved
+    /// path and stores them so the evaluator can build content-addressed
+    /// [`PathValue`](crate::PathValue)s.
     pub async fn resolve_paths(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
         let diags = DiagList::new();
 
@@ -331,6 +343,7 @@ impl<S: SourceRepo> Program<S> {
 
         // Resolve each path and determine all ancestor directories to preload.
         let mut dirs_to_preload: HashSet<PathBuf> = HashSet::new();
+        let mut resolved_paths: Vec<String> = Vec::new();
 
         for (module_id, path_expr) in &collected {
             let resolved = path_expr.resolve_with_context(module_id, self.self_package_id.as_ref());
@@ -345,14 +358,25 @@ impl<S: SourceRepo> Program<S> {
                 prefix.push(component);
                 dirs_to_preload.insert(prefix.clone());
             }
+
+            resolved_paths.push(resolved);
         }
 
-        // Preload directory listings in the user's package
+        // Preload directory listings and query path hashes in the user's package.
         if let Some(pkg_id) = &self.self_package_id
             && let Some(package) = self.packages.get_mut(pkg_id)
         {
             for dir in &dirs_to_preload {
                 let _ = package.list_children(dir).await;
+            }
+
+            // Query hashes for each resolved path.
+            for resolved in &resolved_paths {
+                let rel = resolved.strip_prefix('/').unwrap_or(resolved);
+                let repo_path = Path::new(rel);
+                if let Ok(Some(hash)) = package.source().path_hash(repo_path).await {
+                    self.path_hashes.insert(resolved.clone(), hash);
+                }
             }
         }
 

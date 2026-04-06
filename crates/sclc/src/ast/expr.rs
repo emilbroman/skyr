@@ -263,7 +263,15 @@ impl Expr {
             Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
-                Ok(crate::eval::tracked(Value::Path(resolved)))
+                let hash = evaluator
+                    .program
+                    .path_hash(&resolved)
+                    .copied()
+                    .unwrap_or_else(|| gix_hash::ObjectId::null(gix_hash::Kind::Sha1));
+                Ok(crate::eval::tracked(Value::Path(crate::PathValue {
+                    path: resolved,
+                    hash,
+                })))
             }
             Expr::Extern(extern_expr) => extern_expr.eval(evaluator, env, expr),
             Expr::If(if_expr) => if_expr.eval(evaluator, env, expr),
