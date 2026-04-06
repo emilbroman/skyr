@@ -240,16 +240,33 @@ impl ContainerPlugin {
             .assert_str_ref()
             .map_err(|e| PluginError::InvalidInput(format!("name: {e}")))?
             .to_string();
-        let context = inputs
+        let context_path = inputs
             .get("context")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("context: {e}")))?
-            .to_string();
-        let containerfile = inputs
+            .assert_path_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("context: {e}")))?;
+        let containerfile_path = inputs
             .get("containerfile")
-            .assert_str_ref()
-            .map_err(|e| PluginError::InvalidInput(format!("containerfile: {e}")))?
-            .to_string();
+            .assert_path_ref()
+            .map_err(|e| PluginError::InvalidInput(format!("containerfile: {e}")))?;
+
+        // Strip leading '/' from paths (they are repo-root-relative)
+        let context = context_path.path.trim_start_matches('/').to_string();
+        let cf_stripped = containerfile_path.path.trim_start_matches('/');
+
+        // Compute containerfile relative to context for buildkit
+        let containerfile = if context.is_empty() {
+            cf_stripped.to_string()
+        } else {
+            cf_stripped
+                .strip_prefix(&context)
+                .and_then(|s| s.strip_prefix('/'))
+                .ok_or_else(|| {
+                    PluginError::InvalidInput(
+                        "containerfile must be within the context directory".into(),
+                    )
+                })?
+                .to_string()
+        };
 
         info!(
             resource_type = %id.typ,
