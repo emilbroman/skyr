@@ -1247,30 +1247,26 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
                     }
                 }
                 match &lhs_ty.kind {
-                    TypeKind::Record(record_ty) => {
-                        if let Some(member_ty) = record_ty.get(prop_access.property.name.as_str()) {
-                            if let Some((cursor, _)) = &prop_access.property.cursor {
-                                cursor.set_type(member_ty.clone());
-                                cursor.set_identifier(CursorIdentifier::Type(
-                                    prop_access.property.name.clone(),
-                                ));
-                                if let Some(doc) =
-                                    record_ty.get_doc(prop_access.property.name.as_str())
-                                {
-                                    cursor.set_description(doc.to_owned());
-                                }
+                    TypeKind::Record(record_ty)
+                        if let Some(member_ty) =
+                            record_ty.get(prop_access.property.name.as_str()) =>
+                    {
+                        if let Some((cursor, _)) = &prop_access.property.cursor {
+                            cursor.set_type(member_ty.clone());
+                            cursor.set_identifier(CursorIdentifier::Type(
+                                prop_access.property.name.clone(),
+                            ));
+                            if let Some(doc) = record_ty.get_doc(prop_access.property.name.as_str())
+                            {
+                                cursor.set_description(doc.to_owned());
                             }
-                            member_ty.clone()
+                        }
+                        if let Some(lhs_name) = &lhs_ty.name() {
+                            member_ty
+                                .clone()
+                                .with_name(format!("{}.{}", lhs_name, prop_access.property.name))
                         } else {
-                            if let Ok(module_id) = env.module_id() {
-                                diags.push(UndefinedMember {
-                                    module_id,
-                                    name: prop_access.property.name.clone(),
-                                    ty: lhs_ty,
-                                    property: prop_access.property.clone(),
-                                });
-                            }
-                            Type::Never
+                            member_ty.clone()
                         }
                     }
                     TypeKind::Never => Type::Never,
