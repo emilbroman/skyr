@@ -8,14 +8,12 @@ pub struct ExternExpr {
 }
 
 use crate::eval::{Eval, EvalEnv, EvalError, EvalErrorKind};
-use crate::{
-    DiagList, Diagnosed, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-};
+use crate::{DiagList, Diagnosed, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv};
 
 impl ExternExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
@@ -23,9 +21,9 @@ impl ExternExpr {
         Ok(Diagnosed::new(resolved_ty, diags))
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::checker::{FreeVarConstraints, UndefinedVariable, next_type_id};
-use crate::{DiagList, Diagnosed, SourceRepo, Type, TypeCheckError, TypeChecker, TypeEnv};
+use crate::{DiagList, Diagnosed, Type, TypeCheckError, TypeChecker, TypeEnv};
 
-pub(crate) fn synth_var<S: SourceRepo>(
-    checker: &TypeChecker<'_, S>,
+pub(crate) fn synth_var(
+    checker: &TypeChecker<'_>,
     env: &TypeEnv<'_>,
     expr: &crate::Loc<super::Expr>,
     var: &crate::Loc<super::Var>,
@@ -83,8 +83,8 @@ pub(crate) fn synth_var<S: SourceRepo>(
     Ok(Diagnosed::new(Type::Never, diags))
 }
 
-pub(crate) fn synth_global<S: SourceRepo>(
-    checker: &TypeChecker<'_, S>,
+pub(crate) fn synth_global(
+    checker: &TypeChecker<'_>,
     env: &TypeEnv<'_>,
     expr: &crate::Loc<super::Expr>,
     var: &crate::Loc<super::Var>,

@@ -5,8 +5,8 @@ use ordered_float::NotNan;
 
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
-    DiagList, Diagnosed, Loc, ModuleId, SourceRepo, TrackedValue, Type, TypeCheckError,
-    TypeChecker, TypeEnv, TypeKind, Value,
+    DiagList, Diagnosed, Loc, ModuleId, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    TypeKind, Value,
 };
 
 use super::{
@@ -130,7 +130,7 @@ impl PathExpr {
     /// repository root. Relative paths (starting with `.` or `..`) are resolved
     /// against the directory containing the current module. Absolute paths are
     /// returned as-is after normalisation.
-    fn resolve<S: SourceRepo>(&self, evaluator: &Eval<'_, S>, env: &EvalEnv<'_>) -> String {
+    fn resolve(&self, evaluator: &Eval<'_>, env: &EvalEnv<'_>) -> String {
         let module_id = env
             .module_id
             .expect("module_id should be set during evaluation");
@@ -168,9 +168,9 @@ impl Expr {
     }
 
     /// Synthesis mode: bottom-up type inference with no expected type.
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -224,9 +224,9 @@ impl Expr {
     }
 
     /// Check mode: validate expression against an expected type.
-    pub(crate) fn type_check<S: SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &Type,
@@ -249,9 +249,9 @@ impl Expr {
     }
 
     /// Evaluate the expression.
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {

@@ -1,6 +1,6 @@
 const INT_RESOURCE_TYPE: &str = "Std/Random.Int";
 
-pub fn register_extern<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
+pub fn register_extern(eval: &mut crate::Eval<'_>) {
     eval.add_extern_fn(INT_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 

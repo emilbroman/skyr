@@ -1,26 +1,31 @@
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use thiserror::Error;
 
-use crate::{
-    AnySource, ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo, ast,
-};
+use crate::{ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, SourceRepo, ast};
 use crate::{TrackedValue, std::StdSourceRepo};
 
-#[derive(Clone, Default)]
-pub struct Program<S> {
-    packages: HashMap<ModuleId, Package<AnySource<S>>>,
+#[derive(Clone)]
+pub struct Program {
+    packages: HashMap<ModuleId, Package>,
     /// The package ID of the user's own package, used to resolve `Self/…` imports.
     self_package_id: Option<ModuleId>,
     /// Map from resolved path string (e.g. `/data.txt`) to Git object hash.
     path_hashes: HashMap<String, gix_hash::ObjectId>,
 }
 
-impl<S> Program<S> {
-    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package<AnySource<S>>)> {
+impl Default for Program {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Program {
+    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package)> {
         self.packages.iter()
     }
 
@@ -29,10 +34,7 @@ impl<S> Program<S> {
         self.self_package_id.as_ref()
     }
 
-    pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError>
-    where
-        S: SourceRepo,
-    {
+    pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError> {
         crate::TypeChecker::new(self).check_program()
     }
 
@@ -117,51 +119,12 @@ impl<S> Program<S> {
         let _ = resolved_path;
         None
     }
-}
 
-#[derive(Error, Debug)]
-pub enum ResolveImportError {
-    #[error("failed to open import {import_path} from package {package_name}: {source}")]
-    Open {
-        import_path: ModuleId,
-        package_name: ModuleId,
-        module_path: PathBuf,
-        #[source]
-        source: OpenError,
-    },
-}
-
-#[derive(Error, Debug)]
-pub enum EvaluateError {
-    #[error("module not loaded: {0}")]
-    ModuleNotLoaded(ModuleId),
-
-    #[error("failed to evaluate module {0}: {1}")]
-    Eval(ModuleId, #[source] crate::EvalError),
-}
-
-#[derive(Error, Debug)]
-#[error("module not found: {import_path}")]
-pub struct InvalidImport {
-    /// The module ID of the file containing the import statement.
-    pub source_module_id: ModuleId,
-    /// The target import path that could not be resolved.
-    pub import_path: ModuleId,
-    /// The span covering the import path (first segment start to last segment end).
-    pub path_span: crate::Span,
-}
-
-impl Diag for InvalidImport {
-    fn locate(&self) -> (ModuleId, crate::Span) {
-        (self.source_module_id.clone(), self.path_span)
-    }
-}
-
-impl<S: SourceRepo> Program<S> {
     pub fn new() -> Self {
         let mut packages = HashMap::new();
         let std = StdSourceRepo::new();
-        packages.insert(std.package_id(), Package::new(AnySource::Std(std)));
+        let pkg_id = std.package_id();
+        packages.insert(pkg_id, Package::new(Arc::new(std)));
         Self {
             packages,
             self_package_id: None,
@@ -169,26 +132,26 @@ impl<S: SourceRepo> Program<S> {
         }
     }
 
-    pub async fn open_package(&mut self, source: S) -> &mut Package<AnySource<S>> {
-        let name = SourceRepo::package_id(&source);
+    pub async fn open_package(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
+        let name = source.package_id();
         self.self_package_id = Some(name.clone());
         self.packages
             .entry(name)
-            .or_insert_with(|| Package::new(AnySource::User(source)))
+            .or_insert_with(|| Package::new(Arc::new(source)))
     }
 
-    pub fn replace_user_source(&mut self, source: S) -> &mut Package<AnySource<S>> {
-        let name = SourceRepo::package_id(&source);
+    pub fn replace_user_source(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
+        let name = source.package_id();
         self.self_package_id = Some(name.clone());
         self.path_hashes.clear();
         if self.packages.contains_key(&name) {
             let pkg = self.packages.get_mut(&name).unwrap();
-            pkg.replace_source(AnySource::User(source));
+            pkg.replace_source(Arc::new(source));
             pkg
         } else {
             self.packages
                 .entry(name)
-                .or_insert_with(|| Package::new(AnySource::User(source)))
+                .or_insert_with(|| Package::new(Arc::new(source)))
         }
     }
 
@@ -462,7 +425,7 @@ impl<S: SourceRepo> Program<S> {
     pub fn evaluate(
         &self,
         module_id: &ModuleId,
-        eval: &crate::Eval<'_, S>,
+        eval: &crate::Eval<'_>,
     ) -> Result<Diagnosed<TrackedValue>, EvaluateError> {
         let Some(file_mod) = self.resolve_import_path(module_id) else {
             return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
@@ -521,5 +484,43 @@ impl<S: SourceRepo> Program<S> {
         package
             .modules()
             .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum ResolveImportError {
+    #[error("failed to open import {import_path} from package {package_name}: {source}")]
+    Open {
+        import_path: ModuleId,
+        package_name: ModuleId,
+        module_path: PathBuf,
+        #[source]
+        source: OpenError,
+    },
+}
+
+#[derive(Error, Debug)]
+pub enum EvaluateError {
+    #[error("module not loaded: {0}")]
+    ModuleNotLoaded(ModuleId),
+
+    #[error("failed to evaluate module {0}: {1}")]
+    Eval(ModuleId, #[source] crate::EvalError),
+}
+
+#[derive(Error, Debug)]
+#[error("module not found: {import_path}")]
+pub struct InvalidImport {
+    /// The module ID of the file containing the import statement.
+    pub source_module_id: ModuleId,
+    /// The target import path that could not be resolved.
+    pub import_path: ModuleId,
+    /// The span covering the import path (first segment start to last segment end).
+    pub path_span: crate::Span,
+}
+
+impl Diag for InvalidImport {
+    fn locate(&self) -> (ModuleId, crate::Span) {
+        (self.source_module_id.clone(), self.path_span)
     }
 }

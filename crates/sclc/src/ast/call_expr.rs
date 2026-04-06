@@ -30,9 +30,9 @@ use crate::{DiagList, Diagnosed, FnType, Type, TypeKind};
 
 impl CallExpr {
     #[inline(never)]
-    pub(crate) fn type_synth<S: crate::SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -167,9 +167,9 @@ impl CallExpr {
 
     /// Check arguments against a fully-instantiated (no type params) fn type
     /// and return the return type.
-    fn check_args_and_return<S: crate::SourceRepo>(
+    fn check_args_and_return(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         fn_ty: &FnType,
         mut diags: DiagList,
@@ -226,9 +226,9 @@ impl CallExpr {
     }
 
     #[inline(never)]
-    fn synth_call_free_var<S: crate::SourceRepo>(
+    fn synth_call_free_var(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         callee_var_id: usize,
         diags: &mut DiagList,
@@ -253,9 +253,9 @@ impl CallExpr {
     }
 
     #[inline(never)]
-    pub(crate) fn type_check<S: crate::SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &Type,
@@ -274,9 +274,9 @@ use crate::{TrackedValue, Value};
 
 impl CallExpr {
     #[inline(never)]
-    pub(crate) fn eval<S: crate::SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {

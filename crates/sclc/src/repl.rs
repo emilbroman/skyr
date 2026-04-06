@@ -4,13 +4,13 @@ use tokio::sync::mpsc;
 
 use crate::{
     DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, Program, RecordType,
-    SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
 #[derive(Clone)]
-pub struct ReplState<S: SourceRepo> {
+pub struct ReplState {
     line_number: usize,
-    program: Program<S>,
+    program: Program,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
@@ -44,9 +44,9 @@ impl From<EvalError> for ReplError {
     }
 }
 
-impl<S: SourceRepo> ReplState<S> {
+impl ReplState {
     pub fn new(
-        program: Program<S>,
+        program: Program,
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
@@ -60,11 +60,11 @@ impl<S: SourceRepo> ReplState<S> {
         }
     }
 
-    pub fn program(&self) -> &Program<S> {
+    pub fn program(&self) -> &Program {
         &self.program
     }
 
-    pub fn program_mut(&mut self) -> &mut Program<S> {
+    pub fn program_mut(&mut self) -> &mut Program {
         &mut self.program
     }
 
@@ -183,7 +183,7 @@ impl<S: SourceRepo> ReplState<S> {
     }
 
     /// Create an `Eval` instance for evaluating imports.
-    pub fn make_eval(&self) -> Eval<'_, S> {
+    pub fn make_eval(&self) -> Eval<'_> {
         Eval::new(
             &self.program,
             self.effects_tx.clone(),

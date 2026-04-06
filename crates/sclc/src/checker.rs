@@ -5,8 +5,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    AnySource, CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package,
-    Program, RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
+    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package, Program,
+    RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -719,8 +719,8 @@ impl<'a> TypeEnv<'a> {
 // TypeChecker struct
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub struct TypeChecker<'p, S> {
-    pub(crate) program: &'p Program<S>,
+pub struct TypeChecker<'p> {
+    pub(crate) program: &'p Program,
     /// Cache for resolved global expression types (keyed by expression pointer).
     /// Avoids re-checking the same global expression multiple times within a
     /// single type-checking pass. Diagnostics are not cached — they are only
@@ -732,8 +732,8 @@ pub struct TypeChecker<'p, S> {
     type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
 
-impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
-    pub fn new(program: &'p Program<S>) -> Self {
+impl<'p> TypeChecker<'p> {
+    pub fn new(program: &'p Program) -> Self {
         Self {
             program,
             global_cache: RefCell::new(HashMap::new()),
@@ -794,7 +794,7 @@ impl<'p, S: crate::SourceRepo> TypeChecker<'p, S> {
     pub fn check_package(
         &self,
         env: &TypeEnv<'_>,
-        package: &Package<AnySource<S>>,
+        package: &Package,
     ) -> Result<Diagnosed<()>, TypeCheckError> {
         let package_id = package.package_id();
         let mut diags = DiagList::new();
@@ -1895,16 +1895,15 @@ fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::Modul
 mod tests {
     use super::{TypeChecker, next_type_id};
     use crate::{
-        DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, StdSourceRepo, Type,
-        TypeKind,
+        DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, Type, TypeKind,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
         },
     };
 
-    fn checker() -> TypeChecker<'static, StdSourceRepo> {
-        let program = Box::new(Program::<StdSourceRepo>::new());
+    fn checker() -> TypeChecker<'static> {
+        let program = Box::new(Program::new());
         let program = Box::leak(program);
         TypeChecker::new(program)
     }
@@ -2719,8 +2718,8 @@ mod tests {
     fn check_module(source: &str) -> crate::Diagnosed<Type> {
         let module_id = ModuleId::default();
         let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
-        let program = Box::new(Program::<StdSourceRepo>::new());
-        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let program = Box::new(Program::new());
+        let program: &'static Program = Box::leak(program);
         let checker = TypeChecker::new(program);
         let env = super::TypeEnv::new().with_module_id(&module_id);
         checker
@@ -2812,8 +2811,8 @@ mod tests {
             &module_id,
         )
         .into_inner();
-        let program = Box::new(Program::<StdSourceRepo>::new());
-        let program: &'static Program<StdSourceRepo> = Box::leak(program);
+        let program = Box::new(Program::new());
+        let program: &'static Program = Box::leak(program);
         let checker = TypeChecker::new(program);
         let env = super::TypeEnv::new().with_module_id(&module_id);
         let diagnosed = checker.type_level_exports(&env, &file_mod);

@@ -11,15 +11,12 @@ pub struct IfExpr {
 }
 
 use crate::eval::{Eval, EvalEnv, EvalError, EvalErrorKind};
-use crate::{
-    DiagList, Diagnosed, SourceRepo, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    Value,
-};
+use crate::{DiagList, Diagnosed, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, Value};
 
 impl IfExpr {
-    pub(crate) fn type_synth<S: SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -43,9 +40,9 @@ impl IfExpr {
         Ok(Diagnosed::new(Type::Optional(Box::new(then_ty)), diags))
     }
 
-    pub(crate) fn type_check<S: SourceRepo>(
+    pub(crate) fn type_check(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
@@ -73,9 +70,9 @@ impl IfExpr {
         Ok(Diagnosed::new(result_ty, diags))
     }
 
-    pub(crate) fn eval<S: SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &crate::Loc<super::Expr>,
     ) -> Result<TrackedValue, EvalError> {

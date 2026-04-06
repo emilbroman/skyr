@@ -16,9 +16,9 @@ impl IndexedAccessExpr {
         vars
     }
 
-    pub fn type_synth<S: crate::SourceRepo>(
+    pub fn type_synth(
         &self,
-        checker: &crate::checker::TypeChecker<'_, S>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expr: &crate::Loc<Expr>,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
@@ -58,9 +58,9 @@ impl IndexedAccessExpr {
         Ok(Diagnosed::new(result_ty, diags))
     }
 
-    pub fn eval<S: crate::SourceRepo>(
+    pub fn eval(
         &self,
-        evaluator: &crate::eval::Eval<'_, S>,
+        evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::Value;

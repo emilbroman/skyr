@@ -14,9 +14,9 @@ impl TypeCastExpr {
         self.expr.as_ref().free_vars()
     }
 
-    pub fn type_synth<S: crate::SourceRepo>(
+    pub fn type_synth(
         &self,
-        checker: &crate::checker::TypeChecker<'_, S>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
@@ -27,9 +27,9 @@ impl TypeCastExpr {
         Ok(crate::Diagnosed::new(target_ty, diags))
     }
 
-    pub fn type_check<S: crate::SourceRepo>(
+    pub fn type_check(
         &self,
-        checker: &crate::checker::TypeChecker<'_, S>,
+        checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expr: &crate::Loc<Expr>,
         expected: &crate::Type,
@@ -43,9 +43,9 @@ impl TypeCastExpr {
         Ok(crate::Diagnosed::new(target_ty, diags))
     }
 
-    pub fn eval<S: crate::SourceRepo>(
+    pub fn eval(
         &self,
-        evaluator: &crate::eval::Eval<'_, S>,
+        evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         evaluator.eval_expr(env, &self.expr)

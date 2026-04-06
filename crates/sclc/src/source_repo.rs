@@ -1,7 +1,10 @@
-use std::{error::Error, path::Path};
+use std::error::Error;
+use std::path::Path;
 
 use crate::ModuleId;
-use crate::std::StdSourceRepo;
+
+/// A boxed, thread-safe error type used by [`SourceRepo`] methods.
+pub type SourceError = Box<dyn Error + Send + Sync>;
 
 /// An entry returned by [`SourceRepo::list_children`].
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -14,16 +17,14 @@ pub enum ChildEntry {
     File(String),
 }
 
-#[allow(async_fn_in_trait)]
-pub trait SourceRepo {
-    type Err: Error + Send + Sync + 'static;
-
+#[async_trait::async_trait]
+pub trait SourceRepo: Send + Sync {
     fn package_id(&self) -> ModuleId;
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err>;
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError>;
 
     /// List child entries (modules, directories, and files) under the given path
     /// within this source repository.
-    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
+    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, SourceError> {
         let _ = path;
         Ok(Vec::new())
     }
@@ -34,75 +35,17 @@ pub trait SourceRepo {
     /// The default implementation returns a null SHA-1 hash when the path
     /// exists (sufficient for non-CDB backends). CDB overrides this with
     /// the real tree/blob OID.
-    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
+    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, SourceError> {
         Ok(self
             .read_file(path)
             .await?
             .map(|_| gix_hash::ObjectId::null(gix_hash::Kind::Sha1)))
     }
-
-    fn register_extern<S2: SourceRepo>(_eval: &mut crate::Eval<'_, S2>) {}
-}
-
-#[derive(Clone)]
-pub enum AnySource<S> {
-    User(S),
-    Std(StdSourceRepo),
-}
-
-#[derive(thiserror::Error, Debug)]
-pub enum AnySourceError<E: Error + Send + Sync + 'static> {
-    #[error(transparent)]
-    User(E),
-}
-
-impl<S: SourceRepo> SourceRepo for AnySource<S> {
-    type Err = AnySourceError<S::Err>;
-
-    fn package_id(&self) -> ModuleId {
-        match self {
-            AnySource::User(source) => source.package_id(),
-            AnySource::Std(source) => source.package_id(),
-        }
-    }
-
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
-        match self {
-            AnySource::User(source) => source.read_file(path).await.map_err(AnySourceError::User),
-            AnySource::Std(source) => source.read_file(path).await.map_err(|never| match never {}),
-        }
-    }
-
-    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
-        match self {
-            AnySource::User(source) => source
-                .list_children(path)
-                .await
-                .map_err(AnySourceError::User),
-            AnySource::Std(source) => source
-                .list_children(path)
-                .await
-                .map_err(|never| match never {}),
-        }
-    }
-
-    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
-        match self {
-            AnySource::User(source) => source.path_hash(path).await.map_err(AnySourceError::User),
-            AnySource::Std(source) => source.path_hash(path).await.map_err(|never| match never {}),
-        }
-    }
-
-    fn register_extern<S2: SourceRepo>(eval: &mut crate::Eval<'_, S2>) {
-        S::register_extern(eval);
-        StdSourceRepo::register_extern(eval);
-    }
 }
 
 #[cfg(feature = "cdb")]
+#[async_trait::async_trait]
 impl SourceRepo for cdb::DeploymentClient {
-    type Err = cdb::FileError;
-
     fn package_id(&self) -> ModuleId {
         let repo_qid = self.repo_qid();
         [repo_qid.org.to_string(), repo_qid.repo.to_string()]
@@ -110,19 +53,19 @@ impl SourceRepo for cdb::DeploymentClient {
             .collect::<ModuleId>()
     }
 
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError> {
         match self.read_file(path).await {
             Ok(data) => Ok(Some(data)),
             Err(cdb::FileError::NotFound(_)) => Ok(None),
-            Err(source) => Err(source),
+            Err(source) => Err(source.into()),
         }
     }
 
-    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, Self::Err> {
-        self.path_hash(path).await
+    async fn path_hash(&self, path: &Path) -> Result<Option<gix_hash::ObjectId>, SourceError> {
+        self.path_hash(path).await.map_err(Into::into)
     }
 
-    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
+    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, SourceError> {
         let dir_path = if path.as_os_str().is_empty() {
             None
         } else {
@@ -146,7 +89,7 @@ impl SourceRepo for cdb::DeploymentClient {
                 Ok(entries)
             }
             Err(cdb::FileError::NotFound(_)) => Ok(Vec::new()),
-            Err(err) => Err(err),
+            Err(err) => Err(err.into()),
         }
     }
 }

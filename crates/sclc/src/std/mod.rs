@@ -1,6 +1,6 @@
-use std::{collections::HashMap, convert::Infallible, path::Path};
+use std::{collections::HashMap, path::Path};
 
-use crate::{ChildEntry, ModuleId, RecordType, SourceRepo, Type};
+use crate::{ChildEntry, ModuleId, RecordType, SourceError, SourceRepo, Type};
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {
@@ -16,7 +16,7 @@ macro_rules! std_modules {
             )),*
         ];
 
-        fn register_std_externs<S: crate::SourceRepo>(eval: &mut crate::Eval<'_, S>) {
+        pub(crate) fn register_std_externs(eval: &mut crate::Eval<'_>) {
             $(
                 $module::register_extern(eval);
             )*
@@ -63,19 +63,18 @@ impl Default for StdSourceRepo {
     }
 }
 
+#[async_trait::async_trait]
 impl SourceRepo for StdSourceRepo {
-    type Err = Infallible;
-
     fn package_id(&self) -> ModuleId {
         [String::from("Std")].into()
     }
 
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
+    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError> {
         let key = Self::normalize(path);
         Ok(self.files.get(&key).map(|data| data.to_vec()))
     }
 
-    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, Self::Err> {
+    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, SourceError> {
         let prefix = Self::normalize(path);
         let mut entries = std::collections::BTreeSet::new();
         for key in self.files.keys() {
@@ -94,10 +93,6 @@ impl SourceRepo for StdSourceRepo {
             }
         }
         Ok(entries.into_iter().collect())
-    }
-
-    fn register_extern<S2: SourceRepo>(eval: &mut crate::Eval<'_, S2>) {
-        register_std_externs(eval);
     }
 }
 
@@ -121,25 +116,7 @@ pub async fn stdlib_types() -> Result<HashMap<ModuleId, (Type, RecordType)>, cra
     let mut files = HashMap::new();
     files.insert("Main.scl".to_string(), main_scl.into_bytes());
 
-    // Use a trivial in-memory source repo as the "user" package.
-    struct MemSourceRepo {
-        files: HashMap<String, Vec<u8>>,
-    }
-
-    impl SourceRepo for MemSourceRepo {
-        type Err = Infallible;
-
-        fn package_id(&self) -> ModuleId {
-            [String::from("_StdlibTypes")].into()
-        }
-
-        async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
-            let key = path.to_string_lossy().replace('\\', "/");
-            Ok(self.files.get(&key).cloned())
-        }
-    }
-
-    let source = MemSourceRepo { files };
+    let source = crate::MemSourceRepo::new([String::from("_StdlibTypes")].into(), files);
 
     let mut program = crate::Program::new();
     let package = program.open_package(source).await;

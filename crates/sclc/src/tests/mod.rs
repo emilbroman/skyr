@@ -1,57 +1,8 @@
 use std::collections::HashMap;
-use std::convert::Infallible;
-use std::path::Path;
 
 use ids::ResourceId;
 
-use crate::{Effect, Eval, ModuleId, Record, Resource, SourceRepo, TrackedValue, Value};
-
-/// An in-memory source repository for testing.
-struct MemSourceRepo {
-    package_id: ModuleId,
-    files: HashMap<String, Vec<u8>>,
-}
-
-impl SourceRepo for MemSourceRepo {
-    type Err = Infallible;
-
-    fn package_id(&self) -> ModuleId {
-        self.package_id.clone()
-    }
-
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, Self::Err> {
-        let key = path.to_string_lossy().replace('\\', "/");
-        Ok(self.files.get(&key).cloned())
-    }
-
-    async fn list_children(&self, path: &Path) -> Result<Vec<crate::ChildEntry>, Self::Err> {
-        let prefix = if path.as_os_str().is_empty() {
-            String::new()
-        } else {
-            format!("{}/", path.to_string_lossy().replace('\\', "/"))
-        };
-        let mut entries = std::collections::BTreeSet::new();
-        for key in self.files.keys() {
-            let relative = if prefix.is_empty() {
-                key.as_str()
-            } else if let Some(rest) = key.strip_prefix(&prefix) {
-                rest
-            } else {
-                continue;
-            };
-            // Only direct children
-            if let Some(slash_pos) = relative.find('/') {
-                let dir_name = &relative[..slash_pos];
-                entries.insert(crate::ChildEntry::Directory(dir_name.to_string()));
-            } else if let Some(stem) = relative.strip_suffix(".scl") {
-                entries.insert(crate::ChildEntry::Module(stem.to_string()));
-            } else {
-                entries.insert(crate::ChildEntry::File(relative.to_string()));
-            }
-        }
-        Ok(entries.into_iter().collect())
-    }
-}
+use crate::{Effect, Eval, MemSourceRepo, ModuleId, Record, Resource, TrackedValue, Value};
 
 /// Format an effect in compact form.
 fn format_effect(effect: &Effect) -> String {
@@ -293,10 +244,7 @@ fn load_fixture(dir_name: &str) -> Fixture {
         "fixture {dir_name} must contain Main.scl"
     );
 
-    let source = MemSourceRepo {
-        package_id: [dir_name.to_string()].into_iter().collect(),
-        files,
-    };
+    let source = MemSourceRepo::new([dir_name.to_string()].into_iter().collect(), files);
 
     // Load optional expectation files
     let diag_log = std::fs::read_to_string(fixture_path.join("diag.log")).ok();

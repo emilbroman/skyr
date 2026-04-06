@@ -64,9 +64,9 @@ use crate::{DiagList, Diagnosed, Type, TypeKind};
 
 impl BinaryExpr {
     #[inline(never)]
-    pub(crate) fn type_synth<S: crate::SourceRepo>(
+    pub(crate) fn type_synth(
         &self,
-        checker: &TypeChecker<'_, S>,
+        checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
@@ -101,71 +101,70 @@ impl BinaryExpr {
             .unpack(&mut diags)
             .unfold();
 
-        let result_ty = if matches!(lhs_ty.kind, TypeKind::Never)
-            || matches!(rhs_ty.kind, TypeKind::Never)
-        {
-            Type::Never
-        } else {
-            match self.op {
-                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                    match TypeChecker::<S>::arithmetic_result(self.op, &lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
+        let result_ty =
+            if matches!(lhs_ty.kind, TypeKind::Never) || matches!(rhs_ty.kind, TypeKind::Never) {
+                Type::Never
+            } else {
+                match self.op {
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                        match TypeChecker::arithmetic_result(self.op, &lhs_ty.kind, &rhs_ty.kind) {
+                            Some(ty) => ty,
+                            None => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: self.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
+                        }
+                    }
+                    BinaryOp::Eq | BinaryOp::Neq => {
+                        if lhs_ty.is_disjoint_from(&rhs_ty) {
+                            diags.push(DisjointEquality {
                                 module_id: env.module_id()?,
-                                op: self.op,
                                 lhs: lhs_ty.clone(),
                                 rhs: rhs_ty.clone(),
                                 span: expr.span(),
                             });
-                            Type::Never
+                        }
+                        Type::Bool
+                    }
+                    BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
+                        match TypeChecker::comparison_result(&lhs_ty.kind, &rhs_ty.kind) {
+                            Some(ty) => ty,
+                            None => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: self.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
                         }
                     }
-                }
-                BinaryOp::Eq | BinaryOp::Neq => {
-                    if lhs_ty.is_disjoint_from(&rhs_ty) {
-                        diags.push(DisjointEquality {
-                            module_id: env.module_id()?,
-                            lhs: lhs_ty.clone(),
-                            rhs: rhs_ty.clone(),
-                            span: expr.span(),
-                        });
-                    }
-                    Type::Bool
-                }
-                BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
-                    match TypeChecker::<S>::comparison_result(&lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
-                                module_id: env.module_id()?,
-                                op: self.op,
-                                lhs: lhs_ty.clone(),
-                                rhs: rhs_ty.clone(),
-                                span: expr.span(),
-                            });
-                            Type::Never
+                    BinaryOp::And | BinaryOp::Or => {
+                        match TypeChecker::logical_result(&lhs_ty.kind, &rhs_ty.kind) {
+                            Some(ty) => ty,
+                            None => {
+                                diags.push(InvalidBinaryOperands {
+                                    module_id: env.module_id()?,
+                                    op: self.op,
+                                    lhs: lhs_ty.clone(),
+                                    rhs: rhs_ty.clone(),
+                                    span: expr.span(),
+                                });
+                                Type::Never
+                            }
                         }
                     }
+                    BinaryOp::NilCoalesce => unreachable!("handled above"),
                 }
-                BinaryOp::And | BinaryOp::Or => {
-                    match TypeChecker::<S>::logical_result(&lhs_ty.kind, &rhs_ty.kind) {
-                        Some(ty) => ty,
-                        None => {
-                            diags.push(InvalidBinaryOperands {
-                                module_id: env.module_id()?,
-                                op: self.op,
-                                lhs: lhs_ty.clone(),
-                                rhs: rhs_ty.clone(),
-                                span: expr.span(),
-                            });
-                            Type::Never
-                        }
-                    }
-                }
-                BinaryOp::NilCoalesce => unreachable!("handled above"),
-            }
-        };
+            };
 
         Ok(Diagnosed::new(result_ty, diags))
     }
@@ -178,9 +177,9 @@ use crate::{TrackedValue, Value};
 
 impl BinaryExpr {
     #[inline(never)]
-    pub(crate) fn eval<S: crate::SourceRepo>(
+    pub(crate) fn eval(
         &self,
-        evaluator: &Eval<'_, S>,
+        evaluator: &Eval<'_>,
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
