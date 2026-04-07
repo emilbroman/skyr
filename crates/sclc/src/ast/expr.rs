@@ -94,6 +94,10 @@ impl PathExpr {
         self.segments.iter().map(|s| s.value.as_str())
     }
 
+    pub fn is_root(&self) -> bool {
+        self.segments.is_empty()
+    }
+
     /// Resolve the path expression to an absolute path string relative to the
     /// repository root using the provided module and package context.
     pub fn resolve_with_context(

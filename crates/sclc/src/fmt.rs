@@ -378,9 +378,14 @@ impl Formatter {
                 self.write("\"");
             }
             Expr::Path(p) => {
+                if p.is_root() {
+                    self.write("/");
+                    return;
+                }
+
                 let mut first = true;
                 for segment in p.values() {
-                    if !first {
+                    if !first || (first && !segment.starts_with('.')) {
                         self.write("/");
                     }
                     first = false;
