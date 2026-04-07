@@ -316,8 +316,9 @@ impl Type {
             TypeKind::IsoRec(id, body) => {
                 if !body.contains_var(*id) {
                     // Non-recursive: body doesn't reference the bound variable,
-                    // so just unwrap — preserving the body's name if present.
-                    return *body.clone();
+                    // so just unwrap and continue unfolding in case of nested
+                    // non-recursive IsoRec layers (e.g. re-exported globals).
+                    return body.unfold();
                 }
                 let rec = Type::IsoRec(*id, body.clone());
                 body.substitute(&[(*id, rec)])

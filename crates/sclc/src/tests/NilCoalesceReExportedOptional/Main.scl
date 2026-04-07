@@ -1,0 +1,3 @@
+import Self/Dep/Source
+
+export let result = Source.value ?? 321

@@ -499,3 +499,4 @@ test_case!(NilCoalesceSome);
 test_case!(OptionalChainCoalesce);
 test_case!(DiagOptionalChainNonOptional);
 test_case!(DiagNilCoalesceNonOptional);
+test_case!(NilCoalesceReExportedOptional);
