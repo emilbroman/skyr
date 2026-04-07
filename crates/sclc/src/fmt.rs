@@ -154,8 +154,12 @@ impl Formatter {
                 self.emit_comments_before(stmt_start);
             } else {
                 let prev_end = self.mod_stmt_end(&stmts[i - 1]);
-                // Blank line between top-level statements
-                self.newline();
+                // Blank line between top-level statements, except consecutive imports
+                let both_imports = matches!(&stmts[i - 1], ModStmt::Import(_))
+                    && matches!(stmt, ModStmt::Import(_));
+                if !both_imports {
+                    self.newline();
+                }
                 self.emit_comments_between(prev_end, stmt_start);
             }
             self.emit_mod_stmt(stmt);
@@ -518,22 +522,29 @@ impl Formatter {
         self.write("if (");
         self.emit_expr(&if_expr.condition);
         self.write(")");
-        self.newline();
-        self.indent();
-        self.emit_expr(&if_expr.then_expr);
-        self.dedent();
+        if Self::would_be_multiline_expr(&if_expr.then_expr) {
+            self.newline();
+            self.indent();
+            self.emit_expr(&if_expr.then_expr);
+            self.dedent();
+        } else {
+            self.space();
+            self.emit_expr(&if_expr.then_expr);
+        }
         if let Some(else_expr) = &if_expr.else_expr {
             self.newline();
             self.write("else");
-            // Check if the else branch is itself an if expression
             if matches!(&**else_expr.as_ref(), Expr::If(_)) {
                 self.space();
                 self.emit_expr(else_expr);
-            } else {
+            } else if Self::would_be_multiline_expr(else_expr) {
                 self.newline();
                 self.indent();
                 self.emit_expr(else_expr);
                 self.dedent();
+            } else {
+                self.space();
+                self.emit_expr(else_expr);
             }
         }
     }
@@ -656,6 +667,32 @@ impl Formatter {
         self.write("}");
     }
 
+    /// Check if formatting an expression would produce multiline output.
+    fn would_be_multiline_expr(expr: &Loc<Expr>) -> bool {
+        let mut f = Formatter {
+            comments: vec![],
+            comment_cursor: 0,
+            output: String::new(),
+            indent: 0,
+            at_line_start: true,
+        };
+        f.emit_expr(expr);
+        f.output.contains('\n')
+    }
+
+    /// Check if formatting a list item would produce multiline output.
+    fn would_be_multiline_list_item(item: &ListItem) -> bool {
+        let mut f = Formatter {
+            comments: vec![],
+            comment_cursor: 0,
+            output: String::new(),
+            indent: 0,
+            at_line_start: true,
+        };
+        f.emit_list_item(item);
+        f.output.contains('\n')
+    }
+
     fn emit_list(&mut self, list: &ListExpr, _span: Span) {
         if list.items.is_empty() {
             self.write("[]");
@@ -666,8 +703,24 @@ impl Formatter {
             .items
             .iter()
             .all(|item| matches!(item, ListItem::Expr(_)));
-        if all_simple && list.items.len() <= 4 {
-            // Try inline
+        let any_multiline = list
+            .items
+            .iter()
+            .any(|item| Self::would_be_multiline_list_item(item));
+        if any_multiline {
+            // Multiline: one item per line with trailing commas
+            self.write("[");
+            self.newline();
+            self.indent();
+            for item in list.items.iter() {
+                self.emit_list_item(item);
+                self.write(",");
+                self.newline();
+            }
+            self.dedent();
+            self.write("]");
+        } else if all_simple && list.items.len() <= 4 {
+            // Inline
             self.write("[");
             for (i, item) in list.items.iter().enumerate() {
                 if i > 0 {
@@ -696,16 +749,32 @@ impl Formatter {
             ListItem::If(if_item) => {
                 self.write("if (");
                 self.emit_expr(&if_item.condition);
-                self.write(") ");
-                self.emit_list_item(&if_item.then_item);
+                self.write(")");
+                if Self::would_be_multiline_list_item(&if_item.then_item) {
+                    self.newline();
+                    self.indent();
+                    self.emit_list_item(&if_item.then_item);
+                    self.dedent();
+                } else {
+                    self.write(" ");
+                    self.emit_list_item(&if_item.then_item);
+                }
             }
             ListItem::For(for_item) => {
                 self.write("for (");
                 self.write(&for_item.var.name);
                 self.write(" in ");
                 self.emit_expr(&for_item.iterable);
-                self.write(") ");
-                self.emit_list_item(&for_item.emit_item);
+                self.write(")");
+                if Self::would_be_multiline_list_item(&for_item.emit_item) {
+                    self.newline();
+                    self.indent();
+                    self.emit_list_item(&for_item.emit_item);
+                    self.dedent();
+                } else {
+                    self.write(" ");
+                    self.emit_list_item(&for_item.emit_item);
+                }
             }
         }
     }
@@ -791,9 +860,27 @@ mod tests {
     }
 
     #[test]
-    fn formats_if_else() {
+    fn formats_if_else_simple() {
         let result = format("let x = if (a) b else c");
-        assert_eq!(result, "let x = if (a)\n\tb\nelse\n\tc\n");
+        assert_eq!(result, "let x = if (a) b\nelse c\n");
+    }
+
+    #[test]
+    fn formats_if_else_multiline_then() {
+        let result = format("let x = if (a) {v: 1} else c");
+        assert_eq!(
+            result,
+            "let x = if (a)\n\t{\n\t\tv: 1,\n\t}\nelse c\n"
+        );
+    }
+
+    #[test]
+    fn formats_if_else_multiline_else() {
+        let result = format("let x = if (a) b else {v: 1}");
+        assert_eq!(
+            result,
+            "let x = if (a) b\nelse\n\t{\n\t\tv: 1,\n\t}\n"
+        );
     }
 
     #[test]
@@ -986,5 +1073,47 @@ mod tests {
     fn formats_float() {
         let result = format("let x = 3.14");
         assert_eq!(result, "let x = 3.14\n");
+    }
+
+    #[test]
+    fn formats_consecutive_imports_single_newline() {
+        let result = format("import Std/List\nimport Std/Map");
+        assert_eq!(result, "import Std/List\nimport Std/Map\n");
+    }
+
+    #[test]
+    fn formats_import_then_let_with_blank_line() {
+        let result = format("import Std/List\nlet x = 1");
+        assert_eq!(result, "import Std/List\n\nlet x = 1\n");
+    }
+
+    #[test]
+    fn formats_list_with_multiline_items() {
+        let result = format("let x = [{a: 1}, {b: 2}]");
+        assert_eq!(
+            result,
+            "let x = [\n\t{\n\t\ta: 1,\n\t},\n\t{\n\t\tb: 2,\n\t},\n]\n"
+        );
+    }
+
+    #[test]
+    fn formats_list_with_simple_items_inline() {
+        let result = format("let x = [1, 2, 3]");
+        assert_eq!(result, "let x = [1, 2, 3]\n");
+    }
+
+    #[test]
+    fn formats_for_with_multiline_body() {
+        let result = format("let x = [for (item in list) {name: item}]");
+        assert_eq!(
+            result,
+            "let x = [\n\tfor (item in list)\n\t\t{\n\t\t\tname: item,\n\t\t},\n]\n"
+        );
+    }
+
+    #[test]
+    fn formats_for_with_simple_body_inline() {
+        let result = format("let x = [for (item in list) item]");
+        assert_eq!(result, "let x = [for (item in list) item]\n");
     }
 }
