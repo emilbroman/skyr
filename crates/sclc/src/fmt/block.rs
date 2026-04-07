@@ -10,7 +10,6 @@ pub enum Block {
     /// A group containing potential unfold points, rendered width-aware.
     Group(Vec<GroupItem>),
     /// Indent all content by one level (for forced indentation).
-    #[expect(dead_code)]
     Indent(Box<Block>),
     /// A delimited comma-separated list (records, dicts, lists, params, type params).
     CommaSep(CommaSepBlock),

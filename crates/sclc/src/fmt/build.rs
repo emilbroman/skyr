@@ -370,7 +370,7 @@ impl BlockBuilder {
             Expr::Binary(binary) => self.build_binary(binary, false),
             Expr::If(if_expr) => self.build_if(if_expr),
             Expr::Let(let_expr) => self.build_let_expr(let_expr),
-            Expr::Fn(fn_expr) => self.build_fn(fn_expr),
+            Expr::Fn(fn_expr) => self.build_fn(fn_expr, expr.span()),
             Expr::Call(call) => self.build_call(call),
             Expr::Record(record) => self.build_record(record, expr.span()),
             Expr::Dict(dict) => self.build_dict(dict, expr.span()),
@@ -562,7 +562,7 @@ impl BlockBuilder {
         ])
     }
 
-    fn build_fn(&mut self, fn_expr: &FnExpr) -> Block {
+    fn build_fn(&mut self, fn_expr: &FnExpr, span: Span) -> Block {
         let mut header = vec![Block::Literal("fn".into())];
         header.push(self.build_type_params(&fn_expr.type_params));
 
@@ -591,15 +591,27 @@ impl BlockBuilder {
 
         let body = self.build_expr(&fn_expr.body);
 
-        Block::Group(vec![
-            GroupItem::Block(Block::Seq(header)),
-            GroupItem::PotentialUnfold {
-                tag: 1,
-                space_when_folded: true,
-                indent_children: true,
-                children: vec![body],
-            },
-        ])
+        // If the body starts on a different line than the fn keyword,
+        // always unfold (respect user's formatting choice).
+        let force_unfolded = span.start().line() < fn_expr.body.span().start().line();
+
+        if force_unfolded {
+            Block::Seq(vec![
+                Block::Seq(header),
+                Block::Newline,
+                Block::Indent(Box::new(body)),
+            ])
+        } else {
+            Block::Group(vec![
+                GroupItem::Block(Block::Seq(header)),
+                GroupItem::PotentialUnfold {
+                    tag: 1,
+                    space_when_folded: true,
+                    indent_children: true,
+                    children: vec![body],
+                },
+            ])
+        }
     }
 
     fn build_call(&mut self, call: &CallExpr) -> Block {

@@ -86,9 +86,9 @@ mod tests {
 
     #[test]
     fn formats_fn_expr() {
-        // Short fn body stays inline
+        // Body on separate line in source → stays multiline
         let result = format("let f = fn(x: Int)\n\tx + 1");
-        assert_eq!(result, "let f = fn(x: Int) x + 1\n");
+        assert_eq!(result, "let f = fn(x: Int)\n\tx + 1\n");
     }
 
     #[test]
@@ -295,9 +295,9 @@ mod tests {
 
     #[test]
     fn formats_bounded_type_param() {
-        // Short enough to fit on one line
+        // Body on separate line in source → stays multiline
         let result = format("let f = fn<T <: { name: Str }>(x: T)\n\tx.name");
-        assert_eq!(result, "let f = fn<T <: { name: Str }>(x: T) x.name\n");
+        assert_eq!(result, "let f = fn<T <: { name: Str }>(x: T)\n\tx.name\n");
     }
 
     #[test]
@@ -412,6 +412,20 @@ mod tests {
     fn respects_user_multiline_record_type() {
         let result = format("type Foo {\n\tx: Int,\n}");
         assert_eq!(result, "type Foo {\n\tx: Int,\n}\n");
+    }
+
+    #[test]
+    fn respects_user_multiline_fn() {
+        // Body on separate line → stays multiline even though it would fit inline
+        let result = format("let f = fn(x: Int)\n\tx + 1");
+        assert_eq!(result, "let f = fn(x: Int)\n\tx + 1\n");
+    }
+
+    #[test]
+    fn folds_same_line_fn() {
+        // Body on same line as fn → folds when it fits
+        let result = format("let f = fn(x: Int) x + 1");
+        assert_eq!(result, "let f = fn(x: Int) x + 1\n");
     }
 
     // ── Hugging for nested delimiters ────────────────────────────
