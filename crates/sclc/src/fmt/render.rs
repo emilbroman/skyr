@@ -217,7 +217,25 @@ impl Renderer {
             return;
         }
 
+        // Hugging: when a single item is itself a non-empty CommaSep, render as
+        // `open + inner_unfolded + close` to avoid double-indentation.
+        // e.g. `call({` ... `})` instead of `call(\n\t{\n\t\t...\n\t},\n)`
+        if cs.items.len() == 1
+            && !cs.items[0].has_comments()
+            && let Block::CommaSep(inner) = &cs.items[0].content
+            && !inner.items.is_empty()
+        {
+            self.write(cs.open);
+            self.render_comma_sep_unfolded(inner);
+            self.write(cs.close);
+            return;
+        }
+
         // Unfolded: one item per line with trailing commas
+        self.render_comma_sep_unfolded(cs);
+    }
+
+    fn render_comma_sep_unfolded(&mut self, cs: &CommaSepBlock) {
         self.write(cs.open);
         self.newline();
         self.indent += 1;

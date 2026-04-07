@@ -385,4 +385,76 @@ mod tests {
         let result = format("let x = if (a) b else if (c) d else e");
         assert_eq!(result, "let x = if (a) b else if (c) d else e\n");
     }
+
+    // ── User-controlled unfolding ────────────────────────────────
+
+    #[test]
+    fn respects_user_multiline_record() {
+        // Opening brace on a separate line from first field → stays multiline
+        let result = format("let r = {\n\ta: 1,\n}");
+        assert_eq!(result, "let r = {\n\ta: 1,\n}\n");
+    }
+
+    #[test]
+    fn folds_same_line_record() {
+        // Opening brace on same line as first field → folds when it fits
+        let result = format("let r = { a: 1 }");
+        assert_eq!(result, "let r = { a: 1 }\n");
+    }
+
+    #[test]
+    fn respects_user_multiline_dict() {
+        let result = format("let d = #{\n\t\"a\": 1,\n}");
+        assert_eq!(result, "let d = #{\n\t\"a\": 1,\n}\n");
+    }
+
+    #[test]
+    fn respects_user_multiline_record_type() {
+        let result = format("type Foo {\n\tx: Int,\n}");
+        assert_eq!(result, "type Foo {\n\tx: Int,\n}\n");
+    }
+
+    // ── Hugging for nested delimiters ────────────────────────────
+
+    #[test]
+    fn hugs_record_in_call() {
+        // Single record arg → hugging layout avoids double-indentation
+        let result = format("let x = f({\n\ta: 1,\n\tb: 2,\n})");
+        assert_eq!(result, "let x = f({\n\ta: 1,\n\tb: 2,\n})\n");
+    }
+
+    #[test]
+    fn hugs_list_in_call() {
+        // List too wide to fold → hugging layout (101 chars if folded, exceeds max_width=100)
+        let result = format(
+            "let x = ff([longValueAlphaX, longValueBravo, longValueCharlie, longValueDelta, longValueEchoFoxtrot])",
+        );
+        assert_eq!(
+            result,
+            "let x = ff([\n\tlongValueAlphaX,\n\tlongValueBravo,\n\tlongValueCharlie,\n\tlongValueDelta,\n\tlongValueEchoFoxtrot,\n])\n"
+        );
+    }
+
+    #[test]
+    fn hugs_record_in_list() {
+        let result = format("let x = [{\n\ta: 1,\n}]");
+        assert_eq!(result, "let x = [{\n\ta: 1,\n}]\n");
+    }
+
+    #[test]
+    fn no_hug_when_multiple_args() {
+        // Multiple args → normal unfolded, no hugging
+        let result = format("let x = f({\n\ta: 1,\n}, {\n\tb: 2,\n})");
+        assert_eq!(
+            result,
+            "let x = f(\n\t{\n\t\ta: 1,\n\t},\n\t{\n\t\tb: 2,\n\t},\n)\n"
+        );
+    }
+
+    #[test]
+    fn inline_record_in_call_when_fits() {
+        // Same-line short record in a call → folds entirely inline
+        let result = format("let x = f({ a: 1 })");
+        assert_eq!(result, "let x = f({ a: 1 })\n");
+    }
 }

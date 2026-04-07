@@ -231,6 +231,7 @@ impl BlockBuilder {
             close: ">",
             items,
             space_around: false,
+            force_unfolded: false,
         })
     }
 
@@ -263,6 +264,7 @@ impl BlockBuilder {
                     close: ")",
                     items: param_items,
                     space_around: false,
+                    force_unfolded: false,
                 }));
                 parts.push(Block::Literal(" ".into()));
                 parts.push(self.build_type_expr(&fn_ty.ret));
@@ -297,6 +299,7 @@ impl BlockBuilder {
                     close: ">",
                     items,
                     space_around: false,
+                    force_unfolded: false,
                 }));
                 Block::Seq(parts)
             }
@@ -337,11 +340,14 @@ impl BlockBuilder {
             });
         }
 
+        let force_unfolded = span.start().line() < record.fields[0].var.span().start().line();
+
         Block::CommaSep(CommaSepBlock {
             open: "{",
             close: "}",
             items,
             space_around: true,
+            force_unfolded,
         })
     }
 
@@ -580,6 +586,7 @@ impl BlockBuilder {
             close: ")",
             items: param_items,
             space_around: false,
+            force_unfolded: false,
         }));
 
         let body = self.build_expr(&fn_expr.body);
@@ -613,6 +620,7 @@ impl BlockBuilder {
                 close: ">",
                 items: type_arg_items,
                 space_around: false,
+                force_unfolded: false,
             }));
         }
 
@@ -630,6 +638,7 @@ impl BlockBuilder {
             close: ")",
             items: arg_items,
             space_around: false,
+            force_unfolded: false,
         }));
 
         Block::Seq(parts)
@@ -675,11 +684,14 @@ impl BlockBuilder {
             });
         }
 
+        let force_unfolded = span.start().line() < record.fields[0].var.span().start().line();
+
         Block::CommaSep(CommaSepBlock {
             open: "{",
             close: "}",
             items,
             space_around: true,
+            force_unfolded,
         })
     }
 
@@ -718,11 +730,14 @@ impl BlockBuilder {
             });
         }
 
+        let force_unfolded = span.start().line() < dict.entries[0].key.span().start().line();
+
         Block::CommaSep(CommaSepBlock {
             open: "#{",
             close: "}",
             items,
             space_around: true,
+            force_unfolded,
         })
     }
 
@@ -746,6 +761,7 @@ impl BlockBuilder {
             close: "]",
             items,
             space_around: false,
+            force_unfolded: false,
         })
     }
 

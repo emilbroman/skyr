@@ -34,6 +34,9 @@ pub struct CommaSepBlock {
     pub close: &'static str,
     pub items: Vec<CommaSepItem>,
     pub space_around: bool,
+    /// When true, always render unfolded regardless of width.
+    /// Set when the user wrote the opening delimiter on a separate line from the first item.
+    pub force_unfolded: bool,
 }
 
 pub struct CommaSepItem {
@@ -93,6 +96,9 @@ impl CommaSepBlock {
     pub fn folded_width(&self) -> Option<usize> {
         if self.items.is_empty() {
             return Some(self.open.len() + self.close.len());
+        }
+        if self.force_unfolded {
+            return None;
         }
         let mut total = self.open.len() + self.close.len();
         if self.space_around {
