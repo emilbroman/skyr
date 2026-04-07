@@ -66,11 +66,6 @@ impl PropertyAccessExpr {
                         cursor.set_type(member_ty.clone());
                         cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
                     }
-                    let member_ty = if let Some(outer_name) = resolved.name() {
-                        member_ty.with_name(format!("{outer_name}.{prop_name}"))
-                    } else {
-                        member_ty
-                    };
                     // Wrap in Optional since LHS could be nil
                     return Ok(Diagnosed::new(Type::Optional(Box::new(member_ty)), diags));
                 }
@@ -144,11 +139,6 @@ impl PropertyAccessExpr {
                     cursor.set_description(doc.to_owned());
                 }
             }
-            let member_ty = if let Some(outer_name) = lhs_ty.name() {
-                member_ty.with_name(format!("{outer_name}.{prop_name}"))
-            } else {
-                member_ty
-            };
             return Ok(Diagnosed::new(member_ty, diags));
         }
 
