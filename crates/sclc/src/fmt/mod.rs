@@ -422,6 +422,33 @@ mod tests {
     }
 
     #[test]
+    fn respects_user_multiline_if() {
+        // Then clause on separate line → stays multiline
+        let result = format("let x = if (a)\n\tb\nelse\n\tc");
+        assert_eq!(result, "let x = if (a)\n\tb\nelse\n\tc\n");
+    }
+
+    #[test]
+    fn respects_user_multiline_if_else_chain() {
+        let result = format("let x = if (a)\n\tb\nelse if (c)\n\td\nelse\n\te");
+        assert_eq!(result, "let x = if (a)\n\tb\nelse if (c)\n\td\nelse\n\te\n");
+    }
+
+    #[test]
+    fn folds_same_line_if() {
+        // Then clause on same line → folds when it fits
+        let result = format("let x = if (a) b else c");
+        assert_eq!(result, "let x = if (a) b else c\n");
+    }
+
+    #[test]
+    fn respects_user_multiline_list_if() {
+        // Multiline list if item causes the list to unfold too
+        let result = format("let x = [if (cond)\n\tvalue]");
+        assert_eq!(result, "let x = [\n\tif (cond)\n\t\tvalue,\n]\n");
+    }
+
+    #[test]
     fn folds_same_line_fn() {
         // Body on same line as fn → folds when it fits
         let result = format("let f = fn(x: Int) x + 1");

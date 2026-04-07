@@ -368,7 +368,7 @@ impl BlockBuilder {
                 self.build_expr(&unary.expr),
             ]),
             Expr::Binary(binary) => self.build_binary(binary, false),
-            Expr::If(if_expr) => self.build_if(if_expr),
+            Expr::If(if_expr) => self.build_if(if_expr, expr.span()),
             Expr::Let(let_expr) => self.build_let_expr(let_expr),
             Expr::Fn(fn_expr) => self.build_fn(fn_expr, expr.span()),
             Expr::Call(call) => self.build_call(call),
@@ -504,7 +504,15 @@ impl BlockBuilder {
         Block::Seq(vec![lhs, Block::Literal(format!(" {} ", binary.op)), rhs])
     }
 
-    fn build_if(&mut self, if_expr: &IfExpr) -> Block {
+    fn build_if(&mut self, if_expr: &IfExpr, span: Span) -> Block {
+        // If the then clause starts on a different line than the if keyword,
+        // always unfold branches (respect user's formatting choice).
+        let force_unfolded = span.start().line() < if_expr.then_expr.span().start().line();
+
+        if force_unfolded {
+            return self.build_if_unfolded(if_expr);
+        }
+
         let condition = self.build_expr(&if_expr.condition);
         let then_block = self.build_expr(&if_expr.then_expr);
         let mut items = vec![
@@ -526,12 +534,14 @@ impl BlockBuilder {
 
         if let Some(else_expr) = &if_expr.else_expr {
             if let Expr::If(else_if) = &**else_expr.as_ref() {
-                // else if chain: "else " + recursive if on same line
                 items.push(GroupItem::PotentialUnfold {
                     tag: 3,
                     space_when_folded: true,
                     indent_children: false,
-                    children: vec![Block::Literal("else ".into()), self.build_if(else_if)],
+                    children: vec![
+                        Block::Literal("else ".into()),
+                        self.build_if(else_if, else_expr.span()),
+                    ],
                 });
             } else {
                 items.push(GroupItem::PotentialUnfold {
@@ -550,6 +560,44 @@ impl BlockBuilder {
         }
 
         Block::Group(items)
+    }
+
+    /// Build an if expression with branches always on separate lines.
+    /// The condition still uses a Group for width-aware wrapping.
+    fn build_if_unfolded(&mut self, if_expr: &IfExpr) -> Block {
+        let condition = self.build_expr(&if_expr.condition);
+
+        let cond_group = Block::Group(vec![
+            GroupItem::Block(Block::Literal("if (".into())),
+            GroupItem::PotentialUnfold {
+                tag: 1,
+                space_when_folded: false,
+                indent_children: true,
+                children: vec![condition],
+            },
+            GroupItem::Block(Block::Literal(")".into())),
+        ]);
+
+        let mut parts = vec![
+            cond_group,
+            Block::Newline,
+            Block::Indent(Box::new(self.build_expr(&if_expr.then_expr))),
+        ];
+
+        if let Some(else_expr) = &if_expr.else_expr {
+            if let Expr::If(else_if) = &**else_expr.as_ref() {
+                parts.push(Block::Newline);
+                parts.push(Block::Literal("else ".into()));
+                parts.push(self.build_if(else_if, else_expr.span()));
+            } else {
+                parts.push(Block::Newline);
+                parts.push(Block::Literal("else".into()));
+                parts.push(Block::Newline);
+                parts.push(Block::Indent(Box::new(self.build_expr(else_expr))));
+            }
+        }
+
+        Block::Seq(parts)
     }
 
     fn build_let_expr(&mut self, let_expr: &LetExpr) -> Block {
@@ -777,22 +825,49 @@ impl BlockBuilder {
         })
     }
 
+    fn list_item_start_line(item: &ListItem) -> u32 {
+        match item {
+            ListItem::Expr(expr) => expr.span().start().line(),
+            ListItem::If(if_item) => if_item.condition.span().start().line(),
+            ListItem::For(for_item) => for_item.var.span().start().line(),
+        }
+    }
+
     fn build_list_item(&mut self, item: &ListItem) -> Block {
         match item {
             ListItem::Expr(expr) => self.build_expr(expr),
-            ListItem::If(if_item) => Block::Group(vec![
-                GroupItem::Block(Block::Seq(vec![
-                    Block::Literal("if (".into()),
-                    self.build_expr(&if_item.condition),
-                    Block::Literal(")".into()),
-                ])),
-                GroupItem::PotentialUnfold {
-                    tag: 1,
-                    space_when_folded: true,
-                    indent_children: true,
-                    children: vec![self.build_list_item(&if_item.then_item)],
-                },
-            ]),
+            ListItem::If(if_item) => {
+                // If the then clause starts on a different line than the condition,
+                // always unfold (respect user's formatting choice).
+                let force_unfolded = if_item.condition.span().start().line()
+                    < Self::list_item_start_line(&if_item.then_item);
+
+                if force_unfolded {
+                    Block::Seq(vec![
+                        Block::Seq(vec![
+                            Block::Literal("if (".into()),
+                            self.build_expr(&if_item.condition),
+                            Block::Literal(")".into()),
+                        ]),
+                        Block::Newline,
+                        Block::Indent(Box::new(self.build_list_item(&if_item.then_item))),
+                    ])
+                } else {
+                    Block::Group(vec![
+                        GroupItem::Block(Block::Seq(vec![
+                            Block::Literal("if (".into()),
+                            self.build_expr(&if_item.condition),
+                            Block::Literal(")".into()),
+                        ])),
+                        GroupItem::PotentialUnfold {
+                            tag: 1,
+                            space_when_folded: true,
+                            indent_children: true,
+                            children: vec![self.build_list_item(&if_item.then_item)],
+                        },
+                    ])
+                }
+            }
             ListItem::For(for_item) => Block::Group(vec![
                 GroupItem::Block(Block::Seq(vec![
                     Block::Literal("for (".into()),
