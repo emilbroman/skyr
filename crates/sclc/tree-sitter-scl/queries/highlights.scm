@@ -21,6 +21,9 @@
 (boolean) @constant.builtin
 (nil) @constant.builtin
 
+; Paths
+(path_expression) @string.special.path
+
 ; Strings
 (string) @string
 (string_content) @string

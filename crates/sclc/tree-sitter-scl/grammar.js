@@ -26,6 +26,7 @@ module.exports = grammar({
     [$._atom_expression, $._type_expression_base],
     [$.record, $.record_type],
     [$.if_expression, $._list_item],
+    [$.binary_expression, $.path_expression],
   ],
 
   rules: {
@@ -49,7 +50,7 @@ module.exports = grammar({
       seq("import", $.import_path),
 
     import_path: ($) =>
-      seq($.identifier, repeat(seq("/", $.identifier))),
+      prec.right(seq($.identifier, repeat(seq("/", $.identifier)))),
 
     let_binding: ($) =>
       seq("let", field("name", $.identifier), optional(seq(":", field("type", $._type_expression))), "=", field("value", $._expression)),
@@ -206,10 +207,32 @@ module.exports = grammar({
         $.boolean,
         $.nil,
         $.exception_expression,
+        $.path_expression,
         $.identifier,
       ),
 
     parenthesized_expression: ($) => seq("(", $._expression, ")"),
+
+    path_expression: ($) => {
+      const segment = choice(/[\w.@-]+/, seq('"', /[^"]*/, '"'));
+      const link = seq("/", segment, repeat(segment));
+      return choice(
+        // Relative paths: unambiguous, single token
+        token(choice(
+          seq("..", repeat1(link)),
+          seq(".", repeat1(link)),
+          "..",
+        )),
+        // Absolute paths: grammar-level, disambiguated by parser context
+        // token.immediate ensures the segment is directly after `/` (no space)
+        prec.right(-1, seq("/", $._path_segment, repeat(seq("/", $._path_segment)))),
+        // Standalone root path
+        prec(-2, "/"),
+      );
+    },
+
+    _path_segment: ($) =>
+      token.immediate(/[\w.@-]+/),
 
     // ── Collections ────────────────────────────────────────────
 

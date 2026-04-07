@@ -68,6 +68,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -216,6 +220,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -321,6 +329,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -413,6 +425,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "path_expression",
           "named": true
         },
         {
@@ -526,6 +542,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -654,6 +674,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -745,6 +769,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -1041,6 +1069,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -1298,6 +1330,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -1392,6 +1428,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -1483,6 +1523,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -1613,6 +1657,10 @@
         },
         {
           "type": "parenthesized_expression",
+          "named": true
+        },
+        {
+          "type": "path_expression",
           "named": true
         },
         {
@@ -1759,6 +1807,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -1856,6 +1908,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -1977,6 +2033,10 @@
           "named": true
         },
         {
+          "type": "path_expression",
+          "named": true
+        },
+        {
           "type": "property_access",
           "named": true
         },
@@ -2084,6 +2144,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -2175,6 +2239,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -2296,6 +2364,10 @@
             "named": true
           },
           {
+            "type": "path_expression",
+            "named": true
+          },
+          {
             "type": "property_access",
             "named": true
           },
@@ -2387,6 +2459,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -2564,6 +2640,10 @@
           "named": true
         },
         {
+          "type": "path_expression",
+          "named": true
+        },
+        {
           "type": "property_access",
           "named": true
         },
@@ -2593,6 +2673,11 @@
         }
       ]
     }
+  },
+  {
+    "type": "path_expression",
+    "named": true,
+    "fields": {}
   },
   {
     "type": "property_access",
@@ -2660,6 +2745,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -2770,6 +2859,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -2895,6 +2988,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -3080,6 +3177,10 @@
           "named": true
         },
         {
+          "type": "path_expression",
+          "named": true
+        },
+        {
           "type": "property_access",
           "named": true
         },
@@ -3199,6 +3300,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -3348,6 +3453,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
@@ -3642,6 +3751,10 @@
           },
           {
             "type": "parenthesized_expression",
+            "named": true
+          },
+          {
+            "type": "path_expression",
             "named": true
           },
           {
