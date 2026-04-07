@@ -6,6 +6,10 @@ use clap::Args;
 pub struct FmtArgs {
     /// The file to format
     pub file: PathBuf,
+
+    /// Write the formatted output back to the file instead of printing to stdout
+    #[arg(long)]
+    pub write: bool,
 }
 
 pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
@@ -36,7 +40,12 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
     let file_mod = diagnosed.into_inner();
 
     let formatted = sclc::Formatter::format(&source, &file_mod);
-    print!("{formatted}");
+
+    if args.write {
+        std::fs::write(&args.file, &formatted)?;
+    } else {
+        print!("{formatted}");
+    }
 
     Ok(())
 }
