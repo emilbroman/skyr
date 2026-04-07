@@ -138,11 +138,15 @@
         "path": {
             "patterns": [
                 {
-                    "match": "\\.{1,2}(?:/[\\w.@-]+)+",
+                    "match": "\\.{1,2}(?:/(?:[\\w.@-]+|\"[^\"]*\"))+",
                     "name": "string.unquoted.path.scl"
                 },
                 {
-                    "match": "/[\\w.@-]+(?:/[\\w.@-]+)*",
+                    "match": "\\.{2}(?![\\w])",
+                    "name": "string.unquoted.path.scl"
+                },
+                {
+                    "match": "/(?:[\\w.@-]+|\"[^\"]*\")(?:/(?:[\\w.@-]+|\"[^\"]*\"))*",
                     "name": "string.unquoted.path.scl"
                 }
             ]
