@@ -48,10 +48,8 @@ export type Duration {
 /// Multiply a `Duration` by an integer scalar.
 export let multiply = fn(duration: Duration, multiplier: Int)
 	{
-		months: Option.map<Int, Int>(duration.months, fn(m: Int)
-			m * multiplier),
-		milliseconds: Option.map<Int, Int>(duration.milliseconds, fn(m: Int)
-			m * multiplier),
+		months: Option.map(duration.months, fn(m: Int) m * multiplier),
+		milliseconds: Option.map(duration.milliseconds, fn(m: Int) m * multiplier),
 	} as Duration
 
 /// 1 millisecond duration.

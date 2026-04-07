@@ -15,21 +15,29 @@ let uncheckedUnwrap = extern "Std/Option.uncheckedUnwrap": fn<T>(T?) T
 ///
 /// Use `try`/`catch` to handle the exception.
 export let unwrap = fn<T>(value: T?)
-	if (value != nil) uncheckedUnwrap<T>(value)
-	else raise UnexpectedNil
+	if (value != nil)
+		uncheckedUnwrap<T>(value)
+	else
+		raise UnexpectedNil
 
 /// Return the value if present, or a fallback if `nil`.
 export let default = fn<T>(value: T?, fallback: T)
-	if (value != nil) uncheckedUnwrap<T>(value)
-	else fallback
+	if (value != nil)
+		uncheckedUnwrap<T>(value)
+	else
+		fallback
 
 /// Apply a function to the value if present, or return `nil` if absent.
 export let map = fn<T, U>(value: T?, transform: fn(T) U)
-	if (value == nil) nil as U?
-	else transform(uncheckedUnwrap<T>(value))
+	if (value == nil)
+		nil as U?
+	else
+		transform(uncheckedUnwrap<T>(value))
 
 /// Turn the optional value into a list, empty if input value is `nil` and
 /// containing the value as a single element otherwise.
 export let toList = fn<T>(value: T?)
-	if (value == nil) [] as [T]
-	else [uncheckedUnwrap<T>(value)]
+	if (value == nil)
+		[] as [T]
+	else
+		[uncheckedUnwrap<T>(value)]
