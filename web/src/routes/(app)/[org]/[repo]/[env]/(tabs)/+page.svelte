@@ -30,4 +30,11 @@ let desiredDeployment = $derived(
 
 {#if desiredDeployment}
   <RootTree {orgName} {repoName} commitHash={desiredDeployment.commit.hash} />
+{:else if env}
+  <div class="text-center py-16">
+    <p class="text-gray-500 mb-2">No deployment yet.</p>
+    <p class="text-gray-400">
+      Push a branch to get started.
+    </p>
+  </div>
 {/if}
