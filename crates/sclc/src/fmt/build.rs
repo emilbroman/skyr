@@ -601,13 +601,16 @@ impl BlockBuilder {
     }
 
     fn build_let_expr(&mut self, let_expr: &LetExpr) -> Block {
-        Block::Seq(vec![
+        let mut parts = vec![
             Block::Literal("let ".into()),
             self.build_let_bind(&let_expr.bind),
             Block::Literal(";".into()),
-            Block::Newline,
-            self.build_expr(&let_expr.expr),
-        ])
+        ];
+        if let Some(body) = &let_expr.expr {
+            parts.push(Block::Newline);
+            parts.push(self.build_expr(body));
+        }
+        Block::Seq(parts)
     }
 
     fn build_fn(&mut self, fn_expr: &FnExpr, span: Span) -> Block {
@@ -637,11 +640,18 @@ impl BlockBuilder {
             force_unfolded: false,
         }));
 
-        let body = self.build_expr(&fn_expr.body);
+        let body = fn_expr.body.as_ref().map(|b| self.build_expr(b));
+
+        let Some(body) = body else {
+            return Block::Seq(header);
+        };
 
         // If the body starts on a different line than the fn keyword,
         // always unfold (respect user's formatting choice).
-        let force_unfolded = span.start().line() < fn_expr.body.span().start().line();
+        let force_unfolded = fn_expr
+            .body
+            .as_ref()
+            .is_some_and(|b| span.start().line() < b.span().start().line());
 
         if force_unfolded {
             Block::Seq(vec![

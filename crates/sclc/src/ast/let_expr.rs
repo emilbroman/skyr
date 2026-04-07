@@ -6,7 +6,7 @@ use crate::Loc;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LetExpr {
     pub bind: LetBind,
-    pub expr: Box<Loc<Expr>>,
+    pub expr: Option<Box<Loc<Expr>>>,
 }
 
 use crate::eval::{Eval, EvalEnv, EvalError};
@@ -33,9 +33,13 @@ impl LetExpr {
             cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
-        let body_ty = checker
-            .synth_expr(&inner_env, self.expr.as_ref())?
-            .unpack(&mut diags);
+        let body_ty = if let Some(body) = &self.expr {
+            checker
+                .synth_expr(&inner_env, body.as_ref())?
+                .unpack(&mut diags)
+        } else {
+            Type::Never
+        };
         Ok(Diagnosed::new(body_ty, diags))
     }
 
@@ -60,9 +64,13 @@ impl LetExpr {
             cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
-        let body_ty = checker
-            .check_expr(&inner_env, self.expr.as_ref(), Some(expected))?
-            .unpack(&mut diags);
+        let body_ty = if let Some(body) = &self.expr {
+            checker
+                .check_expr(&inner_env, body.as_ref(), Some(expected))?
+                .unpack(&mut diags)
+        } else {
+            Type::Never
+        };
         Ok(Diagnosed::new(body_ty, diags))
     }
 
@@ -73,14 +81,20 @@ impl LetExpr {
     ) -> Result<TrackedValue, EvalError> {
         let bind_value = evaluator.eval_expr(env, self.bind.expr.as_ref())?;
         let inner_env = env.with_local(self.bind.var.name.as_str(), bind_value);
-        evaluator.eval_expr(&inner_env, self.expr.as_ref())
+        if let Some(body) = &self.expr {
+            evaluator.eval_expr(&inner_env, body.as_ref())
+        } else {
+            Ok(crate::eval::tracked(crate::Value::Nil))
+        }
     }
 
     pub(crate) fn free_vars(&self) -> HashSet<&str> {
         let mut vars = self.bind.expr.as_ref().free_vars();
-        let mut body_vars = self.expr.as_ref().free_vars();
-        body_vars.remove(self.bind.var.name.as_str());
-        vars.extend(body_vars);
+        if let Some(body) = &self.expr {
+            let mut body_vars = body.as_ref().free_vars();
+            body_vars.remove(self.bind.var.name.as_str());
+            vars.extend(body_vars);
+        }
         vars
     }
 }

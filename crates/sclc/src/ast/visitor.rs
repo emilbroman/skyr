@@ -82,7 +82,9 @@ fn visit_dict(visitor: &mut dyn Visitor, e: &DictExpr) {
 }
 
 fn visit_fn(visitor: &mut dyn Visitor, e: &FnExpr) {
-    visit_expr(visitor, &e.body);
+    if let Some(body) = &e.body {
+        visit_expr(visitor, body);
+    }
 }
 
 fn visit_if(visitor: &mut dyn Visitor, e: &IfExpr) {
@@ -106,7 +108,9 @@ fn visit_interp(visitor: &mut dyn Visitor, e: &InterpExpr) {
 
 fn visit_let(visitor: &mut dyn Visitor, e: &LetExpr) {
     visit_let_bind(visitor, &e.bind);
-    visit_expr(visitor, &e.expr);
+    if let Some(body) = &e.expr {
+        visit_expr(visitor, body);
+    }
 }
 
 fn visit_list(visitor: &mut dyn Visitor, e: &ListExpr) {

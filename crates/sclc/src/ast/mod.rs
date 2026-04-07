@@ -187,7 +187,7 @@ mod tests {
                                 ty: Some(type_loc(TypeExpr::Var(var("Y")))),
                             },
                         ],
-                        body: Box::new(expr_loc(Expr::Record(RecordExpr {
+                        body: Some(Box::new(expr_loc(Expr::Record(RecordExpr {
                             fields: vec![
                                 RecordField {
                                     doc_comment: None,
@@ -205,7 +205,7 @@ mod tests {
                                     expr: expr_loc(Expr::Var(var("z"))),
                                 },
                             ],
-                        }))),
+                        })))),
                     })),
                 },
             ],

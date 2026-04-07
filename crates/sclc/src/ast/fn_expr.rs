@@ -7,7 +7,7 @@ use crate::Loc;
 pub struct FnExpr {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<FnParam>,
-    pub body: Box<Loc<Expr>>,
+    pub body: Option<Box<Loc<Expr>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,9 +72,13 @@ impl FnExpr {
             params.push(param_ty);
         }
 
-        let ret = checker
-            .synth_expr(&fn_env, self.body.as_ref())?
-            .unpack(&mut diags);
+        let ret = if let Some(body) = &self.body {
+            checker
+                .synth_expr(&fn_env, body.as_ref())?
+                .unpack(&mut diags)
+        } else {
+            Type::Never
+        };
         Ok(Diagnosed::new(
             Type::Fn(FnType {
                 type_params: type_param_entries,
@@ -155,9 +159,13 @@ impl FnExpr {
         }
 
         let expected_ret = expected_fn.map(|ft| ft.ret.as_ref());
-        let ret = checker
-            .check_expr(&fn_env, self.body.as_ref(), expected_ret)?
-            .unpack(&mut diags);
+        let ret = if let Some(body) = &self.body {
+            checker
+                .check_expr(&fn_env, body.as_ref(), expected_ret)?
+                .unpack(&mut diags)
+        } else {
+            Type::Never
+        };
 
         let actual = Type::Fn(FnType {
             type_params: type_param_entries,
@@ -179,6 +187,11 @@ impl FnExpr {
         for name in expr.as_ref().free_vars() {
             captures.insert(name.to_owned(), evaluator.eval_var_name(env, name)?);
         }
+        let body = self
+            .body
+            .as_ref()
+            .map(|b| *b.clone())
+            .unwrap_or_else(|| Loc::new(Expr::Nil, crate::Span::default()));
         Ok(crate::eval::tracked(Value::Fn(FnValue {
             env: FnEnv {
                 module_id: env.module_id()?,
@@ -190,12 +203,16 @@ impl FnExpr {
                     .collect(),
                 self_name: None,
             },
-            body: *self.body.clone(),
+            body,
         })))
     }
 
     pub(crate) fn free_vars(&self) -> HashSet<&str> {
-        let mut vars = self.body.as_ref().free_vars();
+        let mut vars = if let Some(body) = &self.body {
+            body.as_ref().free_vars()
+        } else {
+            HashSet::new()
+        };
         for param in &self.params {
             vars.remove(param.var.name.as_str());
         }

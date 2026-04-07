@@ -79,6 +79,19 @@ impl Diag for UnexpectedToken {
     }
 }
 
+#[derive(Error, Debug)]
+#[error("missing body expression")]
+pub struct MissingBody {
+    pub module_id: ModuleId,
+    pub span: Span,
+}
+
+impl Diag for MissingBody {
+    fn locate(&self) -> (ModuleId, Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
 fn flush_skip(skip_span: &mut Option<Span>, diags: &mut DiagList, module_id: &ModuleId) {
     if let Some(span) = skip_span.take() {
         diags.push(UnexpectedToken {
@@ -399,13 +412,21 @@ peg::parser! {
 
         // fn expressions are right-associative because the body is parsed as a full Expr.
         rule fn_expr() -> Loc<Expr>
-            = fn_kw_span:fn_keyword() type_params:type_params()? open_paren() params:fn_params() close_paren() body:expr() {
+            = fn_kw_span:fn_keyword() type_params:type_params()? open_paren() params:fn_params() close:close_paren() body:expr() {
                 let end = body.span().end();
                 Loc::new(Expr::Fn(FnExpr {
                     type_params: type_params.unwrap_or_default(),
                     params,
-                    body: Box::new(body),
+                    body: Some(Box::new(body)),
                 }), Span::new(fn_kw_span.start(), end))
+            }
+            / fn_kw_span:fn_keyword() type_params:type_params()? open_paren() params:fn_params() close:close_paren() {
+                diags.push(MissingBody { module_id: module_id.clone(), span: close });
+                Loc::new(Expr::Fn(FnExpr {
+                    type_params: type_params.unwrap_or_default(),
+                    params,
+                    body: None,
+                }), Span::new(fn_kw_span.start(), close.end()))
             }
 
         rule type_param() -> TypeParam
@@ -878,9 +899,14 @@ peg::parser! {
             }
 
         rule let_expr() -> Loc<Expr>
-            = bind:let_bind() semicolon() expr:expr() {
+            = bind:let_bind() semi_span:semicolon() expr:expr() {
                 let span = Span::new(bind.var.span().start(), expr.span().end());
-                Loc::new(Expr::Let(LetExpr { bind, expr: Box::new(expr) }), span)
+                Loc::new(Expr::Let(LetExpr { bind, expr: Some(Box::new(expr)) }), span)
+            }
+            / bind:let_bind() semi_span:semicolon() {
+                diags.push(MissingBody { module_id: module_id.clone(), span: semi_span });
+                let span = Span::new(bind.var.span().start(), semi_span.end());
+                Loc::new(Expr::Let(LetExpr { bind, expr: None }), span)
             }
 
         rule let_bind() -> LetBind
@@ -1999,7 +2025,7 @@ mod tests {
         let crate::Expr::Fn(outer) = expr.into_inner() else {
             panic!("expected outer fn expression");
         };
-        let crate::Expr::Fn(inner) = outer.body.into_inner() else {
+        let crate::Expr::Fn(inner) = outer.body.expect("expected body").into_inner() else {
             panic!("expected inner fn expression as body");
         };
         assert_eq!(outer.params.len(), 1);

@@ -904,7 +904,13 @@ impl<'p> Eval<'p> {
                         .iter()
                         .map(|param| param.var.name.clone())
                         .collect();
-                    let body = *fn_expr.body.clone();
+                    let body = fn_expr
+                        .body
+                        .as_ref()
+                        .map(|b| *b.clone())
+                        .unwrap_or_else(|| {
+                            crate::Loc::new(crate::ast::Expr::Nil, crate::Span::default())
+                        });
 
                     // Evaluate all captures except the self-reference
                     let mut captures = HashMap::new();
