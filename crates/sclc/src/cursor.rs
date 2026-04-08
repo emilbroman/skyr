@@ -69,6 +69,15 @@ impl Cursor {
         self.inner.lock().unwrap().ty = Some(ty);
     }
 
+    /// Apply type substitutions to the stored type (if any).
+    /// Used after SCC constraint solving to replace free type variables.
+    pub fn substitute_type(&self, substitutions: &[(usize, Type)]) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(ty) = &inner.ty {
+            inner.ty = Some(ty.substitute(substitutions));
+        }
+    }
+
     pub fn set_identifier(&self, identifier: CursorIdentifier) {
         self.inner.lock().unwrap().identifier = Some(identifier);
     }

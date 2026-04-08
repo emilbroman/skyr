@@ -456,6 +456,9 @@ test_case!(DiagTypeCastOptionalMismatch);
 
 // Recursive globals
 test_case!(RecursiveGlobalFn);
+test_case!(MutuallyRecursiveFns);
+test_case!(ForwardReference);
+test_case!(DiagCyclicDependency);
 
 // Diagnostic tests
 test_case!(DiagNumToHexWrongType);

@@ -45,6 +45,9 @@ pub struct EvalEnv<'a> {
     globals: Option<&'a GlobalsMap<'a>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
+    /// Pre-evaluated globals (e.g., mutually recursive function groups).
+    /// Checked before the lazy globals path in eval_var_name.
+    precomputed: HashMap<String, TrackedValue>,
     pub(crate) stack: Option<&'a StackFrame<'a>>,
 }
 
@@ -61,6 +64,7 @@ impl<'a> EvalEnv<'a> {
             globals: None,
             imports: None,
             locals: HashMap::new(),
+            precomputed: HashMap::new(),
             stack: None,
         }
     }
@@ -71,6 +75,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
+            precomputed: self.precomputed.clone(),
             stack: self.stack,
         }
     }
@@ -81,6 +86,7 @@ impl<'a> EvalEnv<'a> {
             globals: Some(globals),
             imports: self.imports,
             locals: HashMap::new(),
+            precomputed: self.precomputed.clone(),
             stack: self.stack,
         }
     }
@@ -94,6 +100,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: Some(imports),
             locals: HashMap::new(),
+            precomputed: self.precomputed.clone(),
             stack: self.stack,
         }
     }
@@ -104,6 +111,7 @@ impl<'a> EvalEnv<'a> {
             globals: self.globals,
             imports: self.imports,
             locals: self.locals.clone(),
+            precomputed: self.precomputed.clone(),
             stack: self.stack,
         }
     }
@@ -114,12 +122,19 @@ impl<'a> EvalEnv<'a> {
         env
     }
 
+    pub fn with_precomputed(&self, name: String, value: TrackedValue) -> Self {
+        let mut env = self.inner();
+        env.precomputed.insert(name, value);
+        env
+    }
+
     pub fn without_locals(&self) -> Self {
         Self {
             module_id: self.module_id,
             globals: self.globals,
             imports: self.imports,
             locals: HashMap::new(),
+            precomputed: self.precomputed.clone(),
             stack: self.stack,
         }
     }
@@ -194,6 +209,9 @@ pub struct FnEnv {
     /// When set, the function is recursive and should be bound under this name
     /// in its own call environment so that recursive calls resolve correctly.
     pub self_name: Option<String>,
+    /// For mutually recursive functions: all group members bound at call time.
+    /// Shared via Arc so that all members in a group reference the same list.
+    pub recursive_group: Option<std::sync::Arc<Vec<(String, crate::FnValue)>>>,
 }
 
 impl FnEnv {
@@ -215,6 +233,16 @@ impl FnEnv {
                 self_name.as_str(),
                 TrackedValue::new(crate::Value::Fn(fn_value.clone())),
             );
+        }
+        // Bind all members of a mutually recursive group.
+        // Each member is bound with the same recursive_group so that
+        // calls at any depth correctly resolve all siblings.
+        if let Some(group) = &self.recursive_group {
+            for (name, group_fn) in group.as_ref() {
+                let mut wired_fn = group_fn.clone();
+                wired_fn.env.recursive_group = Some(group.clone());
+                env = env.with_local(name.as_str(), TrackedValue::new(crate::Value::Fn(wired_fn)));
+            }
         }
         for (name, value) in self.parameters.iter().zip(args.iter()) {
             env = env.with_local(name.as_str(), value.clone());
@@ -882,6 +910,10 @@ impl<'p> Eval<'p> {
         if let Some(local_value) = env.lookup_local(name) {
             return Ok(local_value.clone());
         }
+        // Check precomputed globals (e.g., mutually recursive function groups)
+        if let Some(precomputed) = env.precomputed.get(name) {
+            return Ok(precomputed.clone());
+        }
         if let Some(global_expr) = env.lookup_global(name) {
             let module_id = env.module_id.cloned().unwrap_or_default();
             let frame = StackFrame {
@@ -929,6 +961,7 @@ impl<'p> Eval<'p> {
                             captures,
                             parameters,
                             self_name: Some(name.to_string()),
+                            recursive_group: None,
                         },
                         body,
                     };
@@ -972,7 +1005,29 @@ impl<'p> Eval<'p> {
     ) -> Result<TrackedValue, EvalError> {
         let globals = file_mod.find_globals();
         let imports = self.program.find_imports(file_mod);
-        let env = env.with_globals(&globals).with_imports(&imports);
+        let mut env = env.with_globals(&globals).with_imports(&imports);
+
+        // Build intra-module dependency graph and compute SCCs for eval ordering
+        let dep_graph = crate::dep_graph::build_intra_module_value_dep_graph(&globals);
+        let sccs = dep_graph.compute_sccs();
+
+        // Pre-evaluate mutually recursive function SCCs and cache them as locals
+        for scc in &sccs {
+            if scc.len() > 1 {
+                // Multi-binding SCC: build mutually recursive FnValues
+                let all_fns = scc.iter().all(|bid| {
+                    let (_, expr, _) = globals[bid.name.as_str()];
+                    matches!(expr.as_ref(), crate::ast::Expr::Fn(_))
+                });
+                if all_fns {
+                    let group = self.build_recursive_fn_group(&env, scc, &globals)?;
+                    for (name, fn_val) in group {
+                        env = env.with_precomputed(name, TrackedValue::new(Value::Fn(fn_val)));
+                    }
+                }
+            }
+        }
+
         let mut exports = Record::default();
         let mut dependencies = BTreeSet::new();
 
@@ -984,6 +1039,68 @@ impl<'p> Eval<'p> {
         }
 
         Ok(with_dependencies(Value::Record(exports), dependencies))
+    }
+
+    /// Build FnValues for a mutually recursive group of function globals.
+    fn build_recursive_fn_group(
+        &self,
+        env: &EvalEnv<'_>,
+        scc: &[crate::dep_graph::BindingId],
+        globals: &HashMap<&str, (crate::Span, &crate::Loc<crate::ast::Expr>, Option<&str>)>,
+    ) -> Result<Vec<(String, crate::FnValue)>, EvalError> {
+        let fn_module_id = env.module_id()?;
+        let scc_names: std::collections::HashSet<&str> =
+            scc.iter().map(|bid| bid.name.as_str()).collect();
+
+        // First pass: build FnValues without recursive_group
+        let mut preliminary: Vec<(String, crate::FnValue)> = Vec::new();
+        for bid in scc {
+            let (_, global_expr, _) = globals[bid.name.as_str()];
+            let crate::ast::Expr::Fn(fn_expr) = global_expr.as_ref() else {
+                unreachable!("all SCC members validated as functions");
+            };
+            let free_vars = global_expr.as_ref().free_vars();
+            let parameters: Vec<String> =
+                fn_expr.params.iter().map(|p| p.var.name.clone()).collect();
+            let body = fn_expr
+                .body
+                .as_ref()
+                .map(|b| *b.clone())
+                .unwrap_or_else(|| crate::Loc::new(crate::ast::Expr::Nil, crate::Span::default()));
+
+            // Evaluate captures except group members
+            let mut captures = HashMap::new();
+            for fv in &free_vars {
+                if !scc_names.contains(fv) {
+                    captures.insert(fv.to_string(), self.eval_var_name(env, fv)?);
+                }
+            }
+
+            preliminary.push((
+                bid.name.clone(),
+                crate::FnValue {
+                    env: FnEnv {
+                        module_id: fn_module_id.clone(),
+                        captures,
+                        parameters,
+                        self_name: None,
+                        recursive_group: None,
+                    },
+                    body,
+                },
+            ));
+        }
+
+        // Second pass: create a shared Rc group and set it on all members.
+        // The group stores the base FnValues (without recursive_group set).
+        // as_eval_env propagates the shared group to each member at call time,
+        // so recursive calls at any depth correctly resolve all siblings.
+        let shared_group = std::sync::Arc::new(preliminary.clone());
+        for (_, fn_val) in &mut preliminary {
+            fn_val.env.recursive_group = Some(shared_group.clone());
+        }
+
+        Ok(preliminary)
     }
 }
 
@@ -1145,6 +1262,7 @@ mod tests {
                 captures: std::collections::HashMap::new(),
                 parameters: vec!["x".to_string()],
                 self_name: None,
+                recursive_group: None,
             },
             body: parse_expr("123", &module_id),
         });

@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -367,6 +367,20 @@ impl crate::Diag for UnknownField {
 }
 
 #[derive(Error, Debug)]
+#[error("cyclic dependency between {names} — recursive bindings must be functions")]
+pub struct CyclicDependency {
+    pub module_id: crate::ModuleId,
+    pub names: String,
+    pub span: crate::Span,
+}
+
+impl crate::Diag for CyclicDependency {
+    fn locate(&self) -> (crate::ModuleId, crate::Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
 pub enum TypeCheckError {
     #[error("module id missing during type checking")]
     ModuleIdMissing,
@@ -429,16 +443,26 @@ impl FreeVarConstraints {
 
     /// Solve constraints given that `primary_id` equals `body_type`.
     pub(crate) fn solve(&self, primary_id: usize, body_type: &Type) -> Vec<(usize, Type)> {
-        let mut solutions: HashMap<usize, Type> = HashMap::new();
+        self.solve_multi(&[(primary_id, body_type)])
+    }
 
-        if let Some(constraint) = self.lower_bounds.get(&primary_id) {
-            Self::unify_constraint(constraint, body_type, &mut solutions);
+    /// Solve constraints for multiple bindings simultaneously.
+    /// Each `(id, body_type)` pair says "the free variable `id` has synthesized body type `body_type`".
+    /// Returns substitutions for all tracked free variables.
+    pub(crate) fn solve_multi(&self, bindings: &[(usize, &Type)]) -> Vec<(usize, Type)> {
+        let mut solutions: HashMap<usize, Type> = HashMap::new();
+        let primary_ids: HashSet<usize> = bindings.iter().map(|(id, _)| *id).collect();
+
+        for &(id, body_type) in bindings {
+            if let Some(constraint) = self.lower_bounds.get(&id) {
+                Self::unify_constraint(constraint, body_type, &mut solutions);
+            }
         }
 
         self.lower_bounds
             .iter()
             .map(|(id, bound)| {
-                if *id == primary_id {
+                if primary_ids.contains(id) {
                     (*id, Type::Never)
                 } else if let Some(solved) = solutions.get(id) {
                     (*id, solved.clone())
@@ -637,6 +661,22 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    /// Register multiple free variables in a shared constraint set.
+    /// Used for mutually recursive SCC groups.
+    pub(crate) fn with_free_vars(
+        &self,
+        vars: &[(&'a str, crate::Span, usize)],
+        constraints: Rc<RefCell<FreeVarConstraints>>,
+    ) -> Self {
+        let mut env = self.inner();
+        for &(name, span, type_id) in vars {
+            constraints.borrow_mut().register(type_id);
+            env.maps.locals.insert(name, (span, Type::Var(type_id)));
+        }
+        env.free_vars = Some(constraints);
+        env
+    }
+
     /// If `ty` is a type variable with a known upper bound, return a reference
     /// to the bound. Otherwise, return the passed-in reference unchanged.
     pub fn resolve_var_bound<'t>(&'t self, ty: &'t Type) -> &'t Type {
@@ -826,11 +866,109 @@ impl<'p> TypeChecker<'p> {
 
         self.build_module_type_env(&mut env, file_mod, &mut diags)?;
 
-        let mut exports = RecordType::default();
+        // Build intra-module dependency graph and compute SCCs
+        let dep_graph = crate::dep_graph::build_intra_module_value_dep_graph(&globals);
+        let sccs = dep_graph.compute_sccs();
 
+        // Index let/export bindings by name for lookup
+        let binding_by_name: HashMap<&str, &ast::LetBind> = file_mod
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                ast::ModStmt::Let(lb) | ast::ModStmt::Export(lb) => {
+                    Some((lb.var.name.as_str(), lb))
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Process value bindings in SCC order
+        for scc in &sccs {
+            if scc.len() == 1 && !dep_graph.has_self_edge(&scc[0]) {
+                // Non-recursive singleton: check normally
+                let let_bind = binding_by_name[scc[0].name.as_str()];
+                self.check_global_let_bind(&env, let_bind)?
+                    .unpack(&mut diags);
+            } else if scc.len() == 1 {
+                // Self-recursive singleton: validate it's a function, then check
+                let let_bind = binding_by_name[scc[0].name.as_str()];
+                if !matches!(let_bind.expr.as_ref().as_ref(), ast::Expr::Fn(_)) {
+                    diags.push(CyclicDependency {
+                        module_id: env.module_id()?,
+                        names: format!("`{}`", let_bind.var.name),
+                        span: let_bind.var.span(),
+                    });
+                    // Assign Never and cache so downstream references don't re-check
+                    let cache_key = let_bind.expr.as_ref() as *const crate::Loc<ast::Expr>;
+                    self.global_cache
+                        .borrow_mut()
+                        .insert(cache_key, Type::Never);
+                } else {
+                    self.check_global_let_bind(&env, let_bind)?
+                        .unpack(&mut diags);
+                }
+            } else {
+                // Multi-binding SCC: validate all are functions
+                let all_fns = scc.iter().all(|bid| {
+                    let lb = binding_by_name[bid.name.as_str()];
+                    matches!(lb.expr.as_ref().as_ref(), ast::Expr::Fn(_))
+                });
+
+                if !all_fns {
+                    let mut sorted_names: Vec<&str> =
+                        scc.iter().map(|bid| bid.name.as_str()).collect();
+                    sorted_names.sort();
+                    let names = sorted_names
+                        .iter()
+                        .map(|n| format!("`{n}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    for bid in scc {
+                        let lb = binding_by_name[bid.name.as_str()];
+                        diags.push(CyclicDependency {
+                            module_id: env.module_id()?,
+                            names: names.clone(),
+                            span: lb.var.span(),
+                        });
+                        let cache_key = lb.expr.as_ref() as *const crate::Loc<ast::Expr>;
+                        self.global_cache
+                            .borrow_mut()
+                            .insert(cache_key, Type::Never);
+                    }
+                } else {
+                    // All are functions: check mutually recursive group
+                    self.check_recursive_scc_group(&env, scc, &binding_by_name)?
+                        .unpack(&mut diags);
+                }
+            }
+        }
+
+        // Process non-binding statements (imports for cursor info, bare exprs)
         for statement in &file_mod.statements {
-            if let Some((name, ty, doc)) = self.check_stmt(&env, statement)?.unpack(&mut diags) {
-                exports.insert_with_doc(name, ty, doc);
+            match statement {
+                ast::ModStmt::Import(_) => {
+                    self.check_stmt(&env, statement)?.unpack(&mut diags);
+                }
+                ast::ModStmt::Expr(expr) => {
+                    self.check_expr(&env, expr, None)?.unpack(&mut diags);
+                }
+                _ => {} // Let/Export already handled, TypeDefs handled in build_module_type_env
+            }
+        }
+
+        // Collect exports in original statement order
+        let mut exports = RecordType::default();
+        for statement in &file_mod.statements {
+            if let ast::ModStmt::Export(let_bind) = statement {
+                let cache_key = let_bind.expr.as_ref() as *const crate::Loc<ast::Expr>;
+                if let Some(cached_ty) = self.global_cache.borrow().get(&cache_key) {
+                    let ty = Type::IsoRec(next_type_id(), Box::new(cached_ty.clone()));
+                    exports.insert_with_doc(
+                        let_bind.var.name.clone(),
+                        ty,
+                        let_bind.doc_comment.clone(),
+                    );
+                }
             }
         }
 
@@ -884,7 +1022,7 @@ impl<'p> TypeChecker<'p> {
 
     /// Build the type-level environment for a module:
     /// 1. Populate import type-level bindings.
-    /// 2. Two-pass resolve of local type defs (first pass: collect names, second pass: resolve bodies).
+    /// 2. Resolve local type defs in SCC-based topological order.
     fn build_module_type_env(
         &self,
         env: &mut TypeEnv<'_>,
@@ -894,22 +1032,51 @@ impl<'p> TypeChecker<'p> {
         self.populate_import_type_level(env, file_mod, diags)?;
 
         let type_defs = file_mod.find_type_defs();
-
-        for type_def in &type_defs {
-            *env = env.with_type_level(type_def.var.name.clone(), Type::Never, None);
+        if type_defs.is_empty() {
+            return Ok(());
         }
 
-        for _ in 0..2 {
-            for type_def in &type_defs {
-                let resolved_ty = self.resolve_type_def(env, type_def).unpack(diags);
-                *env = env.with_type_level(
-                    type_def.var.name.clone(),
-                    resolved_ty,
-                    type_def.doc_comment.clone(),
-                );
+        // Build dependency graph over type declarations and compute SCCs
+        let dep_graph = crate::dep_graph::build_type_dep_graph(&type_defs);
+        let sccs = dep_graph.compute_sccs();
+
+        // Index type defs by name for lookup
+        let type_def_by_name: std::collections::HashMap<&str, &ast::TypeDef> = type_defs
+            .iter()
+            .map(|td| (td.var.name.as_str(), *td))
+            .collect();
+
+        // Process each SCC in topological order
+        for scc in &sccs {
+            if scc.len() == 1 && !dep_graph.has_self_edge(&scc[0]) {
+                // Non-recursive singleton: resolve directly
+                let td = type_def_by_name[scc[0].name.as_str()];
+                let resolved_ty = self.resolve_type_def(env, td).unpack(diags);
+                *env =
+                    env.with_type_level(td.var.name.clone(), resolved_ty, td.doc_comment.clone());
+            } else {
+                // Recursive group: register all with Never, then iterate until stable
+                for binding_id in scc {
+                    let td = type_def_by_name[binding_id.name.as_str()];
+                    *env = env.with_type_level(td.var.name.clone(), Type::Never, None);
+                }
+                // Iterate resolution until types stabilize (types are structural,
+                // so this converges quickly — typically 2 iterations).
+                for _ in 0..3 {
+                    for binding_id in scc {
+                        let td = type_def_by_name[binding_id.name.as_str()];
+                        let resolved_ty = self.resolve_type_def(env, td).unpack(diags);
+                        *env = env.with_type_level(
+                            td.var.name.clone(),
+                            resolved_ty,
+                            td.doc_comment.clone(),
+                        );
+                    }
+                }
             }
         }
 
+        // Set cursor info for all type defs
         for type_def in &type_defs {
             if let Some((cursor, _)) = &type_def.var.cursor {
                 if let Some((ty, _)) = env.lookup_type_level(type_def.var.name.as_str()) {
@@ -1540,6 +1707,82 @@ impl<'p> TypeChecker<'p> {
             }
         }
         Ok(Diagnosed::new(ty, diags))
+    }
+
+    /// Check a mutually recursive SCC group where all bindings are function literals.
+    /// Creates type variables for all bindings, checks all bodies with all variables
+    /// in scope, then solves the combined constraint system.
+    fn check_recursive_scc_group(
+        &self,
+        env: &TypeEnv<'_>,
+        scc: &[crate::dep_graph::BindingId],
+        binding_by_name: &HashMap<&str, &ast::LetBind>,
+    ) -> Result<Diagnosed<()>, TypeCheckError> {
+        let mut diags = DiagList::new();
+        let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
+
+        // Create type variables for all bindings in the SCC
+        let free_var_entries: Vec<(&str, crate::Span, usize)> = scc
+            .iter()
+            .map(|bid| {
+                let lb = binding_by_name[bid.name.as_str()];
+                let type_id = next_type_id();
+                (lb.var.name.as_str(), lb.var.span(), type_id)
+            })
+            .collect();
+
+        // Set up environment with all free vars from this SCC
+        let scc_env = env
+            .without_locals()
+            .with_free_vars(&free_var_entries, constraints.clone());
+
+        // Check all bodies and collect results
+        let mut body_results: Vec<(usize, Type, &ast::LetBind)> = Vec::new();
+        for (i, bid) in scc.iter().enumerate() {
+            let lb = binding_by_name[bid.name.as_str()];
+            let (_, _, type_id) = free_var_entries[i];
+
+            let annotation_ty = lb
+                .ty
+                .as_ref()
+                .map(|te| self.resolve_type_expr(&scc_env, te).unpack(&mut diags));
+
+            let resolved_ty = self
+                .check_expr(&scc_env, lb.expr.as_ref(), annotation_ty.as_ref())?
+                .unpack(&mut diags);
+
+            let binding_ty = annotation_ty.unwrap_or(resolved_ty);
+            body_results.push((type_id, binding_ty, lb));
+        }
+
+        // Solve constraints for all bindings simultaneously
+        let solve_input: Vec<(usize, &Type)> =
+            body_results.iter().map(|(id, ty, _)| (*id, ty)).collect();
+        let solved = constraints.borrow().solve_multi(&solve_input);
+
+        // Apply solutions and cache results
+        for (type_id, body_ty, lb) in &body_results {
+            let resolved_ty = body_ty.substitute(&solved);
+            let cache_key = lb.expr.as_ref() as *const crate::Loc<ast::Expr>;
+            self.global_cache
+                .borrow_mut()
+                .insert(cache_key, resolved_ty.clone());
+            let ty = Type::IsoRec(*type_id, Box::new(resolved_ty));
+            if let Some((cursor, _)) = &lb.var.cursor {
+                cursor.set_type(ty.clone());
+                cursor.set_identifier(CursorIdentifier::Let(lb.var.name.clone()));
+                if let Some(doc) = &lb.doc_comment {
+                    cursor.set_description(doc.clone());
+                }
+            }
+        }
+
+        // Fix up cursor types set during body checking that contain unsolved vars
+        if let Some(cursor) = &env.cursor {
+            cursor.substitute_type(&solved);
+        }
+
+        Ok(Diagnosed::new((), diags))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -2846,36 +3089,21 @@ mod tests {
     // --- Recursive globals with free variable constraints ---
 
     #[test]
-    fn recursive_global_record_member_access_no_error() {
-        let diagnosed =
-            check_module("let node = { value: 1, child: node }\nexport let v = node.value");
+    fn recursive_non_fn_global_produces_cycle_error() {
+        let diagnosed = check_module("export let node = { value: 1, child: node }");
         assert!(
-            !diagnosed.diags().has_errors(),
-            "unexpected errors: {:?}",
-            diagnosed.diags()
+            diagnosed.diags().has_errors(),
+            "expected cyclic dependency error for non-function self-reference"
         );
-        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
-            panic!("expected record type");
-        };
-        let v_ty = exports.get("v").expect("expected 'v' export").unfold();
-        assert_eq!(v_ty, Type::Int);
     }
 
     #[test]
-    fn recursive_global_self_reference_produces_isorec() {
-        let diagnosed = check_module("export let node = { value: 1, child: node }");
+    fn recursive_fn_global_still_works() {
+        let diagnosed = check_module("export let f = fn(n: Int) if (n == 0) 1 else f(n - 1)");
         assert!(
             !diagnosed.diags().has_errors(),
             "unexpected errors: {:?}",
             diagnosed.diags()
-        );
-        let TypeKind::Record(exports) = &diagnosed.as_ref().kind else {
-            panic!("expected record type");
-        };
-        let node_ty = exports.get("node").expect("expected 'node' export");
-        assert!(
-            matches!(node_ty.kind, TypeKind::IsoRec(_, _)),
-            "expected IsoRec type, got: {node_ty}"
         );
     }
 

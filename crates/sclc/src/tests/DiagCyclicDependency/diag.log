@@ -1,0 +1,2 @@
+DiagCyclicDependency/Main 1:5,1:6: cyclic dependency between `a`, `b` — recursive bindings must be functions
+DiagCyclicDependency/Main 2:5,2:6: cyclic dependency between `a`, `b` — recursive bindings must be functions

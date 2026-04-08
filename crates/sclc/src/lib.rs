@@ -2,6 +2,8 @@ mod ast;
 mod checker;
 mod compile;
 mod cursor;
+#[allow(dead_code)]
+mod dep_graph;
 mod diag;
 mod eval;
 pub mod fmt;

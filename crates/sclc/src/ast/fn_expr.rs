@@ -202,6 +202,7 @@ impl FnExpr {
                     .map(|param| param.var.name.clone())
                     .collect(),
                 self_name: None,
+                recursive_group: None,
             },
             body,
         })))
