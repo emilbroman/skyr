@@ -63,8 +63,10 @@ async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program) {
     let package = program.open_package(repo).await;
 
     for name in file_map.keys() {
-        if name.ends_with(".scl") {
-            let _ = package.open(name).await;
+        if name.ends_with(".scl")
+            && let Ok(diagnosed) = package.open(name).await
+        {
+            diagnosed.unpack(&mut diags);
         }
     }
 

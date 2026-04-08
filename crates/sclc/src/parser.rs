@@ -2396,4 +2396,22 @@ mod tests {
         // The f({1 2}) should be skipped as one recovery unit, leaving just 3
         assert!(!list.items.is_empty());
     }
+
+    #[test]
+    fn fn_without_body_emits_missing_body() {
+        let diagnosed = parse_file_mod("let x = fn()", &ModuleId::default());
+        let has_missing_body = diagnosed
+            .diags()
+            .iter()
+            .any(|d| format!("{d}").contains("missing body"));
+        assert!(
+            has_missing_body,
+            "expected MissingBody diagnostic for fn(), got: {:?}",
+            diagnosed
+                .diags()
+                .iter()
+                .map(|d| format!("{d}"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
