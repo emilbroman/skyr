@@ -55,6 +55,20 @@ impl DiagList {
     pub fn extend(&mut self, other: Self) {
         self.diags.extend(other.diags);
     }
+
+    /// Remove duplicate diagnostics (same location and message).
+    ///
+    /// PEG backtracking does not roll back mutations to the shared `&mut
+    /// DiagList`, so a diagnostic pushed inside a rule that ultimately fails
+    /// can be re-pushed when the same input is re-parsed via a different
+    /// grammar path. Call this after parsing to collapse those duplicates.
+    pub fn dedup(&mut self) {
+        let mut seen = std::collections::HashSet::new();
+        self.diags.retain(|d| {
+            let (module_id, span) = d.locate();
+            seen.insert((module_id, span, d.to_string()))
+        });
+    }
 }
 
 #[derive(Default)]

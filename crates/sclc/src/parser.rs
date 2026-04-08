@@ -1458,7 +1458,10 @@ pub fn parse_file_mod_with_cursor(
         &mut skip_span,
         &last_postfix_end,
     ) {
-        Ok(file_mod) => Diagnosed::new(file_mod, diags),
+        Ok(file_mod) => {
+            diags.dedup();
+            Diagnosed::new(file_mod, diags)
+        }
         Err(error) => {
             // With statement-level recovery this should be unreachable,
             // but as a safety net, produce an empty FileMod.
@@ -1466,6 +1469,7 @@ pub fn parse_file_mod_with_cursor(
                 module_id: module_id.clone(),
                 error,
             });
+            diags.dedup();
             Diagnosed::new(FileMod::default(), diags)
         }
     }
@@ -1507,12 +1511,16 @@ pub fn parse_repl_line_with_cursor(
         &mut skip_span,
         &last_postfix_end,
     ) {
-        Ok(repl_line) => Diagnosed::new(Some(repl_line), diags),
+        Ok(repl_line) => {
+            diags.dedup();
+            Diagnosed::new(Some(repl_line), diags)
+        }
         Err(error) => {
             diags.push(SyntaxError {
                 module_id: module_id.clone(),
                 error,
             });
+            diags.dedup();
             Diagnosed::new(None, diags)
         }
     }
