@@ -5,8 +5,7 @@ use std::{collections::HashMap, path::PathBuf};
 use thiserror::Error;
 
 use crate::{
-    ChildEntry, DiagList, Diagnosed, FileMod, ImportStmt, Loc, ModStmt, SourceError, SourceRepo,
-    parse_file_mod,
+    ChildEntry, FileMod, ImportStmt, Loc, ModStmt, SourceError, SourceRepo,
 };
 
 #[derive(Clone)]
@@ -103,10 +102,10 @@ impl Package {
         self.source.package_id()
     }
 
-    pub async fn open(
-        &mut self,
+    pub async fn read_module_source(
+        &self,
         path: impl AsRef<Path>,
-    ) -> Result<Diagnosed<Option<&FileMod>>, OpenError> {
+    ) -> Result<Option<String>, OpenError> {
         let path = path.as_ref().to_path_buf();
 
         // Reject paths that contain traversal components (e.g. ".." or
@@ -118,30 +117,14 @@ impl Package {
             }
         }
 
-        if self.files.contains_key(&path) {
-            return Ok(Diagnosed::new(
-                Some(
-                    self.files
-                        .get(&path)
-                        .expect("cached file must be present in package map"),
-                ),
-                DiagList::new(),
-            ));
-        }
-
         let source_data = self
             .source
             .read_file(&path)
-            .await?
-            .ok_or_else(|| OpenError::NotFound(path.clone()))?;
-        let source = String::from_utf8(source_data)?;
-        let package_id = self.package_id();
-        let module_id = module_id_for_path(&package_id, &path);
-        let diagnosed = parse_file_mod(&source, &module_id);
-        let mut diags = DiagList::new();
-        let file_mod = diagnosed.unpack(&mut diags);
-        let file_mod = self.files.entry(path.clone()).or_insert(file_mod);
-        Ok(Diagnosed::new(Some(file_mod), diags))
+            .await?;
+        let Some(source_data) = source_data else {
+            return Ok(None);
+        };
+        Ok(Some(String::from_utf8(source_data)?))
     }
 
     /// List child entries at the given path, caching the result.

@@ -396,6 +396,7 @@ fn report_repl_error(err: &sclc::ReplError) {
         }
         sclc::ReplError::TypeCheck(e) => println!("{e}"),
         sclc::ReplError::Eval(e) => println!("{e}"),
+        sclc::ReplError::Resolve(e) => println!("{e}"),
         sclc::ReplError::ResolveImport(e) => println!("{e}"),
     }
 }

@@ -30,6 +30,7 @@ pub enum ReplError {
     Diagnostics(DiagList),
     TypeCheck(TypeCheckError),
     Eval(EvalError),
+    Resolve(crate::ResolveError),
     ResolveImport(crate::ResolveImportError),
 }
 
@@ -48,6 +49,12 @@ impl From<EvalError> for ReplError {
 impl From<crate::ResolveImportError> for ReplError {
     fn from(err: crate::ResolveImportError) -> Self {
         ReplError::ResolveImport(err)
+    }
+}
+
+impl From<crate::ResolveError> for ReplError {
+    fn from(err: crate::ResolveError) -> Self {
+        ReplError::Resolve(err)
     }
 }
 
@@ -189,8 +196,10 @@ impl Repl {
             .clone();
 
         let mut diags = DiagList::new();
-        let diagnosed = self.program.resolve_import(&import_path).await?;
-        let Some(file_mod) = diagnosed.unpack(&mut diags).cloned() else {
+        self.unit.resolve(&import_path).await?.unpack(&mut diags);
+        self.program = self.unit.program().clone();
+
+        let Some(file_mod) = self.unit.module(&import_path).cloned() else {
             diags.push(invalid_import_diag(
                 source_module_id.clone(),
                 import_path.clone(),
@@ -198,10 +207,6 @@ impl Repl {
             ));
             return Err(ReplError::Diagnostics(diags));
         };
-
-        self.program.resolve_imports().await?.unpack(&mut diags);
-        self.program.resolve_paths().await?.unpack(&mut diags);
-        self.sync_unit();
 
         let checker = TypeChecker::new(&self.unit);
         let type_env = TypeEnv::new().with_module_id(&import_path);

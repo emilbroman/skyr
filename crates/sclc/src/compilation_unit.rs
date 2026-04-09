@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -69,7 +69,12 @@ impl CompilationUnit {
             externs: HashMap::new(),
             program: program.clone(),
         };
-        unit.sync_modules_from_program();
+        for (package_id, package) in program.packages() {
+            for (path, file_mod) in package.modules() {
+                let module_id = module_id_for_path(package_id, path);
+                unit.modules.insert(module_id, file_mod.clone());
+            }
+        }
 
         // Copy path hashes
         for (key, hash) in program.path_hashes() {
@@ -105,66 +110,177 @@ impl CompilationUnit {
     /// packages and caches path hashes.
     pub async fn resolve(&mut self, entry: &ModuleId) -> Result<Diagnosed<()>, ResolveError> {
         let mut diags = DiagList::new();
+        let mut queue = VecDeque::from([entry.clone()]);
+        let mut seen_imports = HashSet::new();
 
-        // Load the entry module
-        let package = self.program.packages_mut().get_mut(&entry.package);
-        if let Some(package) = package {
-            let module_path = entry.to_path_buf_with_extension("scl");
-            match package.open(&module_path).await {
-                Ok(diagnosed) => {
-                    let file_mod = diagnosed.unpack(&mut diags);
-                    if let Some(file_mod) = file_mod {
-                        self.modules.insert(entry.clone(), file_mod.clone());
-                    }
-                }
-                Err(crate::OpenError::NotFound(_)) => {
-                    // Entry module not found — not an error, just no modules to load
+        while let Some(module_id) = queue.pop_front() {
+            if self.modules.contains_key(&module_id) {
+                continue;
+            }
+
+            let Some(file_mod) = self.load_module(&module_id, &mut diags).await? else {
+                if &module_id == entry {
                     return Ok(Diagnosed::new((), diags));
                 }
-                Err(e) => return Err(e.into()),
+                continue;
+            };
+
+            for statement in &file_mod.statements {
+                if let crate::ModStmt::Import(import_stmt) = statement {
+                    let raw_segments: Vec<String> = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.as_ref().name.clone())
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    if !seen_imports.insert(raw_segments.clone()) {
+                        continue;
+                    }
+
+                    let import_path = self
+                        .split_import_segments(&raw_segments)
+                        .unwrap_or_else(|| ModuleId::new(PackageId::default(), raw_segments.clone()));
+                    if self.modules.contains_key(&import_path) {
+                        continue;
+                    }
+                    if self.load_module(&import_path, &mut diags).await?.is_none() {
+                        diags.push(invalid_import(module_id.clone(), import_path, import_stmt));
+                        continue;
+                    }
+                    queue.push_back(import_path);
+                }
             }
+
+            self.modules.insert(module_id, file_mod);
         }
 
-        // Resolve all imports (this populates Package.files via the existing loop)
-        self.program.resolve_imports().await?.unpack(&mut diags);
-
-        // Resolve path expressions (populates path_hashes)
-        self.program.resolve_paths().await?.unpack(&mut diags);
-
-        // Now sync: copy all parsed modules from Program's packages into our flat map
-        self.sync_modules_from_program();
-
-        // Copy path hashes
-        for (key, hash) in self.program.path_hashes() {
-            self.path_hashes.insert(key.clone(), *hash);
-        }
-
-        // Copy children caches
-        for (package_id, package) in self.program.packages() {
-            for (path, children) in package.children_entries() {
-                self.children_cache
-                    .insert((package_id.clone(), path.clone()), children.clone());
-            }
-        }
-
-        // Collect externs from all loaded packages
-        for (_package_id, package) in self.program.packages() {
-            for (name, value) in package.source().externs() {
-                self.externs.insert(name, value);
-            }
-        }
+        self.preload_children_for_completions().await;
+        self.resolve_paths().await?;
+        self.refresh_externs();
 
         Ok(Diagnosed::new((), diags))
     }
 
-    /// Copy all parsed modules from the Program's packages into the flat module map.
-    fn sync_modules_from_program(&mut self) {
-        for (package_id, package) in self.program.packages() {
-            for (path, file_mod) in package.modules() {
-                let module_id = module_id_for_path(package_id, path);
-                self.modules
-                    .entry(module_id)
-                    .or_insert_with(|| file_mod.clone());
+    async fn load_module(
+        &mut self,
+        module_id: &ModuleId,
+        diags: &mut DiagList,
+    ) -> Result<Option<FileMod>, ResolveError> {
+        self.program.ensure_import_package(module_id).await?;
+
+        if module_id.path.is_empty() || !module_id.is_safe_path() {
+            return Ok(None);
+        }
+
+        let module_path = module_id.to_path_buf_with_extension("scl");
+        let Some(package) = self.program.packages_mut().get_mut(&module_id.package) else {
+            return Ok(None);
+        };
+
+        let Some(source) = package.read_module_source(&module_path).await? else {
+            return Ok(None);
+        };
+        let diagnosed = crate::parse_file_mod(&source, module_id);
+        Ok(Some(diagnosed.unpack(diags)))
+    }
+
+    async fn preload_children_for_completions(&mut self) {
+        let mut prefixes_to_load: HashMap<PackageId, HashSet<PathBuf>> = HashMap::new();
+
+        for package_name in self.program.package_names() {
+            prefixes_to_load
+                .entry(package_name.clone())
+                .or_default()
+                .insert(PathBuf::new());
+        }
+
+        for file_mod in self.modules.values() {
+            for statement in &file_mod.statements {
+                if let crate::ModStmt::Import(import_stmt) = statement {
+                    let raw_segments: Vec<String> = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.as_ref().name.clone())
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    if let Some(import_path) = self.split_import_segments(&raw_segments) {
+                        let paths = prefixes_to_load
+                            .entry(import_path.package.clone())
+                            .or_default();
+                        let mut prefix = PathBuf::new();
+                        for segment in &import_path.path[..import_path.path.len().saturating_sub(1)] {
+                            prefix.push(segment);
+                            paths.insert(prefix.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        for (package_name, paths) in prefixes_to_load {
+            if let Some(package) = self.program.packages_mut().get_mut(&package_name) {
+                for path in paths {
+                    if let Ok(children) = package.list_children(&path).await {
+                        self.children_cache
+                            .insert((package_name.clone(), path.clone()), children);
+                    }
+                }
+            }
+        }
+    }
+
+    async fn resolve_paths(&mut self) -> Result<(), ResolveError> {
+        let mut dirs_to_preload: HashSet<PathBuf> = HashSet::new();
+        let mut resolved_paths: Vec<String> = Vec::new();
+
+        for (module_id, file_mod) in &self.modules {
+            let mut collector = crate::ast::CollectPaths::new();
+            crate::ast::visit_file_mod(&mut collector, file_mod);
+            for path_expr in collector.paths {
+                let resolved =
+                    path_expr.resolve_with_context(module_id, self.program.self_package_id());
+                let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
+                let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+                let mut prefix = PathBuf::new();
+                dirs_to_preload.insert(PathBuf::new());
+                for component in &components[..components.len().saturating_sub(1)] {
+                    prefix.push(component);
+                    dirs_to_preload.insert(prefix.clone());
+                }
+                resolved_paths.push(resolved);
+            }
+        }
+
+        self.path_hashes.clear();
+        if let Some(pkg_id) = self.program.self_package_id().cloned()
+            && let Some(package) = self.program.packages_mut().get_mut(&pkg_id)
+        {
+            for dir in &dirs_to_preload {
+                if let Ok(children) = package.list_children(dir).await {
+                    self.children_cache
+                        .insert((pkg_id.clone(), dir.clone()), children);
+                }
+            }
+
+            for resolved in resolved_paths {
+                let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
+                let repo_path = Path::new(rel);
+                if let Ok(Some(hash)) = package.source().path_hash(repo_path).await {
+                    self.path_hashes.insert(resolved, hash);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn refresh_externs(&mut self) {
+        self.externs.clear();
+        for (_package_id, package) in self.program.packages() {
+            for (name, value) in package.source().externs() {
+                self.externs.insert(name, value);
             }
         }
     }
@@ -221,7 +337,7 @@ impl CompilationUnit {
         Ok(values)
     }
 
-    /// Access the underlying Program (for backward compatibility during migration).
+    /// Access the underlying Program for remaining path/completion context.
     pub fn program(&self) -> &Program {
         &self.program
     }
@@ -325,4 +441,28 @@ fn module_id_for_path(package_id: &PackageId, path: &Path) -> ModuleId {
     }
 
     ModuleId::new(package_id.clone(), path_segments)
+}
+
+fn invalid_import(
+    source_module_id: ModuleId,
+    import_path: ModuleId,
+    import_stmt: &crate::Loc<crate::ImportStmt>,
+) -> crate::InvalidImport {
+    let vars = &import_stmt.as_ref().vars;
+    let path_span = crate::Span::new(
+        vars.first()
+            .expect("import has at least one segment")
+            .span()
+            .start(),
+        vars.last()
+            .expect("import has at least one segment")
+            .span()
+            .end(),
+    );
+
+    crate::InvalidImport {
+        source_module_id,
+        import_path,
+        path_span,
+    }
 }
