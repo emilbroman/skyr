@@ -58,47 +58,6 @@ impl CompilationUnit {
         }
     }
 
-    /// Create a compilation unit from an existing Program, syncing all modules
-    /// and caches. Used for backward compatibility where callers still work
-    /// with `Program` directly (e.g., REPL, stdlib_types).
-    pub fn from_program(program: &Program) -> Self {
-        let mut unit = Self {
-            modules: HashMap::new(),
-            path_hashes: HashMap::new(),
-            children_cache: HashMap::new(),
-            externs: HashMap::new(),
-            program: program.clone(),
-        };
-        for (package_id, package) in program.packages() {
-            for (path, file_mod) in package.modules() {
-                let module_id = module_id_for_path(package_id, path);
-                unit.modules.insert(module_id, file_mod.clone());
-            }
-        }
-
-        // Copy path hashes
-        for (key, hash) in program.path_hashes() {
-            unit.path_hashes.insert(key.clone(), *hash);
-        }
-
-        // Copy children caches
-        for (package_id, package) in program.packages() {
-            for (path, children) in package.children_entries() {
-                unit.children_cache
-                    .insert((package_id.clone(), path.clone()), children.clone());
-            }
-        }
-
-        // Collect externs
-        for (_package_id, package) in program.packages() {
-            for (name, value) in package.source().externs() {
-                unit.externs.insert(name, value);
-            }
-        }
-
-        unit
-    }
-
     /// Iteratively load, parse, and resolve all modules reachable from the
     /// entry point.
     ///
@@ -347,6 +306,18 @@ impl CompilationUnit {
         &mut self.program
     }
 
+    pub(crate) fn sync_program(&mut self, program: Program) {
+        self.program = program;
+    }
+
+    pub(crate) fn reset_program(&mut self, program: Program) {
+        self.program = program;
+        self.modules.clear();
+        self.path_hashes.clear();
+        self.children_cache.clear();
+        self.externs.clear();
+    }
+
     /// Set the package loader on the underlying Program.
     pub fn set_package_loader(&mut self, loader: std::sync::Arc<dyn crate::PackageLoader>) {
         self.program.set_package_loader(loader);
@@ -423,24 +394,6 @@ impl Default for CompilationUnit {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Compute a module ID from a package ID and a file path within that package.
-fn module_id_for_path(package_id: &PackageId, path: &Path) -> ModuleId {
-    let mut path_segments = Vec::new();
-    if let Some(parent) = path.parent() {
-        for segment in parent.components() {
-            if let std::path::Component::Normal(part) = segment {
-                path_segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-
-    if let Some(stem) = path.file_stem() {
-        path_segments.push(stem.to_string_lossy().into_owned());
-    }
-
-    ModuleId::new(package_id.clone(), path_segments)
 }
 
 fn invalid_import(

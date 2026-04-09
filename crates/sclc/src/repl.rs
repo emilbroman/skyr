@@ -64,7 +64,8 @@ impl Repl {
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
-        let unit = CompilationUnit::from_program(&program);
+        let mut unit = CompilationUnit::new();
+        unit.sync_program(program.clone());
         Self::from_parts(unit, program, effects_tx, namespace)
     }
 
@@ -111,12 +112,12 @@ impl Repl {
 
     pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
         self.program.replace_user_source(source);
-        self.sync_unit();
+        self.unit.reset_program(self.program.clone());
     }
 
     pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
         self.program.preload_path_dirs(dirs).await;
-        self.sync_unit();
+        self.unit.sync_program(self.program.clone());
     }
 
     pub fn next_line_module_id(&mut self) -> ModuleId {
@@ -166,10 +167,6 @@ impl Repl {
                 self.process_statement(statement, &module_id).map(Some)
             }
         }
-    }
-
-    fn sync_unit(&mut self) {
-        self.unit = CompilationUnit::from_program(&self.program);
     }
 
     async fn process_import(
@@ -258,7 +255,7 @@ impl Repl {
 
         if !dirs.is_empty() {
             self.program.preload_path_dirs(dirs).await;
-            self.sync_unit();
+            self.unit.sync_program(self.program.clone());
         }
     }
 
