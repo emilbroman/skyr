@@ -124,48 +124,31 @@ pub async fn stdlib_types()
     let mut diags = crate::DiagList::new();
     package.open("Main.scl").await?.unpack(&mut diags);
     program.resolve_imports().await?.unpack(&mut diags);
-    program.check_types()?.unpack(&mut diags);
 
-    let checker = crate::TypeChecker::new(&program);
+    let unit = crate::CompilationUnit::from_program(&program);
+    unit.check_types()?.unpack(&mut diags);
+
+    let checker = crate::TypeChecker::new(&unit);
     let std_package_id = PackageId::from([String::from("Std")]);
 
     let mut result = HashMap::new();
 
-    for (_, pkg) in program.packages() {
-        if pkg.package_id() != std_package_id {
+    for (module_id, file_mod) in unit.modules() {
+        if module_id.package != std_package_id {
             continue;
         }
-        for (path, file_mod) in pkg.modules() {
-            let module_id = module_id_for_path(&std_package_id, path);
-            let env = crate::TypeEnv::new().with_module_id(&module_id);
+        let env = crate::TypeEnv::new().with_module_id(module_id);
 
-            let mut diags = crate::DiagList::new();
+        let mut diags = crate::DiagList::new();
 
-            let value_type = checker.check_file_mod(&env, file_mod)?.unpack(&mut diags);
+        let value_type = checker.check_file_mod(&env, file_mod)?.unpack(&mut diags);
 
-            let type_level = checker
-                .type_level_exports(&env, file_mod)
-                .unpack(&mut diags);
+        let type_level = checker
+            .type_level_exports(&env, file_mod)
+            .unpack(&mut diags);
 
-            result.insert(module_id, (value_type, type_level));
-        }
+        result.insert(module_id.clone(), (value_type, type_level));
     }
 
     Ok(result)
-}
-
-/// Compute a module ID from a package ID and a file path within that package.
-fn module_id_for_path(package_id: &PackageId, path: &Path) -> crate::ModuleId {
-    let mut path_segments = Vec::new();
-    if let Some(parent) = path.parent() {
-        for segment in parent.components() {
-            if let std::path::Component::Normal(part) = segment {
-                path_segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-    if let Some(stem) = path.file_stem() {
-        path_segments.push(stem.to_string_lossy().into_owned());
-    }
-    crate::ModuleId::new(package_id.clone(), path_segments)
 }

@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 use crate::{
-    DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, Program, RecordType,
-    TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, Program,
+    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
 #[derive(Clone)]
@@ -127,13 +127,14 @@ impl ReplState {
             self.namespace.clone(),
         );
         let eval_env = self.eval_env(module_id);
+        let unit = CompilationUnit::from_program(&self.program);
 
         match statement {
             crate::ast::ModStmt::Import(_) => {
                 panic!("imports must be handled by the caller, not process_statement")
             }
             crate::ast::ModStmt::Let(let_bind) | crate::ast::ModStmt::Export(let_bind) => {
-                let checker = TypeChecker::new(&self.program);
+                let checker = TypeChecker::new(&unit);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let ty = check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
@@ -142,7 +143,7 @@ impl ReplState {
                 Ok(ReplOutcome::Binding { name, ty })
             }
             crate::ast::ModStmt::Expr(expr) => {
-                let checker = TypeChecker::new(&self.program);
+                let checker = TypeChecker::new(&unit);
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
                 check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, expr)?;
@@ -150,7 +151,7 @@ impl ReplState {
             }
             crate::ast::ModStmt::TypeDef(type_def)
             | crate::ast::ModStmt::ExportTypeDef(type_def) => {
-                let checker = TypeChecker::new(&self.program);
+                let checker = TypeChecker::new(&unit);
                 let diagnosed = checker.resolve_type_def(&type_env, type_def);
                 let ty = check_diagnosed(diagnosed)?;
                 let name = type_def.var.name.clone();

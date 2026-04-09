@@ -330,7 +330,8 @@ fn query_cursor(
     let type_env = sclc::TypeEnv::new()
         .with_module_id(module_id)
         .with_cursor(cursor);
-    let checker = sclc::TypeChecker::new(program);
+    let unit = sclc::CompilationUnit::from_program(program);
+    let checker = sclc::TypeChecker::new(&unit);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info
@@ -645,7 +646,8 @@ async fn repl_process_import(
     };
 
     // Type-check the imported module
-    let checker = sclc::TypeChecker::new(wasm_state.state.program());
+    let unit = sclc::CompilationUnit::from_program(wasm_state.state.program());
+    let checker = sclc::TypeChecker::new(&unit);
     let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
     let type_result = checker.check_file_mod(&type_env, &file_mod);
     let Ok(diagnosed_ty) = type_result else {

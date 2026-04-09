@@ -54,8 +54,7 @@ async fn compile_inner(
     let entry = ModuleId::new(package_id, vec!["Main".to_string()]);
     unit.resolve(&entry).await?.unpack(&mut diags);
 
-    // Type check using the underlying Program (backward compat — will move in step 4)
-    unit.program().check_types()?.unpack(&mut diags);
+    unit.check_types()?.unpack(&mut diags);
 
     Ok(Diagnosed::new(unit, diags))
 }

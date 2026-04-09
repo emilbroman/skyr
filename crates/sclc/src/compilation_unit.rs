@@ -54,6 +54,42 @@ impl CompilationUnit {
         }
     }
 
+    /// Create a compilation unit from an existing Program, syncing all modules
+    /// and caches. Used for backward compatibility where callers still work
+    /// with `Program` directly (e.g., REPL, stdlib_types).
+    pub fn from_program(program: &Program) -> Self {
+        let mut unit = Self {
+            modules: HashMap::new(),
+            path_hashes: HashMap::new(),
+            children_cache: HashMap::new(),
+            externs: HashMap::new(),
+            program: program.clone(),
+        };
+        unit.sync_modules_from_program();
+
+        // Copy path hashes
+        for (key, hash) in program.path_hashes() {
+            unit.path_hashes.insert(key.clone(), *hash);
+        }
+
+        // Copy children caches
+        for (package_id, package) in program.packages() {
+            for (path, children) in package.children_entries() {
+                unit.children_cache
+                    .insert((package_id.clone(), path.clone()), children.clone());
+            }
+        }
+
+        // Collect externs
+        for (_package_id, package) in program.packages() {
+            for (name, value) in package.source().externs() {
+                unit.externs.insert(name, value);
+            }
+        }
+
+        unit
+    }
+
     /// Iteratively load, parse, and resolve all modules reachable from the
     /// entry point.
     ///
@@ -154,6 +190,11 @@ impl CompilationUnit {
     /// Access extern function implementations.
     pub fn externs(&self) -> &HashMap<String, Value> {
         &self.externs
+    }
+
+    /// Type-check all modules in the compilation unit.
+    pub fn check_types(&self) -> Result<Diagnosed<()>, crate::TypeCheckError> {
+        crate::TypeChecker::new(self).check_program()
     }
 
     /// Access the underlying Program (for backward compatibility during migration).

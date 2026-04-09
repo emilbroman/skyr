@@ -77,7 +77,8 @@ impl completion::Completer for ReplHelper {
 
         // Type-check the statement to populate completion candidates.
         let type_env = state.type_env(&module_id);
-        let checker = sclc::TypeChecker::new(state.program());
+        let unit = sclc::CompilationUnit::from_program(state.program());
+        let checker = sclc::TypeChecker::new(&unit);
         let _ = checker.check_stmt(&type_env, statement);
 
         // Extract candidates from the cursor.
@@ -525,7 +526,8 @@ async fn process_import(
     // Resolve transitive imports
     let _ = state.program_mut().resolve_imports().await;
 
-    let checker = sclc::TypeChecker::new(state.program());
+    let unit = sclc::CompilationUnit::from_program(state.program());
+    let checker = sclc::TypeChecker::new(&unit);
     let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
     let diagnosed_ty = checker.check_file_mod(&type_env, &file_mod)?;
     let Some(ty) = report_diagnostics(diagnosed_ty) else {

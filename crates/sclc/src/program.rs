@@ -45,7 +45,8 @@ impl Program {
     }
 
     pub fn check_types(&self) -> Result<crate::Diagnosed<()>, crate::TypeCheckError> {
-        crate::TypeChecker::new(self).check_program()
+        let unit = crate::CompilationUnit::from_program(self);
+        unit.check_types()
     }
 
     /// Look up cached children for an import path prefix within a package.

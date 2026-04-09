@@ -188,11 +188,11 @@ impl Expr {
                 let mut diags = DiagList::new();
                 if let Ok(module_id) = env.module_id() {
                     let resolved = path_expr
-                        .resolve_with_context(&module_id, checker.program.self_package_id());
+                        .resolve_with_context(&module_id, checker.unit.program().self_package_id());
                     // `path_exists_cached` returns None when the parent directory
                     // hasn't been cached — in that case we skip validation rather
                     // than emit a false positive.
-                    if checker.program.path_exists_cached(&resolved) == Some(false) {
+                    if checker.unit.program().path_exists_cached(&resolved) == Some(false) {
                         diags.push(crate::InvalidPath {
                             module_id,
                             resolved_path: resolved,

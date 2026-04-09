@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::{Component, Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, Package, Program,
+    CompilationUnit, CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType,
     RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
@@ -760,7 +760,7 @@ impl<'a> TypeEnv<'a> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct TypeChecker<'p> {
-    pub(crate) program: &'p Program,
+    pub(crate) unit: &'p CompilationUnit,
     /// Cache for resolved global expression types (keyed by expression pointer).
     /// Avoids re-checking the same global expression multiple times within a
     /// single type-checking pass. Diagnostics are not cached — they are only
@@ -773,9 +773,9 @@ pub struct TypeChecker<'p> {
 }
 
 impl<'p> TypeChecker<'p> {
-    pub fn new(program: &'p Program) -> Self {
+    pub fn new(unit: &'p CompilationUnit) -> Self {
         Self {
-            program,
+            unit,
             global_cache: RefCell::new(HashMap::new()),
             import_cache: RefCell::new(HashMap::new()),
             type_level_cache: RefCell::new(HashMap::new()),
@@ -821,27 +821,10 @@ impl<'p> TypeChecker<'p> {
     // ═══════════════════════════════════════════════════════════════════════════
 
     pub fn check_program(&self) -> Result<Diagnosed<()>, TypeCheckError> {
-        let env = TypeEnv::new();
         let mut diags = DiagList::new();
 
-        for (_, package) in self.program.packages() {
-            self.check_package(&env, package)?.unpack(&mut diags);
-        }
-
-        Ok(Diagnosed::new((), diags))
-    }
-
-    pub fn check_package(
-        &self,
-        env: &TypeEnv<'_>,
-        package: &Package,
-    ) -> Result<Diagnosed<()>, TypeCheckError> {
-        let package_id = package.package_id();
-        let mut diags = DiagList::new();
-
-        for (path, file_mod) in package.modules() {
-            let module_id = module_id_for_path(&package_id, path);
-            let env = env.with_module_id(&module_id);
+        for (module_id, file_mod) in self.unit.modules() {
+            let env = TypeEnv::new().with_module_id(module_id);
             let _ = self.check_file_mod(&env, file_mod)?.unpack(&mut diags);
         }
 
@@ -1890,7 +1873,7 @@ impl<'p> TypeChecker<'p> {
     /// user package ID segments.
     fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
         if segments.first().map(String::as_str) == Some("Self")
-            && let Some(self_id) = self.program.self_package_id()
+            && let Some(self_id) = self.unit.program().self_package_id()
         {
             let mut result: Vec<String> = self_id.as_slice().to_vec();
             result.extend(segments[1..].iter().cloned());
@@ -1955,25 +1938,17 @@ impl<'p> TypeChecker<'p> {
             .map(|var| var.name.clone())
             .collect();
         let raw_segments = self.resolve_self_import_segments(raw_segments);
-        let import_path = self.split_import_segments(&raw_segments)?;
-        let package = self
-            .program
-            .packages()
-            .find(|(name, _)| *name == &import_path.package)
-            .map(|(_, pkg)| pkg)?;
-        if import_path.path.is_empty() {
+        let module_id = self.split_import_segments(&raw_segments)?;
+        if module_id.path.is_empty() {
             return None;
         }
-        let module_path = import_path.to_path_buf_with_extension("scl");
-        package
-            .modules()
-            .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
+        self.unit.module(&module_id)
     }
 
     fn package_name_for_import(&self, segments: &[String]) -> Option<crate::PackageId> {
-        self.program
-            .packages()
-            .map(|(name, _)| name)
+        self.unit
+            .program()
+            .package_names()
             .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
             .cloned()
@@ -1989,7 +1964,7 @@ impl<'p> TypeChecker<'p> {
 
             if i == 0 {
                 // First segment: suggest package names and "Self"
-                for package_name in self.program.package_names() {
+                for package_name in self.unit.program().package_names() {
                     if let Some(first) = package_name.as_slice().first()
                         && first.starts_with(prefix)
                     {
@@ -1998,7 +1973,7 @@ impl<'p> TypeChecker<'p> {
                         ));
                     }
                 }
-                if "Self".starts_with(prefix) && self.program.self_package_id().is_some() {
+                if "Self".starts_with(prefix) && self.unit.program().self_package_id().is_some() {
                     cursor.add_completion_candidate(crate::CompletionCandidate::ModuleDir(
                         "Self".to_owned(),
                     ));
@@ -2022,7 +1997,8 @@ impl<'p> TypeChecker<'p> {
                 }
 
                 if let Some(children) = self
-                    .program
+                    .unit
+                    .program()
                     .cached_children_for_import(&package_name, &dir_path)
                 {
                     for entry in children {
@@ -2090,7 +2066,7 @@ impl<'p> TypeChecker<'p> {
 
             let dir_path = PathBuf::from(components.join("/"));
 
-            if let Some(children) = self.program.cached_children_for_path(&dir_path) {
+            if let Some(children) = self.unit.program().cached_children_for_path(&dir_path) {
                 for entry in children {
                     match entry {
                         crate::ChildEntry::File(name) => {
@@ -2114,23 +2090,6 @@ impl<'p> TypeChecker<'p> {
     }
 }
 
-fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::ModuleId {
-    let mut path_segments = Vec::new();
-    if let Some(parent) = path.parent() {
-        for segment in parent.components() {
-            if let Component::Normal(part) = segment {
-                path_segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-
-    if let Some(stem) = path.file_stem() {
-        path_segments.push(stem.to_string_lossy().into_owned());
-    }
-
-    crate::ModuleId::new(package_id.clone(), path_segments)
-}
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2139,7 +2098,8 @@ fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::Modu
 mod tests {
     use super::{TypeChecker, next_type_id};
     use crate::{
-        DictType, FnType, Loc, ModuleId, Position, Program, RecordType, Span, Type, TypeKind,
+        CompilationUnit, DictType, FnType, Loc, ModuleId, Position, RecordType, Span, Type,
+        TypeKind,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -2147,9 +2107,9 @@ mod tests {
     };
 
     fn checker() -> TypeChecker<'static> {
-        let program = Box::new(Program::new());
-        let program = Box::leak(program);
-        TypeChecker::new(program)
+        let unit = Box::new(CompilationUnit::new());
+        let unit = Box::leak(unit);
+        TypeChecker::new(unit)
     }
 
     fn loc<T>(value: T, span: Span) -> Loc<T> {
@@ -2962,9 +2922,9 @@ mod tests {
     fn check_module(source: &str) -> crate::Diagnosed<Type> {
         let module_id = ModuleId::default();
         let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
-        let program = Box::new(Program::new());
-        let program: &'static Program = Box::leak(program);
-        let checker = TypeChecker::new(program);
+        let unit = Box::new(CompilationUnit::new());
+        let unit: &'static CompilationUnit = Box::leak(unit);
+        let checker = TypeChecker::new(unit);
         let env = super::TypeEnv::new().with_module_id(&module_id);
         checker
             .check_file_mod(&env, &file_mod)
@@ -3055,9 +3015,9 @@ mod tests {
             &module_id,
         )
         .into_inner();
-        let program = Box::new(Program::new());
-        let program: &'static Program = Box::leak(program);
-        let checker = TypeChecker::new(program);
+        let unit = Box::new(CompilationUnit::new());
+        let unit: &'static CompilationUnit = Box::leak(unit);
+        let checker = TypeChecker::new(unit);
         let env = super::TypeEnv::new().with_module_id(&module_id);
         let diagnosed = checker.type_level_exports(&env, &file_mod);
         assert!(!diagnosed.diags().has_errors());

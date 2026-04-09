@@ -179,7 +179,8 @@ pub fn query_cursor(
     let type_env = sclc::TypeEnv::new()
         .with_module_id(module_id)
         .with_cursor(cursor);
-    let checker = sclc::TypeChecker::new(program);
+    let unit = sclc::CompilationUnit::from_program(program);
+    let checker = sclc::TypeChecker::new(&unit);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info
