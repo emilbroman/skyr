@@ -77,8 +77,7 @@ impl completion::Completer for ReplHelper {
 
         // Type-check the statement to populate completion candidates.
         let type_env = state.type_env(&module_id);
-        let unit = sclc::CompilationUnit::from_program(state.program());
-        let checker = sclc::TypeChecker::new(&unit);
+        let checker = sclc::TypeChecker::new(state.unit());
         let _ = checker.check_stmt(&type_env, statement);
 
         // Extract candidates from the cursor.

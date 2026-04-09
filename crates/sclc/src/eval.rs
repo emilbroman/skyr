@@ -1142,8 +1142,7 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
@@ -1166,8 +1165,7 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1213,8 +1211,7 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1261,8 +1258,7 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
@@ -1306,8 +1302,7 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1355,8 +1350,7 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let program = crate::Program::new();
-        let unit = crate::CompilationUnit::from_program(&program);
+        let unit = crate::CompilationUnit::new();
         let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
