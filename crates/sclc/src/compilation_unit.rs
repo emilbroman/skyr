@@ -13,6 +13,7 @@ use crate::{
 /// `ModuleId`, along with path hashes, directory listings, and extern function
 /// implementations. It serves as the immutable context for type checking and
 /// evaluation after the resolution phase completes.
+#[derive(Clone)]
 pub struct CompilationUnit {
     /// Every module in the program, keyed by fully-qualified ModuleId.
     modules: HashMap<ModuleId, FileMod>,
@@ -241,6 +242,15 @@ impl CompilationUnit {
         source: impl crate::SourceRepo + 'static,
     ) -> &mut crate::Package {
         self.program.open_package(source).await
+    }
+
+    pub fn repl(
+        self,
+        program: Program,
+        effects_tx: tokio::sync::mpsc::UnboundedSender<crate::Effect>,
+        namespace: String,
+    ) -> crate::Repl {
+        crate::Repl::from_parts(self, program, effects_tx, namespace)
     }
 
     pub(crate) fn find_imports<'a>(

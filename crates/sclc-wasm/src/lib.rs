@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -342,7 +342,7 @@ fn query_cursor(
 // ---------------------------------------------------------------------------
 
 struct WasmReplState {
-    state: sclc::ReplState,
+    state: sclc::Repl,
     effects_rx: tokio::sync::mpsc::UnboundedReceiver<sclc::Effect>,
 }
 
@@ -355,7 +355,7 @@ thread_local! {
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let program = sclc::Program::new();
-    let state = sclc::ReplState::new(program, effects_tx, "Playground".to_string());
+    let state = sclc::Repl::new(program, effects_tx, "Playground".to_string());
     REPL_STATE.with(|cell| {
         *cell.borrow_mut() = Some(WasmReplState { state, effects_rx });
     });
@@ -414,6 +414,7 @@ fn format_repl_error(err: &sclc::ReplError) -> String {
         sclc::ReplError::Diagnostics(diags) => collect_diagnostics(diags).join("\n"),
         sclc::ReplError::TypeCheck(e) => e.to_string(),
         sclc::ReplError::Eval(e) => e.to_string(),
+        sclc::ReplError::ResolveImport(e) => e.to_string(),
     }
 }
 
@@ -438,98 +439,33 @@ pub async fn repl_eval(files_json: &str, line: &str) -> String {
 }
 
 async fn repl_process(wasm_state: &mut WasmReplState, files_json: &str, line: &str) -> ReplResult {
-    let module_id = wasm_state.state.next_line_module_id();
-    let parsed = sclc::parse_repl_line(line, &module_id);
-    let mut diags = sclc::DiagList::new();
-    let repl_line = parsed.unpack(&mut diags);
-
-    if !diags.iter().all(|d| d.level() != sclc::DiagLevel::Error) {
-        let errors = collect_diagnostics(&diags);
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some(errors.join("\n")),
-        };
-    }
-
-    let Some(repl_line) = repl_line else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: None,
-        };
-    };
-
-    let Some(statement) = &repl_line.statement else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: None,
-        };
-    };
-
-    // Handle imports separately
-    if let sclc::ModStmt::Import(import_stmt) = statement {
-        return repl_process_import(wasm_state, files_json, import_stmt).await;
-    }
-
-    // Preload path directory listings so the type checker can validate paths.
-    {
-        let repo = make_repo(files_json);
-        let file_map = parse_files_json(files_json);
-        let package = wasm_state.state.program_mut().replace_user_source(repo);
-        for name in file_map.keys() {
-            if name.ends_with(".scl") {
-                let _ = package.open(name).await;
-            }
-        }
-
-        let file_mod = sclc::FileMod {
-            statements: vec![statement.clone()],
-        };
-        let mut collector = sclc::CollectPaths::new();
-        sclc::visit_file_mod(&mut collector, &file_mod);
-
-        let self_package_id = wasm_state.state.program().self_package_id().cloned();
-        let dirs: HashSet<PathBuf> = collector
-            .paths
-            .iter()
-            .flat_map(|path_expr| {
-                let resolved = path_expr.resolve_with_context(&module_id, self_package_id.as_ref());
-                let rel = resolved.strip_prefix('/').unwrap_or(&resolved).to_string();
-                let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-                let mut result = vec![PathBuf::new()];
-                let mut prefix = PathBuf::new();
-                for component in &components[..components.len().saturating_sub(1)] {
-                    prefix.push(component);
-                    result.push(prefix.clone());
-                }
-                result
-            })
-            .collect();
-
-        if !dirs.is_empty() {
-            wasm_state.state.program_mut().preload_path_dirs(dirs).await;
-        }
-    }
-
-    let result = wasm_state.state.process_statement(statement, &module_id);
+    wasm_state.state.replace_user_source(make_repo(files_json));
     let effects = drain_effects(&mut wasm_state.effects_rx);
 
-    match result {
-        Ok(sclc::ReplOutcome::Binding { name, ty }) => ReplResult {
+    match wasm_state.state.process(line.to_string()).await {
+        Ok(Some(sclc::ReplOutcome::Binding { name, ty })) => ReplResult {
             output: Some(format!("{name} : {ty}")),
             effects,
             error: None,
         },
-        Ok(sclc::ReplOutcome::Value { value }) => ReplResult {
+        Ok(Some(sclc::ReplOutcome::Value { value })) => ReplResult {
             output: Some(format!("{}", value.value)),
             effects,
             error: None,
         },
-        Ok(sclc::ReplOutcome::TypeDef { name }) => ReplResult {
+        Ok(Some(sclc::ReplOutcome::TypeDef { name })) => ReplResult {
             output: Some(format!("type {name}")),
             effects: Vec::new(),
+            error: None,
+        },
+        Ok(Some(sclc::ReplOutcome::Import { module_id })) => ReplResult {
+            output: Some(format!("import {module_id}")),
+            effects,
+            error: None,
+        },
+        Ok(None) => ReplResult {
+            output: None,
+            effects,
             error: None,
         },
         Err(err) => ReplResult {
@@ -537,153 +473,5 @@ async fn repl_process(wasm_state: &mut WasmReplState, files_json: &str, line: &s
             effects,
             error: Some(format_repl_error(&err)),
         },
-    }
-}
-
-async fn repl_process_import(
-    wasm_state: &mut WasmReplState,
-    files_json: &str,
-    import_stmt: &sclc::Loc<sclc::ImportStmt>,
-) -> ReplResult {
-    let raw_segments: Vec<String> = import_stmt
-        .as_ref()
-        .vars
-        .iter()
-        .map(|var| var.as_ref().name.clone())
-        .collect();
-    // Allow `Self` as an alias for the current package (`Playground`)
-    let resolved_segments = if raw_segments.first().map(String::as_str) == Some("Self") {
-        let mut segments = vec!["Playground".to_string()];
-        segments.extend(raw_segments[1..].iter().cloned());
-        segments
-    } else {
-        raw_segments
-    };
-    // Split into package + path
-    let import_path = {
-        let playground_pkg = sclc::PackageId::from(["Playground"]);
-        let mut best_pkg = sclc::PackageId::default();
-        let mut best_len = 0;
-        for pname in wasm_state.state.program().package_names() {
-            if resolved_segments.starts_with(pname.as_slice()) && pname.len() > best_len {
-                best_pkg = pname.clone();
-                best_len = pname.len();
-            }
-        }
-        let _ = playground_pkg;
-        sclc::ModuleId::new(best_pkg, resolved_segments[best_len..].to_vec())
-    };
-    let Some(alias) = import_stmt
-        .as_ref()
-        .vars
-        .last()
-        .map(|var| var.as_ref().name.clone())
-    else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some("Invalid import statement".to_string()),
-        };
-    };
-
-    let file_map = parse_files_json(files_json);
-    let repo = make_repo(files_json);
-    let package = wasm_state.state.program_mut().replace_user_source(repo);
-    for name in file_map.keys() {
-        if name.ends_with(".scl") {
-            let _ = package.open(name).await;
-        }
-    }
-
-    // Resolve all transitive imports
-    let mut diags = sclc::DiagList::new();
-    match wasm_state.state.program_mut().resolve_imports().await {
-        Ok(diagnosed) => {
-            diagnosed.unpack(&mut diags);
-        }
-        Err(e) => {
-            return ReplResult {
-                output: None,
-                effects: Vec::new(),
-                error: Some(format!("{e}")),
-            };
-        }
-    }
-
-    // Get the file_mod (already loaded by resolve_imports above)
-    let resolve_result = wasm_state
-        .state
-        .program_mut()
-        .resolve_import(&import_path)
-        .await;
-    let Ok(diagnosed) = resolve_result else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some(format!("{}", resolve_result.unwrap_err())),
-        };
-    };
-    let file_mod_opt = diagnosed.unpack(&mut diags);
-    let Some(file_mod) = file_mod_opt.cloned() else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some(format!("Could not resolve import {import_path}")),
-        };
-    };
-
-    // Type-check the imported module
-    let unit = sclc::CompilationUnit::from_program(wasm_state.state.program());
-    let checker = sclc::TypeChecker::new(&unit);
-    let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
-    let type_result = checker.check_file_mod(&type_env, &file_mod);
-    let Ok(diagnosed_ty) = type_result else {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some(format!("{}", type_result.unwrap_err())),
-        };
-    };
-    let ty = diagnosed_ty.unpack(&mut diags);
-
-    let eval = sclc::Eval::new(
-        &unit,
-        wasm_state.state.effects_tx().clone(),
-        wasm_state.state.namespace(),
-    );
-    let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
-    let value = match eval.eval_file_mod(&eval_env, &file_mod) {
-        Ok(value) => value,
-        Err(e) => {
-            return ReplResult {
-                output: None,
-                effects: drain_effects(&mut wasm_state.effects_rx),
-                error: Some(e.to_string()),
-            };
-        }
-    };
-
-    if diags.iter().any(|d| d.level() == sclc::DiagLevel::Error) {
-        return ReplResult {
-            output: None,
-            effects: Vec::new(),
-            error: Some(collect_diagnostics(&diags).join("\n")),
-        };
-    }
-
-    // Extract type-level exports
-    let type_exports = checker
-        .type_level_exports(&type_env, &file_mod)
-        .into_inner();
-
-    wasm_state
-        .state
-        .register_import(alias, ty, value, type_exports);
-
-    let effects = drain_effects(&mut wasm_state.effects_rx);
-    ReplResult {
-        output: Some(format!("import {import_path}")),
-        effects,
-        error: None,
     }
 }

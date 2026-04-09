@@ -1,15 +1,17 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 
 use tokio::sync::mpsc;
 
 use crate::{
-    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, Program,
-    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, FileMod, ModuleId,
+    Program, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
 #[derive(Clone)]
-pub struct ReplState {
+pub struct Repl {
     line_number: usize,
+    unit: CompilationUnit,
     program: Program,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
@@ -18,18 +20,17 @@ pub struct ReplState {
 }
 
 pub enum ReplOutcome {
-    /// `let x = ...` or `export let x = ...` — binding was stored.
     Binding { name: String, ty: Type },
-    /// Bare expression — value was computed.
     Value { value: TrackedValue },
-    /// `type Foo = ...` — type def was stored.
     TypeDef { name: String },
+    Import { module_id: ModuleId },
 }
 
 pub enum ReplError {
     Diagnostics(DiagList),
     TypeCheck(TypeCheckError),
     Eval(EvalError),
+    ResolveImport(crate::ResolveImportError),
 }
 
 impl From<TypeCheckError> for ReplError {
@@ -44,14 +45,31 @@ impl From<EvalError> for ReplError {
     }
 }
 
-impl ReplState {
+impl From<crate::ResolveImportError> for ReplError {
+    fn from(err: crate::ResolveImportError) -> Self {
+        ReplError::ResolveImport(err)
+    }
+}
+
+impl Repl {
     pub fn new(
+        program: Program,
+        effects_tx: mpsc::UnboundedSender<Effect>,
+        namespace: String,
+    ) -> Self {
+        let unit = CompilationUnit::from_program(&program);
+        Self::from_parts(unit, program, effects_tx, namespace)
+    }
+
+    pub fn from_parts(
+        unit: CompilationUnit,
         program: Program,
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
         Self {
             line_number: 0,
+            unit,
             program,
             effects_tx,
             bindings: HashMap::new(),
@@ -64,8 +82,8 @@ impl ReplState {
         &self.program
     }
 
-    pub fn program_mut(&mut self) -> &mut Program {
-        &mut self.program
+    pub fn unit(&self) -> &CompilationUnit {
+        &self.unit
     }
 
     pub fn effects_tx(&self) -> &mpsc::UnboundedSender<Effect> {
@@ -84,17 +102,22 @@ impl ReplState {
         &self.type_defs
     }
 
-    /// Increment the line counter and return a module ID for this REPL line.
-    ///
-    /// The module ID is scoped under the package ID so that relative path
-    /// expressions (e.g. `./file`) resolve correctly against the repo root.
+    pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
+        self.program.replace_user_source(source);
+        self.sync_unit();
+    }
+
+    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
+        self.program.preload_path_dirs(dirs).await;
+        self.sync_unit();
+    }
+
     pub fn next_line_module_id(&mut self) -> ModuleId {
         self.line_number += 1;
         let package = self.program.self_package_id().cloned().unwrap_or_default();
         ModuleId::new(package, vec![format!("Repl{}", self.line_number)])
     }
 
-    /// Build a `TypeEnv` from current bindings and type defs.
     pub fn type_env<'a>(&'a self, module_id: &'a ModuleId) -> TypeEnv<'a> {
         let env = self.bindings.iter().fold(
             TypeEnv::new().with_module_id(module_id),
@@ -107,7 +130,6 @@ impl ReplState {
         })
     }
 
-    /// Build an `EvalEnv` from current bindings.
     pub fn eval_env<'a>(&'a self, module_id: &'a ModuleId) -> EvalEnv<'a> {
         self.bindings.iter().fold(
             EvalEnv::new().with_module_id(module_id),
@@ -115,26 +137,141 @@ impl ReplState {
         )
     }
 
-    /// Process a non-import statement. Returns the outcome on success.
-    ///
-    /// The statement is type-checked and evaluated, and any resulting
-    /// binding or type def is stored in the REPL state.
-    pub fn process_statement(
+    pub async fn process(&mut self, line: String) -> Result<Option<ReplOutcome>, ReplError> {
+        let module_id = self.next_line_module_id();
+        let parsed = crate::parse_repl_line(&line, &module_id);
+        let repl_line = check_diagnosed(parsed)?;
+
+        let Some(repl_line) = repl_line else {
+            return Ok(None);
+        };
+        let Some(statement) = &repl_line.statement else {
+            return Ok(None);
+        };
+
+        match statement {
+            crate::ModStmt::Import(import_stmt) => {
+                self.process_import(&module_id, import_stmt).await.map(Some)
+            }
+            _ => {
+                self.preload_paths_for_statement(statement, &module_id)
+                    .await;
+                self.process_statement(statement, &module_id).map(Some)
+            }
+        }
+    }
+
+    fn sync_unit(&mut self) {
+        self.unit = CompilationUnit::from_program(&self.program);
+    }
+
+    async fn process_import(
+        &mut self,
+        source_module_id: &ModuleId,
+        import_stmt: &crate::Loc<crate::ImportStmt>,
+    ) -> Result<ReplOutcome, ReplError> {
+        let raw_segments: Vec<String> = import_stmt
+            .as_ref()
+            .vars
+            .iter()
+            .map(|var| var.as_ref().name.clone())
+            .collect();
+        let import_path = self
+            .split_import_segments(&raw_segments)
+            .unwrap_or_else(|| ModuleId::new(crate::PackageId::default(), raw_segments.clone()));
+        let alias = import_stmt
+            .as_ref()
+            .vars
+            .last()
+            .expect("import path contains at least one segment")
+            .as_ref()
+            .name
+            .clone();
+
+        let mut diags = DiagList::new();
+        let diagnosed = self.program.resolve_import(&import_path).await?;
+        let Some(file_mod) = diagnosed.unpack(&mut diags).cloned() else {
+            diags.push(invalid_import_diag(
+                source_module_id.clone(),
+                import_path.clone(),
+                import_stmt,
+            ));
+            return Err(ReplError::Diagnostics(diags));
+        };
+
+        self.program.resolve_imports().await?.unpack(&mut diags);
+        self.program.resolve_paths().await?.unpack(&mut diags);
+        self.sync_unit();
+
+        let checker = TypeChecker::new(&self.unit);
+        let type_env = TypeEnv::new().with_module_id(&import_path);
+        let ty = checker
+            .check_file_mod(&type_env, &file_mod)?
+            .unpack(&mut diags);
+        let type_exports = checker
+            .type_level_exports(&type_env, &file_mod)
+            .unpack(&mut diags);
+
+        if diags.has_errors() {
+            return Err(ReplError::Diagnostics(diags));
+        }
+
+        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
+        let eval_env = EvalEnv::new().with_module_id(&import_path);
+        let value = eval.eval_file_mod(&eval_env, &file_mod)?;
+
+        self.register_import(alias, ty, value, type_exports);
+        Ok(ReplOutcome::Import {
+            module_id: import_path,
+        })
+    }
+
+    async fn preload_paths_for_statement(
+        &mut self,
+        statement: &crate::ModStmt,
+        module_id: &ModuleId,
+    ) {
+        let file_mod = FileMod {
+            statements: vec![statement.clone()],
+        };
+        let mut collector = crate::CollectPaths::new();
+        crate::visit_file_mod(&mut collector, &file_mod);
+
+        let self_package_id = self.program.self_package_id().cloned();
+        let dirs: HashSet<PathBuf> = collector
+            .paths
+            .iter()
+            .filter_map(|path_expr| {
+                let resolved = path_expr.resolve_with_context(module_id, self_package_id.as_ref());
+                let resolved_path = std::path::Path::new(&resolved);
+                let parent = resolved_path.parent()?;
+                let parent_str = parent.to_string_lossy();
+                let parent_rel = parent_str.strip_prefix('/').unwrap_or(&parent_str);
+                Some(PathBuf::from(parent_rel))
+            })
+            .collect();
+
+        if !dirs.is_empty() {
+            self.program.preload_path_dirs(dirs).await;
+            self.sync_unit();
+        }
+    }
+
+    fn process_statement(
         &mut self,
         statement: &crate::ast::ModStmt,
         module_id: &ModuleId,
     ) -> Result<ReplOutcome, ReplError> {
         let type_env = self.type_env(module_id);
-        let unit = CompilationUnit::from_program(&self.program);
-        let eval = Eval::new(&unit, self.effects_tx.clone(), self.namespace.clone());
+        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
         let eval_env = self.eval_env(module_id);
 
         match statement {
             crate::ast::ModStmt::Import(_) => {
-                panic!("imports must be handled by the caller, not process_statement")
+                panic!("imports must be handled by process_import, not process_statement")
             }
             crate::ast::ModStmt::Let(let_bind) | crate::ast::ModStmt::Export(let_bind) => {
-                let checker = TypeChecker::new(&unit);
+                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let ty = check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
@@ -143,7 +280,7 @@ impl ReplState {
                 Ok(ReplOutcome::Binding { name, ty })
             }
             crate::ast::ModStmt::Expr(expr) => {
-                let checker = TypeChecker::new(&unit);
+                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
                 check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, expr)?;
@@ -151,7 +288,7 @@ impl ReplState {
             }
             crate::ast::ModStmt::TypeDef(type_def)
             | crate::ast::ModStmt::ExportTypeDef(type_def) => {
-                let checker = TypeChecker::new(&unit);
+                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.resolve_type_def(&type_env, type_def);
                 let ty = check_diagnosed(diagnosed)?;
                 let name = type_def.var.name.clone();
@@ -161,11 +298,7 @@ impl ReplState {
         }
     }
 
-    /// Register an already-resolved import into the REPL state.
-    ///
-    /// Call this after loading the import source, resolving imports,
-    /// type-checking the module, evaluating it, and extracting type exports.
-    pub fn register_import(
+    fn register_import(
         &mut self,
         alias: String,
         ty: Type,
@@ -177,9 +310,57 @@ impl ReplState {
             self.type_defs.insert(alias, Type::Record(type_exports));
         }
     }
+
+    fn split_import_segments(&self, raw_segments: &[String]) -> Option<ModuleId> {
+        let segments = if raw_segments.first().map(String::as_str) == Some("Self") {
+            let mut resolved = self
+                .program
+                .self_package_id()
+                .cloned()
+                .unwrap_or_default()
+                .as_slice()
+                .to_vec();
+            resolved.extend(raw_segments[1..].iter().cloned());
+            resolved
+        } else {
+            raw_segments.to_vec()
+        };
+
+        let package = self
+            .program
+            .package_names()
+            .filter(|package_name| segments.starts_with(package_name.as_slice()))
+            .max_by_key(|package_name| package_name.len())
+            .cloned()?;
+        let pkg_len = package.len();
+        Some(ModuleId::new(package, segments[pkg_len..].to_vec()))
+    }
 }
 
-/// Check a `Diagnosed<T>` and return `Err(ReplError::Diagnostics)` if it contains errors.
+fn invalid_import_diag(
+    source_module_id: ModuleId,
+    import_path: ModuleId,
+    import_stmt: &crate::Loc<crate::ImportStmt>,
+) -> crate::InvalidImport {
+    let vars = &import_stmt.as_ref().vars;
+    let path_span = crate::Span::new(
+        vars.first()
+            .expect("import has at least one segment")
+            .span()
+            .start(),
+        vars.last()
+            .expect("import has at least one segment")
+            .span()
+            .end(),
+    );
+
+    crate::InvalidImport {
+        source_module_id,
+        import_path,
+        path_span,
+    }
+}
+
 fn check_diagnosed<T>(diagnosed: Diagnosed<T>) -> Result<T, ReplError> {
     if diagnosed.diags().has_errors() {
         let mut diags = DiagList::new();

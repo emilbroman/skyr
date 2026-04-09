@@ -8,14 +8,14 @@ use rustyline::highlight;
 use rustyline::hint;
 use rustyline::validate;
 use rustyline::{Context, Editor, Helper};
-use sclc::{Diag, Lexer, Token};
+use sclc::{Lexer, Token};
 
-use crate::output::{report_diagnostics, spawn_effect_printer};
+use crate::output::spawn_effect_printer;
 
 struct ReplHelper {
     /// Snapshot of the REPL state used for completions.
     /// Updated before each `readline()` call.
-    state: RefCell<Option<sclc::ReplState>>,
+    state: RefCell<Option<sclc::Repl>>,
     /// Filesystem root for path completions.
     root: PathBuf,
 }
@@ -397,188 +397,37 @@ fn report_repl_error(err: &sclc::ReplError) {
         }
         sclc::ReplError::TypeCheck(e) => println!("{e}"),
         sclc::ReplError::Eval(e) => println!("{e}"),
+        sclc::ReplError::ResolveImport(e) => println!("{e}"),
     }
 }
 
-async fn process_line(state: &mut sclc::ReplState, root: &Path, line: &str) -> anyhow::Result<()> {
-    let module_id = state.next_line_module_id();
-    let Some(repl_line) =
-        report_diagnostics(sclc::parse_repl_line(line, &module_id)).and_then(|line| line)
-    else {
-        return Ok(());
-    };
-
-    let Some(statement) = &repl_line.statement else {
-        return Ok(());
-    };
-
-    // Handle imports separately — they mutate the program
-    if let sclc::ModStmt::Import(import_stmt) = statement {
-        return process_import(state, root, import_stmt).await;
-    }
-
-    // Preload directory listings for any path expressions in this line so
-    // that the type checker can validate them synchronously.
-    preload_paths_for_statement(state, statement, &module_id).await;
-
-    match state.process_statement(statement, &module_id) {
-        Ok(sclc::ReplOutcome::Binding { name, ty }) => {
-            println!("{name} : {ty}");
-        }
-        Ok(sclc::ReplOutcome::Value { value }) => {
-            println!("{}", value.value);
-        }
-        Ok(sclc::ReplOutcome::TypeDef { .. }) => {}
-        Err(err) => report_repl_error(&err),
-    }
-
-    Ok(())
-}
-
-async fn process_import(
-    state: &mut sclc::ReplState,
-    root: &Path,
-    import_stmt: &sclc::Loc<sclc::ImportStmt>,
-) -> anyhow::Result<()> {
-    let raw_segments: Vec<String> = import_stmt
-        .as_ref()
-        .vars
-        .iter()
-        .map(|var| var.as_ref().name.clone())
-        .collect();
-    // Construct a best-effort ModuleId — the program's resolve_import will handle
-    // proper package resolution.
-    let import_path = {
-        let pkg = state
-            .program()
-            .self_package_id()
-            .cloned()
-            .unwrap_or_default();
-        // If it starts with Self, resolve to the user's package
-        let resolved = if raw_segments.first().map(String::as_str) == Some("Self") {
-            let mut segs = pkg.as_slice().to_vec();
-            segs.extend(raw_segments[1..].iter().cloned());
-            segs
-        } else {
-            raw_segments
-        };
-        // Find the matching package
-        let mut best_pkg = sclc::PackageId::default();
-        let mut best_len = 0;
-        for pname in state.program().package_names() {
-            if resolved.starts_with(pname.as_slice()) && pname.len() > best_len {
-                best_pkg = pname.clone();
-                best_len = pname.len();
-            }
-        }
-        sclc::ModuleId::new(best_pkg, resolved[best_len..].to_vec())
-    };
-    let Some(alias) = import_stmt
-        .as_ref()
-        .vars
-        .last()
-        .map(|var| var.as_ref().name.clone())
-    else {
-        return Ok(());
-    };
-
-    // Open the user package if not already loaded and resolve imports
+async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
     let package_id = state
         .program()
         .self_package_id()
         .cloned()
         .unwrap_or_default();
-    let source = sclc::FsSource {
+    state.replace_user_source(sclc::FsSource {
         root: root.to_path_buf(),
         package_id,
-    };
-    state.program_mut().open_package(source).await;
-    let Some(file_mod) = state
-        .program_mut()
-        .resolve_import(&import_path)
-        .await?
-        .cloned()
-    else {
-        let vars = &import_stmt.as_ref().vars;
-        let path_span = sclc::Span::new(
-            vars.first()
-                .expect("import has at least one segment")
-                .span()
-                .start(),
-            vars.last()
-                .expect("import has at least one segment")
-                .span()
-                .end(),
-        );
-        let diag = sclc::InvalidImport {
-            source_module_id: sclc::ModuleId::new(
-                sclc::PackageId::default(),
-                vec!["Repl".to_string()],
-            ),
-            import_path,
-            path_span,
-        };
-        let (module_id, span) = diag.locate();
-        println!("[{:?}] {module_id}:{span}: {diag}", diag.level());
-        return Ok(());
-    };
+    });
 
-    // Resolve transitive imports
-    let _ = state.program_mut().resolve_imports().await;
-
-    let unit = sclc::CompilationUnit::from_program(state.program());
-    let checker = sclc::TypeChecker::new(&unit);
-    let type_env = sclc::TypeEnv::new().with_module_id(&import_path);
-    let diagnosed_ty = checker.check_file_mod(&type_env, &file_mod)?;
-    let Some(ty) = report_diagnostics(diagnosed_ty) else {
-        return Ok(());
-    };
-
-    let eval = sclc::Eval::new(&unit, state.effects_tx().clone(), state.namespace());
-    let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
-    let value = eval.eval_file_mod(&eval_env, &file_mod)?;
-
-    let type_exports = checker
-        .type_level_exports(&type_env, &file_mod)
-        .into_inner();
-
-    state.register_import(alias, ty, value, type_exports);
+    match state.process(line.to_owned()).await {
+        Ok(Some(sclc::ReplOutcome::Binding { name, ty })) => {
+            println!("{name} : {ty}");
+        }
+        Ok(Some(sclc::ReplOutcome::Value { value })) => {
+            println!("{}", value.value);
+        }
+        Ok(Some(sclc::ReplOutcome::TypeDef { .. })) => {}
+        Ok(Some(sclc::ReplOutcome::Import { module_id })) => {
+            println!("import {module_id}");
+        }
+        Ok(None) => {}
+        Err(err) => report_repl_error(&err),
+    }
 
     Ok(())
-}
-
-/// Collect path expressions from a statement, resolve them, and preload
-/// parent directory listings so the type checker can validate paths.
-async fn preload_paths_for_statement(
-    state: &mut sclc::ReplState,
-    statement: &sclc::ModStmt,
-    module_id: &sclc::ModuleId,
-) {
-    // Build a temporary FileMod containing just this statement so we can
-    // use the visitor.
-    let file_mod = sclc::FileMod {
-        statements: vec![statement.clone()],
-    };
-    let mut collector = sclc::CollectPaths::new();
-    sclc::visit_file_mod(&mut collector, &file_mod);
-
-    let self_package_id = state.program().self_package_id().cloned();
-    let dirs: std::collections::HashSet<PathBuf> = collector
-        .paths
-        .iter()
-        .filter_map(|path_expr| {
-            let resolved = path_expr.resolve_with_context(module_id, self_package_id.as_ref());
-            let resolved_path = std::path::Path::new(&resolved);
-            let parent = resolved_path.parent()?;
-            let parent_str = parent.to_string_lossy();
-            let parent_rel = parent_str.strip_prefix('/').unwrap_or(&parent_str);
-            Some(PathBuf::from(parent_rel))
-        })
-        .collect();
-
-    if !dirs.is_empty() {
-        state.program_mut().preload_path_dirs(dirs).await;
-    }
 }
 
 pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
@@ -600,7 +449,7 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     // Preload root directory listing so path validation works for REPL lines
     program.preload_path_dirs([PathBuf::new()]).await;
 
-    let mut state = sclc::ReplState::new(program, effects_tx, package_id.to_string());
+    let mut state = sclc::Repl::new(program, effects_tx, package_id.to_string());
     let mut editor = Editor::new()?;
     editor.set_helper(Some(ReplHelper {
         state: RefCell::new(None),
