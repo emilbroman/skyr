@@ -12,14 +12,15 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         root,
         package_id: package_id.clone(),
     };
-    let Some(program) = report_diagnostics(sclc::compile(source).await?) else {
+    let Some(unit) = report_diagnostics(sclc::compile(source).await?) else {
         return Ok(());
     };
 
     let module_id = sclc::ModuleId::new(package_id.clone(), vec!["Main".to_string()]);
 
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let eval = sclc::Eval::new(&program, effects_tx, package_id.to_string());
+    let program = unit.program();
+    let eval = sclc::Eval::new(program, effects_tx, package_id.to_string());
     let effects_task = spawn_effect_printer(effects_rx);
 
     if let Some(result) = report_diagnostics(program.evaluate(&module_id, &eval)?) {

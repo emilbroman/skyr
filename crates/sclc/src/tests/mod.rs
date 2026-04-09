@@ -315,7 +315,9 @@ async fn run_test_case(dir_name: &str) {
 
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut eval = Eval::new(&result, tx, "test");
+    let unit = result.into_inner();
+    let program = unit.program();
+    let mut eval = Eval::new(program, tx, "test");
 
     // Load existing resources from rdb.json
     for (id, resource) in rdb {
@@ -328,7 +330,7 @@ async fn run_test_case(dir_name: &str) {
         vec!["Main".to_string()],
     );
 
-    let tracked_value: TrackedValue = result
+    let tracked_value: TrackedValue = program
         .evaluate(&main_module_id, &eval)
         .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"))
         .into_inner();

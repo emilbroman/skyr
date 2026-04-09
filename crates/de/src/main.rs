@@ -633,7 +633,8 @@ impl Worker {
             });
         }
 
-        let program = diagnosed.into_inner();
+        let unit = diagnosed.into_inner();
+        let program = unit.program();
         let module_id = sclc::ModuleId::new(
             SourceRepo::package_id(&self.client),
             vec!["Main".to_string()],
@@ -652,7 +653,7 @@ impl Worker {
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
-        let mut eval = sclc::Eval::new(&program, effects_tx, environment_qid_str);
+        let mut eval = sclc::Eval::new(program, effects_tx, environment_qid_str);
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;

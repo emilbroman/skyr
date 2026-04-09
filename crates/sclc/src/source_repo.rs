@@ -1,7 +1,9 @@
 use std::error::Error;
 use std::path::Path;
 
-use crate::PackageId;
+use std::collections::HashMap;
+
+use crate::{PackageId, Value};
 
 /// A boxed, thread-safe error type used by [`SourceRepo`] methods.
 pub type SourceError = Box<dyn Error + Send + Sync>;
@@ -55,6 +57,12 @@ pub trait SourceRepo: Send + Sync {
             .read_file(path)
             .await?
             .map(|_| gix_hash::ObjectId::null(gix_hash::Kind::Sha1)))
+    }
+
+    /// Return extern function implementations provided by this source.
+    /// Default: no externs. StdSourceRepo overrides this with std library impls.
+    fn externs(&self) -> HashMap<String, Value> {
+        HashMap::new()
     }
 }
 

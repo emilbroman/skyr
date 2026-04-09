@@ -1,5 +1,6 @@
 mod ast;
 mod checker;
+mod compilation_unit;
 mod compile;
 mod cursor;
 #[allow(dead_code)]
@@ -27,6 +28,7 @@ mod value;
 
 pub use ast::*;
 pub use checker::*;
+pub use compilation_unit::*;
 pub use compile::*;
 pub use cursor::*;
 pub use diag::*;

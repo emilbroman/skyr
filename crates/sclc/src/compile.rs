@@ -3,8 +3,8 @@ use thiserror::Error;
 use std::sync::Arc;
 
 use crate::{
-    DiagList, Diagnosed, OpenError, PackageLoader, Program, ResolveImportError, SourceRepo,
-    TypeCheckError,
+    CompilationUnit, DiagList, Diagnosed, ModuleId, OpenError, PackageId, PackageLoader,
+    ResolveError, ResolveImportError, SourceRepo, TypeCheckError,
 };
 
 #[derive(Error, Debug)]
@@ -17,11 +17,14 @@ pub enum CompileError {
 
     #[error("failed to type check program: {0}")]
     TypeCheck(#[from] TypeCheckError),
+
+    #[error("failed to resolve: {0}")]
+    Resolve(#[from] ResolveError),
 }
 
 pub async fn compile(
     source: impl SourceRepo + 'static,
-) -> Result<Diagnosed<Program>, CompileError> {
+) -> Result<Diagnosed<CompilationUnit>, CompileError> {
     compile_inner(source, None).await
 }
 
@@ -30,36 +33,36 @@ pub async fn compile(
 pub async fn compile_with_loader(
     source: impl SourceRepo + 'static,
     loader: Arc<dyn PackageLoader>,
-) -> Result<Diagnosed<Program>, CompileError> {
+) -> Result<Diagnosed<CompilationUnit>, CompileError> {
     compile_inner(source, Some(loader)).await
 }
 
 async fn compile_inner(
     source: impl SourceRepo + 'static,
     loader: Option<Arc<dyn PackageLoader>>,
-) -> Result<Diagnosed<Program>, CompileError> {
+) -> Result<Diagnosed<CompilationUnit>, CompileError> {
     let mut diags = DiagList::new();
-    let mut program = Program::new();
+
+    let package_id: PackageId = source.package_id();
+    let mut unit = CompilationUnit::new();
+
     if let Some(loader) = loader {
-        program.set_package_loader(loader);
+        unit.set_package_loader(loader);
     }
-    let package = program.open_package(source).await;
-    if package.open("Main.scl").await?.unpack(&mut diags).is_none() {
-        return Ok(Diagnosed::new(program, diags));
-    }
+    unit.open_package(source).await;
 
-    program.resolve_imports().await?.unpack(&mut diags);
-    program.resolve_paths().await?.unpack(&mut diags);
-    program.check_types()?.unpack(&mut diags);
+    let entry = ModuleId::new(package_id, vec!["Main".to_string()]);
+    unit.resolve(&entry).await?.unpack(&mut diags);
 
-    Ok(Diagnosed::new(program, diags))
+    // Type check using the underlying Program (backward compat — will move in step 4)
+    unit.program().check_types()?.unpack(&mut diags);
+
+    Ok(Diagnosed::new(unit, diags))
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-
-    use crate::ModuleId;
 
     /// Compiling a program that imports every stdlib module should produce zero diagnostics.
     #[tokio::test]

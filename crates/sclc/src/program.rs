@@ -34,6 +34,11 @@ impl Program {
         self.packages.iter()
     }
 
+    /// Mutable access to the packages map.
+    pub fn packages_mut(&mut self) -> &mut HashMap<PackageId, Package> {
+        &mut self.packages
+    }
+
     /// The package ID of the user's own package (used to resolve `Self/…` imports).
     pub fn self_package_id(&self) -> Option<&PackageId> {
         self.self_package_id.as_ref()
@@ -60,6 +65,11 @@ impl Program {
     /// Look up the Git object hash for a resolved path string.
     pub fn path_hash(&self, resolved: &str) -> Option<&gix_hash::ObjectId> {
         self.path_hashes.get(resolved)
+    }
+
+    /// Access all path hashes.
+    pub fn path_hashes(&self) -> &HashMap<String, gix_hash::ObjectId> {
+        &self.path_hashes
     }
 
     /// Look up cached children for a path within the user's own package.

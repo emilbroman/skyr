@@ -89,6 +89,11 @@ impl Package {
         self.children_cache.get(path).map(Vec::as_slice)
     }
 
+    /// Iterate over all cached children entries.
+    pub fn children_entries(&self) -> impl Iterator<Item = (&PathBuf, &Vec<ChildEntry>)> {
+        self.children_cache.iter()
+    }
+
     /// Access the underlying source repo.
     pub fn source(&self) -> &dyn SourceRepo {
         &*self.source
