@@ -21,7 +21,7 @@ pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Local".to_string());
-    sclc::ModuleId::from([parent_name, stem])
+    sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem])
 }
 
 /// Overlay source that checks the document cache before delegating to an inner source.
@@ -262,13 +262,10 @@ fn symbol_kind_for_expr(expr: &sclc::Loc<sclc::Expr>) -> lsp::SymbolKind {
 fn module_id_to_path(
     root: &Path,
     module_id: &sclc::ModuleId,
-    package_id: &sclc::PackageId,
+    _package_id: &sclc::PackageId,
 ) -> PathBuf {
-    // Strip the package_id prefix from the module_id, since root already
-    // corresponds to the package directory.
-    let segments = module_id
-        .suffix_after_package(package_id)
-        .unwrap_or(module_id.as_slice());
+    // Use the module path directly — it already excludes the package prefix.
+    let segments = &module_id.path;
 
     if segments.is_empty() {
         return root.join("Main.scl");

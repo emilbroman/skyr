@@ -26,7 +26,7 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
         .and_then(|p| p.file_name())
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Local".to_string());
-    let module_id = sclc::ModuleId::from([parent_name, stem]);
+    let module_id = sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem]);
 
     let diagnosed = sclc::parse_file_mod(&source, &module_id);
 

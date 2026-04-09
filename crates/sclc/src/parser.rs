@@ -1528,7 +1528,7 @@ pub fn parse_repl_line_with_cursor(
 
 #[cfg(test)]
 mod tests {
-    use crate::ModuleId;
+    use crate::{ModuleId, PackageId};
 
     use super::{parse_file_mod, parse_repl_line};
 
@@ -1616,9 +1616,7 @@ mod tests {
 
     #[test]
     fn duplicate_record_fields_emit_diagnostic() {
-        let module_id = ["Org".to_owned(), "Pkg".to_owned(), "Main".to_owned()]
-            .into_iter()
-            .collect::<ModuleId>();
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
         let diagnosed = parse_repl_line("{ a: 1, a: 2 }", &module_id);
         assert!(diagnosed.as_ref().is_some(), "record should parse");
         assert!(diagnosed.diags().has_errors());

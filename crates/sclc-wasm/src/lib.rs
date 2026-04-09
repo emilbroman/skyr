@@ -25,28 +25,26 @@ fn parse_files_json(files_json: &str) -> HashMap<String, String> {
 /// e.g. "models/User.scl" -> ["Playground", "models", "User"]
 fn module_id_for_file(file: &str) -> sclc::ModuleId {
     let path = Path::new(file);
-    let mut segments: Vec<String> = vec!["Playground".to_string()];
+    let mut path_segments: Vec<String> = Vec::new();
     if let Some(parent) = path.parent() {
         for component in parent.components() {
-            segments.push(component.as_os_str().to_string_lossy().into_owned());
+            path_segments.push(component.as_os_str().to_string_lossy().into_owned());
         }
     }
     if let Some(stem) = path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
+        path_segments.push(stem.to_string_lossy().into_owned());
     }
-    segments.into_iter().collect()
+    sclc::ModuleId::new(sclc::PackageId::from(["Playground"]), path_segments)
 }
 
 /// Convert a module ID back to a file path relative to the package root.
 /// e.g. ["Playground", "models", "User"] -> "models/User.scl"
 fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
-    let package_id = sclc::PackageId::from(["Playground"]);
-    let segments = module_id.suffix_after_package(&package_id)?;
-    if segments.is_empty() {
+    if module_id.path.is_empty() {
         return None;
     }
     let mut path = PathBuf::new();
-    for s in segments {
+    for s in &module_id.path {
         path.push(s);
     }
     path.set_extension("scl");
@@ -107,7 +105,7 @@ pub async fn analyze(files_json: &str) -> String {
         .iter()
         .filter(|d| {
             let (module_id, _) = d.locate();
-            module_id.starts_with_package(&package_id)
+            module_id.package == package_id
         })
         .map(|d| {
             let (module_id, span) = d.locate();
@@ -303,10 +301,10 @@ pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) 
 /// Format source code (single file).
 #[wasm_bindgen]
 pub fn format(source: &str) -> Option<String> {
-    let module_id: sclc::ModuleId = ["Playground", "Main"]
-        .into_iter()
-        .map(String::from)
-        .collect();
+    let module_id = sclc::ModuleId::new(
+        sclc::PackageId::from(["Playground"]),
+        vec!["Main".to_string()],
+    );
     let diagnosed = sclc::parse_file_mod(source, &module_id);
     let file_mod = diagnosed.into_inner();
     let formatted = sclc::Formatter::format(source, &file_mod);
@@ -546,19 +544,33 @@ async fn repl_process_import(
     files_json: &str,
     import_stmt: &sclc::Loc<sclc::ImportStmt>,
 ) -> ReplResult {
-    let import_path: sclc::ModuleId = import_stmt
+    let raw_segments: Vec<String> = import_stmt
         .as_ref()
         .vars
         .iter()
         .map(|var| var.as_ref().name.clone())
         .collect();
     // Allow `Self` as an alias for the current package (`Playground`)
-    let import_path = if import_path.as_slice().first().map(String::as_str) == Some("Self") {
+    let resolved_segments = if raw_segments.first().map(String::as_str) == Some("Self") {
         let mut segments = vec!["Playground".to_string()];
-        segments.extend(import_path.as_slice()[1..].iter().cloned());
-        sclc::ModuleId::new(segments)
+        segments.extend(raw_segments[1..].iter().cloned());
+        segments
     } else {
-        import_path
+        raw_segments
+    };
+    // Split into package + path
+    let import_path = {
+        let playground_pkg = sclc::PackageId::from(["Playground"]);
+        let mut best_pkg = sclc::PackageId::default();
+        let mut best_len = 0;
+        for pname in wasm_state.state.program().package_names() {
+            if resolved_segments.starts_with(pname.as_slice()) && pname.len() > best_len {
+                best_pkg = pname.clone();
+                best_len = pname.len();
+            }
+        }
+        let _ = playground_pkg;
+        sclc::ModuleId::new(best_pkg, resolved_segments[best_len..].to_vec())
     };
     let Some(alias) = import_stmt
         .as_ref()

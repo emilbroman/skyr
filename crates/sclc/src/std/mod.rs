@@ -156,16 +156,16 @@ pub async fn stdlib_types()
 
 /// Compute a module ID from a package ID and a file path within that package.
 fn module_id_for_path(package_id: &PackageId, path: &Path) -> crate::ModuleId {
-    let mut segments = package_id.as_slice().to_vec();
+    let mut path_segments = Vec::new();
     if let Some(parent) = path.parent() {
         for segment in parent.components() {
             if let std::path::Component::Normal(part) = segment {
-                segments.push(part.to_string_lossy().into_owned());
+                path_segments.push(part.to_string_lossy().into_owned());
             }
         }
     }
     if let Some(stem) = path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
+        path_segments.push(stem.to_string_lossy().into_owned());
     }
-    segments.into_iter().collect()
+    crate::ModuleId::new(package_id.clone(), path_segments)
 }

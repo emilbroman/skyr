@@ -325,9 +325,7 @@ pub fn build_value_dep_graph(program: &Program) -> DepGraph {
                     _ => String::new(),
                 })
                 .collect::<Vec<_>>();
-            let mut full_segments = package_id.as_slice().to_vec();
-            full_segments.extend(module_segments);
-            let module_id = ModuleId::new(full_segments);
+            let module_id = ModuleId::new(package_id.clone(), module_segments);
 
             let globals_map = file_mod.find_globals();
             let globals: HashSet<&str> = globals_map.keys().copied().collect();
@@ -341,22 +339,27 @@ pub fn build_value_dep_graph(program: &Program) -> DepGraph {
                         .vars
                         .last()
                         .expect("import has at least one segment");
-                    let import_path_segments: Vec<String> = import_stmt
+                    let mut raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|v| v.name.clone())
                         .collect();
-                    let mut resolved = ModuleId::new(import_path_segments);
 
                     // Resolve Self/ prefix
-                    if resolved.as_slice().first().map(String::as_str) == Some("Self")
+                    if raw_segments.first().map(String::as_str) == Some("Self")
                         && let Some(self_id) = program.self_package_id()
                     {
                         let mut segs = self_id.as_slice().to_vec();
-                        segs.extend(resolved.as_slice()[1..].iter().cloned());
-                        resolved = ModuleId::new(segs);
+                        segs.extend(raw_segments[1..].iter().cloned());
+                        raw_segments = segs;
                     }
+
+                    // Split into package + path
+                    let resolved =
+                        split_import_segments(program, &raw_segments).unwrap_or_else(|| {
+                            ModuleId::new(crate::PackageId::default(), raw_segments)
+                        });
 
                     // Find the target module's globals
                     let target_exports = find_module_exports(program, &resolved);
@@ -396,9 +399,7 @@ pub fn build_value_dep_graph(program: &Program) -> DepGraph {
                     _ => String::new(),
                 })
                 .collect::<Vec<_>>();
-            let mut full_segments = package_id.as_slice().to_vec();
-            full_segments.extend(module_segments);
-            let module_id = ModuleId::new(full_segments);
+            let module_id = ModuleId::new(package_id.clone(), module_segments);
 
             let info = module_infos
                 .iter()
@@ -579,27 +580,34 @@ pub fn build_type_dep_graph(type_defs: &[&TypeDef]) -> DepGraph {
     graph
 }
 
+/// Split raw import segments into a `ModuleId` using known packages from the program.
+fn split_import_segments(program: &Program, segments: &[String]) -> Option<ModuleId> {
+    let package = program
+        .package_names()
+        .filter(|pkg| segments.starts_with(pkg.as_slice()))
+        .max_by_key(|pkg| pkg.len())
+        .cloned()?;
+    let pkg_len = package.len();
+    let path = segments[pkg_len..].to_vec();
+    Some(ModuleId::new(package, path))
+}
+
 /// Find the exported global names of a module identified by its full module ID.
 fn find_module_exports<'a>(program: &'a Program, module_id: &ModuleId) -> HashSet<&'a str> {
-    for (package_id, package) in program.packages() {
-        if !module_id.starts_with_package(package_id) {
-            continue;
-        }
-        let Some(suffix) = module_id.suffix_after_package(package_id) else {
-            continue;
-        };
-        if suffix.is_empty() {
-            continue;
-        }
-        let module_path = suffix
-            .iter()
-            .cloned()
-            .collect::<ModuleId>()
-            .to_path_buf_with_extension("scl");
-        for (path, file_mod) in package.modules() {
-            if path == &module_path {
-                return file_mod.find_globals().into_keys().collect();
-            }
+    let package = program
+        .packages()
+        .find(|(pkg_id, _)| *pkg_id == &module_id.package)
+        .map(|(_, pkg)| pkg);
+    let Some(package) = package else {
+        return HashSet::new();
+    };
+    if module_id.path.is_empty() {
+        return HashSet::new();
+    }
+    let module_path = module_id.to_path_buf_with_extension("scl");
+    for (path, file_mod) in package.modules() {
+        if path == &module_path {
+            return file_mod.find_globals().into_keys().collect();
         }
     }
     HashSet::new()
@@ -608,6 +616,7 @@ fn find_module_exports<'a>(program: &'a Program, module_id: &ModuleId) -> HashSe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PackageId;
 
     fn bid(name: &str) -> BindingId {
         BindingId {
@@ -618,7 +627,7 @@ mod tests {
 
     fn bid_mod(module: &str, name: &str) -> BindingId {
         BindingId {
-            module_id: ModuleId::new(vec![module.to_string()]),
+            module_id: ModuleId::new(PackageId::default(), vec![module.to_string()]),
             name: name.to_string(),
         }
     }

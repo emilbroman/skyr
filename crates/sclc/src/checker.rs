@@ -1857,13 +1857,18 @@ impl<'p> TypeChecker<'p> {
                     .expect("import path contains at least one segment");
 
                 if let Some(import_file_mod) = self.resolve_import(import_stmt) {
-                    let target_module_id = import_stmt
+                    let raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.name.clone())
-                        .collect::<crate::ModuleId>();
-                    let target_module_id = self.resolve_self_import(target_module_id);
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let target_module_id = self
+                        .split_import_segments(&raw_segments)
+                        .unwrap_or_else(|| {
+                            crate::ModuleId::new(crate::PackageId::default(), raw_segments.clone())
+                        });
                     let import_env = TypeEnv::new().with_module_id(&target_module_id);
                     let type_exports = self
                         .type_level_exports(&import_env, import_file_mod)
@@ -1881,17 +1886,25 @@ impl<'p> TypeChecker<'p> {
         Ok(())
     }
 
-    /// If `import_path` starts with `Self`, replace that prefix with the
-    /// user package ID.
-    fn resolve_self_import(&self, import_path: crate::ModuleId) -> crate::ModuleId {
-        if import_path.as_slice().first().map(String::as_str) == Some("Self")
+    /// If `segments` starts with `Self`, replace that prefix with the
+    /// user package ID segments.
+    fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
+        if segments.first().map(String::as_str) == Some("Self")
             && let Some(self_id) = self.program.self_package_id()
         {
-            let mut segments: Vec<String> = self_id.as_slice().to_vec();
-            segments.extend(import_path.as_slice()[1..].iter().cloned());
-            return crate::ModuleId::new(segments);
+            let mut result: Vec<String> = self_id.as_slice().to_vec();
+            result.extend(segments[1..].iter().cloned());
+            return result;
         }
-        import_path
+        segments
+    }
+
+    /// Split raw import segments into a `ModuleId` using known packages.
+    fn split_import_segments(&self, segments: &[String]) -> Option<crate::ModuleId> {
+        let package = self.package_name_for_import(segments)?;
+        let pkg_len = package.len();
+        let path = segments[pkg_len..].to_vec();
+        Some(crate::ModuleId::new(package, path))
     }
 
     fn find_imports<'a>(
@@ -1908,13 +1921,21 @@ impl<'p> TypeChecker<'p> {
                         .vars
                         .last()
                         .expect("import path contains at least one segment");
-                    let import_path = import_stmt
+                    let raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.name.clone())
-                        .collect::<crate::ModuleId>();
-                    let import_path = self.resolve_self_import(import_path);
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let import_path =
+                        self.split_import_segments(&raw_segments)
+                            .unwrap_or_else(|| {
+                                crate::ModuleId::new(
+                                    crate::PackageId::default(),
+                                    raw_segments.clone(),
+                                )
+                            });
                     let destination = self.resolve_import(import_stmt);
                     return Some((alias.name.as_str(), (import_path, destination)));
                 }
@@ -1927,38 +1948,33 @@ impl<'p> TypeChecker<'p> {
         &'a self,
         import_stmt: &'a crate::Loc<ast::ImportStmt>,
     ) -> Option<&'a ast::FileMod> {
-        let import_path = import_stmt
+        let raw_segments: Vec<String> = import_stmt
             .as_ref()
             .vars
             .iter()
             .map(|var| var.name.clone())
-            .collect::<crate::ModuleId>();
-        let import_path = self.resolve_self_import(import_path);
-        let package_name = self.package_name_for_import(&import_path)?;
+            .collect();
+        let raw_segments = self.resolve_self_import_segments(raw_segments);
+        let import_path = self.split_import_segments(&raw_segments)?;
         let package = self
             .program
             .packages()
-            .find(|(name, _)| *name == &package_name)
+            .find(|(name, _)| *name == &import_path.package)
             .map(|(_, pkg)| pkg)?;
-        let module_segments = import_path.suffix_after_package(&package_name)?;
-        if module_segments.is_empty() {
+        if import_path.path.is_empty() {
             return None;
         }
-        let module_path = module_segments
-            .iter()
-            .cloned()
-            .collect::<crate::ModuleId>()
-            .to_path_buf_with_extension("scl");
+        let module_path = import_path.to_path_buf_with_extension("scl");
         package
             .modules()
             .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
     }
 
-    fn package_name_for_import(&self, import_path: &crate::ModuleId) -> Option<crate::PackageId> {
+    fn package_name_for_import(&self, segments: &[String]) -> Option<crate::PackageId> {
         self.program
             .packages()
             .map(|(name, _)| name)
-            .filter(|package_name| import_path.starts_with_package(package_name))
+            .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }
@@ -1992,16 +2008,14 @@ impl<'p> TypeChecker<'p> {
                 // build the directory path, and suggest children.
                 let prior_segments: Vec<String> =
                     vars[..i].iter().map(|v| v.name.clone()).collect();
-                let partial_path = prior_segments.iter().cloned().collect::<crate::ModuleId>();
-                let partial_path = self.resolve_self_import(partial_path);
+                let prior_segments = self.resolve_self_import_segments(prior_segments);
 
-                let Some(package_name) = self.package_name_for_import(&partial_path) else {
+                let Some(package_name) = self.package_name_for_import(&prior_segments) else {
                     continue;
                 };
                 // The directory path within the package
-                let dir_segments = partial_path
-                    .suffix_after_package(&package_name)
-                    .unwrap_or(&[]);
+                let pkg_len = package_name.len();
+                let dir_segments = &prior_segments[pkg_len..];
                 let mut dir_path = PathBuf::new();
                 for seg in dir_segments {
                     dir_path.push(seg);
@@ -2058,10 +2072,7 @@ impl<'p> TypeChecker<'p> {
                 .first()
                 .is_some_and(|s| *s == "." || *s == "..");
             let mut components: Vec<&str> = if is_relative {
-                let module_segments = module_id.as_slice();
-                let package_len = self.program.self_package_id().map(|p| p.len()).unwrap_or(0);
-                let repo_path = &module_segments[package_len..];
-                let dir = &repo_path[..repo_path.len().saturating_sub(1)];
+                let dir = &module_id.path[..module_id.path.len().saturating_sub(1)];
                 dir.iter().map(|s| s.as_str()).collect()
             } else {
                 Vec::new()
@@ -2104,20 +2115,20 @@ impl<'p> TypeChecker<'p> {
 }
 
 fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::ModuleId {
-    let mut segments = package_id.as_slice().to_vec();
+    let mut path_segments = Vec::new();
     if let Some(parent) = path.parent() {
         for segment in parent.components() {
             if let Component::Normal(part) = segment {
-                segments.push(part.to_string_lossy().into_owned());
+                path_segments.push(part.to_string_lossy().into_owned());
             }
         }
     }
 
     if let Some(stem) = path.file_stem() {
-        segments.push(stem.to_string_lossy().into_owned());
+        path_segments.push(stem.to_string_lossy().into_owned());
     }
 
-    segments.into_iter().collect()
+    crate::ModuleId::new(package_id.clone(), path_segments)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

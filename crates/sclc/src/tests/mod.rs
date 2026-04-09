@@ -2,7 +2,9 @@ use std::collections::HashMap;
 
 use ids::ResourceId;
 
-use crate::{Effect, Eval, MemSourceRepo, ModuleId, Record, Resource, TrackedValue, Value};
+use crate::{
+    Effect, Eval, MemSourceRepo, ModuleId, PackageId, Record, Resource, TrackedValue, Value,
+};
 
 /// Format an effect in compact form.
 fn format_effect(effect: &Effect) -> String {
@@ -321,9 +323,10 @@ async fn run_test_case(dir_name: &str) {
     }
 
     // Find the main module
-    let main_module_id: ModuleId = [dir_name.to_string(), "Main".to_string()]
-        .into_iter()
-        .collect();
+    let main_module_id = ModuleId::new(
+        PackageId::from([dir_name.to_string()]),
+        vec!["Main".to_string()],
+    );
 
     let tracked_value: TrackedValue = result
         .evaluate(&main_module_id, &eval)

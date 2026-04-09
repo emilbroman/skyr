@@ -634,12 +634,10 @@ impl Worker {
         }
 
         let program = diagnosed.into_inner();
-        let module_id = SourceRepo::package_id(&self.client)
-            .as_slice()
-            .iter()
-            .cloned()
-            .chain(std::iter::once(String::from("Main")))
-            .collect::<sclc::ModuleId>();
+        let module_id = sclc::ModuleId::new(
+            SourceRepo::package_id(&self.client),
+            vec!["Main".to_string()],
+        );
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();

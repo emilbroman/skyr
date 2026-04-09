@@ -163,23 +163,31 @@ impl Program {
         }
     }
 
-    /// If `import_path` starts with `Self`, replace that prefix with the
-    /// user package ID so that the rest of the resolution machinery can find
-    /// it in the package map.
-    fn resolve_self_import(&self, import_path: ModuleId) -> ModuleId {
-        if import_path.as_slice().first().map(String::as_str) == Some("Self")
+    /// If `segments` starts with `Self`, replace that prefix with the
+    /// user package ID segments so that the rest of the resolution machinery
+    /// can find it in the package map.
+    fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
+        if segments.first().map(String::as_str) == Some("Self")
             && let Some(self_pkg) = &self.self_package_id
         {
-            let mut segments: Vec<String> = self_pkg.as_slice().to_vec();
-            segments.extend(import_path.as_slice()[1..].iter().cloned());
-            return ModuleId::new(segments);
+            let mut result: Vec<String> = self_pkg.as_slice().to_vec();
+            result.extend(segments[1..].iter().cloned());
+            return result;
         }
-        import_path
+        segments
+    }
+
+    /// Split raw import segments into a `ModuleId` using known packages.
+    fn split_import_segments(&self, segments: &[String]) -> Option<ModuleId> {
+        let package = self.package_name_for_import(segments)?;
+        let pkg_len = package.len();
+        let path = segments[pkg_len..].to_vec();
+        Some(ModuleId::new(package, path))
     }
 
     pub async fn resolve_imports(&mut self) -> Result<Diagnosed<()>, ResolveImportError> {
         let mut diags = DiagList::new();
-        let mut seen_import_paths = HashSet::<ModuleId>::new();
+        let mut seen_import_segments = HashSet::<Vec<String>>::new();
 
         loop {
             let discovered_imports = self
@@ -187,27 +195,33 @@ impl Program {
                 .values()
                 .flat_map(|package| package.imports_with_source())
                 .map(|(source_module_id, import_stmt)| {
-                    let import_path = import_stmt
+                    let raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.as_ref().name.clone())
-                        .collect::<ModuleId>();
-                    let import_path = self.resolve_self_import(import_path);
-                    (source_module_id, import_path, import_stmt.clone())
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    (source_module_id, raw_segments, import_stmt.clone())
                 })
                 .collect::<Vec<_>>();
 
             let pending_imports = discovered_imports
                 .into_iter()
-                .filter(|(_, import_path, _)| seen_import_paths.insert(import_path.clone()))
+                .filter(|(_, segments, _)| seen_import_segments.insert(segments.clone()))
                 .collect::<Vec<_>>();
 
             if pending_imports.is_empty() {
                 break;
             }
 
-            for (source_module_id, import_path, import_stmt) in pending_imports {
+            for (source_module_id, raw_segments, import_stmt) in pending_imports {
+                let import_path = self
+                    .split_import_segments(&raw_segments)
+                    .unwrap_or_else(|| {
+                        // Best-effort: put everything in path with empty package
+                        ModuleId::new(PackageId::default(), raw_segments.clone())
+                    });
                 if self
                     .resolve_import(&import_path)
                     .await?
@@ -259,20 +273,21 @@ impl Program {
         // For each import, preload parent directory paths.
         for package in self.packages.values() {
             for import_stmt in package.imports() {
-                let import_path = import_stmt
+                let raw_segments: Vec<String> = import_stmt
                     .as_ref()
                     .vars
                     .iter()
                     .map(|var| var.as_ref().name.clone())
-                    .collect::<ModuleId>();
-                let import_path = self.resolve_self_import(import_path);
+                    .collect();
+                let raw_segments = self.resolve_self_import_segments(raw_segments);
 
-                if let Some(package_name) = self.package_name_for_import(&import_path)
-                    && let Some(module_segments) = import_path.suffix_after_package(&package_name)
-                {
-                    let paths = prefixes_to_load.entry(package_name).or_default();
+                if let Some(import_path) = self.split_import_segments(&raw_segments) {
+                    let paths = prefixes_to_load
+                        .entry(import_path.package.clone())
+                        .or_default();
                     // Preload each directory prefix: for Std/Foo/Bar, preload "" and "Foo"
                     let mut prefix = PathBuf::new();
+                    let module_segments = &import_path.path;
                     for segment in &module_segments[..module_segments.len().saturating_sub(1)] {
                         prefix.push(segment);
                         paths.insert(prefix.clone());
@@ -306,18 +321,18 @@ impl Program {
         for (package_id, package) in &self.packages {
             for (path, file_mod) in package.modules() {
                 let module_id = {
-                    let mut segments = package_id.as_slice().to_vec();
+                    let mut path_segments = Vec::new();
                     if let Some(parent) = path.parent() {
                         for seg in parent.components() {
                             if let std::path::Component::Normal(part) = seg {
-                                segments.push(part.to_string_lossy().into_owned());
+                                path_segments.push(part.to_string_lossy().into_owned());
                             }
                         }
                     }
                     if let Some(stem) = path.file_stem() {
-                        segments.push(stem.to_string_lossy().into_owned());
+                        path_segments.push(stem.to_string_lossy().into_owned());
                     }
-                    ModuleId::new(segments)
+                    ModuleId::new(package_id.clone(), path_segments)
                 };
                 let mut collector = ast::CollectPaths::new();
                 ast::visit_file_mod(&mut collector, file_mod);
@@ -385,8 +400,10 @@ impl Program {
         &mut self,
         import_path: &ModuleId,
     ) -> Result<Diagnosed<Option<&crate::ast::FileMod>>, ResolveImportError> {
+        let all_segments = import_path.all_segments();
+
         // If no loaded package matches, try the package loader.
-        if self.package_name_for_import(import_path).is_none()
+        if self.package_name_for_import(&all_segments).is_none()
             && let Some(loader) = self.package_loader.clone()
         {
             match loader.load_package(import_path).await {
@@ -406,28 +423,22 @@ impl Program {
             }
         }
 
-        let Some(package_name) = self.package_name_for_import(import_path) else {
-            return Ok(Diagnosed::new(None, DiagList::new()));
-        };
-
-        let Some(module_segments) = import_path.suffix_after_package(&package_name) else {
-            return Ok(Diagnosed::new(None, DiagList::new()));
-        };
-        if module_segments.is_empty() {
+        // Use the module path from the ModuleId directly
+        if import_path.path.is_empty() {
             return Ok(Diagnosed::new(None, DiagList::new()));
         }
 
-        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
+        let package_name = &import_path.package;
 
         // Reject module paths containing traversal components (e.g. "..")
         // to prevent escaping the package directory.
-        if !module_id_from_segments.is_safe_path() {
+        if !import_path.is_safe_path() {
             return Ok(Diagnosed::new(None, DiagList::new()));
         }
 
-        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
+        let module_path = import_path.to_path_buf_with_extension("scl");
 
-        let Some(package) = self.packages.get_mut(&package_name) else {
+        let Some(package) = self.packages.get_mut(package_name) else {
             return Ok(Diagnosed::new(None, DiagList::new()));
         };
 
@@ -436,17 +447,17 @@ impl Program {
             Err(OpenError::NotFound(_)) => Ok(Diagnosed::new(None, DiagList::new())),
             Err(source) => Err(ResolveImportError::Open {
                 import_path: import_path.clone(),
-                package_name,
+                package_name: package_name.clone(),
                 module_path,
                 source,
             }),
         }
     }
 
-    fn package_name_for_import(&self, import_path: &ModuleId) -> Option<PackageId> {
+    fn package_name_for_import(&self, segments: &[String]) -> Option<PackageId> {
         self.packages
             .keys()
-            .filter(|package_name| import_path.starts_with_package(package_name))
+            .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }
@@ -477,13 +488,14 @@ impl Program {
             .filter_map(|statement| {
                 if let crate::ast::ModStmt::Import(import_stmt) = statement {
                     let alias = import_stmt.as_ref().vars.last()?;
-                    let import_path = import_stmt
+                    let raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.as_ref().name.clone())
-                        .collect::<ModuleId>();
-                    let import_path = self.resolve_self_import(import_path);
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let import_path = self.split_import_segments(&raw_segments)?;
                     let destination = self.resolve_import_path(&import_path)?;
                     return Some((alias.as_ref().name.as_str(), (import_path, destination)));
                 }
@@ -496,17 +508,14 @@ impl Program {
         &'a self,
         import_path: &ModuleId,
     ) -> Option<&'a crate::ast::FileMod> {
-        let package_name = self.package_name_for_import(import_path)?;
-        let package = self.packages.get(&package_name)?;
-        let module_segments = import_path.suffix_after_package(&package_name)?;
-        if module_segments.is_empty() {
+        let package = self.packages.get(&import_path.package)?;
+        if import_path.path.is_empty() {
             return None;
         }
-        let module_id_from_segments = module_segments.iter().cloned().collect::<ModuleId>();
-        if !module_id_from_segments.is_safe_path() {
+        if !import_path.is_safe_path() {
             return None;
         }
-        let module_path = module_id_from_segments.to_path_buf_with_extension("scl");
+        let module_path = import_path.to_path_buf_with_extension("scl");
         package
             .modules()
             .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))

@@ -57,15 +57,14 @@ impl completion::Completer for ReplHelper {
         let cursor = sclc::Cursor::new(position);
 
         // Use a peek module ID (don't increment the line counter).
-        let module_id = state
-            .program()
-            .self_package_id()
-            .map(|id| {
-                let mut segments = id.as_slice().to_vec();
-                segments.push("ReplCompletion".to_string());
-                sclc::ModuleId::new(segments)
-            })
-            .unwrap_or_else(|| ["ReplCompletion"].into());
+        let module_id = sclc::ModuleId::new(
+            state
+                .program()
+                .self_package_id()
+                .cloned()
+                .unwrap_or_default(),
+            vec!["ReplCompletion".to_string()],
+        );
 
         let diagnosed = sclc::parse_repl_line_with_cursor(line, &module_id, Some(cursor.clone()));
         let repl_line = match diagnosed.into_inner() {
@@ -440,12 +439,39 @@ async fn process_import(
     root: &Path,
     import_stmt: &sclc::Loc<sclc::ImportStmt>,
 ) -> anyhow::Result<()> {
-    let import_path = import_stmt
+    let raw_segments: Vec<String> = import_stmt
         .as_ref()
         .vars
         .iter()
         .map(|var| var.as_ref().name.clone())
-        .collect::<sclc::ModuleId>();
+        .collect();
+    // Construct a best-effort ModuleId — the program's resolve_import will handle
+    // proper package resolution.
+    let import_path = {
+        let pkg = state
+            .program()
+            .self_package_id()
+            .cloned()
+            .unwrap_or_default();
+        // If it starts with Self, resolve to the user's package
+        let resolved = if raw_segments.first().map(String::as_str) == Some("Self") {
+            let mut segs = pkg.as_slice().to_vec();
+            segs.extend(raw_segments[1..].iter().cloned());
+            segs
+        } else {
+            raw_segments
+        };
+        // Find the matching package
+        let mut best_pkg = sclc::PackageId::default();
+        let mut best_len = 0;
+        for pname in state.program().package_names() {
+            if resolved.starts_with(pname.as_slice()) && pname.len() > best_len {
+                best_pkg = pname.clone();
+                best_len = pname.len();
+            }
+        }
+        sclc::ModuleId::new(best_pkg, resolved[best_len..].to_vec())
+    };
     let Some(alias) = import_stmt
         .as_ref()
         .vars
@@ -484,7 +510,10 @@ async fn process_import(
                 .end(),
         );
         let diag = sclc::InvalidImport {
-            source_module_id: ["Repl"].into(),
+            source_module_id: sclc::ModuleId::new(
+                sclc::PackageId::default(),
+                vec!["Repl".to_string()],
+            ),
             import_path,
             path_span,
         };

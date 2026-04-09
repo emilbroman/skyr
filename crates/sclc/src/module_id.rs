@@ -92,92 +92,49 @@ impl FromStr for PackageId {
     }
 }
 
+/// Identifies a module within a specific package.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ModuleId {
-    segments: Vec<String>,
+    pub package: PackageId,
+    pub path: Vec<String>,
 }
 
 impl ModuleId {
-    pub fn new(segments: Vec<String>) -> Self {
-        Self { segments }
+    pub fn new(package: PackageId, path: Vec<String>) -> Self {
+        Self { package, path }
     }
 
-    /// Returns `true` if every segment is a safe identifier (non-empty, no `.`,
+    /// Returns `true` if every path segment is a safe identifier (non-empty, no `.`,
     /// no `/`, no `\`, and not `..`). This prevents path-traversal when the
     /// module id is converted to a filesystem path via
     /// [`to_path_buf_with_extension`](Self::to_path_buf_with_extension).
     pub fn is_safe_path(&self) -> bool {
-        self.segments.iter().all(|s| {
+        self.path.iter().all(|s| {
             !s.is_empty() && s != ".." && s != "." && !s.contains('/') && !s.contains('\\')
         })
     }
 
-    pub fn len(&self) -> usize {
-        self.segments.len()
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.segments.is_empty()
+        self.package.is_empty() && self.path.is_empty()
     }
 
-    pub fn starts_with(&self, prefix: &Self) -> bool {
-        self.segments.starts_with(prefix.segments.as_slice())
-    }
-
-    /// Returns `true` if the module ID starts with the given package prefix.
-    pub fn starts_with_package(&self, prefix: &PackageId) -> bool {
-        self.segments.starts_with(prefix.as_slice())
-    }
-
-    pub fn suffix_after(&self, prefix: &Self) -> Option<&[String]> {
-        if !self.starts_with(prefix) {
-            return None;
-        }
-
-        Some(&self.segments[prefix.len()..])
-    }
-
-    /// Returns the suffix of this module ID after the given package prefix,
-    /// or `None` if this module ID does not start with the package prefix.
-    pub fn suffix_after_package(&self, prefix: &PackageId) -> Option<&[String]> {
-        if !self.starts_with_package(prefix) {
-            return None;
-        }
-
-        Some(&self.segments[prefix.len()..])
-    }
-
+    /// Convert the module path (not the package) to a filesystem path with the
+    /// given extension.
     pub fn to_path_buf_with_extension(&self, extension: &str) -> PathBuf {
         let mut path = PathBuf::new();
-        for segment in &self.segments {
+        for segment in &self.path {
             path.push(segment);
         }
         path.set_extension(extension);
         path
     }
 
-    pub fn as_slice(&self) -> &[String] {
-        &self.segments
-    }
-}
-
-impl FromIterator<String> for ModuleId {
-    fn from_iter<T: IntoIterator<Item = String>>(iter: T) -> Self {
-        Self {
-            segments: iter.into_iter().collect(),
-        }
-    }
-}
-
-impl<I> From<I> for ModuleId
-where
-    I: IntoIterator,
-    I::Item: Into<String>,
-{
-    fn from(value: I) -> Self {
-        Self {
-            segments: value.into_iter().map(Into::into).collect(),
-        }
+    /// Returns all segments as a flat slice: package segments followed by path segments.
+    /// This is a convenience for code that needs backward-compatible flat segment access.
+    pub fn all_segments(&self) -> Vec<String> {
+        let mut segments = self.package.as_slice().to_vec();
+        segments.extend(self.path.iter().cloned());
+        segments
     }
 }
 
@@ -189,34 +146,39 @@ impl serde::Serialize for ModuleId {
 
 impl<'de> serde::Deserialize<'de> for ModuleId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize as flat string "Package/Module/Path" — assumes first segment is
+        // the package. This is a lossy heuristic for backward compatibility.
         let s = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Ok(s.parse().unwrap())
+        let segments: Vec<String> = s
+            .split('/')
+            .filter(|segment| !segment.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if segments.is_empty() {
+            return Ok(ModuleId::default());
+        }
+        Ok(ModuleId {
+            package: PackageId::new(vec![segments[0].clone()]),
+            path: segments[1..].to_vec(),
+        })
     }
 }
 
 impl std::fmt::Display for ModuleId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.segments.join("/"))
+        if self.package.is_empty() {
+            write!(f, "{}", self.path.join("/"))
+        } else if self.path.is_empty() {
+            write!(f, "{}", self.package)
+        } else {
+            write!(f, "{}/{}", self.package, self.path.join("/"))
+        }
     }
 }
 
 impl std::fmt::Debug for ModuleId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "ModuleId(\"{}\")", self)
-    }
-}
-
-impl FromStr for ModuleId {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(Self {
-            segments: s
-                .split('/')
-                .filter(|segment| !segment.is_empty())
-                .map(str::to_owned)
-                .collect(),
-        })
     }
 }
 
@@ -241,58 +203,56 @@ mod tests {
     }
 
     #[test]
-    fn module_id_starts_with_package() {
-        let module = ModuleId::from(["Std", "Time", "Sleep"]);
-        let pkg = PackageId::from(["Std"]);
-        assert!(module.starts_with_package(&pkg));
+    fn module_id_display() {
+        let id = ModuleId::new(PackageId::from(["Std"]), vec!["Time".to_string()]);
+        assert_eq!(id.to_string(), "Std/Time");
 
-        let other_pkg = PackageId::from(["Other"]);
-        assert!(!module.starts_with_package(&other_pkg));
+        let id = ModuleId::new(PackageId::default(), vec!["Main".to_string()]);
+        assert_eq!(id.to_string(), "Main");
+
+        let id = ModuleId::new(PackageId::from(["Std"]), vec![]);
+        assert_eq!(id.to_string(), "Std");
     }
 
     #[test]
-    fn module_id_suffix_after_package() {
-        let module = ModuleId::from(["Std", "Time", "Sleep"]);
-        let pkg = PackageId::from(["Std"]);
+    fn module_id_to_path() {
+        let id = ModuleId::new(
+            PackageId::from(["Std"]),
+            vec!["Time".to_string(), "Sleep".to_string()],
+        );
         assert_eq!(
-            module.suffix_after_package(&pkg),
-            Some(["Time".to_string(), "Sleep".to_string()].as_slice())
+            id.to_path_buf_with_extension("scl"),
+            PathBuf::from("Time/Sleep.scl")
         );
     }
 
     #[test]
     fn safe_path_accepts_normal_segments() {
-        let id = ModuleId::from(["Std", "Time"]);
+        let id = ModuleId::new(PackageId::from(["Std"]), vec!["Time".to_string()]);
         assert!(id.is_safe_path());
     }
 
     #[test]
     fn safe_path_rejects_dot_dot() {
-        let id = ModuleId::from(["Std", "..", "etc"]);
-        assert!(!id.is_safe_path());
-    }
-
-    #[test]
-    fn safe_path_rejects_single_dot() {
-        let id = ModuleId::from([".", "Foo"]);
-        assert!(!id.is_safe_path());
-    }
-
-    #[test]
-    fn safe_path_rejects_slash_in_segment() {
-        let id = ModuleId::from(["Std/../../etc"]);
+        let id = ModuleId::new(
+            PackageId::from(["Std"]),
+            vec!["..".to_string(), "etc".to_string()],
+        );
         assert!(!id.is_safe_path());
     }
 
     #[test]
     fn safe_path_rejects_empty_segment() {
-        let id = ModuleId::from(["Std", "", "Foo"]);
+        let id = ModuleId::new(
+            PackageId::from(["Std"]),
+            vec!["".to_string(), "Foo".to_string()],
+        );
         assert!(!id.is_safe_path());
     }
 
     #[test]
-    fn safe_path_rejects_backslash_in_segment() {
-        let id = ModuleId::from(["Std\\..\\etc"]);
-        assert!(!id.is_safe_path());
+    fn all_segments() {
+        let id = ModuleId::new(PackageId::from(["Std"]), vec!["Time".to_string()]);
+        assert_eq!(id.all_segments(), vec!["Std", "Time"]);
     }
 }

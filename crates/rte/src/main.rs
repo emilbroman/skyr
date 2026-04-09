@@ -55,9 +55,8 @@ impl FromStr for PluginSpec {
             )
         })?;
 
-        let name = name_str
-            .parse::<sclc::ModuleId>()
-            .map_err(|error| format!("invalid plugin name `{name_str}`: {error}"))?;
+        let name = parse_module_id(name_str)
+            .ok_or_else(|| format!("invalid plugin name `{name_str}`: empty module path"))?;
         let target = target_str
             .parse::<rtp::Target>()
             .map_err(|error| format!("invalid plugin target `{target_str}`: {error}"))?;
@@ -249,12 +248,29 @@ fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
     .to_string()
 }
 
+/// Parse a module ID string like "Std/Random" into a `ModuleId`.
+/// The first segment becomes the package, the rest becomes the module path.
+fn parse_module_id(s: &str) -> Option<sclc::ModuleId> {
+    let segments: Vec<String> = s
+        .split('/')
+        .filter(|seg| !seg.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if segments.is_empty() {
+        return None;
+    }
+    Some(sclc::ModuleId::new(
+        sclc::PackageId::new(vec![segments[0].clone()]),
+        segments[1..].to_vec(),
+    ))
+}
+
 fn resolve_plugin(
     resource_type: &str,
     plugins: &HashMap<sclc::ModuleId, rtp::PluginClient>,
 ) -> Option<(sclc::ModuleId, rtp::PluginClient)> {
     let plugin_name = plugin_name_for_resource_type(resource_type)?;
-    let module_id: sclc::ModuleId = plugin_name.parse().ok()?;
+    let module_id = parse_module_id(plugin_name)?;
     let client = plugins.get(&module_id)?;
     Some((module_id, client.clone()))
 }

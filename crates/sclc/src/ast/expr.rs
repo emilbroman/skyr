@@ -103,15 +103,12 @@ impl PathExpr {
     pub fn resolve_with_context(
         &self,
         module_id: &ModuleId,
-        self_package_id: Option<&PackageId>,
+        _self_package_id: Option<&PackageId>,
     ) -> String {
         let is_relative = self.values().next().is_some_and(|s| s == "." || s == "..");
 
         let mut components: Vec<&str> = if is_relative {
-            let module_segments = module_id.as_slice();
-            let package_len = self_package_id.map(|p| p.len()).unwrap_or(0);
-            let repo_path = &module_segments[package_len..];
-            let dir = &repo_path[..repo_path.len().saturating_sub(1)];
+            let dir = &module_id.path[..module_id.path.len().saturating_sub(1)];
             dir.iter().map(|s| s.as_str()).collect()
         } else {
             Vec::new()

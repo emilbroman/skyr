@@ -86,13 +86,8 @@ impl ReplState {
     /// expressions (e.g. `./file`) resolve correctly against the repo root.
     pub fn next_line_module_id(&mut self) -> ModuleId {
         self.line_number += 1;
-        let mut segments = self
-            .program
-            .self_package_id()
-            .map(|id| id.as_slice().to_vec())
-            .unwrap_or_default();
-        segments.push(format!("Repl{}", self.line_number));
-        ModuleId::new(segments)
+        let package = self.program.self_package_id().cloned().unwrap_or_default();
+        ModuleId::new(package, vec![format!("Repl{}", self.line_number)])
     }
 
     /// Build a `TypeEnv` from current bindings and type defs.

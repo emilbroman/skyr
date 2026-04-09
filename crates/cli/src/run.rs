@@ -16,12 +16,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         return Ok(());
     };
 
-    let module_id = package_id
-        .as_slice()
-        .iter()
-        .cloned()
-        .chain(std::iter::once(String::from("Main")))
-        .collect::<sclc::ModuleId>();
+    let module_id = sclc::ModuleId::new(package_id.clone(), vec!["Main".to_string()]);
 
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let eval = sclc::Eval::new(&program, effects_tx, package_id.to_string());

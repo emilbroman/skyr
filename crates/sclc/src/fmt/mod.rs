@@ -46,12 +46,12 @@ impl Formatter {
 
 #[cfg(test)]
 mod tests {
-    use crate::{ModuleId, parse_file_mod};
+    use crate::{ModuleId, PackageId, parse_file_mod};
 
     use super::Formatter;
 
     fn format(source: &str) -> String {
-        let module_id = ModuleId::new(vec!["Test".to_owned()]);
+        let module_id = ModuleId::new(PackageId::default(), vec!["Test".to_owned()]);
         let diagnosed = parse_file_mod(source, &module_id);
         assert!(
             !diagnosed.diags().has_errors(),
