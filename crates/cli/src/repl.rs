@@ -58,7 +58,7 @@ impl completion::Completer for ReplHelper {
 
         // Use a peek module ID (don't increment the line counter).
         let module_id = sclc::ModuleId::new(
-            state.unit().self_package_id().cloned().unwrap_or_default(),
+            state.package_id().clone(),
             vec!["ReplCompletion".to_string()],
         );
 
@@ -398,10 +398,9 @@ fn report_repl_error(err: &sclc::ReplError) {
 }
 
 async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
-    let package_id = state.unit().self_package_id().cloned().unwrap_or_default();
     state.replace_user_source(sclc::FsSource {
         root: root.to_path_buf(),
-        package_id,
+        package_id: state.package_id().clone(),
     });
 
     match state.process(line.to_owned()).await {
@@ -439,9 +438,16 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     };
     program.open_package(source).await;
     // Preload root directory listing so path validation works for REPL lines
-    program.preload_path_dirs([PathBuf::new()]).await;
+    program
+        .preload_path_dirs(&package_id, [PathBuf::new()])
+        .await;
 
-    let mut state = sclc::Repl::new(program, effects_tx, package_id.to_string());
+    let mut state = sclc::Repl::new(
+        program,
+        package_id.clone(),
+        effects_tx,
+        package_id.to_string(),
+    );
     let mut editor = Editor::new()?;
     editor.set_helper(Some(ReplHelper {
         state: RefCell::new(None),

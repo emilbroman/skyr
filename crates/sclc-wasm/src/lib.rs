@@ -312,7 +312,12 @@ thread_local! {
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let program = sclc::Program::new();
-    let state = sclc::Repl::new(program, effects_tx, "Playground".to_string());
+    let state = sclc::Repl::new(
+        program,
+        sclc::PackageId::default(),
+        effects_tx,
+        "Playground".to_string(),
+    );
     REPL_STATE.with(|cell| {
         *cell.borrow_mut() = Some(WasmReplState { state, effects_rx });
     });

@@ -8,8 +8,6 @@ use crate::{Diag, ModuleId, OpenError, Package, PackageId, PackageLoader, Source
 #[derive(Clone)]
 pub struct Program {
     packages: HashMap<PackageId, Package>,
-    /// The package ID of the user's own package, used to resolve `Self/…` imports.
-    self_package_id: Option<PackageId>,
     /// Optional loader for dynamically discovering packages during import resolution.
     package_loader: Option<Arc<dyn PackageLoader>>,
 }
@@ -30,11 +28,6 @@ impl Program {
         &mut self.packages
     }
 
-    /// The package ID of the user's own package (used to resolve `Self/…` imports).
-    pub fn self_package_id(&self) -> Option<&PackageId> {
-        self.self_package_id.as_ref()
-    }
-
     /// Returns all known package names.
     pub fn package_names(&self) -> impl Iterator<Item = &PackageId> {
         self.packages.keys()
@@ -47,7 +40,6 @@ impl Program {
         packages.insert(pkg_id, Package::new(Arc::new(std)));
         Self {
             packages,
-            self_package_id: None,
             package_loader: None,
         }
     }
@@ -60,7 +52,6 @@ impl Program {
 
     pub async fn open_package(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
         let name = source.package_id();
-        self.self_package_id = Some(name.clone());
         self.packages
             .entry(name)
             .or_insert_with(|| Package::new(Arc::new(source)))
@@ -68,7 +59,6 @@ impl Program {
 
     pub fn replace_user_source(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
         let name = source.package_id();
-        self.self_package_id = Some(name.clone());
         if self.packages.contains_key(&name) {
             let pkg = self.packages.get_mut(&name).unwrap();
             pkg.replace_source(Arc::new(source));
@@ -80,12 +70,15 @@ impl Program {
         }
     }
 
-    /// Preload directory listings for a set of repo-relative directory paths.
+    /// Preload directory listings for a set of repo-relative directory paths
+    /// within the given package.
     /// Useful for the REPL where `resolve_paths` doesn't cover ad-hoc lines.
-    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        if let Some(pkg_id) = &self.self_package_id
-            && let Some(package) = self.packages.get_mut(pkg_id)
-        {
+    pub async fn preload_path_dirs(
+        &mut self,
+        package_id: &PackageId,
+        dirs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        if let Some(package) = self.packages.get_mut(package_id) {
             for dir in dirs {
                 let _ = package.list_children(&dir).await;
             }

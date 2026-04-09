@@ -842,7 +842,13 @@ impl<'p> TypeChecker<'p> {
             return Ok(Diagnosed::new(cached.clone(), DiagList::new()));
         }
         let globals = file_mod.find_globals();
-        let imports = self.find_imports(file_mod);
+        let current_package = env.module_id().map(|m| m.package.clone());
+        let imports = self.find_imports(
+            file_mod,
+            current_package
+                .as_ref()
+                .unwrap_or(&crate::PackageId::default()),
+        );
         let mut env = env.with_globals(&globals).with_imports(&imports);
 
         let mut diags = DiagList::new();
@@ -978,7 +984,13 @@ impl<'p> TypeChecker<'p> {
         let mut type_exports = RecordType::default();
 
         let globals = file_mod.find_globals();
-        let imports = self.find_imports(file_mod);
+        let current_package = env.module_id().map(|m| m.package.clone());
+        let imports = self.find_imports(
+            file_mod,
+            current_package
+                .as_ref()
+                .unwrap_or(&crate::PackageId::default()),
+        );
         let mut inner_env = env.with_globals(&globals).with_imports(&imports);
 
         if let Err(_err) = self.build_module_type_env(&mut inner_env, file_mod, &mut diags) {
@@ -1114,7 +1126,9 @@ impl<'p> TypeChecker<'p> {
                 }
 
                 // Add completion candidates for import path segments
-                self.add_import_completions(vars);
+                if let Ok(module_id) = env.module_id() {
+                    self.add_import_completions(vars, &module_id.package);
+                }
 
                 Ok(Diagnosed::new(None, DiagList::new()))
             }
@@ -1839,14 +1853,19 @@ impl<'p> TypeChecker<'p> {
                     .last()
                     .expect("import path contains at least one segment");
 
-                if let Some(import_file_mod) = self.resolve_import(import_stmt) {
+                let current_package = env
+                    .module_id()
+                    .map(|m| m.package.clone())
+                    .unwrap_or_default();
+                if let Some(import_file_mod) = self.resolve_import(import_stmt, &current_package) {
                     let raw_segments: Vec<String> = import_stmt
                         .as_ref()
                         .vars
                         .iter()
                         .map(|var| var.name.clone())
                         .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let raw_segments =
+                        self.resolve_self_import_segments(raw_segments, &current_package);
                     let target_module_id = self
                         .split_import_segments(&raw_segments)
                         .unwrap_or_else(|| {
@@ -1870,12 +1889,14 @@ impl<'p> TypeChecker<'p> {
     }
 
     /// If `segments` starts with `Self`, replace that prefix with the
-    /// user package ID segments.
-    fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
-        if segments.first().map(String::as_str) == Some("Self")
-            && let Some(self_id) = self.unit.self_package_id()
-        {
-            let mut result: Vec<String> = self_id.as_slice().to_vec();
+    /// current package's ID segments.
+    fn resolve_self_import_segments(
+        &self,
+        segments: Vec<String>,
+        current_package: &crate::PackageId,
+    ) -> Vec<String> {
+        if segments.first().map(String::as_str) == Some("Self") {
+            let mut result: Vec<String> = current_package.as_slice().to_vec();
             result.extend(segments[1..].iter().cloned());
             return result;
         }
@@ -1893,6 +1914,7 @@ impl<'p> TypeChecker<'p> {
     fn find_imports<'a>(
         &'a self,
         file_mod: &'a ast::FileMod,
+        current_package: &crate::PackageId,
     ) -> HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)> {
         file_mod
             .statements
@@ -1910,7 +1932,8 @@ impl<'p> TypeChecker<'p> {
                         .iter()
                         .map(|var| var.name.clone())
                         .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let raw_segments =
+                        self.resolve_self_import_segments(raw_segments, current_package);
                     let import_path =
                         self.split_import_segments(&raw_segments)
                             .unwrap_or_else(|| {
@@ -1919,7 +1942,7 @@ impl<'p> TypeChecker<'p> {
                                     raw_segments.clone(),
                                 )
                             });
-                    let destination = self.resolve_import(import_stmt);
+                    let destination = self.resolve_import(import_stmt, current_package);
                     return Some((alias.name.as_str(), (import_path, destination)));
                 }
                 None
@@ -1930,6 +1953,7 @@ impl<'p> TypeChecker<'p> {
     fn resolve_import<'a>(
         &'a self,
         import_stmt: &'a crate::Loc<ast::ImportStmt>,
+        current_package: &crate::PackageId,
     ) -> Option<&'a ast::FileMod> {
         let raw_segments: Vec<String> = import_stmt
             .as_ref()
@@ -1937,7 +1961,7 @@ impl<'p> TypeChecker<'p> {
             .iter()
             .map(|var| var.name.clone())
             .collect();
-        let raw_segments = self.resolve_self_import_segments(raw_segments);
+        let raw_segments = self.resolve_self_import_segments(raw_segments, current_package);
         let module_id = self.split_import_segments(&raw_segments)?;
         if module_id.path.is_empty() {
             return None;
@@ -1954,7 +1978,11 @@ impl<'p> TypeChecker<'p> {
     }
 
     /// Add Module/ModuleDir completion candidates for an import path.
-    fn add_import_completions(&self, vars: &[crate::Loc<ast::Var>]) {
+    fn add_import_completions(
+        &self,
+        vars: &[crate::Loc<ast::Var>],
+        current_package: &crate::PackageId,
+    ) {
         for (i, var) in vars.iter().enumerate() {
             let Some((cursor, offset)) = &var.cursor else {
                 continue;
@@ -1972,7 +2000,7 @@ impl<'p> TypeChecker<'p> {
                         ));
                     }
                 }
-                if "Self".starts_with(prefix) && self.unit.self_package_id().is_some() {
+                if "Self".starts_with(prefix) {
                     cursor.add_completion_candidate(crate::CompletionCandidate::ModuleDir(
                         "Self".to_owned(),
                     ));
@@ -1982,7 +2010,8 @@ impl<'p> TypeChecker<'p> {
                 // build the directory path, and suggest children.
                 let prior_segments: Vec<String> =
                     vars[..i].iter().map(|v| v.name.clone()).collect();
-                let prior_segments = self.resolve_self_import_segments(prior_segments);
+                let prior_segments =
+                    self.resolve_self_import_segments(prior_segments, current_package);
 
                 let Some(package_name) = self.package_name_for_import(&prior_segments) else {
                     continue;
@@ -2064,7 +2093,10 @@ impl<'p> TypeChecker<'p> {
 
             let dir_path = PathBuf::from(components.join("/"));
 
-            if let Some(children) = self.unit.cached_children_for_path(&dir_path) {
+            if let Some(children) = self
+                .unit
+                .cached_children_for_path(&module_id.package, &dir_path)
+            {
                 for entry in children {
                     match entry {
                         crate::ChildEntry::File(name) => {

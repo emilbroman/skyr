@@ -5,8 +5,8 @@ use ordered_float::NotNan;
 
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
-    DiagList, Diagnosed, Loc, ModuleId, PackageId, TrackedValue, Type, TypeCheckError, TypeChecker,
-    TypeEnv, TypeKind, Value,
+    DiagList, Diagnosed, Loc, ModuleId, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    TypeKind, Value,
 };
 
 use super::{
@@ -99,12 +99,12 @@ impl PathExpr {
     }
 
     /// Resolve the path expression to an absolute path string relative to the
-    /// repository root using the provided module and package context.
-    pub fn resolve_with_context(
-        &self,
-        module_id: &ModuleId,
-        _self_package_id: Option<&PackageId>,
-    ) -> String {
+    /// repository root using the provided module context.
+    ///
+    /// Absolute paths (no `.`/`..` prefix) are rooted at the module's package.
+    /// Relative paths are resolved against the directory containing the current
+    /// module within its package.
+    pub fn resolve_with_context(&self, module_id: &ModuleId) -> String {
         let is_relative = self.values().next().is_some_and(|s| s == "." || s == "..");
 
         let mut components: Vec<&str> = if is_relative {
@@ -131,11 +131,11 @@ impl PathExpr {
     /// repository root. Relative paths (starting with `.` or `..`) are resolved
     /// against the directory containing the current module. Absolute paths are
     /// returned as-is after normalisation.
-    fn resolve(&self, evaluator: &Eval<'_>, env: &EvalEnv<'_>) -> String {
+    fn resolve(&self, _evaluator: &Eval<'_>, env: &EvalEnv<'_>) -> String {
         let module_id = env
             .module_id
             .expect("module_id should be set during evaluation");
-        self.resolve_with_context(module_id, evaluator.unit.self_package_id())
+        self.resolve_with_context(module_id)
     }
 }
 
@@ -187,12 +187,15 @@ impl Expr {
             Expr::Path(path_expr) => {
                 let mut diags = DiagList::new();
                 if let Ok(module_id) = env.module_id() {
-                    let resolved =
-                        path_expr.resolve_with_context(&module_id, checker.unit.self_package_id());
+                    let resolved = path_expr.resolve_with_context(&module_id);
                     // `path_exists_cached` returns None when the parent directory
                     // hasn't been cached — in that case we skip validation rather
                     // than emit a false positive.
-                    if checker.unit.path_exists_cached(&resolved) == Some(false) {
+                    if checker
+                        .unit
+                        .path_exists_cached(&module_id.package, &resolved)
+                        == Some(false)
+                    {
                         diags.push(crate::InvalidPath {
                             module_id,
                             resolved_path: resolved,

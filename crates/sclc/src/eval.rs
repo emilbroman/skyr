@@ -1017,7 +1017,8 @@ impl<'p> Eval<'p> {
         file_mod: &ast::FileMod,
     ) -> Result<TrackedValue, EvalError> {
         let globals = file_mod.find_globals();
-        let imports = self.unit.find_imports(file_mod);
+        let current_package = env.module_id.map(|m| m.package.clone()).unwrap_or_default();
+        let imports = self.unit.find_imports(file_mod, &current_package);
         let mut env = env.with_globals(&globals).with_imports(&imports);
 
         // Build intra-module dependency graph and compute SCCs for eval ordering

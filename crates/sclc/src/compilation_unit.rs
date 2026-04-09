@@ -92,7 +92,8 @@ impl CompilationUnit {
                         .iter()
                         .map(|var| var.as_ref().name.clone())
                         .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let raw_segments =
+                        self.resolve_self_import_segments(raw_segments, &module_id.package);
                     if !seen_imports.insert(raw_segments.clone()) {
                         continue;
                     }
@@ -156,7 +157,7 @@ impl CompilationUnit {
                 .insert(PathBuf::new());
         }
 
-        for file_mod in self.modules.values() {
+        for (module_id, file_mod) in &self.modules {
             for statement in &file_mod.statements {
                 if let crate::ModStmt::Import(import_stmt) = statement {
                     let raw_segments: Vec<String> = import_stmt
@@ -165,7 +166,8 @@ impl CompilationUnit {
                         .iter()
                         .map(|var| var.as_ref().name.clone())
                         .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let raw_segments =
+                        self.resolve_self_import_segments(raw_segments, &module_id.package);
                     if let Some(import_path) = self.split_import_segments(&raw_segments) {
                         let paths = prefixes_to_load
                             .entry(import_path.package.clone())
@@ -194,31 +196,35 @@ impl CompilationUnit {
     }
 
     async fn resolve_paths(&mut self) -> Result<(), ResolveError> {
-        let mut dirs_to_preload: HashSet<PathBuf> = HashSet::new();
-        let mut resolved_paths: Vec<String> = Vec::new();
+        // Group resolved paths and directories by their owning package.
+        let mut per_package: HashMap<PackageId, (HashSet<PathBuf>, Vec<String>)> = HashMap::new();
 
         for (module_id, file_mod) in &self.modules {
             let mut collector = crate::ast::CollectPaths::new();
             crate::ast::visit_file_mod(&mut collector, file_mod);
             for path_expr in collector.paths {
-                let resolved =
-                    path_expr.resolve_with_context(module_id, self.program.self_package_id());
+                let resolved = path_expr.resolve_with_context(module_id);
                 let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
                 let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+                let (dirs, paths) = per_package
+                    .entry(module_id.package.clone())
+                    .or_insert_with(|| (HashSet::new(), Vec::new()));
+                dirs.insert(PathBuf::new());
                 let mut prefix = PathBuf::new();
-                dirs_to_preload.insert(PathBuf::new());
                 for component in &components[..components.len().saturating_sub(1)] {
                     prefix.push(component);
-                    dirs_to_preload.insert(prefix.clone());
+                    dirs.insert(prefix.clone());
                 }
-                resolved_paths.push(resolved);
+                paths.push(resolved);
             }
         }
 
         self.path_hashes.clear();
-        if let Some(pkg_id) = self.program.self_package_id().cloned()
-            && let Some(package) = self.program.packages_mut().get_mut(&pkg_id)
-        {
+        for (pkg_id, (dirs_to_preload, resolved_paths)) in per_package {
+            let Some(package) = self.program.packages_mut().get_mut(&pkg_id) else {
+                continue;
+            };
+
             for dir in &dirs_to_preload {
                 if let Ok(children) = package.list_children(dir).await {
                     self.children_cache
@@ -274,11 +280,6 @@ impl CompilationUnit {
         &self.externs
     }
 
-    /// The package ID of the user's own package (used to resolve `Self/…` imports).
-    pub fn self_package_id(&self) -> Option<&PackageId> {
-        self.program.self_package_id()
-    }
-
     /// Returns all known package names.
     pub fn package_names(&self) -> impl Iterator<Item = &PackageId> {
         self.program.package_names()
@@ -295,18 +296,21 @@ impl CompilationUnit {
             .map(Vec::as_slice)
     }
 
-    /// Look up cached children for a path within the user's own package.
-    pub fn cached_children_for_path(&self, path: &Path) -> Option<&[ChildEntry]> {
-        let pkg = self.program.self_package_id()?;
+    /// Look up cached children for a path within a package.
+    pub fn cached_children_for_path(
+        &self,
+        package: &PackageId,
+        path: &Path,
+    ) -> Option<&[ChildEntry]> {
         self.children_cache
-            .get(&(pkg.clone(), path.to_path_buf()))
+            .get(&(package.clone(), path.to_path_buf()))
             .map(Vec::as_slice)
     }
 
     /// Check whether a resolved path exists by consulting cached directory listings.
     /// Returns `None` if any ancestor directory hasn't been cached yet (unknown),
     /// `Some(true)` if the full path is valid, `Some(false)` if invalid.
-    pub fn path_exists_cached(&self, resolved: &str) -> Option<bool> {
+    pub fn path_exists_cached(&self, package: &PackageId, resolved: &str) -> Option<bool> {
         let rel = resolved.strip_prefix('/')?;
         let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
         if components.is_empty() {
@@ -316,7 +320,7 @@ impl CompilationUnit {
         let mut dir = PathBuf::new();
         for (i, component) in components.iter().enumerate() {
             let is_last = i == components.len() - 1;
-            let children = self.cached_children_for_path(&dir)?;
+            let children = self.cached_children_for_path(package, &dir)?;
 
             if is_last {
                 let exists = children.iter().any(|entry| entry.name() == *component);
@@ -389,20 +393,24 @@ impl CompilationUnit {
         self.externs.clear();
     }
 
-    /// Preload directory listings for a set of repo-relative directory paths.
-    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        self.program.preload_path_dirs(dirs).await;
+    /// Preload directory listings for a set of repo-relative directory paths
+    /// within the given package.
+    pub async fn preload_path_dirs(
+        &mut self,
+        package_id: &PackageId,
+        dirs: impl IntoIterator<Item = PathBuf>,
+    ) {
+        self.program.preload_path_dirs(package_id, dirs).await;
         // Sync package children caches into our own cache
-        if let Some(pkg_id) = self.program.self_package_id().cloned()
-            && let Some(package) = self
-                .program
-                .packages()
-                .find(|(id, _)| **id == pkg_id)
-                .map(|(_, p)| p)
+        if let Some(package) = self
+            .program
+            .packages()
+            .find(|(id, _)| *id == package_id)
+            .map(|(_, p)| p)
         {
             for (path, children) in package.children_entries() {
                 self.children_cache
-                    .insert((pkg_id.clone(), path.clone()), children.clone());
+                    .insert((package_id.clone(), path.clone()), children.clone());
             }
         }
     }
@@ -415,6 +423,7 @@ impl CompilationUnit {
     pub(crate) fn find_imports<'a>(
         &'a self,
         file_mod: &'a FileMod,
+        current_package: &PackageId,
     ) -> HashMap<&'a str, (ModuleId, &'a FileMod)> {
         file_mod
             .statements
@@ -428,7 +437,8 @@ impl CompilationUnit {
                         .iter()
                         .map(|var| var.as_ref().name.clone())
                         .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let raw_segments =
+                        self.resolve_self_import_segments(raw_segments, current_package);
                     let import_path = self.split_import_segments(&raw_segments)?;
                     let destination = self.module(&import_path)?;
                     return Some((alias.as_ref().name.as_str(), (import_path, destination)));
@@ -438,11 +448,13 @@ impl CompilationUnit {
             .collect()
     }
 
-    fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
-        if segments.first().map(String::as_str) == Some("Self")
-            && let Some(self_pkg) = self.program.self_package_id()
-        {
-            let mut result: Vec<String> = self_pkg.as_slice().to_vec();
+    fn resolve_self_import_segments(
+        &self,
+        segments: Vec<String>,
+        current_package: &PackageId,
+    ) -> Vec<String> {
+        if segments.first().map(String::as_str) == Some("Self") {
+            let mut result: Vec<String> = current_package.as_slice().to_vec();
             result.extend(segments[1..].iter().cloned());
             return result;
         }

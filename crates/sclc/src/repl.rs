@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, FileMod, ModuleId,
-    Program, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    PackageId, Program, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
 #[derive(Clone)]
@@ -16,6 +16,7 @@ pub struct Repl {
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
     namespace: String,
+    package_id: PackageId,
 }
 
 pub enum ReplOutcome {
@@ -60,6 +61,7 @@ impl From<crate::ResolveError> for ReplError {
 impl Repl {
     pub fn new(
         program: Program,
+        package_id: PackageId,
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
@@ -72,6 +74,7 @@ impl Repl {
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
             namespace,
+            package_id,
         }
     }
 
@@ -96,17 +99,24 @@ impl Repl {
     }
 
     pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
+        self.package_id = source.package_id();
         self.unit.replace_user_source(source);
     }
 
+    pub fn package_id(&self) -> &PackageId {
+        &self.package_id
+    }
+
     pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        self.unit.preload_path_dirs(dirs).await;
+        self.unit.preload_path_dirs(&self.package_id, dirs).await;
     }
 
     pub fn next_line_module_id(&mut self) -> ModuleId {
         self.line_number += 1;
-        let package = self.unit.self_package_id().cloned().unwrap_or_default();
-        ModuleId::new(package, vec![format!("Repl{}", self.line_number)])
+        ModuleId::new(
+            self.package_id.clone(),
+            vec![format!("Repl{}", self.line_number)],
+        )
     }
 
     pub fn type_env<'a>(&'a self, module_id: &'a ModuleId) -> TypeEnv<'a> {
@@ -163,10 +173,14 @@ impl Repl {
             .iter()
             .map(|var| var.as_ref().name.clone())
             .collect();
+        let resolved_segments =
+            resolve_self_import_segments(raw_segments.clone(), &self.package_id);
         let import_path = self
             .unit
-            .split_import_segments(&raw_segments)
-            .unwrap_or_else(|| ModuleId::new(crate::PackageId::default(), raw_segments.clone()));
+            .split_import_segments(&resolved_segments)
+            .unwrap_or_else(|| {
+                ModuleId::new(crate::PackageId::default(), resolved_segments.clone())
+            });
         let alias = import_stmt
             .as_ref()
             .vars
@@ -222,12 +236,11 @@ impl Repl {
         let mut collector = crate::CollectPaths::new();
         crate::visit_file_mod(&mut collector, &file_mod);
 
-        let self_package_id = self.unit.self_package_id().cloned();
         let dirs: HashSet<PathBuf> = collector
             .paths
             .iter()
             .filter_map(|path_expr| {
-                let resolved = path_expr.resolve_with_context(module_id, self_package_id.as_ref());
+                let resolved = path_expr.resolve_with_context(module_id);
                 let resolved_path = std::path::Path::new(&resolved);
                 let parent = resolved_path.parent()?;
                 let parent_str = parent.to_string_lossy();
@@ -237,7 +250,7 @@ impl Repl {
             .collect();
 
         if !dirs.is_empty() {
-            self.unit.preload_path_dirs(dirs).await;
+            self.unit.preload_path_dirs(&self.package_id, dirs).await;
         }
     }
 
@@ -328,4 +341,13 @@ fn check_diagnosed<T>(diagnosed: Diagnosed<T>) -> Result<T, ReplError> {
     } else {
         Ok(diagnosed.into_inner())
     }
+}
+
+fn resolve_self_import_segments(segments: Vec<String>, current_package: &PackageId) -> Vec<String> {
+    if segments.first().map(String::as_str) == Some("Self") {
+        let mut result: Vec<String> = current_package.as_slice().to_vec();
+        result.extend(segments[1..].iter().cloned());
+        return result;
+    }
+    segments
 }
