@@ -51,36 +51,21 @@ fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// Load a program from multiple files (compile + type check), returning diagnostics.
-async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::Program) {
+/// Load a compilation unit from multiple files (compile + type check), returning diagnostics.
+async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::CompilationUnit) {
     let repo = make_repo(files_json);
-    let file_map = parse_files_json(files_json);
     let mut diags = sclc::DiagList::new();
 
-    let mut program = sclc::Program::new();
-    let package = program.open_package(repo).await;
-
-    for name in file_map.keys() {
-        if name.ends_with(".scl")
-            && let Ok(diagnosed) = package.open(name).await
-        {
-            diagnosed.unpack(&mut diags);
+    match sclc::compile(repo).await {
+        Ok(diagnosed) => {
+            let unit = diagnosed.unpack(&mut diags);
+            (diags, unit)
+        }
+        Err(error) => {
+            eprintln!("sclc-wasm: compile failed: {error}");
+            (diags, sclc::CompilationUnit::new())
         }
     }
-
-    if let Ok(diagnosed) = program.resolve_imports().await {
-        diagnosed.unpack(&mut diags);
-    }
-
-    if let Ok(diagnosed) = program.resolve_paths().await {
-        diagnosed.unpack(&mut diags);
-    }
-
-    if let Ok(diagnosed) = program.check_types() {
-        diagnosed.unpack(&mut diags);
-    }
-
-    (diags, program)
 }
 
 #[derive(Serialize)]
@@ -141,21 +126,12 @@ struct HoverInfo {
 #[wasm_bindgen]
 pub async fn hover(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let repo = make_repo(files_json);
-    let mut program = sclc::Program::new();
-    let package = program.open_package(repo).await;
-
-    for name in file_map.keys() {
-        if name.ends_with(".scl") {
-            let _ = package.open(name).await;
-        }
-    }
-    let _ = program.resolve_imports().await;
+    let (_, unit) = load_and_compile(files_json).await;
 
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&program, source, &module_id, position);
+    let cursor_info = query_cursor(&unit, source, &module_id, position);
 
     let info = cursor_info.lock().unwrap();
     let ty_str = match (&info.identifier, &info.ty) {
@@ -187,23 +163,14 @@ struct CompletionItem {
 #[wasm_bindgen]
 pub async fn completions(files_json: &str, file: &str, line: u32, col: u32) -> String {
     let file_map = parse_files_json(files_json);
-    let repo = make_repo(files_json);
-    let mut program = sclc::Program::new();
-    let package = program.open_package(repo).await;
-
-    for name in file_map.keys() {
-        if name.ends_with(".scl") {
-            let _ = package.open(name).await;
-        }
-    }
-    let _ = program.resolve_imports().await;
+    let (_, unit) = load_and_compile(files_json).await;
 
     let module_id = module_id_for_file(file);
     let Some(source) = file_map.get(file) else {
         return "[]".to_string();
     };
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&program, source, &module_id, position);
+    let cursor_info = query_cursor(&unit, source, &module_id, position);
 
     let info = cursor_info.lock().unwrap();
     let items: Vec<CompletionItem> = info
@@ -269,21 +236,12 @@ struct LocationInfo {
 #[wasm_bindgen]
 pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let repo = make_repo(files_json);
-    let mut program = sclc::Program::new();
-    let package = program.open_package(repo).await;
-
-    for name in file_map.keys() {
-        if name.ends_with(".scl") {
-            let _ = package.open(name).await;
-        }
-    }
-    let _ = program.resolve_imports().await;
+    let (_, unit) = load_and_compile(files_json).await;
 
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&program, source, &module_id, position);
+    let cursor_info = query_cursor(&unit, source, &module_id, position);
 
     let info = cursor_info.lock().unwrap();
     info.declaration.map(|span| {
@@ -316,7 +274,7 @@ pub fn format(source: &str) -> Option<String> {
 }
 
 fn query_cursor(
-    program: &sclc::Program,
+    unit: &sclc::CompilationUnit,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
@@ -330,8 +288,7 @@ fn query_cursor(
     let type_env = sclc::TypeEnv::new()
         .with_module_id(module_id)
         .with_cursor(cursor);
-    let unit = sclc::CompilationUnit::from_program(program);
-    let checker = sclc::TypeChecker::new(&unit);
+    let checker = sclc::TypeChecker::new(unit);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info

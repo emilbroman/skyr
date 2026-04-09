@@ -125,7 +125,7 @@ fn to_json_value(value: &impl Serialize) -> serde_json::Value {
 type SourceFactory = Box<dyn Fn(&sclc::PackageId, DocumentCache, &PathBuf) -> OverlaySource + Send>;
 
 /// The concrete program type used in the LSP server.
-pub type LspProgram = sclc::Program;
+pub type LspProgram = sclc::CompilationUnit;
 
 /// The main LSP server.
 pub struct LanguageServer {
@@ -198,7 +198,7 @@ impl LanguageServer {
     async fn load_program(&self) -> Option<LspProgram> {
         let root = self.root.as_ref()?;
         let source = (self.source_factory)(&self.package_id, self.documents.clone(), root);
-        Some(analysis::load_program(source).await)
+        Some(analysis::load_unit(source).await)
     }
 
     async fn handle_request(

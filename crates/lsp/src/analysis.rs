@@ -151,19 +151,19 @@ pub async fn analyze(
     }
 }
 
-/// Load a program with resolved imports (best-effort).
-pub async fn load_program(source: impl sclc::SourceRepo + 'static) -> sclc::Program {
-    let mut program = sclc::Program::new();
-    let package = program.open_package(source).await;
-    let _ = package.open("Main.scl").await;
-    let _ = program.resolve_imports().await;
-    let _ = program.resolve_paths().await;
-    program
+/// Load a compilation unit with resolved imports (best-effort).
+pub async fn load_unit(source: impl sclc::SourceRepo + 'static) -> sclc::CompilationUnit {
+    let package_id = source.package_id();
+    let mut unit = sclc::CompilationUnit::new();
+    unit.open_package(source).await;
+    let entry = sclc::ModuleId::new(package_id, vec!["Main".to_string()]);
+    let _ = unit.resolve(&entry).await;
+    unit
 }
 
 /// Query cursor information at a specific position in a file.
 pub fn query_cursor(
-    program: &sclc::Program,
+    unit: &sclc::CompilationUnit,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
@@ -179,8 +179,7 @@ pub fn query_cursor(
     let type_env = sclc::TypeEnv::new()
         .with_module_id(module_id)
         .with_cursor(cursor);
-    let unit = sclc::CompilationUnit::from_program(program);
-    let checker = sclc::TypeChecker::new(&unit);
+    let checker = sclc::TypeChecker::new(unit);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info

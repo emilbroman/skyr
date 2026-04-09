@@ -119,14 +119,8 @@ pub async fn stdlib_types()
 
     let source = crate::MemSourceRepo::new([String::from("_StdlibTypes")].into(), files);
 
-    let mut program = crate::Program::new();
-    let package = program.open_package(source).await;
     let mut diags = crate::DiagList::new();
-    package.open("Main.scl").await?.unpack(&mut diags);
-    program.resolve_imports().await?.unpack(&mut diags);
-
-    let unit = crate::CompilationUnit::from_program(&program);
-    unit.check_types()?.unpack(&mut diags);
+    let unit = crate::compile(source).await?.unpack(&mut diags);
 
     let checker = crate::TypeChecker::new(&unit);
     let std_package_id = PackageId::from([String::from("Std")]);
