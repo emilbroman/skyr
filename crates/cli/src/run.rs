@@ -19,15 +19,13 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
     let module_id = sclc::ModuleId::new(package_id.clone(), vec!["Main".to_string()]);
 
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let program = unit.program();
-    let eval = sclc::Eval::new(program, effects_tx, package_id.to_string());
+    let ctx = sclc::EvalCtx::new(effects_tx, package_id.to_string());
     let effects_task = spawn_effect_printer(effects_rx);
 
-    if let Some(result) = report_diagnostics(program.evaluate(&module_id, &eval)?) {
+    if let Some(result) = unit.eval(ctx)?.get(&module_id).cloned() {
         println!("{}", result.value);
     }
 
-    drop(eval);
     effects_task.await?;
     Ok(())
 }

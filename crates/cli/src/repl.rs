@@ -534,8 +534,9 @@ async fn process_import(
         return Ok(());
     };
 
-    let eval = state.make_eval();
-    let value = state.program().evaluate(&import_path, &eval)?.into_inner();
+    let eval = sclc::Eval::new(&unit, state.effects_tx().clone(), state.namespace());
+    let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
+    let value = eval.eval_file_mod(&eval_env, &file_mod)?;
 
     let type_exports = checker
         .type_level_exports(&type_env, &file_mod)

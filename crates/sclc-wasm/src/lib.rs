@@ -610,19 +610,6 @@ async fn repl_process_import(
         }
     }
 
-    // Evaluate the imported module
-    let eval = wasm_state.state.make_eval();
-    let value = match wasm_state.state.program().evaluate(&import_path, &eval) {
-        Ok(diagnosed_val) => diagnosed_val.into_inner(),
-        Err(e) => {
-            return ReplResult {
-                output: None,
-                effects: drain_effects(&mut wasm_state.effects_rx),
-                error: Some(e.to_string()),
-            };
-        }
-    };
-
     // Get the file_mod (already loaded by resolve_imports above)
     let resolve_result = wasm_state
         .state
@@ -658,6 +645,23 @@ async fn repl_process_import(
         };
     };
     let ty = diagnosed_ty.unpack(&mut diags);
+
+    let eval = sclc::Eval::new(
+        &unit,
+        wasm_state.state.effects_tx().clone(),
+        wasm_state.state.namespace(),
+    );
+    let eval_env = sclc::EvalEnv::new().with_module_id(&import_path);
+    let value = match eval.eval_file_mod(&eval_env, &file_mod) {
+        Ok(value) => value,
+        Err(e) => {
+            return ReplResult {
+                output: None,
+                effects: drain_effects(&mut wasm_state.effects_rx),
+                error: Some(e.to_string()),
+            };
+        }
+    };
 
     if diags.iter().any(|d| d.level() == sclc::DiagLevel::Error) {
         return ReplResult {

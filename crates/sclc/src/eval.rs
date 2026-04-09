@@ -253,7 +253,7 @@ impl FnEnv {
 }
 
 pub struct Eval<'p> {
-    pub(crate) program: &'p crate::Program,
+    pub(crate) unit: &'p crate::CompilationUnit,
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
 }
@@ -307,6 +307,19 @@ pub(crate) enum ListItemOutcome {
 }
 
 impl EvalCtx {
+    pub fn new(effects: mpsc::UnboundedSender<Effect>, namespace: impl Into<String>) -> Self {
+        Self {
+            effects,
+            resources: HashMap::new(),
+            namespace: namespace.into(),
+            source_trace: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {
+        self.resources.insert(id, resource);
+    }
+
     pub fn emit(&self, effect: Effect) -> Result<(), EvalError> {
         self.effects
             .send(effect)
@@ -603,21 +616,21 @@ pub(crate) fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>
 
 impl<'p> Eval<'p> {
     pub fn new(
-        program: &'p crate::Program,
+        unit: &'p crate::CompilationUnit,
         effects: mpsc::UnboundedSender<Effect>,
         namespace: impl Into<String>,
     ) -> Self {
+        Self::from_ctx(unit, EvalCtx::new(effects, namespace))
+    }
+
+    pub fn from_ctx(unit: &'p crate::CompilationUnit, ctx: EvalCtx) -> Self {
         let mut eval = Self {
-            program,
-            ctx: EvalCtx {
-                effects,
-                resources: HashMap::new(),
-                namespace: namespace.into(),
-                source_trace: Mutex::new(Vec::new()),
-            },
+            unit,
+            ctx,
             externs: HashMap::new(),
         };
         crate::std::register_std_externs(&mut eval);
+        eval.externs.extend(unit.externs().clone());
         eval
     }
 
@@ -637,7 +650,7 @@ impl<'p> Eval<'p> {
     }
 
     pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {
-        self.ctx.resources.insert(id, resource);
+        self.ctx.add_resource(id, resource);
     }
 
     pub fn add_extern_fn(
@@ -1004,7 +1017,7 @@ impl<'p> Eval<'p> {
         file_mod: &ast::FileMod,
     ) -> Result<TrackedValue, EvalError> {
         let globals = file_mod.find_globals();
-        let imports = self.program.find_imports(file_mod);
+        let imports = self.unit.find_imports(file_mod);
         let mut env = env.with_globals(&globals).with_imports(&imports);
 
         // Build intra-module dependency graph and compute SCCs for eval ordering
@@ -1130,7 +1143,8 @@ mod tests {
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1153,7 +1167,8 @@ mod tests {
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1199,7 +1214,8 @@ mod tests {
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1246,7 +1262,8 @@ mod tests {
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1290,7 +1307,8 @@ mod tests {
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
@@ -1338,7 +1356,8 @@ mod tests {
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let program = crate::Program::new();
-        let mut eval = Eval::new(&program, tx, String::from("test/namespace"));
+        let unit = crate::CompilationUnit::from_program(&program);
+        let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),

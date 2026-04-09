@@ -72,6 +72,10 @@ impl ReplState {
         &self.effects_tx
     }
 
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
     pub fn bindings(&self) -> &HashMap<String, (Type, TrackedValue)> {
         &self.bindings
     }
@@ -121,13 +125,9 @@ impl ReplState {
         module_id: &ModuleId,
     ) -> Result<ReplOutcome, ReplError> {
         let type_env = self.type_env(module_id);
-        let eval = Eval::new(
-            &self.program,
-            self.effects_tx.clone(),
-            self.namespace.clone(),
-        );
-        let eval_env = self.eval_env(module_id);
         let unit = CompilationUnit::from_program(&self.program);
+        let eval = Eval::new(&unit, self.effects_tx.clone(), self.namespace.clone());
+        let eval_env = self.eval_env(module_id);
 
         match statement {
             crate::ast::ModStmt::Import(_) => {
@@ -176,15 +176,6 @@ impl ReplState {
         if type_exports.iter().next().is_some() {
             self.type_defs.insert(alias, Type::Record(type_exports));
         }
-    }
-
-    /// Create an `Eval` instance for evaluating imports.
-    pub fn make_eval(&self) -> Eval<'_> {
-        Eval::new(
-            &self.program,
-            self.effects_tx.clone(),
-            self.namespace.clone(),
-        )
     }
 }
 

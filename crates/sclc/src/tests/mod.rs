@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use ids::ResourceId;
 
 use crate::{
-    Effect, Eval, MemSourceRepo, ModuleId, PackageId, Record, Resource, TrackedValue, Value,
+    Effect, EvalCtx, MemSourceRepo, ModuleId, PackageId, Record, Resource, TrackedValue, Value,
 };
 
 /// Format an effect in compact form.
@@ -316,12 +316,11 @@ async fn run_test_case(dir_name: &str) {
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let unit = result.into_inner();
-    let program = unit.program();
-    let mut eval = Eval::new(program, tx, "test");
+    let mut eval_ctx = EvalCtx::new(tx, "test");
 
     // Load existing resources from rdb.json
     for (id, resource) in rdb {
-        eval.add_resource(id, resource);
+        eval_ctx.add_resource(id, resource);
     }
 
     // Find the main module
@@ -330,10 +329,11 @@ async fn run_test_case(dir_name: &str) {
         vec!["Main".to_string()],
     );
 
-    let tracked_value: TrackedValue = program
-        .evaluate(&main_module_id, &eval)
+    let tracked_value: TrackedValue = unit
+        .eval(eval_ctx)
         .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"))
-        .into_inner();
+        .remove(&main_module_id)
+        .unwrap_or_else(|| panic!("main module missing from evaluation results for {dir_name}"));
 
     // Check exports
     let expected_exports = exports_txt.as_deref().map(|s| s.trim()).unwrap_or("{}");
@@ -344,7 +344,6 @@ async fn run_test_case(dir_name: &str) {
     );
 
     // Collect and check effects
-    drop(eval); // Close the sender side
     let mut actual_effects = Vec::new();
     while let Ok(effect) = rx.try_recv() {
         actual_effects.push(format_effect(&effect));

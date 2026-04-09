@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::{ChildEntry, DiagList, Diagnosed, FileMod, ModuleId, PackageId, Program, Value};
+use crate::{
+    ChildEntry, DiagList, Diagnosed, EvalCtx, EvalError, FileMod, ModuleId, PackageId, Program,
+    TrackedValue, Value,
+};
 
 /// A fully-resolved compilation unit containing all parsed modules and metadata
 /// needed for type checking and evaluation.
@@ -197,6 +200,26 @@ impl CompilationUnit {
         crate::TypeChecker::new(self).check_program()
     }
 
+    /// Eagerly evaluate every loaded module in the compilation unit.
+    pub fn eval(&self, ctx: EvalCtx) -> Result<HashMap<ModuleId, TrackedValue>, EvalError> {
+        let eval = crate::Eval::from_ctx(self, ctx);
+        let mut module_ids = self.modules.keys().cloned().collect::<Vec<_>>();
+        module_ids.sort_by_key(ToString::to_string);
+
+        let mut values = HashMap::new();
+        for module_id in module_ids {
+            let file_mod = self
+                .modules
+                .get(&module_id)
+                .expect("module ids were collected from the compilation unit");
+            let env = crate::EvalEnv::new().with_module_id(&module_id);
+            let value = eval.eval_file_mod(&env, file_mod)?;
+            values.insert(module_id, value);
+        }
+
+        Ok(values)
+    }
+
     /// Access the underlying Program (for backward compatibility during migration).
     pub fn program(&self) -> &Program {
         &self.program
@@ -218,6 +241,55 @@ impl CompilationUnit {
         source: impl crate::SourceRepo + 'static,
     ) -> &mut crate::Package {
         self.program.open_package(source).await
+    }
+
+    pub(crate) fn find_imports<'a>(
+        &'a self,
+        file_mod: &'a FileMod,
+    ) -> HashMap<&'a str, (ModuleId, &'a FileMod)> {
+        file_mod
+            .statements
+            .iter()
+            .filter_map(|statement| {
+                if let crate::ModStmt::Import(import_stmt) = statement {
+                    let alias = import_stmt.as_ref().vars.last()?;
+                    let raw_segments: Vec<String> = import_stmt
+                        .as_ref()
+                        .vars
+                        .iter()
+                        .map(|var| var.as_ref().name.clone())
+                        .collect();
+                    let raw_segments = self.resolve_self_import_segments(raw_segments);
+                    let import_path = self.split_import_segments(&raw_segments)?;
+                    let destination = self.module(&import_path)?;
+                    return Some((alias.as_ref().name.as_str(), (import_path, destination)));
+                }
+                None
+            })
+            .collect()
+    }
+
+    fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
+        if segments.first().map(String::as_str) == Some("Self")
+            && let Some(self_pkg) = self.program.self_package_id()
+        {
+            let mut result: Vec<String> = self_pkg.as_slice().to_vec();
+            result.extend(segments[1..].iter().cloned());
+            return result;
+        }
+
+        segments
+    }
+
+    fn split_import_segments(&self, segments: &[String]) -> Option<ModuleId> {
+        let package = self
+            .program
+            .package_names()
+            .filter(|package_name| segments.starts_with(package_name.as_slice()))
+            .max_by_key(|package_name| package_name.len())
+            .cloned()?;
+        let pkg_len = package.len();
+        Some(ModuleId::new(package, segments[pkg_len..].to_vec()))
     }
 }
 

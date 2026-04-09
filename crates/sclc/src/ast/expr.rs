@@ -135,7 +135,7 @@ impl PathExpr {
         let module_id = env
             .module_id
             .expect("module_id should be set during evaluation");
-        self.resolve_with_context(module_id, evaluator.program.self_package_id())
+        self.resolve_with_context(module_id, evaluator.unit.program().self_package_id())
     }
 }
 
@@ -265,7 +265,7 @@ impl Expr {
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
                 let hash = evaluator
-                    .program
+                    .unit
                     .path_hash(&resolved)
                     .copied()
                     .unwrap_or_else(|| gix_hash::ObjectId::null(gix_hash::Kind::Sha1));

@@ -6,11 +6,11 @@ use std::{
 
 use thiserror::Error;
 
+use crate::std::StdSourceRepo;
 use crate::{
     ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, PackageId, PackageLoader,
     SourceRepo, ast,
 };
-use crate::{TrackedValue, std::StdSourceRepo};
 
 #[derive(Clone)]
 pub struct Program {
@@ -472,65 +472,6 @@ impl Program {
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }
-
-    pub fn evaluate(
-        &self,
-        module_id: &ModuleId,
-        eval: &crate::Eval<'_>,
-    ) -> Result<Diagnosed<TrackedValue>, EvaluateError> {
-        let Some(file_mod) = self.resolve_import_path(module_id) else {
-            return Err(EvaluateError::ModuleNotLoaded(module_id.clone()));
-        };
-
-        let env = crate::EvalEnv::new().with_module_id(module_id);
-        let result = eval
-            .eval_file_mod(&env, file_mod)
-            .map_err(|err| EvaluateError::Eval(module_id.clone(), err))?;
-        Ok(Diagnosed::new(result, DiagList::new()))
-    }
-
-    pub fn find_imports<'a>(
-        &'a self,
-        file_mod: &'a crate::ast::FileMod,
-    ) -> HashMap<&'a str, (ModuleId, &'a crate::ast::FileMod)> {
-        file_mod
-            .statements
-            .iter()
-            .filter_map(|statement| {
-                if let crate::ast::ModStmt::Import(import_stmt) = statement {
-                    let alias = import_stmt.as_ref().vars.last()?;
-                    let raw_segments: Vec<String> = import_stmt
-                        .as_ref()
-                        .vars
-                        .iter()
-                        .map(|var| var.as_ref().name.clone())
-                        .collect();
-                    let raw_segments = self.resolve_self_import_segments(raw_segments);
-                    let import_path = self.split_import_segments(&raw_segments)?;
-                    let destination = self.resolve_import_path(&import_path)?;
-                    return Some((alias.as_ref().name.as_str(), (import_path, destination)));
-                }
-                None
-            })
-            .collect()
-    }
-
-    fn resolve_import_path<'a>(
-        &'a self,
-        import_path: &ModuleId,
-    ) -> Option<&'a crate::ast::FileMod> {
-        let package = self.packages.get(&import_path.package)?;
-        if import_path.path.is_empty() {
-            return None;
-        }
-        if !import_path.is_safe_path() {
-            return None;
-        }
-        let module_path = import_path.to_path_buf_with_extension("scl");
-        package
-            .modules()
-            .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
-    }
 }
 
 #[derive(Error, Debug)]
@@ -550,15 +491,6 @@ pub enum ResolveImportError {
         #[source]
         source: crate::SourceError,
     },
-}
-
-#[derive(Error, Debug)]
-pub enum EvaluateError {
-    #[error("module not loaded: {0}")]
-    ModuleNotLoaded(ModuleId),
-
-    #[error("failed to evaluate module {0}: {1}")]
-    Eval(ModuleId, #[source] crate::EvalError),
 }
 
 #[derive(Error, Debug)]

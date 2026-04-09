@@ -6,7 +6,6 @@ use std::{
 use cdb::{DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
-use sclc::SourceRepo;
 use tokio::{
     sync::mpsc,
     sync::oneshot::{self, error::TryRecvError},
@@ -634,11 +633,6 @@ impl Worker {
         }
 
         let unit = diagnosed.into_inner();
-        let program = unit.program();
-        let module_id = sclc::ModuleId::new(
-            SourceRepo::package_id(&self.client),
-            vec!["Main".to_string()],
-        );
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();
@@ -653,7 +647,7 @@ impl Worker {
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
-        let mut eval = sclc::Eval::new(program, effects_tx, environment_qid_str);
+        let mut eval_ctx = sclc::EvalCtx::new(effects_tx, environment_qid_str);
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
@@ -668,7 +662,7 @@ impl Worker {
                 volatile_resource_ids.insert(resource_id.clone());
             }
 
-            eval.add_resource(
+            eval_ctx.add_resource(
                 resource_id,
                 sclc::Resource {
                     inputs: resource.inputs.unwrap_or_default(),
@@ -948,30 +942,9 @@ impl Worker {
             .instrument(tracing::Span::current()),
         );
 
-        match program.evaluate(&module_id, &eval) {
-            Ok(eval_diagnosed) => {
-                for diag in eval_diagnosed.diags().iter() {
-                    let (module_id, span) = diag.locate();
-                    if let Err(error) = self
-                        .log_publisher
-                        .log(
-                            diag_severity(diag.level()),
-                            format!("{module_id}:{span}: {diag}"),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            error = %error,
-                            "failed to publish eval diagnostic to log",
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                self.log_publisher.error(format!("{e}")).await;
-            }
+        if let Err(e) = unit.eval(eval_ctx) {
+            self.log_publisher.error(format!("{e}")).await;
         }
-        drop(eval);
         let outcome = effects_task.await?;
         Ok(outcome)
     }
