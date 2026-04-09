@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{ChildEntry, ModuleId, SourceError, SourceRepo};
+use crate::{ChildEntry, PackageId, SourceError, SourceRepo};
 
 /// A filesystem-backed source repository.
 ///
@@ -8,12 +8,12 @@ use crate::{ChildEntry, ModuleId, SourceError, SourceRepo};
 #[derive(Clone)]
 pub struct FsSource {
     pub root: PathBuf,
-    pub package_id: ModuleId,
+    pub package_id: PackageId,
 }
 
 #[async_trait::async_trait]
 impl SourceRepo for FsSource {
-    fn package_id(&self) -> ModuleId {
+    fn package_id(&self) -> PackageId {
         self.package_id.clone()
     }
 

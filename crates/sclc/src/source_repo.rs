@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::path::Path;
 
-use crate::ModuleId;
+use crate::PackageId;
 
 /// A boxed, thread-safe error type used by [`SourceRepo`] methods.
 pub type SourceError = Box<dyn Error + Send + Sync>;
@@ -34,7 +34,7 @@ impl ChildEntry {
 
 #[async_trait::async_trait]
 pub trait SourceRepo: Send + Sync {
-    fn package_id(&self) -> ModuleId;
+    fn package_id(&self) -> PackageId;
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError>;
 
     /// List child entries (modules, directories, and files) under the given path
@@ -61,11 +61,11 @@ pub trait SourceRepo: Send + Sync {
 #[cfg(feature = "cdb")]
 #[async_trait::async_trait]
 impl SourceRepo for cdb::DeploymentClient {
-    fn package_id(&self) -> ModuleId {
+    fn package_id(&self) -> PackageId {
         let repo_qid = self.repo_qid();
         [repo_qid.org.to_string(), repo_qid.repo.to_string()]
             .into_iter()
-            .collect::<ModuleId>()
+            .collect::<PackageId>()
     }
 
     async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError> {

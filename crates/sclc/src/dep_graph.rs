@@ -582,10 +582,10 @@ pub fn build_type_dep_graph(type_defs: &[&TypeDef]) -> DepGraph {
 /// Find the exported global names of a module identified by its full module ID.
 fn find_module_exports<'a>(program: &'a Program, module_id: &ModuleId) -> HashSet<&'a str> {
     for (package_id, package) in program.packages() {
-        if !module_id.starts_with(package_id) {
+        if !module_id.starts_with_package(package_id) {
             continue;
         }
-        let Some(suffix) = module_id.suffix_after(package_id) else {
+        let Some(suffix) = module_id.suffix_after_package(package_id) else {
             continue;
         };
         if suffix.is_empty() {

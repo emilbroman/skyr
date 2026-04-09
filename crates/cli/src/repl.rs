@@ -554,7 +554,7 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
-        .collect::<sclc::ModuleId>();
+        .collect::<sclc::PackageId>();
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
 

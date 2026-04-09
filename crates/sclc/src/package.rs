@@ -94,7 +94,7 @@ impl Package {
         &*self.source
     }
 
-    pub fn package_id(&self) -> crate::ModuleId {
+    pub fn package_id(&self) -> crate::PackageId {
         self.source.package_id()
     }
 
@@ -154,7 +154,7 @@ impl Package {
     }
 }
 
-fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::ModuleId {
+fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::ModuleId {
     let mut segments = package_id.as_slice().to_vec();
     if let Some(parent) = path.parent() {
         for segment in parent.components() {

@@ -122,7 +122,7 @@ fn to_json_value(value: &impl Serialize) -> serde_json::Value {
     })
 }
 
-type SourceFactory = Box<dyn Fn(&sclc::ModuleId, DocumentCache, &PathBuf) -> OverlaySource + Send>;
+type SourceFactory = Box<dyn Fn(&sclc::PackageId, DocumentCache, &PathBuf) -> OverlaySource + Send>;
 
 /// The concrete program type used in the LSP server.
 pub type LspProgram = sclc::Program;
@@ -136,7 +136,7 @@ pub struct LanguageServer {
     /// Workspace root path.
     root: Option<PathBuf>,
     /// Package ID for the workspace.
-    package_id: sclc::ModuleId,
+    package_id: sclc::PackageId,
     /// Whether shutdown has been requested.
     shutdown_requested: bool,
     /// Exit code set when the "exit" notification is received.
@@ -168,7 +168,7 @@ impl LanguageServer {
             source_factory: default_source_factory(),
             documents: DocumentCache::new(),
             root: None,
-            package_id: sclc::ModuleId::default(),
+            package_id: sclc::PackageId::default(),
             shutdown_requested: false,
             exit_code: None,
             published_uris: HashSet::new(),
@@ -370,7 +370,7 @@ impl LanguageServer {
                         .chars()
                         .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
                 {
-                    self.package_id = sclc::ModuleId::from([name_str.as_ref()]);
+                    self.package_id = sclc::PackageId::from([name_str.as_ref()]);
                 }
             }
         }

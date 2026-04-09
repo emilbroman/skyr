@@ -7,7 +7,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .map(str::to_owned)
-        .collect::<sclc::ModuleId>();
+        .collect::<sclc::PackageId>();
     let source = sclc::FsSource {
         root,
         package_id: package_id.clone(),

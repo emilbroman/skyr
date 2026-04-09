@@ -86,7 +86,9 @@ mod tests {
         files.insert("Main.scl".to_string(), main_scl.into_bytes());
 
         let source = crate::MemSourceRepo::new(
-            [String::from("Test")].into_iter().collect::<ModuleId>(),
+            [String::from("Test")]
+                .into_iter()
+                .collect::<crate::PackageId>(),
             files,
         );
 

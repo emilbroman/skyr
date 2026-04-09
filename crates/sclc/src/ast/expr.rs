@@ -5,8 +5,8 @@ use ordered_float::NotNan;
 
 use crate::eval::{Eval, EvalEnv, EvalError};
 use crate::{
-    DiagList, Diagnosed, Loc, ModuleId, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
-    TypeKind, Value,
+    DiagList, Diagnosed, Loc, ModuleId, PackageId, TrackedValue, Type, TypeCheckError, TypeChecker,
+    TypeEnv, TypeKind, Value,
 };
 
 use super::{
@@ -103,7 +103,7 @@ impl PathExpr {
     pub fn resolve_with_context(
         &self,
         module_id: &ModuleId,
-        self_package_id: Option<&ModuleId>,
+        self_package_id: Option<&PackageId>,
     ) -> String {
         let is_relative = self.values().next().is_some_and(|s| s == "." || s == "..");
 

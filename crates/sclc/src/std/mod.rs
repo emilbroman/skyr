@@ -1,6 +1,6 @@
 use std::{collections::HashMap, path::Path};
 
-use crate::{ChildEntry, ModuleId, RecordType, SourceError, SourceRepo, Type};
+use crate::{ChildEntry, PackageId, RecordType, SourceError, SourceRepo, Type};
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {
@@ -65,7 +65,7 @@ impl Default for StdSourceRepo {
 
 #[async_trait::async_trait]
 impl SourceRepo for StdSourceRepo {
-    fn package_id(&self) -> ModuleId {
+    fn package_id(&self) -> PackageId {
         [String::from("Std")].into()
     }
 
@@ -98,7 +98,8 @@ impl SourceRepo for StdSourceRepo {
 
 /// Compiles all standard library modules and returns the value-level type and
 /// type-level type exports for each module, keyed by module ID (e.g. `Std/Time`).
-pub async fn stdlib_types() -> Result<HashMap<ModuleId, (Type, RecordType)>, crate::CompileError> {
+pub async fn stdlib_types()
+-> Result<HashMap<crate::ModuleId, (Type, RecordType)>, crate::CompileError> {
     // Derive module names from the embedded .scl files.
     let module_names: Vec<&str> = BUNDLED_FILES
         .iter()
@@ -126,7 +127,7 @@ pub async fn stdlib_types() -> Result<HashMap<ModuleId, (Type, RecordType)>, cra
     program.check_types()?.unpack(&mut diags);
 
     let checker = crate::TypeChecker::new(&program);
-    let std_package_id: ModuleId = [String::from("Std")].into();
+    let std_package_id = PackageId::from([String::from("Std")]);
 
     let mut result = HashMap::new();
 
@@ -154,7 +155,7 @@ pub async fn stdlib_types() -> Result<HashMap<ModuleId, (Type, RecordType)>, cra
 }
 
 /// Compute a module ID from a package ID and a file path within that package.
-fn module_id_for_path(package_id: &ModuleId, path: &Path) -> ModuleId {
+fn module_id_for_path(package_id: &PackageId, path: &Path) -> crate::ModuleId {
     let mut segments = package_id.as_slice().to_vec();
     if let Some(parent) = path.parent() {
         for segment in parent.components() {

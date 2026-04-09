@@ -1935,11 +1935,12 @@ impl<'p> TypeChecker<'p> {
             .collect::<crate::ModuleId>();
         let import_path = self.resolve_self_import(import_path);
         let package_name = self.package_name_for_import(&import_path)?;
-        let (_, package) = self
+        let package = self
             .program
             .packages()
-            .find(|(name, _)| *name == &package_name)?;
-        let module_segments = import_path.suffix_after(&package_name)?;
+            .find(|(name, _)| *name == &package_name)
+            .map(|(_, pkg)| pkg)?;
+        let module_segments = import_path.suffix_after_package(&package_name)?;
         if module_segments.is_empty() {
             return None;
         }
@@ -1953,11 +1954,11 @@ impl<'p> TypeChecker<'p> {
             .find_map(|(path, file_mod)| (path == &module_path).then_some(file_mod))
     }
 
-    fn package_name_for_import(&self, import_path: &crate::ModuleId) -> Option<crate::ModuleId> {
+    fn package_name_for_import(&self, import_path: &crate::ModuleId) -> Option<crate::PackageId> {
         self.program
             .packages()
             .map(|(name, _)| name)
-            .filter(|package_name| import_path.starts_with(package_name))
+            .filter(|package_name| import_path.starts_with_package(package_name))
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }
@@ -1998,7 +1999,9 @@ impl<'p> TypeChecker<'p> {
                     continue;
                 };
                 // The directory path within the package
-                let dir_segments = partial_path.suffix_after(&package_name).unwrap_or(&[]);
+                let dir_segments = partial_path
+                    .suffix_after_package(&package_name)
+                    .unwrap_or(&[]);
                 let mut dir_path = PathBuf::new();
                 for seg in dir_segments {
                     dir_path.push(seg);
@@ -2100,7 +2103,7 @@ impl<'p> TypeChecker<'p> {
     }
 }
 
-fn module_id_for_path(package_id: &crate::ModuleId, path: &Path) -> crate::ModuleId {
+fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::ModuleId {
     let mut segments = package_id.as_slice().to_vec();
     if let Some(parent) = path.parent() {
         for segment in parent.components() {

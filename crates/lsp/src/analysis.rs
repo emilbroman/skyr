@@ -47,7 +47,7 @@ impl OverlaySource {
 
 #[async_trait::async_trait]
 impl sclc::SourceRepo for OverlaySource {
-    fn package_id(&self) -> sclc::ModuleId {
+    fn package_id(&self) -> sclc::PackageId {
         self.inner.package_id()
     }
 
@@ -100,7 +100,7 @@ pub struct AnalysisResult {
 pub async fn analyze(
     source: impl sclc::SourceRepo + 'static,
     root: &Path,
-    package_id: &sclc::ModuleId,
+    package_id: &sclc::PackageId,
 ) -> AnalysisResult {
     let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
 
@@ -262,12 +262,12 @@ fn symbol_kind_for_expr(expr: &sclc::Loc<sclc::Expr>) -> lsp::SymbolKind {
 fn module_id_to_path(
     root: &Path,
     module_id: &sclc::ModuleId,
-    package_id: &sclc::ModuleId,
+    package_id: &sclc::PackageId,
 ) -> PathBuf {
     // Strip the package_id prefix from the module_id, since root already
     // corresponds to the package directory.
     let segments = module_id
-        .suffix_after(package_id)
+        .suffix_after_package(package_id)
         .unwrap_or(module_id.as_slice());
 
     if segments.is_empty() {

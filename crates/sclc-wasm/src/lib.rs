@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 fn make_repo(files_json: &str) -> sclc::MemSourceRepo {
     let file_map: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
     sclc::MemSourceRepo::new(
-        ["Playground"].into_iter().map(String::from).collect(),
+        sclc::PackageId::from(["Playground"]),
         file_map
             .into_iter()
             .map(|(name, content)| (name, content.into_bytes()))
@@ -40,8 +40,8 @@ fn module_id_for_file(file: &str) -> sclc::ModuleId {
 /// Convert a module ID back to a file path relative to the package root.
 /// e.g. ["Playground", "models", "User"] -> "models/User.scl"
 fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
-    let package_id: sclc::ModuleId = ["Playground"].into_iter().map(String::from).collect();
-    let segments = module_id.suffix_after(&package_id)?;
+    let package_id = sclc::PackageId::from(["Playground"]);
+    let segments = module_id.suffix_after_package(&package_id)?;
     if segments.is_empty() {
         return None;
     }
@@ -101,13 +101,13 @@ struct DiagnosticInfo {
 pub async fn analyze(files_json: &str) -> String {
     let (diags, _) = load_and_compile(files_json).await;
 
-    let package_id: sclc::ModuleId = ["Playground"].into_iter().map(String::from).collect();
+    let package_id = sclc::PackageId::from(["Playground"]);
 
     let result: Vec<DiagnosticInfo> = diags
         .iter()
         .filter(|d| {
             let (module_id, _) = d.locate();
-            module_id.starts_with(&package_id)
+            module_id.starts_with_package(&package_id)
         })
         .map(|d| {
             let (module_id, span) = d.locate();

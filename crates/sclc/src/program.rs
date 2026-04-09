@@ -7,16 +7,16 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, PackageLoader, SourceRepo,
-    ast,
+    ChildEntry, Diag, DiagList, Diagnosed, ModuleId, OpenError, Package, PackageId, PackageLoader,
+    SourceRepo, ast,
 };
 use crate::{TrackedValue, std::StdSourceRepo};
 
 #[derive(Clone)]
 pub struct Program {
-    packages: HashMap<ModuleId, Package>,
+    packages: HashMap<PackageId, Package>,
     /// The package ID of the user's own package, used to resolve `Self/…` imports.
-    self_package_id: Option<ModuleId>,
+    self_package_id: Option<PackageId>,
     /// Map from resolved path string (e.g. `/data.txt`) to Git object hash.
     path_hashes: HashMap<String, gix_hash::ObjectId>,
     /// Optional loader for dynamically discovering packages during import resolution.
@@ -30,12 +30,12 @@ impl Default for Program {
 }
 
 impl Program {
-    pub fn packages(&self) -> impl Iterator<Item = (&ModuleId, &Package)> {
+    pub fn packages(&self) -> impl Iterator<Item = (&PackageId, &Package)> {
         self.packages.iter()
     }
 
     /// The package ID of the user's own package (used to resolve `Self/…` imports).
-    pub fn self_package_id(&self) -> Option<&ModuleId> {
+    pub fn self_package_id(&self) -> Option<&PackageId> {
         self.self_package_id.as_ref()
     }
 
@@ -46,14 +46,14 @@ impl Program {
     /// Look up cached children for an import path prefix within a package.
     pub fn cached_children_for_import(
         &self,
-        package_name: &ModuleId,
+        package_name: &PackageId,
         path: &Path,
     ) -> Option<&[ChildEntry]> {
         self.packages.get(package_name)?.cached_children(path)
     }
 
     /// Returns all known package names.
-    pub fn package_names(&self) -> impl Iterator<Item = &ModuleId> {
+    pub fn package_names(&self) -> impl Iterator<Item = &PackageId> {
         self.packages.keys()
     }
 
@@ -168,9 +168,9 @@ impl Program {
     /// it in the package map.
     fn resolve_self_import(&self, import_path: ModuleId) -> ModuleId {
         if import_path.as_slice().first().map(String::as_str) == Some("Self")
-            && let Some(self_id) = &self.self_package_id
+            && let Some(self_pkg) = &self.self_package_id
         {
-            let mut segments: Vec<String> = self_id.as_slice().to_vec();
+            let mut segments: Vec<String> = self_pkg.as_slice().to_vec();
             segments.extend(import_path.as_slice()[1..].iter().cloned());
             return ModuleId::new(segments);
         }
@@ -246,7 +246,7 @@ impl Program {
     /// can be resolved synchronously during type checking.
     async fn preload_children_for_completions(&mut self) {
         // Collect all import path prefixes to preload.
-        let mut prefixes_to_load: HashMap<ModuleId, HashSet<PathBuf>> = HashMap::new();
+        let mut prefixes_to_load: HashMap<PackageId, HashSet<PathBuf>> = HashMap::new();
 
         // Always preload root for every package.
         for package_name in self.packages.keys() {
@@ -268,7 +268,7 @@ impl Program {
                 let import_path = self.resolve_self_import(import_path);
 
                 if let Some(package_name) = self.package_name_for_import(&import_path)
-                    && let Some(module_segments) = import_path.suffix_after(&package_name)
+                    && let Some(module_segments) = import_path.suffix_after_package(&package_name)
                 {
                     let paths = prefixes_to_load.entry(package_name).or_default();
                     // Preload each directory prefix: for Std/Foo/Bar, preload "" and "Foo"
@@ -303,10 +303,10 @@ impl Program {
 
         // Collect all PathExprs from every module, along with their module context.
         let mut collected: Vec<(ModuleId, ast::PathExpr)> = Vec::new();
-        for (package_name, package) in &self.packages {
+        for (package_id, package) in &self.packages {
             for (path, file_mod) in package.modules() {
                 let module_id = {
-                    let mut segments = package_name.as_slice().to_vec();
+                    let mut segments = package_id.as_slice().to_vec();
                     if let Some(parent) = path.parent() {
                         for seg in parent.components() {
                             if let std::path::Component::Normal(part) = seg {
@@ -391,7 +391,7 @@ impl Program {
         {
             match loader.load_package(import_path).await {
                 Ok(Some(source)) => {
-                    let pkg_id = source.package_id();
+                    let pkg_id: PackageId = source.package_id();
                     self.packages
                         .entry(pkg_id)
                         .or_insert_with(|| Package::new(source));
@@ -410,7 +410,7 @@ impl Program {
             return Ok(Diagnosed::new(None, DiagList::new()));
         };
 
-        let Some(module_segments) = import_path.suffix_after(&package_name) else {
+        let Some(module_segments) = import_path.suffix_after_package(&package_name) else {
             return Ok(Diagnosed::new(None, DiagList::new()));
         };
         if module_segments.is_empty() {
@@ -443,10 +443,10 @@ impl Program {
         }
     }
 
-    fn package_name_for_import(&self, import_path: &ModuleId) -> Option<ModuleId> {
+    fn package_name_for_import(&self, import_path: &ModuleId) -> Option<PackageId> {
         self.packages
             .keys()
-            .filter(|package_name| import_path.starts_with(package_name))
+            .filter(|package_name| import_path.starts_with_package(package_name))
             .max_by_key(|package_name| package_name.len())
             .cloned()
     }
@@ -497,11 +497,8 @@ impl Program {
         import_path: &ModuleId,
     ) -> Option<&'a crate::ast::FileMod> {
         let package_name = self.package_name_for_import(import_path)?;
-        let (_, package) = self
-            .packages
-            .iter()
-            .find(|(name, _)| *name == &package_name)?;
-        let module_segments = import_path.suffix_after(&package_name)?;
+        let package = self.packages.get(&package_name)?;
+        let module_segments = import_path.suffix_after_package(&package_name)?;
         if module_segments.is_empty() {
             return None;
         }
@@ -521,7 +518,7 @@ pub enum ResolveImportError {
     #[error("failed to open import {import_path} from package {package_name}: {source}")]
     Open {
         import_path: ModuleId,
-        package_name: ModuleId,
+        package_name: PackageId,
         module_path: PathBuf,
         #[source]
         source: OpenError,

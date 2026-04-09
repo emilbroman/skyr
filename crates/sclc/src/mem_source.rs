@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::{ChildEntry, ModuleId, SourceError, SourceRepo};
+use crate::{ChildEntry, PackageId, SourceError, SourceRepo};
 
 /// An in-memory source repository backed by a map of file paths to contents.
 ///
@@ -9,19 +9,19 @@ use crate::{ChildEntry, ModuleId, SourceError, SourceRepo};
 /// `"subdir/Foo.scl"`).
 #[derive(Clone)]
 pub struct MemSourceRepo {
-    package_id: ModuleId,
+    package_id: PackageId,
     files: HashMap<String, Vec<u8>>,
 }
 
 impl MemSourceRepo {
-    pub fn new(package_id: ModuleId, files: HashMap<String, Vec<u8>>) -> Self {
+    pub fn new(package_id: PackageId, files: HashMap<String, Vec<u8>>) -> Self {
         Self { package_id, files }
     }
 }
 
 #[async_trait::async_trait]
 impl SourceRepo for MemSourceRepo {
-    fn package_id(&self) -> ModuleId {
+    fn package_id(&self) -> PackageId {
         self.package_id.clone()
     }
 
