@@ -58,11 +58,7 @@ impl completion::Completer for ReplHelper {
 
         // Use a peek module ID (don't increment the line counter).
         let module_id = sclc::ModuleId::new(
-            state
-                .program()
-                .self_package_id()
-                .cloned()
-                .unwrap_or_default(),
+            state.unit().self_package_id().cloned().unwrap_or_default(),
             vec!["ReplCompletion".to_string()],
         );
 
@@ -402,11 +398,7 @@ fn report_repl_error(err: &sclc::ReplError) {
 }
 
 async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
-    let package_id = state
-        .program()
-        .self_package_id()
-        .cloned()
-        .unwrap_or_default();
+    let package_id = state.unit().self_package_id().cloned().unwrap_or_default();
     state.replace_user_source(sclc::FsSource {
         root: root.to_path_buf(),
         package_id,

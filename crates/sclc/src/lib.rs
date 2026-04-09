@@ -3,7 +3,6 @@ mod checker;
 mod compilation_unit;
 mod compile;
 mod cursor;
-#[allow(dead_code)]
 mod dep_graph;
 mod diag;
 mod eval;

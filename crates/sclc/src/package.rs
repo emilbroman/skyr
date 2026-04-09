@@ -4,14 +4,11 @@ use std::{collections::HashMap, path::PathBuf};
 
 use thiserror::Error;
 
-use crate::{
-    ChildEntry, FileMod, ImportStmt, Loc, ModStmt, SourceError, SourceRepo,
-};
+use crate::{ChildEntry, SourceError, SourceRepo};
 
 #[derive(Clone)]
 pub struct Package {
     source: Arc<dyn SourceRepo>,
-    files: HashMap<PathBuf, FileMod>,
     /// Cached directory listings, keyed by the directory path within the package.
     children_cache: HashMap<PathBuf, Vec<ChildEntry>>,
 }
@@ -35,52 +32,13 @@ impl Package {
     pub fn new(source: Arc<dyn SourceRepo>) -> Self {
         Self {
             source,
-            files: HashMap::new(),
             children_cache: HashMap::new(),
         }
     }
 
     pub fn replace_source(&mut self, source: Arc<dyn SourceRepo>) {
         self.source = source;
-        self.files.clear();
         self.children_cache.clear();
-    }
-
-    pub fn imports(&self) -> impl Iterator<Item = &Loc<ImportStmt>> {
-        self.files.values().flat_map(|file_mod| {
-            file_mod
-                .statements
-                .iter()
-                .filter_map(|statement| match statement {
-                    ModStmt::Import(import_stmt) => Some(import_stmt),
-                    ModStmt::Let(_) => None,
-                    ModStmt::Export(_) => None,
-                    ModStmt::TypeDef(_) => None,
-                    ModStmt::ExportTypeDef(_) => None,
-                    ModStmt::Expr(_) => None,
-                })
-        })
-    }
-
-    /// Like [`imports`](Self::imports), but also returns the source module ID
-    /// for each import statement (the module that contains the import).
-    pub fn imports_with_source(&self) -> impl Iterator<Item = (crate::ModuleId, &Loc<ImportStmt>)> {
-        let package_id = self.source.package_id();
-        self.files.iter().flat_map(move |(path, file_mod)| {
-            let module_id = module_id_for_path(&package_id, path);
-            file_mod
-                .statements
-                .iter()
-                .filter_map(|statement| match statement {
-                    ModStmt::Import(import_stmt) => Some(import_stmt),
-                    _ => None,
-                })
-                .map(move |import_stmt| (module_id.clone(), import_stmt))
-        })
-    }
-
-    pub fn modules(&self) -> impl Iterator<Item = (&PathBuf, &FileMod)> {
-        self.files.iter()
     }
 
     /// Synchronously look up previously cached children for a path.
@@ -117,10 +75,7 @@ impl Package {
             }
         }
 
-        let source_data = self
-            .source
-            .read_file(&path)
-            .await?;
+        let source_data = self.source.read_file(&path).await?;
         let Some(source_data) = source_data else {
             return Ok(None);
         };
@@ -140,21 +95,4 @@ impl Package {
         self.children_cache.insert(path, entries.clone());
         Ok(entries)
     }
-}
-
-fn module_id_for_path(package_id: &crate::PackageId, path: &Path) -> crate::ModuleId {
-    let mut path_segments = Vec::new();
-    if let Some(parent) = path.parent() {
-        for segment in parent.components() {
-            if let Component::Normal(part) = segment {
-                path_segments.push(part.to_string_lossy().into_owned());
-            }
-        }
-    }
-
-    if let Some(stem) = path.file_stem() {
-        path_segments.push(stem.to_string_lossy().into_owned());
-    }
-
-    crate::ModuleId::new(package_id.clone(), path_segments)
 }

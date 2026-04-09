@@ -97,9 +97,11 @@ impl CompilationUnit {
                         continue;
                     }
 
-                    let import_path = self
-                        .split_import_segments(&raw_segments)
-                        .unwrap_or_else(|| ModuleId::new(PackageId::default(), raw_segments.clone()));
+                    let import_path =
+                        self.split_import_segments(&raw_segments)
+                            .unwrap_or_else(|| {
+                                ModuleId::new(PackageId::default(), raw_segments.clone())
+                            });
                     if self.modules.contains_key(&import_path) {
                         continue;
                     }
@@ -169,7 +171,8 @@ impl CompilationUnit {
                             .entry(import_path.package.clone())
                             .or_default();
                         let mut prefix = PathBuf::new();
-                        for segment in &import_path.path[..import_path.path.len().saturating_sub(1)] {
+                        for segment in &import_path.path[..import_path.path.len().saturating_sub(1)]
+                        {
                             prefix.push(segment);
                             paths.insert(prefix.clone());
                         }
@@ -271,6 +274,74 @@ impl CompilationUnit {
         &self.externs
     }
 
+    /// The package ID of the user's own package (used to resolve `Self/…` imports).
+    pub fn self_package_id(&self) -> Option<&PackageId> {
+        self.program.self_package_id()
+    }
+
+    /// Returns all known package names.
+    pub fn package_names(&self) -> impl Iterator<Item = &PackageId> {
+        self.program.package_names()
+    }
+
+    /// Look up cached children for an import path prefix within a package.
+    pub fn cached_children_for_import(
+        &self,
+        package_name: &PackageId,
+        path: &Path,
+    ) -> Option<&[ChildEntry]> {
+        self.children_cache
+            .get(&(package_name.clone(), path.to_path_buf()))
+            .map(Vec::as_slice)
+    }
+
+    /// Look up cached children for a path within the user's own package.
+    pub fn cached_children_for_path(&self, path: &Path) -> Option<&[ChildEntry]> {
+        let pkg = self.program.self_package_id()?;
+        self.children_cache
+            .get(&(pkg.clone(), path.to_path_buf()))
+            .map(Vec::as_slice)
+    }
+
+    /// Check whether a resolved path exists by consulting cached directory listings.
+    /// Returns `None` if any ancestor directory hasn't been cached yet (unknown),
+    /// `Some(true)` if the full path is valid, `Some(false)` if invalid.
+    pub fn path_exists_cached(&self, resolved: &str) -> Option<bool> {
+        let rel = resolved.strip_prefix('/')?;
+        let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if components.is_empty() {
+            return Some(true);
+        }
+
+        let mut dir = PathBuf::new();
+        for (i, component) in components.iter().enumerate() {
+            let is_last = i == components.len() - 1;
+            let children = self.cached_children_for_path(&dir)?;
+
+            if is_last {
+                let exists = children.iter().any(|entry| entry.name() == *component);
+                return Some(exists);
+            }
+
+            let is_dir = children
+                .iter()
+                .any(|entry| matches!(entry, ChildEntry::Directory(name) if name == component));
+            if !is_dir {
+                let exists_as_non_dir = children
+                    .iter()
+                    .any(|entry| matches!(entry, ChildEntry::File(name) if name == component));
+                if exists_as_non_dir {
+                    return Some(false);
+                }
+                return None;
+            }
+
+            dir.push(component);
+        }
+
+        None
+    }
+
     /// Type-check all modules in the compilation unit.
     pub fn check_types(&self) -> Result<Diagnosed<()>, crate::TypeCheckError> {
         crate::TypeChecker::new(self).check_program()
@@ -296,28 +367,6 @@ impl CompilationUnit {
         Ok(values)
     }
 
-    /// Access the underlying Program for remaining path/completion context.
-    pub fn program(&self) -> &Program {
-        &self.program
-    }
-
-    /// Mutable access to the underlying Program.
-    pub fn program_mut(&mut self) -> &mut Program {
-        &mut self.program
-    }
-
-    pub(crate) fn sync_program(&mut self, program: Program) {
-        self.program = program;
-    }
-
-    pub(crate) fn reset_program(&mut self, program: Program) {
-        self.program = program;
-        self.modules.clear();
-        self.path_hashes.clear();
-        self.children_cache.clear();
-        self.externs.clear();
-    }
-
     /// Set the package loader on the underlying Program.
     pub fn set_package_loader(&mut self, loader: std::sync::Arc<dyn crate::PackageLoader>) {
         self.program.set_package_loader(loader);
@@ -331,13 +380,36 @@ impl CompilationUnit {
         self.program.open_package(source).await
     }
 
-    pub fn repl(
-        self,
-        program: Program,
-        effects_tx: tokio::sync::mpsc::UnboundedSender<crate::Effect>,
-        namespace: String,
-    ) -> crate::Repl {
-        crate::Repl::from_parts(self, program, effects_tx, namespace)
+    /// Replace the user source, clearing all cached state.
+    pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
+        self.program.replace_user_source(source);
+        self.modules.clear();
+        self.path_hashes.clear();
+        self.children_cache.clear();
+        self.externs.clear();
+    }
+
+    /// Preload directory listings for a set of repo-relative directory paths.
+    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
+        self.program.preload_path_dirs(dirs).await;
+        // Sync package children caches into our own cache
+        if let Some(pkg_id) = self.program.self_package_id().cloned()
+            && let Some(package) = self
+                .program
+                .packages()
+                .find(|(id, _)| **id == pkg_id)
+                .map(|(_, p)| p)
+        {
+            for (path, children) in package.children_entries() {
+                self.children_cache
+                    .insert((pkg_id.clone(), path.clone()), children.clone());
+            }
+        }
+    }
+
+    /// Set the underlying Program directly (used during REPL initialization).
+    pub(crate) fn set_program(&mut self, program: Program) {
+        self.program = program;
     }
 
     pub(crate) fn find_imports<'a>(
@@ -378,7 +450,7 @@ impl CompilationUnit {
         segments
     }
 
-    fn split_import_segments(&self, segments: &[String]) -> Option<ModuleId> {
+    pub(crate) fn split_import_segments(&self, segments: &[String]) -> Option<ModuleId> {
         let package = self
             .program
             .package_names()

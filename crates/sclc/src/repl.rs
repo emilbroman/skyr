@@ -12,7 +12,6 @@ use crate::{
 pub struct Repl {
     line_number: usize,
     unit: CompilationUnit,
-    program: Program,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
@@ -65,29 +64,15 @@ impl Repl {
         namespace: String,
     ) -> Self {
         let mut unit = CompilationUnit::new();
-        unit.sync_program(program.clone());
-        Self::from_parts(unit, program, effects_tx, namespace)
-    }
-
-    pub fn from_parts(
-        unit: CompilationUnit,
-        program: Program,
-        effects_tx: mpsc::UnboundedSender<Effect>,
-        namespace: String,
-    ) -> Self {
+        unit.set_program(program);
         Self {
             line_number: 0,
             unit,
-            program,
             effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
             namespace,
         }
-    }
-
-    pub fn program(&self) -> &Program {
-        &self.program
     }
 
     pub fn unit(&self) -> &CompilationUnit {
@@ -111,18 +96,16 @@ impl Repl {
     }
 
     pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
-        self.program.replace_user_source(source);
-        self.unit.reset_program(self.program.clone());
+        self.unit.replace_user_source(source);
     }
 
     pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        self.program.preload_path_dirs(dirs).await;
-        self.unit.sync_program(self.program.clone());
+        self.unit.preload_path_dirs(dirs).await;
     }
 
     pub fn next_line_module_id(&mut self) -> ModuleId {
         self.line_number += 1;
-        let package = self.program.self_package_id().cloned().unwrap_or_default();
+        let package = self.unit.self_package_id().cloned().unwrap_or_default();
         ModuleId::new(package, vec![format!("Repl{}", self.line_number)])
     }
 
@@ -181,6 +164,7 @@ impl Repl {
             .map(|var| var.as_ref().name.clone())
             .collect();
         let import_path = self
+            .unit
             .split_import_segments(&raw_segments)
             .unwrap_or_else(|| ModuleId::new(crate::PackageId::default(), raw_segments.clone()));
         let alias = import_stmt
@@ -194,7 +178,6 @@ impl Repl {
 
         let mut diags = DiagList::new();
         self.unit.resolve(&import_path).await?.unpack(&mut diags);
-        self.program = self.unit.program().clone();
 
         let Some(file_mod) = self.unit.module(&import_path).cloned() else {
             diags.push(invalid_import_diag(
@@ -239,7 +222,7 @@ impl Repl {
         let mut collector = crate::CollectPaths::new();
         crate::visit_file_mod(&mut collector, &file_mod);
 
-        let self_package_id = self.program.self_package_id().cloned();
+        let self_package_id = self.unit.self_package_id().cloned();
         let dirs: HashSet<PathBuf> = collector
             .paths
             .iter()
@@ -254,8 +237,7 @@ impl Repl {
             .collect();
 
         if !dirs.is_empty() {
-            self.program.preload_path_dirs(dirs).await;
-            self.unit.sync_program(self.program.clone());
+            self.unit.preload_path_dirs(dirs).await;
         }
     }
 
@@ -311,31 +293,6 @@ impl Repl {
         if type_exports.iter().next().is_some() {
             self.type_defs.insert(alias, Type::Record(type_exports));
         }
-    }
-
-    fn split_import_segments(&self, raw_segments: &[String]) -> Option<ModuleId> {
-        let segments = if raw_segments.first().map(String::as_str) == Some("Self") {
-            let mut resolved = self
-                .program
-                .self_package_id()
-                .cloned()
-                .unwrap_or_default()
-                .as_slice()
-                .to_vec();
-            resolved.extend(raw_segments[1..].iter().cloned());
-            resolved
-        } else {
-            raw_segments.to_vec()
-        };
-
-        let package = self
-            .program
-            .package_names()
-            .filter(|package_name| segments.starts_with(package_name.as_slice()))
-            .max_by_key(|package_name| package_name.len())
-            .cloned()?;
-        let pkg_len = package.len();
-        Some(ModuleId::new(package, segments[pkg_len..].to_vec()))
     }
 }
 

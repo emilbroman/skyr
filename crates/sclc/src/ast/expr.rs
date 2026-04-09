@@ -135,7 +135,7 @@ impl PathExpr {
         let module_id = env
             .module_id
             .expect("module_id should be set during evaluation");
-        self.resolve_with_context(module_id, evaluator.unit.program().self_package_id())
+        self.resolve_with_context(module_id, evaluator.unit.self_package_id())
     }
 }
 
@@ -187,12 +187,12 @@ impl Expr {
             Expr::Path(path_expr) => {
                 let mut diags = DiagList::new();
                 if let Ok(module_id) = env.module_id() {
-                    let resolved = path_expr
-                        .resolve_with_context(&module_id, checker.unit.program().self_package_id());
+                    let resolved =
+                        path_expr.resolve_with_context(&module_id, checker.unit.self_package_id());
                     // `path_exists_cached` returns None when the parent directory
                     // hasn't been cached — in that case we skip validation rather
                     // than emit a false positive.
-                    if checker.unit.program().path_exists_cached(&resolved) == Some(false) {
+                    if checker.unit.path_exists_cached(&resolved) == Some(false) {
                         diags.push(crate::InvalidPath {
                             module_id,
                             resolved_path: resolved,

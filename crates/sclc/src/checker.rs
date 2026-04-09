@@ -1873,7 +1873,7 @@ impl<'p> TypeChecker<'p> {
     /// user package ID segments.
     fn resolve_self_import_segments(&self, segments: Vec<String>) -> Vec<String> {
         if segments.first().map(String::as_str) == Some("Self")
-            && let Some(self_id) = self.unit.program().self_package_id()
+            && let Some(self_id) = self.unit.self_package_id()
         {
             let mut result: Vec<String> = self_id.as_slice().to_vec();
             result.extend(segments[1..].iter().cloned());
@@ -1947,7 +1947,6 @@ impl<'p> TypeChecker<'p> {
 
     fn package_name_for_import(&self, segments: &[String]) -> Option<crate::PackageId> {
         self.unit
-            .program()
             .package_names()
             .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
@@ -1964,7 +1963,7 @@ impl<'p> TypeChecker<'p> {
 
             if i == 0 {
                 // First segment: suggest package names and "Self"
-                for package_name in self.unit.program().package_names() {
+                for package_name in self.unit.package_names() {
                     if let Some(first) = package_name.as_slice().first()
                         && first.starts_with(prefix)
                     {
@@ -1973,7 +1972,7 @@ impl<'p> TypeChecker<'p> {
                         ));
                     }
                 }
-                if "Self".starts_with(prefix) && self.unit.program().self_package_id().is_some() {
+                if "Self".starts_with(prefix) && self.unit.self_package_id().is_some() {
                     cursor.add_completion_candidate(crate::CompletionCandidate::ModuleDir(
                         "Self".to_owned(),
                     ));
@@ -1998,7 +1997,6 @@ impl<'p> TypeChecker<'p> {
 
                 if let Some(children) = self
                     .unit
-                    .program()
                     .cached_children_for_import(&package_name, &dir_path)
                 {
                     for entry in children {
@@ -2066,7 +2064,7 @@ impl<'p> TypeChecker<'p> {
 
             let dir_path = PathBuf::from(components.join("/"));
 
-            if let Some(children) = self.unit.program().cached_children_for_path(&dir_path) {
+            if let Some(children) = self.unit.cached_children_for_path(&dir_path) {
                 for entry in children {
                     match entry {
                         crate::ChildEntry::File(name) => {

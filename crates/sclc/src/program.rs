@@ -1,23 +1,15 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use thiserror::Error;
 
 use crate::std::StdSourceRepo;
-use crate::{
-    ChildEntry, Diag, ModuleId, OpenError, Package, PackageId, PackageLoader, SourceRepo,
-};
+use crate::{Diag, ModuleId, OpenError, Package, PackageId, PackageLoader, SourceRepo};
 
 #[derive(Clone)]
 pub struct Program {
     packages: HashMap<PackageId, Package>,
     /// The package ID of the user's own package, used to resolve `Self/…` imports.
     self_package_id: Option<PackageId>,
-    /// Map from resolved path string (e.g. `/data.txt`) to Git object hash.
-    path_hashes: HashMap<String, gix_hash::ObjectId>,
     /// Optional loader for dynamically discovering packages during import resolution.
     package_loader: Option<Arc<dyn PackageLoader>>,
 }
@@ -43,87 +35,9 @@ impl Program {
         self.self_package_id.as_ref()
     }
 
-    /// Look up cached children for an import path prefix within a package.
-    pub fn cached_children_for_import(
-        &self,
-        package_name: &PackageId,
-        path: &Path,
-    ) -> Option<&[ChildEntry]> {
-        self.packages.get(package_name)?.cached_children(path)
-    }
-
     /// Returns all known package names.
     pub fn package_names(&self) -> impl Iterator<Item = &PackageId> {
         self.packages.keys()
-    }
-
-    /// Look up the Git object hash for a resolved path string.
-    pub fn path_hash(&self, resolved: &str) -> Option<&gix_hash::ObjectId> {
-        self.path_hashes.get(resolved)
-    }
-
-    /// Access all path hashes.
-    pub fn path_hashes(&self) -> &HashMap<String, gix_hash::ObjectId> {
-        &self.path_hashes
-    }
-
-    /// Look up cached children for a path within the user's own package.
-    pub fn cached_children_for_path(&self, path: &Path) -> Option<&[ChildEntry]> {
-        let pkg = self.self_package_id.as_ref()?;
-        self.packages.get(pkg)?.cached_children(path)
-    }
-
-    /// Check whether a resolved path exists by consulting the cached directory
-    /// listings. Returns `None` if any ancestor directory hasn't been cached yet
-    /// (unknown), `Some(true)` if the full path is valid, `Some(false)` if any
-    /// intermediate component is a file (not a directory) or the final component
-    /// is missing.
-    pub fn path_exists_cached(&self, resolved: &str) -> Option<bool> {
-        let resolved_path = Path::new(resolved);
-
-        // Strip the leading `/` to get repo-relative components.
-        let rel = resolved.strip_prefix('/')?;
-        let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-        if components.is_empty() {
-            return Some(true);
-        }
-
-        // Walk each component, checking that intermediates are directories
-        // and the final component exists.
-        let mut dir = PathBuf::new();
-        for (i, component) in components.iter().enumerate() {
-            let is_last = i == components.len() - 1;
-            let children = self.cached_children_for_path(&dir)?;
-
-            if is_last {
-                // Final component: just needs to exist (file or directory).
-                let exists = children.iter().any(|entry| entry.name() == *component);
-                return Some(exists);
-            }
-
-            // Intermediate component: must be a directory.
-            let is_dir = children
-                .iter()
-                .any(|entry| matches!(entry, ChildEntry::Directory(name) if name == component));
-            if !is_dir {
-                // It might be a file — that means traversing through
-                // a non-directory, which is invalid.
-                let exists_as_non_dir = children
-                    .iter()
-                    .any(|entry| matches!(entry, ChildEntry::File(name) if name == component));
-                if exists_as_non_dir {
-                    return Some(false);
-                }
-                // Not cached or doesn't exist at all — unknown.
-                return None;
-            }
-
-            dir.push(component);
-        }
-
-        // Shouldn't reach here, but treat as unknown.
-        let _ = resolved_path;
-        None
     }
 
     pub fn new() -> Self {
@@ -134,7 +48,6 @@ impl Program {
         Self {
             packages,
             self_package_id: None,
-            path_hashes: HashMap::new(),
             package_loader: None,
         }
     }
@@ -156,7 +69,6 @@ impl Program {
     pub fn replace_user_source(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
         let name = source.package_id();
         self.self_package_id = Some(name.clone());
-        self.path_hashes.clear();
         if self.packages.contains_key(&name) {
             let pkg = self.packages.get_mut(&name).unwrap();
             pkg.replace_source(Arc::new(source));
