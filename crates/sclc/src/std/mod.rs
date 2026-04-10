@@ -152,7 +152,10 @@ impl SourceRepo for StdSourceRepo {
 /// Compiles all standard library modules and returns the value-level type and
 /// type-level type exports for each module, keyed by module ID (e.g. `Std/Time`).
 pub async fn stdlib_types()
--> Result<HashMap<crate::ModuleId, (Type, RecordType)>, crate::CompileError> {
+-> Result<HashMap<crate::ModuleId, (Type, RecordType)>, crate::v2::V2CompileError> {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
     // Derive module names from the embedded .scl files.
     let module_names: Vec<&str> = BUNDLED_FILES
         .iter()
@@ -160,7 +163,7 @@ pub async fn stdlib_types()
         .collect();
 
     // Build a Main.scl that imports every stdlib module so that
-    // resolve_imports discovers and parses them all.
+    // the Loader discovers and parses them all.
     let main_scl = module_names
         .iter()
         .map(|m| format!("import Std/{m}"))
@@ -168,13 +171,20 @@ pub async fn stdlib_types()
         .join("\n");
 
     let mut files = HashMap::new();
-    files.insert("Main.scl".to_string(), main_scl.into_bytes());
+    files.insert(PathBuf::from("Main.scl"), main_scl.into_bytes());
 
-    let source = crate::MemSourceRepo::new([String::from("_StdlibTypes")].into(), files);
+    let user_pkg = Arc::new(crate::v2::InMemoryPackage::new(
+        crate::PackageId::from(["_StdlibTypes"]),
+        files,
+    ));
+    let finder = crate::v2::build_default_finder(user_pkg);
 
     let mut diags = crate::DiagList::new();
-    let unit = crate::compile(source).await?.unpack(&mut diags);
+    let asg = crate::v2::compile(finder, &["_StdlibTypes", "Main"])
+        .await?
+        .unpack(&mut diags);
 
+    let unit = crate::v2::asg_to_compilation_unit(&asg);
     let checker = crate::TypeChecker::new(&unit);
     let std_package_id = PackageId::from([String::from("Std")]);
 

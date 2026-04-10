@@ -3,13 +3,11 @@ use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use thiserror::Error;
 
 use crate::std::StdSourceRepo;
-use crate::{Diag, ModuleId, OpenError, Package, PackageId, PackageLoader, SourceRepo};
+use crate::{Diag, ModuleId, OpenError, Package, PackageId, SourceRepo};
 
 #[derive(Clone)]
 pub struct Program {
     packages: HashMap<PackageId, Package>,
-    /// Optional loader for dynamically discovering packages during import resolution.
-    package_loader: Option<Arc<dyn PackageLoader>>,
 }
 
 impl Default for Program {
@@ -38,16 +36,7 @@ impl Program {
         let std = StdSourceRepo::new();
         let pkg_id = std.package_id();
         packages.insert(pkg_id, Package::new(Arc::new(std)));
-        Self {
-            packages,
-            package_loader: None,
-        }
-    }
-
-    /// Set the package loader used to dynamically discover packages during
-    /// import resolution. See [`PackageLoader`] for details.
-    pub fn set_package_loader(&mut self, loader: Arc<dyn PackageLoader>) {
-        self.package_loader = Some(loader);
+        Self { packages }
     }
 
     pub async fn open_package(&mut self, source: impl SourceRepo + 'static) -> &mut Package {
@@ -87,40 +76,11 @@ impl Program {
 
     pub(crate) async fn ensure_import_package(
         &mut self,
-        import_path: &ModuleId,
+        _import_path: &ModuleId,
     ) -> Result<(), ResolveImportError> {
-        let all_segments = import_path.all_segments();
-
-        // If no loaded package matches, try the package loader.
-        if self.package_name_for_import(&all_segments).is_none()
-            && let Some(loader) = self.package_loader.clone()
-        {
-            match loader.load_package(import_path).await {
-                Ok(Some(source)) => {
-                    let pkg_id: PackageId = source.package_id();
-                    self.packages
-                        .entry(pkg_id)
-                        .or_insert_with(|| Package::new(source));
-                }
-                Ok(None) => {}
-                Err(source) => {
-                    return Err(ResolveImportError::Loader {
-                        import_path: import_path.clone(),
-                        source,
-                    });
-                }
-            }
-        }
         Ok(())
     }
 
-    fn package_name_for_import(&self, segments: &[String]) -> Option<PackageId> {
-        self.packages
-            .keys()
-            .filter(|package_name| segments.starts_with(package_name.as_slice()))
-            .max_by_key(|package_name| package_name.len())
-            .cloned()
-    }
 }
 
 #[derive(Error, Debug)]
@@ -132,13 +92,6 @@ pub enum ResolveImportError {
         module_path: PathBuf,
         #[source]
         source: OpenError,
-    },
-
-    #[error("package loader failed for {import_path}: {source}")]
-    Loader {
-        import_path: ModuleId,
-        #[source]
-        source: crate::SourceError,
     },
 }
 

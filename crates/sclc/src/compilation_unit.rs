@@ -397,11 +397,6 @@ impl CompilationUnit {
         Ok(values)
     }
 
-    /// Set the package loader on the underlying Program.
-    pub fn set_package_loader(&mut self, loader: std::sync::Arc<dyn crate::PackageLoader>) {
-        self.program.set_package_loader(loader);
-    }
-
     /// Open a user package on the underlying Program.
     pub async fn open_package(
         &mut self,
