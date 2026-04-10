@@ -42,11 +42,14 @@ pub trait ExternRegistry {
     fn add_extern_fn(
         &mut self,
         name: impl Into<String>,
-        f: impl Fn(Vec<crate::TrackedValue>, &crate::EvalCtx) -> Result<crate::TrackedValue, crate::EvalError>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
+        f: impl Fn(
+            Vec<crate::TrackedValue>,
+            &crate::EvalCtx,
+        ) -> Result<crate::TrackedValue, crate::EvalError>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     );
 }
 
@@ -58,11 +61,14 @@ impl ExternRegistry for ExternCollector {
     fn add_extern_fn(
         &mut self,
         name: impl Into<String>,
-        f: impl Fn(Vec<crate::TrackedValue>, &crate::EvalCtx) -> Result<crate::TrackedValue, crate::EvalError>
-            + Clone
-            + Send
-            + Sync
-            + 'static,
+        f: impl Fn(
+            Vec<crate::TrackedValue>,
+            &crate::EvalCtx,
+        ) -> Result<crate::TrackedValue, crate::EvalError>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     ) {
         self.0.insert(
             name.into(),

@@ -681,7 +681,6 @@ impl crate::std::ExternRegistry for Eval<'_> {
 }
 
 impl<'p> Eval<'p> {
-
     pub fn eval_expr(
         &self,
         env: &EvalEnv<'_>,

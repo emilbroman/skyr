@@ -105,8 +105,7 @@ impl Loader {
 
             // Add global expression statements.
             for stmt in analysis.global_exprs {
-                self.asg
-                    .add_global_expr(raw_module_id.clone(), stmt);
+                self.asg.add_global_expr(raw_module_id.clone(), stmt);
             }
 
             // Add edges.
@@ -295,14 +294,17 @@ fn analyze_module(
                 collect_type_refs(&ctx, td.ty.as_ref(), &mut refs);
 
                 // Subtract own type params.
-                let own_params: HashSet<&str> =
-                    td.type_params.iter().map(|tp| tp.var.name.as_str()).collect();
+                let own_params: HashSet<&str> = td
+                    .type_params
+                    .iter()
+                    .map(|tp| tp.var.name.as_str())
+                    .collect();
 
                 for r in refs {
-                    if let NodeId::TypeDecl(_, ref tname) = r.target {
-                        if own_params.contains(tname.as_str()) {
-                            continue;
-                        }
+                    if let NodeId::TypeDecl(_, ref tname) = r.target
+                        && own_params.contains(tname.as_str())
+                    {
+                        continue;
                     }
                     analysis.edges.push(Edge {
                         from: from.clone(),
@@ -352,7 +354,7 @@ fn analyze_module(
 fn resolve_import_path(vars: &[Loc<ast::Var>], pkg_id: &PackageId) -> RawModuleId {
     let segments: Vec<String> = vars.iter().map(|v| v.name.clone()).collect();
     if segments.first().is_some_and(|s| s == "Self") {
-        let mut resolved: Vec<String> = pkg_id.as_slice().iter().cloned().collect();
+        let mut resolved: Vec<String> = pkg_id.as_slice().to_vec();
         resolved.extend(segments[1..].iter().cloned());
         resolved
     } else {
@@ -419,20 +421,17 @@ fn collect_expr_refs_with_scope(
             // Check for qualified reference: Import.member
             if let Expr::Var(var) = pa.expr.as_ref().as_ref() {
                 let name = &var.name;
-                if !locals.contains(name.as_str()) {
-                    if let Some(import_id) = ctx.import_aliases.get(name.as_str()) {
-                        // This is Import.member — add edge to the specific global.
-                        out.push(Ref {
-                            target: NodeId::Global(
-                                import_id.clone(),
-                                pa.property.name.clone(),
-                            ),
-                            lazy: in_fn,
-                            span: pa.property.span(),
-                        });
-                        // Don't recurse into the Var — we've handled it.
-                        return;
-                    }
+                if !locals.contains(name.as_str())
+                    && let Some(import_id) = ctx.import_aliases.get(name.as_str())
+                {
+                    // This is Import.member — add edge to the specific global.
+                    out.push(Ref {
+                        target: NodeId::Global(import_id.clone(), pa.property.name.clone()),
+                        lazy: in_fn,
+                        span: pa.property.span(),
+                    });
+                    // Don't recurse into the Var — we've handled it.
+                    return;
                 }
             }
             // Not a qualified reference — recurse normally.
@@ -446,7 +445,13 @@ fn collect_expr_refs_with_scope(
                 inner_locals.insert(param.var.name.clone());
             }
             if let Some(body) = &fn_expr.body {
-                collect_expr_refs_with_scope(ctx, body.as_ref().as_ref(), true, &mut inner_locals, out);
+                collect_expr_refs_with_scope(
+                    ctx,
+                    body.as_ref().as_ref(),
+                    true,
+                    &mut inner_locals,
+                    out,
+                );
             }
             // Type annotations on params are NOT lazy.
             for param in &fn_expr.params {
@@ -464,7 +469,13 @@ fn collect_expr_refs_with_scope(
 
         Expr::Let(let_expr) => {
             // The binding expression is in current scope.
-            collect_expr_refs_with_scope(ctx, let_expr.bind.expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                let_expr.bind.expr.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+            );
             // Type annotation on the let bind.
             if let Some(ty) = &let_expr.bind.ty {
                 collect_type_refs(ctx, ty.as_ref(), out);
@@ -473,13 +484,31 @@ fn collect_expr_refs_with_scope(
             if let Some(body) = &let_expr.expr {
                 let mut inner_locals = locals.clone();
                 inner_locals.insert(let_expr.bind.var.name.clone());
-                collect_expr_refs_with_scope(ctx, body.as_ref().as_ref(), in_fn, &mut inner_locals, out);
+                collect_expr_refs_with_scope(
+                    ctx,
+                    body.as_ref().as_ref(),
+                    in_fn,
+                    &mut inner_locals,
+                    out,
+                );
             }
         }
 
         Expr::If(if_expr) => {
-            collect_expr_refs_with_scope(ctx, if_expr.condition.as_ref().as_ref(), in_fn, locals, out);
-            collect_expr_refs_with_scope(ctx, if_expr.then_expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                if_expr.condition.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+            );
+            collect_expr_refs_with_scope(
+                ctx,
+                if_expr.then_expr.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+            );
             if let Some(else_expr) = &if_expr.else_expr {
                 collect_expr_refs_with_scope(ctx, else_expr.as_ref().as_ref(), in_fn, locals, out);
             }
@@ -551,7 +580,9 @@ fn collect_expr_refs_with_scope(
                 // free vars set (it's the exception being caught, not a local binding).
                 // For the dependency graph, we treat it as a reference.
                 let exc_name = &catch.exception_var.name;
-                if !locals.contains(exc_name.as_str()) && ctx.global_names.contains(exc_name.as_str()) {
+                if !locals.contains(exc_name.as_str())
+                    && ctx.global_names.contains(exc_name.as_str())
+                {
                     out.push(Ref {
                         target: NodeId::Global(ctx.raw_id.clone(), exc_name.clone()),
                         lazy: in_fn,
@@ -599,11 +630,23 @@ fn collect_list_item_refs(
             collect_expr_refs_with_scope(ctx, expr.as_ref(), in_fn, locals, out);
         }
         ListItem::If(if_item) => {
-            collect_expr_refs_with_scope(ctx, if_item.condition.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                if_item.condition.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+            );
             collect_list_item_refs(ctx, &if_item.then_item, in_fn, locals, out);
         }
         ListItem::For(for_item) => {
-            collect_expr_refs_with_scope(ctx, for_item.iterable.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                for_item.iterable.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+            );
             let mut inner_locals = locals.clone();
             inner_locals.insert(for_item.var.name.clone());
             collect_list_item_refs(ctx, &for_item.emit_item, in_fn, &mut inner_locals, out);
@@ -627,23 +670,26 @@ fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>) {
         }
         TypeExpr::PropertyAccess(pa) => {
             // Qualified type reference: Import.Type
-            if let TypeExpr::Var(var) = pa.expr.as_ref().as_ref() {
-                if let Some(import_id) = ctx.import_aliases.get(var.name.as_str()) {
-                    out.push(Ref {
-                        target: NodeId::TypeDecl(import_id.clone(), pa.property.name.clone()),
-                        lazy: false,
-                        span: pa.property.span(),
-                    });
-                    return;
-                }
+            if let TypeExpr::Var(var) = pa.expr.as_ref().as_ref()
+                && let Some(import_id) = ctx.import_aliases.get(var.name.as_str())
+            {
+                out.push(Ref {
+                    target: NodeId::TypeDecl(import_id.clone(), pa.property.name.clone()),
+                    lazy: false,
+                    span: pa.property.span(),
+                });
+                return;
             }
             collect_type_refs(ctx, pa.expr.as_ref().as_ref(), out);
         }
         TypeExpr::Optional(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out),
         TypeExpr::List(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out),
         TypeExpr::Fn(f) => {
-            let own_params: HashSet<&str> =
-                f.type_params.iter().map(|tp| tp.var.name.as_str()).collect();
+            let own_params: HashSet<&str> = f
+                .type_params
+                .iter()
+                .map(|tp| tp.var.name.as_str())
+                .collect();
             for param in &f.params {
                 collect_type_refs_excluding(ctx, param.as_ref(), &own_params, out);
             }
@@ -752,8 +798,8 @@ impl crate::Diag for CyclicEagerDependency {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::v2::{InMemoryPackage, StdPackage};
     use crate::v2::CompositePackageFinder;
+    use crate::v2::{InMemoryPackage, StdPackage};
 
     use super::*;
 
@@ -794,10 +840,7 @@ mod tests {
     #[tokio::test]
     async fn single_module_no_imports() {
         let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("Main.scl"),
-            b"let x = 1\nlet y = x".to_vec(),
-        );
+        files.insert(PathBuf::from("Main.scl"), b"let x = 1\nlet y = x".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -806,9 +849,18 @@ mod tests {
 
         assert!(!result.diags().has_errors());
         let asg = result.into_inner();
-        assert!(asg.module(&["Test".to_string(), "Main".to_string()]).is_some());
-        assert!(asg.global(&["Test".to_string(), "Main".to_string()], "x").is_some());
-        assert!(asg.global(&["Test".to_string(), "Main".to_string()], "y").is_some());
+        assert!(
+            asg.module(&["Test".to_string(), "Main".to_string()])
+                .is_some()
+        );
+        assert!(
+            asg.global(&["Test".to_string(), "Main".to_string()], "x")
+                .is_some()
+        );
+        assert!(
+            asg.global(&["Test".to_string(), "Main".to_string()], "y")
+                .is_some()
+        );
 
         // y depends on x.
         let edges: Vec<_> = asg
@@ -817,8 +869,11 @@ mod tests {
                 "y".into(),
             ))
             .collect();
-        assert!(edges.iter().any(|e| e.to
-            == NodeId::Global(vec!["Test".into(), "Main".into()], "x".into())));
+        assert!(
+            edges
+                .iter()
+                .any(|e| e.to == NodeId::Global(vec!["Test".into(), "Main".into()], "x".into()))
+        );
     }
 
     #[tokio::test]
@@ -828,10 +883,7 @@ mod tests {
             PathBuf::from("Main.scl"),
             b"import Test/Lib\nlet x = Lib.foo".to_vec(),
         );
-        files.insert(
-            PathBuf::from("Lib.scl"),
-            b"export let foo = 42".to_vec(),
-        );
+        files.insert(PathBuf::from("Lib.scl"), b"export let foo = 42".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -840,8 +892,14 @@ mod tests {
 
         assert!(!result.diags().has_errors());
         let asg = result.into_inner();
-        assert!(asg.module(&["Test".to_string(), "Main".to_string()]).is_some());
-        assert!(asg.module(&["Test".to_string(), "Lib".to_string()]).is_some());
+        assert!(
+            asg.module(&["Test".to_string(), "Main".to_string()])
+                .is_some()
+        );
+        assert!(
+            asg.module(&["Test".to_string(), "Lib".to_string()])
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -851,10 +909,7 @@ mod tests {
             PathBuf::from("Main.scl"),
             b"import Self/Lib\nlet x = Lib.foo".to_vec(),
         );
-        files.insert(
-            PathBuf::from("Lib.scl"),
-            b"export let foo = 42".to_vec(),
-        );
+        files.insert(PathBuf::from("Lib.scl"), b"export let foo = 42".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -864,7 +919,10 @@ mod tests {
         assert!(!result.diags().has_errors());
         let asg = result.into_inner();
         // Self/Lib should resolve to Test/Lib.
-        assert!(asg.module(&["Test".to_string(), "Lib".to_string()]).is_some());
+        assert!(
+            asg.module(&["Test".to_string(), "Lib".to_string()])
+                .is_some()
+        );
     }
 
     #[tokio::test]
@@ -940,10 +998,7 @@ mod tests {
     #[tokio::test]
     async fn eager_edge_outside_fn_body() {
         let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("Main.scl"),
-            b"let a = b\nlet b = 1".to_vec(),
-        );
+        files.insert(PathBuf::from("Main.scl"), b"let a = b\nlet b = 1".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -958,8 +1013,10 @@ mod tests {
                 "a".into(),
             ))
             .collect();
-        assert!(a_edges.iter().any(|e| !e.lazy
-            && e.to == NodeId::Global(vec!["Test".into(), "Main".into()], "b".into())));
+        assert!(
+            a_edges.iter().any(|e| !e.lazy
+                && e.to == NodeId::Global(vec!["Test".into(), "Main".into()], "b".into()))
+        );
     }
 
     // ── SCC laziness validation tests ─────────────────────────────────
@@ -967,10 +1024,7 @@ mod tests {
     #[tokio::test]
     async fn eager_cycle_produces_diagnostic() {
         let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("Main.scl"),
-            b"let a = b\nlet b = a".to_vec(),
-        );
+        files.insert(PathBuf::from("Main.scl"), b"let a = b\nlet b = a".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -1007,10 +1061,7 @@ mod tests {
     #[tokio::test]
     async fn self_referencing_eager_global_diagnostic() {
         let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("Main.scl"),
-            b"let a = a".to_vec(),
-        );
+        files.insert(PathBuf::from("Main.scl"), b"let a = a".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
@@ -1025,10 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn self_referencing_lazy_global_ok() {
         let mut files = HashMap::new();
-        files.insert(
-            PathBuf::from("Main.scl"),
-            b"let a = () => a()".to_vec(),
-        );
+        files.insert(PathBuf::from("Main.scl"), b"let a = () => a()".to_vec());
 
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);

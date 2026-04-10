@@ -34,8 +34,8 @@ mod tests {
 
     use crate::{PackageId, Value};
 
-    use super::*;
     use super::super::PackageEntity;
+    use super::*;
 
     struct TestPackage(PackageId);
 
@@ -44,10 +44,7 @@ mod tests {
         fn id(&self) -> PackageId {
             self.0.clone()
         }
-        async fn lookup(
-            &self,
-            _path: &Path,
-        ) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+        async fn lookup(&self, _path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
             Ok(None)
         }
         async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError> {
@@ -62,10 +59,7 @@ mod tests {
 
         #[async_trait::async_trait]
         impl PackageFinder for Finder {
-            async fn find(
-                &self,
-                raw_id: &[&str],
-            ) -> Result<Option<Arc<dyn Package>>, LoadError> {
+            async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
                 // Reuse the Arc<P: Package> blanket impl logic.
                 self.0.find(raw_id).await
             }
@@ -79,8 +73,7 @@ mod tests {
 
     #[tokio::test]
     async fn first_match_wins() {
-        let composite =
-            CompositePackageFinder::new(vec![finder(&["A"]), finder(&["A"])]);
+        let composite = CompositePackageFinder::new(vec![finder(&["A"]), finder(&["A"])]);
 
         let result = composite.find(&["A", "Foo"]).await.unwrap();
         assert!(result.is_some());
@@ -97,8 +90,7 @@ mod tests {
 
     #[tokio::test]
     async fn tries_finders_in_order() {
-        let composite =
-            CompositePackageFinder::new(vec![finder(&["A"]), finder(&["B"])]);
+        let composite = CompositePackageFinder::new(vec![finder(&["A"]), finder(&["B"])]);
 
         let result = composite.find(&["B", "Foo"]).await.unwrap();
         assert!(result.is_some());

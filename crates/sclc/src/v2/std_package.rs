@@ -127,7 +127,10 @@ mod tests {
         let pkg = StdPackage::new();
         let result = pkg.lookup(Path::new("Time.scl")).await.unwrap();
         assert!(result.is_some());
-        assert!(matches!(result.unwrap().as_ref(), PackageEntity::File { .. }));
+        assert!(matches!(
+            result.unwrap().as_ref(),
+            PackageEntity::File { .. }
+        ));
     }
 
     #[tokio::test]

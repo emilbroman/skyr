@@ -98,17 +98,13 @@ impl Asg {
     }
 
     pub(crate) fn add_global(&mut self, node: GlobalNode) {
-        self.globals.insert(
-            (node.raw_module_id.clone(), node.name.clone()),
-            node,
-        );
+        self.globals
+            .insert((node.raw_module_id.clone(), node.name.clone()), node);
     }
 
     pub(crate) fn add_type_decl(&mut self, node: TypeDeclNode) {
-        self.type_decls.insert(
-            (node.raw_module_id.clone(), node.name.clone()),
-            node,
-        );
+        self.type_decls
+            .insert((node.raw_module_id.clone(), node.name.clone()), node);
     }
 
     pub(crate) fn add_edge(&mut self, edge: Edge) {
@@ -171,9 +167,7 @@ impl Asg {
 
     /// Returns true if this node has an edge to itself.
     pub fn has_self_edge(&self, node: &NodeId) -> bool {
-        self.edges
-            .iter()
-            .any(|e| &e.from == node && &e.to == node)
+        self.edges.iter().any(|e| &e.from == node && &e.to == node)
     }
 
     /// Compute SCCs using Tarjan's algorithm.
@@ -301,7 +295,13 @@ mod tests {
             span: Span::default(),
             stmt: ast::LetBind {
                 doc_comment: None,
-                var: crate::Loc::new(ast::Var { name: "a".into(), cursor: None }, Span::default()),
+                var: crate::Loc::new(
+                    ast::Var {
+                        name: "a".into(),
+                        cursor: None,
+                    },
+                    Span::default(),
+                ),
                 ty: None,
                 expr: Box::new(crate::Loc::new(ast::Expr::Nil, Span::default())),
             },
@@ -313,7 +313,13 @@ mod tests {
             span: Span::default(),
             stmt: ast::LetBind {
                 doc_comment: None,
-                var: crate::Loc::new(ast::Var { name: "b".into(), cursor: None }, Span::default()),
+                var: crate::Loc::new(
+                    ast::Var {
+                        name: "b".into(),
+                        cursor: None,
+                    },
+                    Span::default(),
+                ),
                 ty: None,
                 expr: Box::new(crate::Loc::new(ast::Expr::Nil, Span::default())),
             },
@@ -344,7 +350,13 @@ mod tests {
             span: Span::default(),
             stmt: ast::LetBind {
                 doc_comment: None,
-                var: crate::Loc::new(ast::Var { name: "a".into(), cursor: None }, Span::default()),
+                var: crate::Loc::new(
+                    ast::Var {
+                        name: "a".into(),
+                        cursor: None,
+                    },
+                    Span::default(),
+                ),
                 ty: None,
                 expr: Box::new(crate::Loc::new(ast::Expr::Nil, Span::default())),
             },
@@ -356,7 +368,13 @@ mod tests {
             span: Span::default(),
             stmt: ast::LetBind {
                 doc_comment: None,
-                var: crate::Loc::new(ast::Var { name: "b".into(), cursor: None }, Span::default()),
+                var: crate::Loc::new(
+                    ast::Var {
+                        name: "b".into(),
+                        cursor: None,
+                    },
+                    Span::default(),
+                ),
                 ty: None,
                 expr: Box::new(crate::Loc::new(ast::Expr::Nil, Span::default())),
             },

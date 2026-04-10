@@ -72,8 +72,8 @@ impl<P: Package> Package for CachedPackage<P> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -90,10 +90,7 @@ mod tests {
             PackageId::from(["Test"])
         }
 
-        async fn lookup(
-            &self,
-            _path: &Path,
-        ) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+        async fn lookup(&self, _path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
             self.lookup_count.fetch_add(1, Ordering::SeqCst);
             let hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
             Ok(Some(Cow::Owned(PackageEntity::File { hash })))
@@ -145,10 +142,7 @@ mod tests {
         fn id(&self) -> PackageId {
             self.0.id()
         }
-        async fn lookup(
-            &self,
-            path: &Path,
-        ) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+        async fn lookup(&self, path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
             self.0.lookup(path).await
         }
         async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError> {

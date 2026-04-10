@@ -198,7 +198,10 @@ mod tests {
         assert!(pkg.load(Path::new("A.scl")).await.is_err());
 
         pkg.update_file(PathBuf::from("A.scl"), b"hello".to_vec());
-        assert_eq!(pkg.load(Path::new("A.scl")).await.unwrap().as_ref(), b"hello");
+        assert_eq!(
+            pkg.load(Path::new("A.scl")).await.unwrap().as_ref(),
+            b"hello"
+        );
 
         pkg.remove_file(Path::new("A.scl"));
         assert!(pkg.load(Path::new("A.scl")).await.is_err());
