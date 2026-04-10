@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    sync::Arc,
     time::Duration,
 };
 
@@ -620,7 +621,12 @@ impl Worker {
     }
 
     async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
-        let diagnosed = sclc::compile(self.client.clone()).await?;
+        let user_pkg: Arc<dyn sclc::v2::Package> = Arc::new(self.client.clone());
+        let finder = sclc::v2::build_default_finder(user_pkg);
+        let repo_qid = self.client.repo_qid();
+        let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
+
+        let diagnosed = sclc::v2::compile(finder, &entry).await?;
         self.publish_diagnostics(diagnosed.diags()).await;
 
         if diagnosed.diags().has_errors() {
@@ -632,7 +638,7 @@ impl Worker {
             });
         }
 
-        let unit = diagnosed.into_inner();
+        let asg = diagnosed.into_inner();
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();
@@ -942,7 +948,7 @@ impl Worker {
             .instrument(tracing::Span::current()),
         );
 
-        if let Err(e) = unit.eval(eval_ctx) {
+        if let Err(e) = sclc::v2::eval(&asg, eval_ctx) {
             self.log_publisher.error(format!("{e}")).await;
         }
         let outcome = effects_task.await?;
