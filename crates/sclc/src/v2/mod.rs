@@ -12,6 +12,7 @@ mod compile;
 mod composite_finder;
 #[cfg(feature = "fs")]
 mod fs_package;
+mod ide;
 mod loader;
 mod mem_package;
 mod package;
@@ -25,6 +26,7 @@ pub use compile::*;
 pub use composite_finder::*;
 #[cfg(feature = "fs")]
 pub use fs_package::*;
+pub use ide::*;
 pub use loader::*;
 pub use mem_package::*;
 pub use package::*;
