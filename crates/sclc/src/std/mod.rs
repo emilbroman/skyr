@@ -184,13 +184,17 @@ pub async fn stdlib_types()
         .await?
         .unpack(&mut diags);
 
-    let unit = crate::v2::asg_to_compilation_unit(&asg);
-    let checker = crate::TypeChecker::new(&unit);
+    let modules: HashMap<crate::ModuleId, crate::ast::FileMod> = asg
+        .modules()
+        .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+        .collect();
+    let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
+    let checker = crate::TypeChecker::from_modules(&modules, package_names);
     let std_package_id = PackageId::from([String::from("Std")]);
 
     let mut result = HashMap::new();
 
-    for (module_id, file_mod) in unit.modules() {
+    for (module_id, file_mod) in &modules {
         if module_id.package != std_package_id {
             continue;
         }

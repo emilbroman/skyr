@@ -1,12 +1,12 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    CompilationUnit, CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType,
-    RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
+    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, RecordType, Type,
+    TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -760,11 +760,13 @@ impl<'a> TypeEnv<'a> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct TypeChecker<'p> {
-    pub(crate) unit: &'p CompilationUnit,
+    /// Module map for import resolution.
+    pub(crate) modules: &'p HashMap<crate::ModuleId, ast::FileMod>,
+    /// Package names for import path splitting and IDE completions.
+    pub(crate) package_names: Vec<crate::PackageId>,
+    /// Cached directory listings for path validation and IDE completions.
+    pub(crate) children_cache: &'p HashMap<(crate::PackageId, PathBuf), Vec<crate::ChildEntry>>,
     /// Cache for resolved global expression types (keyed by expression pointer).
-    /// Avoids re-checking the same global expression multiple times within a
-    /// single type-checking pass. Diagnostics are not cached — they are only
-    /// emitted during the canonical check in `check_global_let_bind`.
     pub(crate) global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
     /// Cache for resolved import module types (keyed by FileMod pointer).
     pub(crate) import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
@@ -772,14 +774,77 @@ pub struct TypeChecker<'p> {
     pub(crate) type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
 
+/// Empty children cache used as default when no IDE context is available.
+static EMPTY_CHILDREN_CACHE: std::sync::LazyLock<
+    HashMap<(crate::PackageId, PathBuf), Vec<crate::ChildEntry>>,
+> = std::sync::LazyLock::new(HashMap::new);
+
 impl<'p> TypeChecker<'p> {
-    pub fn new(unit: &'p CompilationUnit) -> Self {
+    /// Create a TypeChecker from a module map and package names.
+    pub fn from_modules(
+        modules: &'p HashMap<crate::ModuleId, ast::FileMod>,
+        package_names: Vec<crate::PackageId>,
+    ) -> Self {
         Self {
-            unit,
+            modules,
+            package_names,
+            children_cache: &EMPTY_CHILDREN_CACHE,
             global_cache: RefCell::new(HashMap::new()),
             import_cache: RefCell::new(HashMap::new()),
             type_level_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Look up cached children for a directory within a package.
+    pub(crate) fn cached_children(
+        &self,
+        package: &crate::PackageId,
+        path: &Path,
+    ) -> Option<&[crate::ChildEntry]> {
+        self.children_cache
+            .get(&(package.clone(), path.to_path_buf()))
+            .map(Vec::as_slice)
+    }
+
+    /// Check whether a resolved path exists by consulting cached directory listings.
+    pub(crate) fn path_exists_cached(
+        &self,
+        package: &crate::PackageId,
+        resolved: &str,
+    ) -> Option<bool> {
+        let rel = resolved.strip_prefix('/')?;
+        let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
+        if components.is_empty() {
+            return Some(true);
+        }
+
+        let mut dir = PathBuf::new();
+        for (i, component) in components.iter().enumerate() {
+            let is_last = i == components.len() - 1;
+            let children = self.cached_children(package, &dir)?;
+
+            if is_last {
+                let exists = children.iter().any(|entry| entry.name() == *component);
+                return Some(exists);
+            }
+
+            let is_dir = children.iter().any(
+                |entry| matches!(entry, crate::ChildEntry::Directory(name) if name == component),
+            );
+            if !is_dir {
+                let exists_as_non_dir = children.iter().any(
+                    |entry| matches!(entry, crate::ChildEntry::File(name) if name == component),
+                );
+                if exists_as_non_dir {
+                    return Some(false);
+                }
+                return None;
+            }
+
+            dir.push(component);
+        }
+
+        None
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -819,17 +884,6 @@ impl<'p> TypeChecker<'p> {
     // ═══════════════════════════════════════════════════════════════════════════
     // Module-level checking
     // ═══════════════════════════════════════════════════════════════════════════
-
-    pub fn check_program(&self) -> Result<Diagnosed<()>, TypeCheckError> {
-        let mut diags = DiagList::new();
-
-        for (module_id, file_mod) in self.unit.modules() {
-            let env = TypeEnv::new().with_module_id(module_id);
-            let _ = self.check_file_mod(&env, file_mod)?.unpack(&mut diags);
-        }
-
-        Ok(Diagnosed::new((), diags))
-    }
 
     #[inline(never)]
     pub fn check_file_mod(
@@ -1018,7 +1072,7 @@ impl<'p> TypeChecker<'p> {
     /// Build the type-level environment for a module:
     /// 1. Populate import type-level bindings.
     /// 2. Resolve local type defs in SCC-based topological order.
-    fn build_module_type_env(
+    pub(crate) fn build_module_type_env(
         &self,
         env: &mut TypeEnv<'_>,
         file_mod: &ast::FileMod,
@@ -1709,7 +1763,7 @@ impl<'p> TypeChecker<'p> {
     /// Check a mutually recursive SCC group where all bindings are function literals.
     /// Creates type variables for all bindings, checks all bodies with all variables
     /// in scope, then solves the combined constraint system.
-    fn check_recursive_scc_group(
+    pub(crate) fn check_recursive_scc_group(
         &self,
         env: &TypeEnv<'_>,
         scc: &[crate::dep_graph::BindingId],
@@ -1911,7 +1965,7 @@ impl<'p> TypeChecker<'p> {
         Some(crate::ModuleId::new(package, path))
     }
 
-    fn find_imports<'a>(
+    pub(crate) fn find_imports<'a>(
         &'a self,
         file_mod: &'a ast::FileMod,
         current_package: &crate::PackageId,
@@ -1966,12 +2020,12 @@ impl<'p> TypeChecker<'p> {
         if module_id.path.is_empty() {
             return None;
         }
-        self.unit.module(&module_id)
+        self.modules.get(&module_id)
     }
 
     fn package_name_for_import(&self, segments: &[String]) -> Option<crate::PackageId> {
-        self.unit
-            .package_names()
+        self.package_names
+            .iter()
             .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
             .cloned()
@@ -1991,7 +2045,7 @@ impl<'p> TypeChecker<'p> {
 
             if i == 0 {
                 // First segment: suggest package names and "Self"
-                for package_name in self.unit.package_names() {
+                for package_name in &self.package_names {
                     if let Some(first) = package_name.as_slice().first()
                         && first.starts_with(prefix)
                     {
@@ -2024,10 +2078,7 @@ impl<'p> TypeChecker<'p> {
                     dir_path.push(seg);
                 }
 
-                if let Some(children) = self
-                    .unit
-                    .cached_children_for_import(&package_name, &dir_path)
-                {
+                if let Some(children) = self.cached_children(&package_name, &dir_path) {
                     for entry in children {
                         match entry {
                             crate::ChildEntry::File(name) => {
@@ -2093,10 +2144,7 @@ impl<'p> TypeChecker<'p> {
 
             let dir_path = PathBuf::from(components.join("/"));
 
-            if let Some(children) = self
-                .unit
-                .cached_children_for_path(&module_id.package, &dir_path)
-            {
+            if let Some(children) = self.cached_children(&module_id.package, &dir_path) {
                 for entry in children {
                     match entry {
                         crate::ChildEntry::File(name) => {
@@ -2126,10 +2174,11 @@ impl<'p> TypeChecker<'p> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{TypeChecker, next_type_id};
     use crate::{
-        CompilationUnit, DictType, FnType, Loc, ModuleId, Position, RecordType, Span, Type,
-        TypeKind,
+        DictType, FnType, Loc, ModuleId, Position, RecordType, Span, Type, TypeKind,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -2137,9 +2186,8 @@ mod tests {
     };
 
     fn checker() -> TypeChecker<'static> {
-        let unit = Box::new(CompilationUnit::new());
-        let unit = Box::leak(unit);
-        TypeChecker::new(unit)
+        let modules = Box::leak(Box::new(HashMap::new()));
+        TypeChecker::from_modules(modules, Vec::new())
     }
 
     fn loc<T>(value: T, span: Span) -> Loc<T> {
@@ -2952,9 +3000,8 @@ mod tests {
     fn check_module(source: &str) -> crate::Diagnosed<Type> {
         let module_id = ModuleId::default();
         let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
-        let unit = Box::new(CompilationUnit::new());
-        let unit: &'static CompilationUnit = Box::leak(unit);
-        let checker = TypeChecker::new(unit);
+        let modules = Box::leak(Box::new(HashMap::new()));
+        let checker = TypeChecker::from_modules(modules, Vec::new());
         let env = super::TypeEnv::new().with_module_id(&module_id);
         checker
             .check_file_mod(&env, &file_mod)
@@ -3045,9 +3092,8 @@ mod tests {
             &module_id,
         )
         .into_inner();
-        let unit = Box::new(CompilationUnit::new());
-        let unit: &'static CompilationUnit = Box::leak(unit);
-        let checker = TypeChecker::new(unit);
+        let modules = Box::leak(Box::new(HashMap::new()));
+        let checker = TypeChecker::from_modules(modules, Vec::new());
         let env = super::TypeEnv::new().with_module_id(&module_id);
         let diagnosed = checker.type_level_exports(&env, &file_mod);
         assert!(!diagnosed.diags().has_errors());

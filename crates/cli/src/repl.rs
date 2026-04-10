@@ -73,7 +73,8 @@ impl completion::Completer for ReplHelper {
 
         // Type-check the statement to populate completion candidates.
         let type_env = state.type_env(&module_id);
-        let checker = sclc::TypeChecker::new(state.unit());
+        let checker =
+            sclc::TypeChecker::from_modules(state.modules(), state.package_names().to_vec());
         let _ = checker.check_stmt(&type_env, statement);
 
         // Extract candidates from the cursor.
@@ -392,8 +393,6 @@ fn report_repl_error(err: &sclc::ReplError) {
         }
         sclc::ReplError::TypeCheck(e) => println!("{e}"),
         sclc::ReplError::Eval(e) => println!("{e}"),
-        sclc::ReplError::Resolve(e) => println!("{e}"),
-        sclc::ReplError::ResolveImport(e) => println!("{e}"),
     }
 }
 

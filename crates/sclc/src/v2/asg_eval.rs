@@ -33,11 +33,8 @@ impl<'a> AsgEvaluator<'a> {
 
     /// Evaluate the entire program by walking the ASG's SCC ordering.
     pub fn eval(self) -> Result<EvalResults, EvalError> {
-        // The Eval struct is needed for expression-level evaluation (eval_expr,
-        // eval_call, extern resolution, resource effects, etc.). We create a
-        // CompilationUnit for it, but bypass its module-level orchestration.
-        let unit = super::compile::asg_to_compilation_unit(self.asg);
-        let evaluator = Eval::from_ctx(&unit, self.ctx);
+        let externs = collect_externs(self.asg);
+        let evaluator = Eval::from_externs(externs, self.ctx);
 
         let mut state = EvalState {
             import_maps: build_import_maps(self.asg),
@@ -470,6 +467,15 @@ fn add_evaluated_globals<'a>(
         }
     }
     env
+}
+
+/// Collect extern values from all packages registered in the ASG.
+fn collect_externs(asg: &Asg) -> HashMap<String, Value> {
+    let mut externs = HashMap::new();
+    for pkg in asg.packages().values() {
+        pkg.register_externs(&mut externs);
+    }
+    externs
 }
 
 /// Find a LetBind by name in a module's statements.

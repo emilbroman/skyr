@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CompilationUnit, DiagList, Diagnosed, EvalCtx, Value};
+use crate::{DiagList, Diagnosed, EvalCtx};
 
 use super::{
     Asg, CompositePackageFinder, LoadError, Loader, Package, PackageFinder, StdPackage,
@@ -82,37 +81,9 @@ fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
     Arc::new(PkgFinder(pkg))
 }
 
-/// Convert an [`Asg`] into a [`CompilationUnit`] by extracting the modules,
-/// externs, and path hashes.
-///
-/// This is a transitional bridge used by `AsgChecker`, `AsgEvaluator`, and
-/// the v2 IDE module while expression-level processing still delegates to the
-/// existing `TypeChecker` and `Eval`.
-pub fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
-    let mut unit = CompilationUnit::new();
-
-    // Register package names so split_import_segments works.
-    for pkg_id in asg.packages().keys() {
-        unit.register_package_name(pkg_id.clone());
-    }
-
-    // Populate modules.
-    for module_node in asg.modules() {
-        unit.insert_module(module_node.module_id.clone(), module_node.file_mod.clone());
-    }
-
-    // Populate externs from all packages.
-    let mut externs: HashMap<String, Value> = HashMap::new();
-    for pkg in asg.packages().values() {
-        pkg.register_externs(&mut externs);
-    }
-    unit.set_externs(externs);
-
-    unit
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use super::*;

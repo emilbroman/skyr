@@ -43,7 +43,6 @@ type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, 
 pub struct EvalEnv<'a> {
     pub(crate) module_id: Option<&'a crate::ModuleId>,
     globals: Option<&'a GlobalsMap<'a>>,
-    imports: Option<&'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>>,
     locals: HashMap<&'a str, TrackedValue>,
     /// Pre-evaluated globals (e.g., mutually recursive function groups).
     /// Checked before the lazy globals path in eval_var_name.
@@ -62,7 +61,6 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: None,
             globals: None,
-            imports: None,
             locals: HashMap::new(),
             precomputed: HashMap::new(),
             stack: None,
@@ -73,7 +71,6 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
-            imports: self.imports,
             locals: self.locals.clone(),
             precomputed: self.precomputed.clone(),
             stack: self.stack,
@@ -84,21 +81,6 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: Some(globals),
-            imports: self.imports,
-            locals: HashMap::new(),
-            precomputed: self.precomputed.clone(),
-            stack: self.stack,
-        }
-    }
-
-    pub fn with_imports(
-        &self,
-        imports: &'a HashMap<&'a str, (crate::ModuleId, &'a ast::FileMod)>,
-    ) -> Self {
-        Self {
-            module_id: self.module_id,
-            globals: self.globals,
-            imports: Some(imports),
             locals: HashMap::new(),
             precomputed: self.precomputed.clone(),
             stack: self.stack,
@@ -109,7 +91,6 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: Some(module_id),
             globals: self.globals,
-            imports: self.imports,
             locals: self.locals.clone(),
             precomputed: self.precomputed.clone(),
             stack: self.stack,
@@ -132,7 +113,6 @@ impl<'a> EvalEnv<'a> {
         Self {
             module_id: self.module_id,
             globals: self.globals,
-            imports: self.imports,
             locals: HashMap::new(),
             precomputed: self.precomputed.clone(),
             stack: self.stack,
@@ -168,12 +148,6 @@ impl<'a> EvalEnv<'a> {
         self.globals
             .and_then(|globals| globals.get(name))
             .map(|(_, expr, _)| *expr)
-    }
-
-    pub fn lookup_import(&self, name: &str) -> Option<(crate::ModuleId, &'a ast::FileMod)> {
-        self.imports
-            .and_then(|imports| imports.get(name))
-            .map(|(module_id, file_mod)| (module_id.clone(), *file_mod))
     }
 
     pub fn module_id(&self) -> Result<crate::ModuleId, EvalError> {
@@ -253,9 +227,12 @@ impl FnEnv {
 }
 
 pub struct Eval<'p> {
-    pub(crate) unit: &'p crate::CompilationUnit,
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
+    /// Git object hashes for resolved file paths (used by `path()` expressions).
+    pub(crate) path_hashes: HashMap<String, gix_hash::ObjectId>,
+    /// Marker to keep the lifetime parameter used by callers.
+    _phantom: std::marker::PhantomData<&'p ()>,
 }
 
 /// Resource effects emitted during evaluation.
@@ -615,22 +592,19 @@ pub(crate) fn with_dependencies(value: Value, dependencies: BTreeSet<ResourceId>
 }
 
 impl<'p> Eval<'p> {
-    pub fn new(
-        unit: &'p crate::CompilationUnit,
-        effects: mpsc::UnboundedSender<Effect>,
-        namespace: impl Into<String>,
-    ) -> Self {
-        Self::from_ctx(unit, EvalCtx::new(effects, namespace))
-    }
-
-    pub fn from_ctx(unit: &'p crate::CompilationUnit, ctx: EvalCtx) -> Self {
+    /// Create an `Eval` from pre-collected externs and an evaluation context.
+    ///
+    /// Standard library externs are registered automatically; `externs` should
+    /// contain any additional (package-provided) extern values.
+    pub fn from_externs(externs: HashMap<String, Value>, ctx: EvalCtx) -> Self {
         let mut eval = Self {
-            unit,
             ctx,
             externs: HashMap::new(),
+            path_hashes: HashMap::new(),
+            _phantom: std::marker::PhantomData,
         };
         crate::std::register_std_externs(&mut eval);
-        eval.externs.extend(unit.externs().clone());
+        eval.externs.extend(externs);
         eval
     }
 
@@ -999,10 +973,6 @@ impl<'p> Eval<'p> {
             }
             return self.eval_expr(&global_env, global_expr);
         }
-        if let Some((target_module_id, import_file_mod)) = env.lookup_import(name) {
-            let import_env = EvalEnv::new().with_module_id(&target_module_id);
-            return self.eval_file_mod(&import_env, import_file_mod);
-        }
         Ok(tracked(Value::Nil))
     }
 
@@ -1026,116 +996,11 @@ impl<'p> Eval<'p> {
             }
         }
     }
-
-    pub fn eval_file_mod(
-        &self,
-        env: &EvalEnv<'_>,
-        file_mod: &ast::FileMod,
-    ) -> Result<TrackedValue, EvalError> {
-        let globals = file_mod.find_globals();
-        let current_package = env.module_id.map(|m| m.package.clone()).unwrap_or_default();
-        let imports = self.unit.find_imports(file_mod, &current_package);
-        let mut env = env.with_globals(&globals).with_imports(&imports);
-
-        // Build intra-module dependency graph and compute SCCs for eval ordering
-        let dep_graph = crate::dep_graph::build_intra_module_value_dep_graph(&globals);
-        let sccs = dep_graph.compute_sccs();
-
-        // Pre-evaluate mutually recursive function SCCs and cache them as locals
-        for scc in &sccs {
-            if scc.len() > 1 {
-                // Multi-binding SCC: build mutually recursive FnValues
-                let all_fns = scc.iter().all(|bid| {
-                    let (_, expr, _) = globals[bid.name.as_str()];
-                    matches!(expr.as_ref(), crate::ast::Expr::Fn(_))
-                });
-                if all_fns {
-                    let group = self.build_recursive_fn_group(&env, scc, &globals)?;
-                    for (name, fn_val) in group {
-                        env = env.with_precomputed(name, TrackedValue::new(Value::Fn(fn_val)));
-                    }
-                }
-            }
-        }
-
-        let mut exports = Record::default();
-        let mut dependencies = BTreeSet::new();
-
-        for statement in &file_mod.statements {
-            if let Some((name, value)) = self.eval_stmt(&env, statement)? {
-                dependencies.extend(value.dependencies.clone());
-                exports.insert(name, value.value);
-            }
-        }
-
-        Ok(with_dependencies(Value::Record(exports), dependencies))
-    }
-
-    /// Build FnValues for a mutually recursive group of function globals.
-    fn build_recursive_fn_group(
-        &self,
-        env: &EvalEnv<'_>,
-        scc: &[crate::dep_graph::BindingId],
-        globals: &HashMap<&str, (crate::Span, &crate::Loc<crate::ast::Expr>, Option<&str>)>,
-    ) -> Result<Vec<(String, crate::FnValue)>, EvalError> {
-        let fn_module_id = env.module_id()?;
-        let scc_names: std::collections::HashSet<&str> =
-            scc.iter().map(|bid| bid.name.as_str()).collect();
-
-        // First pass: build FnValues without recursive_group
-        let mut preliminary: Vec<(String, crate::FnValue)> = Vec::new();
-        for bid in scc {
-            let (_, global_expr, _) = globals[bid.name.as_str()];
-            let crate::ast::Expr::Fn(fn_expr) = global_expr.as_ref() else {
-                unreachable!("all SCC members validated as functions");
-            };
-            let free_vars = global_expr.as_ref().free_vars();
-            let parameters: Vec<String> =
-                fn_expr.params.iter().map(|p| p.var.name.clone()).collect();
-            let body = fn_expr
-                .body
-                .as_ref()
-                .map(|b| *b.clone())
-                .unwrap_or_else(|| crate::Loc::new(crate::ast::Expr::Nil, crate::Span::default()));
-
-            // Evaluate captures except group members
-            let mut captures = HashMap::new();
-            for fv in &free_vars {
-                if !scc_names.contains(fv) {
-                    captures.insert(fv.to_string(), self.eval_var_name(env, fv)?);
-                }
-            }
-
-            preliminary.push((
-                bid.name.clone(),
-                crate::FnValue {
-                    env: FnEnv {
-                        module_id: fn_module_id.clone(),
-                        captures,
-                        parameters,
-                        self_name: None,
-                        recursive_group: None,
-                    },
-                    body,
-                },
-            ));
-        }
-
-        // Second pass: create a shared Rc group and set it on all members.
-        // The group stores the base FnValues (without recursive_group set).
-        // as_eval_env propagates the shared group to each member at call time,
-        // so recursive calls at any depth correctly resolve all siblings.
-        let shared_group = std::sync::Arc::new(preliminary.clone());
-        for (_, fn_val) in &mut preliminary {
-            fn_val.env.recursive_group = Some(shared_group.clone());
-        }
-
-        Ok(preliminary)
-    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
     use tokio::sync::mpsc;
 
     use super::{Effect, Eval, EvalEnv};
@@ -1159,8 +1024,7 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1182,8 +1046,7 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1228,8 +1091,7 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1275,8 +1137,7 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1319,8 +1180,8 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let mut eval =
+            Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
@@ -1367,8 +1228,8 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let unit = crate::CompilationUnit::new();
-        let mut eval = Eval::new(&unit, tx, String::from("test/namespace"));
+        let mut eval =
+            Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),

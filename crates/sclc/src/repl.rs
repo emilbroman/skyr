@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 
 use crate::v2::{Asg, Loader, PackageFinder, build_default_finder};
 use crate::{
-    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, PackageId,
-    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError, ModuleId, PackageId,
+    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, Value, ast,
 };
 
 #[derive(Clone)]
@@ -15,8 +15,10 @@ pub struct Repl {
     finder: Arc<dyn PackageFinder>,
     /// Cached ASG built from all resolved imports so far.
     cached_asg: Asg,
-    /// Cached CompilationUnit derived from the ASG (rebuilt when imports change).
-    unit: CompilationUnit,
+    /// Module map derived from the ASG (rebuilt when imports change).
+    modules: HashMap<ModuleId, ast::FileMod>,
+    /// Package names from the ASG.
+    package_names: Vec<PackageId>,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
@@ -37,8 +39,6 @@ pub enum ReplError {
     Diagnostics(DiagList),
     TypeCheck(TypeCheckError),
     Eval(EvalError),
-    Resolve(crate::ResolveError),
-    ResolveImport(crate::ResolveImportError),
 }
 
 impl From<TypeCheckError> for ReplError {
@@ -53,18 +53,6 @@ impl From<EvalError> for ReplError {
     }
 }
 
-impl From<crate::ResolveImportError> for ReplError {
-    fn from(err: crate::ResolveImportError) -> Self {
-        ReplError::ResolveImport(err)
-    }
-}
-
-impl From<crate::ResolveError> for ReplError {
-    fn from(err: crate::ResolveError) -> Self {
-        ReplError::Resolve(err)
-    }
-}
-
 impl Repl {
     pub fn new(
         finder: Arc<dyn PackageFinder>,
@@ -76,7 +64,8 @@ impl Repl {
             line_number: 0,
             finder,
             cached_asg: Asg::new(),
-            unit: CompilationUnit::new(),
+            modules: HashMap::new(),
+            package_names: Vec::new(),
             effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
@@ -86,8 +75,14 @@ impl Repl {
         }
     }
 
-    pub fn unit(&self) -> &CompilationUnit {
-        &self.unit
+    /// Get a reference to the module map (for creating TypeCheckers).
+    pub fn modules(&self) -> &HashMap<ModuleId, ast::FileMod> {
+        &self.modules
+    }
+
+    /// Get the package names.
+    pub fn package_names(&self) -> &[PackageId] {
+        &self.package_names
     }
 
     pub fn effects_tx(&self) -> &mpsc::UnboundedSender<Effect> {
@@ -199,7 +194,7 @@ impl Repl {
         // Determine the module ID for the import.
         let import_path = self.find_module_id(&resolved_segments);
 
-        let Some(file_mod) = self.unit.module(&import_path).cloned() else {
+        let Some(file_mod) = self.modules.get(&import_path).cloned() else {
             let mut diags = DiagList::new();
             diags.push(invalid_import_diag(
                 source_module_id.clone(),
@@ -210,7 +205,7 @@ impl Repl {
         };
 
         let mut diags = DiagList::new();
-        let checker = TypeChecker::new(&self.unit);
+        let checker = TypeChecker::from_modules(&self.modules, self.package_names.clone());
         let type_env = TypeEnv::new().with_module_id(&import_path);
         let ty = checker
             .check_file_mod(&type_env, &file_mod)?
@@ -223,9 +218,13 @@ impl Repl {
             return Err(ReplError::Diagnostics(diags));
         }
 
-        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
+        let externs = self.collect_externs();
+        let eval = Eval::from_externs(
+            externs,
+            EvalCtx::new(self.effects_tx.clone(), &self.namespace),
+        );
         let eval_env = EvalEnv::new().with_module_id(&import_path);
-        let value = eval.eval_file_mod(&eval_env, &file_mod)?;
+        let value = Self::eval_file_mod_via_asg(&eval, &eval_env, &file_mod)?;
 
         self.register_import(alias, ty, value, type_exports);
         Ok(ReplOutcome::Import {
@@ -233,7 +232,7 @@ impl Repl {
         })
     }
 
-    /// Rebuild the cached ASG and CompilationUnit from all accumulated import entries.
+    /// Rebuild the cached ASG and module map from all accumulated import entries.
     async fn rebuild_asg(&mut self) -> Result<(), ReplError> {
         let mut loader = Loader::new(Arc::clone(&self.finder));
 
@@ -248,7 +247,12 @@ impl Repl {
         let diagnosed = loader.finish();
         let mut diags = DiagList::new();
         self.cached_asg = diagnosed.unpack(&mut diags);
-        self.unit = crate::v2::asg_to_compilation_unit(&self.cached_asg);
+        self.modules = self
+            .cached_asg
+            .modules()
+            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .collect();
+        self.package_names = self.cached_asg.packages().keys().cloned().collect();
 
         if diags.has_errors() {
             return Err(ReplError::Diagnostics(diags));
@@ -302,7 +306,11 @@ impl Repl {
         module_id: &ModuleId,
     ) -> Result<ReplOutcome, ReplError> {
         let type_env = self.type_env(module_id);
-        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
+        let externs = self.collect_externs();
+        let eval = Eval::from_externs(
+            externs,
+            EvalCtx::new(self.effects_tx.clone(), &self.namespace),
+        );
         let eval_env = self.eval_env(module_id);
 
         match statement {
@@ -310,7 +318,7 @@ impl Repl {
                 panic!("imports must be handled by process_import, not process_statement")
             }
             crate::ast::ModStmt::Let(let_bind) | crate::ast::ModStmt::Export(let_bind) => {
-                let checker = TypeChecker::new(&self.unit);
+                let checker = TypeChecker::from_modules(&self.modules, self.package_names.clone());
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let ty = check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
@@ -319,7 +327,7 @@ impl Repl {
                 Ok(ReplOutcome::Binding { name, ty })
             }
             crate::ast::ModStmt::Expr(expr) => {
-                let checker = TypeChecker::new(&self.unit);
+                let checker = TypeChecker::from_modules(&self.modules, self.package_names.clone());
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
                 check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, expr)?;
@@ -327,7 +335,7 @@ impl Repl {
             }
             crate::ast::ModStmt::TypeDef(type_def)
             | crate::ast::ModStmt::ExportTypeDef(type_def) => {
-                let checker = TypeChecker::new(&self.unit);
+                let checker = TypeChecker::from_modules(&self.modules, self.package_names.clone());
                 let diagnosed = checker.resolve_type_def(&type_env, type_def);
                 let ty = check_diagnosed(diagnosed)?;
                 let name = type_def.var.name.clone();
@@ -335,6 +343,122 @@ impl Repl {
                 Ok(ReplOutcome::TypeDef { name })
             }
         }
+    }
+
+    /// Collect extern values from all packages in the cached ASG.
+    fn collect_externs(&self) -> std::collections::HashMap<String, Value> {
+        let mut externs = std::collections::HashMap::new();
+        for pkg in self.cached_asg.packages().values() {
+            pkg.register_externs(&mut externs);
+        }
+        externs
+    }
+
+    /// Evaluate a file module by running each statement, collecting exports.
+    ///
+    /// This replaces the removed `Eval::eval_file_mod` for the REPL's import
+    /// evaluation path. It processes statements sequentially without import
+    /// resolution (imports are handled by the ASG-level evaluator in production;
+    /// the REPL evaluates one module at a time).
+    fn eval_file_mod_via_asg(
+        eval: &Eval<'_>,
+        env: &EvalEnv<'_>,
+        file_mod: &crate::ast::FileMod,
+    ) -> Result<TrackedValue, EvalError> {
+        use std::collections::BTreeSet;
+        let globals = file_mod.find_globals();
+        let mut env = env.with_globals(&globals);
+
+        // Build intra-module dep graph and compute SCCs for eval ordering.
+        let dep_graph = crate::dep_graph::build_intra_module_value_dep_graph(&globals);
+        let sccs = dep_graph.compute_sccs();
+
+        // Pre-evaluate mutually recursive function SCCs.
+        for scc in &sccs {
+            if scc.len() > 1 {
+                let all_fns = scc.iter().all(|bid| {
+                    let (_, expr, _) = globals[bid.name.as_str()];
+                    matches!(expr.as_ref(), crate::ast::Expr::Fn(_))
+                });
+                if all_fns {
+                    let group = Self::build_recursive_fn_group(eval, &env, scc, &globals)?;
+                    for (name, fn_val) in group {
+                        env = env.with_precomputed(name, TrackedValue::new(Value::Fn(fn_val)));
+                    }
+                }
+            }
+        }
+
+        let mut exports = crate::Record::default();
+        let mut dependencies = BTreeSet::new();
+        for statement in &file_mod.statements {
+            if let Some((name, value)) = eval.eval_stmt(&env, statement)? {
+                dependencies.extend(value.dependencies.clone());
+                exports.insert(name, value.value);
+            }
+        }
+        Ok(crate::eval::with_dependencies(
+            Value::Record(exports),
+            dependencies,
+        ))
+    }
+
+    /// Build FnValues for a mutually recursive group of function globals.
+    fn build_recursive_fn_group(
+        eval: &Eval<'_>,
+        env: &EvalEnv<'_>,
+        scc: &[crate::dep_graph::BindingId],
+        globals: &std::collections::HashMap<
+            &str,
+            (crate::Span, &crate::Loc<crate::ast::Expr>, Option<&str>),
+        >,
+    ) -> Result<Vec<(String, crate::FnValue)>, EvalError> {
+        use std::collections::HashSet;
+        let fn_module_id = env.module_id()?;
+        let scc_names: HashSet<&str> = scc.iter().map(|bid| bid.name.as_str()).collect();
+
+        let mut preliminary: Vec<(String, crate::FnValue)> = Vec::new();
+        for bid in scc {
+            let (_, global_expr, _) = globals[bid.name.as_str()];
+            let crate::ast::Expr::Fn(fn_expr) = global_expr.as_ref() else {
+                unreachable!("all SCC members validated as functions");
+            };
+            let free_vars = global_expr.as_ref().free_vars();
+            let parameters: Vec<String> =
+                fn_expr.params.iter().map(|p| p.var.name.clone()).collect();
+            let body = fn_expr
+                .body
+                .as_ref()
+                .map(|b| *b.clone())
+                .unwrap_or_else(|| crate::Loc::new(crate::ast::Expr::Nil, crate::Span::default()));
+
+            let mut captures = std::collections::HashMap::new();
+            for fv in &free_vars {
+                if !scc_names.contains(fv) {
+                    captures.insert(fv.to_string(), eval.eval_var_name(env, fv)?);
+                }
+            }
+
+            preliminary.push((
+                bid.name.clone(),
+                crate::FnValue {
+                    env: crate::FnEnv {
+                        module_id: fn_module_id.clone(),
+                        captures,
+                        parameters,
+                        self_name: None,
+                        recursive_group: None,
+                    },
+                    body,
+                },
+            ));
+        }
+
+        let shared_group = std::sync::Arc::new(preliminary.clone());
+        for (_, fn_val) in &mut preliminary {
+            fn_val.env.recursive_group = Some(shared_group.clone());
+        }
+        Ok(preliminary)
     }
 
     fn register_import(

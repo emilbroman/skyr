@@ -1,9 +1,7 @@
-/// The v2 compiler pipeline.
+/// The v2 compiler pipeline: Loader → ASG → AsgChecker → AsgEvaluator.
 ///
-/// This module provides a redesigned Loader → Checker → Evaluator pipeline
-/// that replaces the `CompilationUnit`-centric architecture. Shared types
-/// (`ast`, `loc`, `diag`, `ty`, `value`, etc.) are imported from the parent
-/// crate; only the orchestration layer is new.
+/// Shared types (`ast`, `loc`, `diag`, `ty`, `value`, etc.) are imported
+/// from the parent crate; only the orchestration layer is here.
 mod asg;
 mod asg_eval;
 mod cached_package;

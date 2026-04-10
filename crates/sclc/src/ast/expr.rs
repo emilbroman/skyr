@@ -191,11 +191,7 @@ impl Expr {
                     // `path_exists_cached` returns None when the parent directory
                     // hasn't been cached — in that case we skip validation rather
                     // than emit a false positive.
-                    if checker
-                        .unit
-                        .path_exists_cached(&module_id.package, &resolved)
-                        == Some(false)
-                    {
+                    if checker.path_exists_cached(&module_id.package, &resolved) == Some(false) {
                         diags.push(crate::InvalidPath {
                             module_id,
                             resolved_path: resolved,
@@ -268,8 +264,8 @@ impl Expr {
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
                 let hash = evaluator
-                    .unit
-                    .path_hash(&resolved)
+                    .path_hashes
+                    .get(&resolved)
                     .copied()
                     .unwrap_or_else(|| gix_hash::ObjectId::null(gix_hash::Kind::Sha1));
                 Ok(crate::eval::tracked(Value::Path(crate::PathValue {

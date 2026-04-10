@@ -365,8 +365,6 @@ fn format_repl_error(err: &sclc::ReplError) -> String {
         sclc::ReplError::Diagnostics(diags) => collect_diagnostics(diags).join("\n"),
         sclc::ReplError::TypeCheck(e) => e.to_string(),
         sclc::ReplError::Eval(e) => e.to_string(),
-        sclc::ReplError::Resolve(e) => e.to_string(),
-        sclc::ReplError::ResolveImport(e) => e.to_string(),
     }
 }
 
