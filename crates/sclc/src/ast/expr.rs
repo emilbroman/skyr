@@ -251,11 +251,12 @@ impl Expr {
             Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
-                let hash = evaluator
-                    .path_hashes
-                    .get(&resolved)
-                    .copied()
-                    .unwrap_or_else(|| gix_hash::ObjectId::null(gix_hash::Kind::Sha1));
+                let package_id = env
+                    .module_id
+                    .map(|m| &m.package)
+                    .cloned()
+                    .unwrap_or_default();
+                let hash = evaluator.resolve_path_hash(&resolved, &package_id);
                 Ok(crate::eval::tracked(Value::Path(crate::PathValue {
                     path: resolved,
                     hash,

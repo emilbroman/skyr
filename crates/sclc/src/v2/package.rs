@@ -32,6 +32,16 @@ pub enum DirChildKind {
     Dir,
 }
 
+impl PackageEntity {
+    /// Returns the git hash of this entity.
+    pub fn hash(&self) -> gix_hash::ObjectId {
+        match self {
+            PackageEntity::File { hash } => *hash,
+            PackageEntity::Dir { hash, .. } => *hash,
+        }
+    }
+}
+
 /// Errors that can occur when loading from a [`Package`].
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {

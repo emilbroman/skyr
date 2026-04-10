@@ -51,7 +51,8 @@ impl<'a> AsgEvaluator<'a> {
     /// Evaluate the entire program by walking the ASG's SCC ordering.
     pub fn eval(self) -> Result<(EvalResults, GlobalEvalEnv), EvalError> {
         let externs = collect_externs(self.asg);
-        let evaluator = Eval::from_externs(externs, self.ctx);
+        let packages = Arc::new(self.asg.packages().clone());
+        let evaluator = Eval::from_externs(externs, self.ctx).with_packages(packages);
 
         let mut global_env = if let Some(mut env) = self.initial_env {
             // Merge import maps from the new ASG into the existing env.

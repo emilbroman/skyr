@@ -1,5 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -315,8 +315,8 @@ impl FnEnv {
 pub struct Eval<'p> {
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
-    /// Git object hashes for resolved file paths (used by `path()` expressions).
-    pub(crate) path_hashes: HashMap<String, gix_hash::ObjectId>,
+    /// Package map for on-demand path hash resolution at runtime.
+    pub(crate) packages: Option<Arc<HashMap<crate::PackageId, Arc<dyn crate::v2::Package>>>>,
     /// Marker to keep the lifetime parameter used by callers.
     _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -686,12 +686,63 @@ impl<'p> Eval<'p> {
         let mut eval = Self {
             ctx,
             externs: HashMap::new(),
-            path_hashes: HashMap::new(),
+            packages: None,
             _phantom: std::marker::PhantomData,
         };
         crate::std::register_std_externs(&mut eval);
         eval.externs.extend(externs);
         eval
+    }
+
+    /// Set the package map for on-demand path hash resolution.
+    pub fn with_packages(
+        mut self,
+        packages: Arc<HashMap<crate::PackageId, Arc<dyn crate::v2::Package>>>,
+    ) -> Self {
+        self.packages = Some(packages);
+        self
+    }
+
+    /// Resolve a path expression hash on-demand by calling `Package::lookup`.
+    ///
+    /// Uses `tokio::task::block_in_place` to bridge the async package API
+    /// into the synchronous evaluator. Returns a null hash when no packages
+    /// are available or the path cannot be resolved.
+    pub(crate) fn resolve_path_hash(
+        &self,
+        resolved_path: &str,
+        package_id: &crate::PackageId,
+    ) -> gix_hash::ObjectId {
+        let null = || gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+        let Some(packages) = &self.packages else {
+            return null();
+        };
+        let Some(package) = packages.get(package_id) else {
+            return null();
+        };
+        let rel = resolved_path.strip_prefix('/').unwrap_or(resolved_path);
+        if rel.is_empty() {
+            return null();
+        }
+        let path = std::path::Path::new(rel);
+        let package = Arc::clone(package);
+
+        // Bridge async Package::lookup into the sync evaluator.
+        // block_in_place requires rt-multi-thread (gated behind "runtime" feature).
+        #[cfg(feature = "runtime")]
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| {
+                handle.block_on(async { package.lookup(path).await })
+            }),
+            Err(_) => return null(),
+        };
+        #[cfg(not(feature = "runtime"))]
+        return null();
+
+        match result {
+            Ok(Some(entity)) => entity.hash(),
+            _ => null(),
+        }
     }
 
     /// Register an extern value under the given name.

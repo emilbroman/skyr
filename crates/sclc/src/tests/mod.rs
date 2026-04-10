@@ -383,7 +383,7 @@ async fn run_test_case(dir_name: &str) {
 macro_rules! test_case {
     ($name:ident) => {
         #[allow(non_snake_case)]
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
         async fn $name() {
             run_test_case(stringify!($name)).await;
         }
