@@ -510,10 +510,10 @@ test_case!(DiagNamedRecordInFnType);
 test_case!(DiagUntypedParam);
 test_case!(UntypedParamCheck);
 
-// Path validation — skipped until path hash preloading is implemented in the v2 pipeline.
-// test_case!(PathValid);
-// test_case!(PathInvalid);
-// test_case!(PathTraverseFile);
+// Path validation
+test_case!(PathValid);
+test_case!(PathInvalid);
+test_case!(PathTraverseFile);
 
 // Optional chaining and nil coalescing
 test_case!(OptionalChainNil);

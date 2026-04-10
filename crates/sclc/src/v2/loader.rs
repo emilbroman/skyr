@@ -81,6 +81,9 @@ impl Loader {
                 file_mod
             };
 
+            // Validate path expressions.
+            self.validate_paths(&module_id, &file_mod, &*package).await;
+
             // Register the package.
             self.asg
                 .register_package(pkg_id.clone(), Arc::clone(&package));
@@ -125,6 +128,58 @@ impl Loader {
         }
 
         Ok(())
+    }
+
+    /// Validate path expressions in a parsed module, emitting `InvalidPath`
+    /// diagnostics for paths that don't exist in the package.
+    async fn validate_paths(
+        &mut self,
+        module_id: &crate::ModuleId,
+        file_mod: &ast::FileMod,
+        package: &dyn super::Package,
+    ) {
+        let mut collector = crate::CollectPaths::default();
+        crate::visit_file_mod(&mut collector, file_mod);
+
+        for (path_expr, span) in collector.paths {
+            let resolved = path_expr.resolve_with_context(module_id);
+            let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
+            if rel.is_empty() {
+                continue;
+            }
+
+            let components: Vec<&str> = rel.split('/').collect();
+            let mut valid = true;
+
+            for i in 1..=components.len() {
+                let prefix = components[..i].join("/");
+                let prefix_path = std::path::Path::new(&prefix);
+                match package.lookup(prefix_path).await {
+                    Ok(None) => {
+                        valid = false;
+                        break;
+                    }
+                    Ok(Some(entity)) => {
+                        if i < components.len() {
+                            // Intermediate component must be a directory.
+                            if matches!(entity.as_ref(), super::PackageEntity::File { .. }) {
+                                valid = false;
+                                break;
+                            }
+                        }
+                    }
+                    Err(_) => break, // I/O error — don't emit a false positive.
+                }
+            }
+
+            if !valid {
+                self.diags.push(crate::InvalidPath {
+                    module_id: module_id.clone(),
+                    resolved_path: resolved,
+                    span,
+                });
+            }
+        }
     }
 
     /// Finalize the Loader, returning the ASG with accumulated diagnostics.

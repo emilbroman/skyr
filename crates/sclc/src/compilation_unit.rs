@@ -202,7 +202,7 @@ impl CompilationUnit {
         for (module_id, file_mod) in &self.modules {
             let mut collector = crate::ast::CollectPaths::new();
             crate::ast::visit_file_mod(&mut collector, file_mod);
-            for path_expr in collector.paths {
+            for (path_expr, _span) in collector.paths {
                 let resolved = path_expr.resolve_with_context(module_id);
                 let rel = resolved.strip_prefix('/').unwrap_or(&resolved);
                 let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
