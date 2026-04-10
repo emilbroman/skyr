@@ -560,6 +560,13 @@ impl GlobalTypeEnv {
         &self.import_maps
     }
 
+    /// Merge additional import maps into this environment.
+    pub fn merge_import_maps(&mut self, maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>) {
+        for (raw_id, aliases) in maps {
+            self.import_maps.entry(raw_id).or_default().extend(aliases);
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&GlobalKey, &Type)> {
         self.types.iter()
     }

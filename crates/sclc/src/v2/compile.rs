@@ -41,7 +41,8 @@ pub async fn compile(
 
 /// Evaluate using the ASG-driven evaluator.
 pub fn eval(asg: &Asg, ctx: EvalCtx) -> Result<EvalResults, crate::EvalError> {
-    AsgEvaluator::new(asg, ctx).eval()
+    let (results, _env) = AsgEvaluator::new(asg, ctx).eval()?;
+    Ok(results)
 }
 
 /// Build a default `PackageFinder` that combines a user package with the
