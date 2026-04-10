@@ -556,6 +556,14 @@ impl GlobalTypeEnv {
         self.types.insert(key, ty);
     }
 
+    pub fn import_maps(&self) -> &HashMap<RawModuleId, HashMap<String, RawModuleId>> {
+        &self.import_maps
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&GlobalKey, &Type)> {
+        self.types.iter()
+    }
+
     pub fn get(&self, key: &GlobalKey) -> Option<&Type> {
         self.types.get(key)
     }
