@@ -579,7 +579,7 @@ async fn run_test_case_v2(dir_name: &str) {
 
     // Set up evaluation.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let (_, unit) = result.into_inner();
+    let asg = result.into_inner();
     let mut eval_ctx = EvalCtx::new(tx, "test");
 
     for (id, resource) in rdb {
@@ -588,9 +588,9 @@ async fn run_test_case_v2(dir_name: &str) {
 
     let main_module_id = ModuleId::new(pkg_id, vec!["Main".to_string()]);
 
-    let tracked_value: TrackedValue = unit
-        .eval(eval_ctx)
+    let tracked_value: TrackedValue = crate::v2::eval(&asg, eval_ctx)
         .unwrap_or_else(|e| panic!("[v2] evaluation failed for {dir_name}: {e}"))
+        .modules
         .remove(&main_module_id)
         .unwrap_or_else(|| {
             panic!("[v2] main module missing from evaluation results for {dir_name}")

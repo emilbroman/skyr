@@ -1,9 +1,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{CompilationUnit, DiagList, Diagnosed, EvalCtx, EvalError, ModuleId, TrackedValue};
+use crate::{CompilationUnit, DiagList, Diagnosed, EvalCtx, Value};
 
-use super::{Asg, CompositePackageFinder, LoadError, Loader, Package, PackageFinder, StdPackage};
+use super::{
+    Asg, CompositePackageFinder, LoadError, Loader, Package, PackageFinder, StdPackage,
+    asg_eval::{AsgEvaluator, EvalResults},
+    check::AsgChecker,
+};
 
 /// Errors from the v2 compilation pipeline.
 #[derive(Debug, thiserror::Error)]
@@ -15,15 +19,14 @@ pub enum V2CompileError {
     TypeCheck(#[from] crate::TypeCheckError),
 }
 
-/// Compile using the v2 pipeline: Loader → ASG → CompilationUnit → Checker.
+/// Compile using the v2 pipeline: Loader → ASG → AsgChecker.
 ///
-/// This is the transitional entry point that builds the ASG via the new Loader
-/// then converts it into a `CompilationUnit` so the existing type checker and
-/// evaluator can be reused.
+/// Returns the type-checked ASG. Diagnostics (warnings, errors) are attached
+/// to the `Diagnosed` wrapper.
 pub async fn compile(
     finder: Arc<dyn PackageFinder>,
     entry: &[&str],
-) -> Result<Diagnosed<(Asg, CompilationUnit)>, V2CompileError> {
+) -> Result<Diagnosed<Asg>, V2CompileError> {
     let mut diags = DiagList::new();
 
     // Build the ASG.
@@ -31,21 +34,15 @@ pub async fn compile(
     loader.resolve(entry).await?;
     let asg = loader.finish().unpack(&mut diags);
 
-    // Convert ASG → CompilationUnit for the existing checker/evaluator.
-    let unit = asg_to_compilation_unit(&asg);
+    // Type-check via AsgChecker.
+    let _check_results = AsgChecker::new(&asg).check()?.unpack(&mut diags);
 
-    // Type-check.
-    unit.check_types()?.unpack(&mut diags);
-
-    Ok(Diagnosed::new((asg, unit), diags))
+    Ok(Diagnosed::new(asg, diags))
 }
 
-/// Evaluate using a `CompilationUnit` produced by [`compile`].
-pub fn eval(
-    unit: &CompilationUnit,
-    ctx: EvalCtx,
-) -> Result<HashMap<ModuleId, TrackedValue>, EvalError> {
-    unit.eval(ctx)
+/// Evaluate using the ASG-driven evaluator.
+pub fn eval(asg: &Asg, ctx: EvalCtx) -> Result<EvalResults, crate::EvalError> {
+    AsgEvaluator::new(asg, ctx).eval()
 }
 
 /// Build a default `PackageFinder` that combines a user package with the
@@ -87,7 +84,11 @@ fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
 
 /// Convert an [`Asg`] into a [`CompilationUnit`] by extracting the modules,
 /// externs, and path hashes.
-fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
+///
+/// This is a transitional bridge used internally by `AsgChecker` and
+/// `AsgEvaluator` while they still delegate expression-level processing to
+/// the existing `TypeChecker` and `Eval`.
+pub(super) fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
     let mut unit = CompilationUnit::new();
 
     // Register package names so split_import_segments works.
@@ -101,7 +102,7 @@ fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
     }
 
     // Populate externs from all packages.
-    let mut externs = HashMap::new();
+    let mut externs: HashMap<String, Value> = HashMap::new();
     for pkg in asg.packages().values() {
         pkg.register_externs(&mut externs);
     }
@@ -115,8 +116,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::PackageId;
     use crate::v2::InMemoryPackage;
+    use crate::{ModuleId, PackageId};
 
     #[tokio::test]
     async fn compile_simple_program() {
@@ -175,13 +176,14 @@ mod tests {
         let result = compile(finder, &["Test", "Main"]).await.unwrap();
         assert!(!result.diags().has_errors());
 
-        let (_, unit) = result.into_inner();
+        let asg = result.into_inner();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = EvalCtx::new(tx, "test");
-        let values = eval(&unit, ctx).unwrap();
+        let results = eval(&asg, ctx).unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
-        let main_val = values
+        let main_val = results
+            .modules
             .get(&main_id)
             .expect("Main module should have a value");
         assert_eq!(main_val.value.to_string(), "{x: 42}");
