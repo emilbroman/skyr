@@ -2,7 +2,10 @@ use std::collections::HashMap;
 
 use crate::{
     DiagList, Diagnosed, GlobalTypeEnv, RecordType, Type, TypeCheckError, TypeChecker, TypeEnv,
-    ast, checker::{CyclicDependency, next_type_id}, ty::TypeKind, v2::GlobalKey,
+    ast,
+    checker::{CyclicDependency, next_type_id},
+    ty::TypeKind,
+    v2::GlobalKey,
 };
 
 use super::{Asg, NodeId, RawModuleId};
@@ -193,8 +196,7 @@ impl<'a> AsgChecker<'a> {
 
             // Resolve each type body once (references to SCC members
             // will appear as Var(type_id) in the resolved type).
-            let mut resolved: Vec<(&NodeId, usize, Type)> =
-                Vec::with_capacity(scc_vars.len());
+            let mut resolved: Vec<(&NodeId, usize, Type)> = Vec::with_capacity(scc_vars.len());
             for (node, type_id) in &scc_vars {
                 let NodeId::TypeDecl(raw_id, name) = node else {
                     continue;
