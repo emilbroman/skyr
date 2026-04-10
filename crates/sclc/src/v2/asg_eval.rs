@@ -48,14 +48,10 @@ impl<'a> AsgEvaluator<'a> {
             if let ast::ModStmt::Expr(expr) = stmt
                 && let Some(mn) = self.asg.module(raw_id)
             {
-                let globals = mn.file_mod.find_globals();
                 let env = EvalEnv::new(&global_env)
                     .with_module_id(&mn.module_id)
-                    .with_raw_module_id(&mn.raw_id)
-                    .with_globals(&globals);
-                add_evaluated_globals_as_locals(&env, raw_id, &global_env, |env| {
-                    evaluator.eval_expr(env, expr)
-                })?;
+                    .with_raw_module_id(&mn.raw_id);
+                evaluator.eval_expr(&env, expr)?;
             }
         }
 
@@ -131,18 +127,14 @@ fn eval_singleton_global(
     let mn = asg.module(raw_id).unwrap();
     let lb = find_let_bind(&mn.file_mod, name).unwrap();
 
-    let globals = mn.file_mod.find_globals();
     let env = EvalEnv::new(global_env)
         .with_module_id(&mn.module_id)
-        .with_raw_module_id(&mn.raw_id)
-        .with_globals(&globals);
+        .with_raw_module_id(&mn.raw_id);
 
     let value = if has_self_edge {
         build_self_recursive_fn(evaluator, &env, name, lb)?
     } else {
-        add_evaluated_globals_as_locals(&env, raw_id, global_env, |env| {
-            evaluator.eval_expr(env, lb.expr.as_ref())
-        })?
+        evaluator.eval_expr(&env, lb.expr.as_ref())?
     };
 
     global_env.insert(GlobalKey::Global(raw_id.clone(), name.to_string()), value);
@@ -225,11 +217,9 @@ fn eval_recursive_group(
             continue;
         };
 
-        let globals = mn.file_mod.find_globals();
         let env = EvalEnv::new(global_env)
             .with_module_id(&mn.module_id)
-            .with_raw_module_id(&mn.raw_id)
-            .with_globals(&globals);
+            .with_raw_module_id(&mn.raw_id);
 
         let fn_module_id = env.module_id()?;
         let parameters: Vec<String> = fn_expr.params.iter().map(|p| p.var.name.clone()).collect();
@@ -357,38 +347,6 @@ fn assemble_module(asg: &Asg, raw_id: &RawModuleId, global_env: &mut GlobalEvalE
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Temporarily add already-evaluated same-module globals as locals, run the
-/// closure, then return the result. This bridges the old eval_var_name path
-/// (which checks locals/precomputed before globals) with the new GlobalEvalEnv.
-fn add_evaluated_globals_as_locals<F>(
-    env: &EvalEnv<'_>,
-    raw_id: &RawModuleId,
-    global_env: &GlobalEvalEnv,
-    f: F,
-) -> Result<TrackedValue, EvalError>
-where
-    F: FnOnce(&EvalEnv<'_>) -> Result<TrackedValue, EvalError>,
-{
-    let mut env = env.inner();
-    for (key, value) in global_env.iter() {
-        if let GlobalKey::Global(rid, name) = key
-            && rid == raw_id
-        {
-            env = env.with_precomputed(name.clone(), value.clone());
-        }
-    }
-    // Also add import module values as precomputed.
-    if let Some(imports) = global_env.import_maps().get(raw_id) {
-        for (alias, import_raw_id) in imports {
-            let module_key = GlobalKey::ModuleValue(import_raw_id.clone());
-            if let Some(module_value) = global_env.get(&module_key) {
-                env = env.with_precomputed(alias.clone(), module_value.clone());
-            }
-        }
-    }
-    f(&env)
-}
 
 /// Build per-module import alias → RawModuleId maps from the ASG.
 fn build_import_maps(asg: &Asg) -> HashMap<RawModuleId, HashMap<String, RawModuleId>> {

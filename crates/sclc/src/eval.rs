@@ -996,6 +996,13 @@ impl<'p> Eval<'p> {
         if let Some(precomputed) = env.precomputed.get(name) {
             return Ok(precomputed.clone());
         }
+        // Global eval env (v2 path): resolve via accumulated global values.
+        if let Some(raw_id) = env.raw_module_id.as_ref()
+            && let Some(value) = env.global_env.resolve_variable(name, raw_id)
+        {
+            return Ok(value.clone());
+        }
+        // Legacy on-demand global evaluation (used by REPL/IDE).
         if let Some(global_expr) = env.lookup_global(name) {
             let module_id = env.module_id.cloned().unwrap_or_default();
             let frame = StackFrame {

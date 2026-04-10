@@ -59,27 +59,18 @@ impl<'a> AsgChecker<'a> {
             if let ast::ModStmt::Expr(expr) = stmt
                 && let Some(mn) = self.asg.module(raw_id)
             {
-                let globals = mn.file_mod.find_globals();
-                let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
                 let env = TypeEnv::new(&self.global_type_env)
                     .with_module_id(&mn.module_id)
-                    .with_raw_module_id(&mn.raw_id)
-                    .with_globals(&globals)
-                    .with_imports(&imports);
-                self.preseed_import_caches(&checker, raw_id);
+                    .with_raw_module_id(&mn.raw_id);
                 checker.check_expr(&env, expr, None)?.unpack(&mut diags);
             }
         }
 
         // Check import statements for cursor info.
         for mn in self.asg.modules() {
-            let globals = mn.file_mod.find_globals();
-            let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
             let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&mn.module_id)
-                .with_raw_module_id(&mn.raw_id)
-                .with_globals(&globals)
-                .with_imports(&imports);
+                .with_raw_module_id(&mn.raw_id);
             for stmt in &mn.file_mod.statements {
                 if matches!(stmt, ast::ModStmt::Import(_)) {
                     checker.check_stmt(&env, stmt)?.unpack(&mut diags);
@@ -168,14 +159,9 @@ impl<'a> AsgChecker<'a> {
             let td = self.asg.type_decl(raw_id, name).unwrap();
             let mn = self.asg.module(raw_id).unwrap();
 
-            let globals = mn.file_mod.find_globals();
-            let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
             let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&mn.module_id)
-                .with_raw_module_id(&mn.raw_id)
-                .with_globals(&globals)
-                .with_imports(&imports);
-            self.preseed_import_caches(checker, raw_id);
+                .with_raw_module_id(&mn.raw_id);
 
             let ty = checker.resolve_type_def(&env, &td.type_def).unpack(diags);
             self.global_type_env
@@ -199,14 +185,9 @@ impl<'a> AsgChecker<'a> {
                     let td = self.asg.type_decl(raw_id, name).unwrap();
                     let mn = self.asg.module(raw_id).unwrap();
 
-                    let globals = mn.file_mod.find_globals();
-                    let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
                     let env = TypeEnv::new(&self.global_type_env)
                         .with_module_id(&mn.module_id)
-                        .with_raw_module_id(&mn.raw_id)
-                        .with_globals(&globals)
-                        .with_imports(&imports);
-                    self.preseed_import_caches(checker, raw_id);
+                        .with_raw_module_id(&mn.raw_id);
 
                     let ty = checker.resolve_type_def(&env, &td.type_def).unpack(diags);
                     self.global_type_env
@@ -264,14 +245,9 @@ impl<'a> AsgChecker<'a> {
             return Ok(());
         }
 
-        let globals = mn.file_mod.find_globals();
-        let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
         let env = TypeEnv::new(&self.global_type_env)
             .with_module_id(&mn.module_id)
-            .with_raw_module_id(&mn.raw_id)
-            .with_globals(&globals)
-            .with_imports(&imports);
-        self.preseed_import_caches(checker, raw_id);
+            .with_raw_module_id(&mn.raw_id);
 
         let ty = checker.check_global_let_bind(&env, lb)?.unpack(diags);
         let unwrapped = match &ty.kind {
@@ -396,14 +372,9 @@ impl<'a> AsgChecker<'a> {
         };
         let mn = self.asg.module(first_raw_id).unwrap();
 
-        let globals = mn.file_mod.find_globals();
-        let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
         let env = TypeEnv::new(&self.global_type_env)
             .with_module_id(&mn.module_id)
-            .with_raw_module_id(&mn.raw_id)
-            .with_globals(&globals)
-            .with_imports(&imports);
-        self.preseed_import_caches(checker, first_raw_id);
+            .with_raw_module_id(&mn.raw_id);
 
         let scc_binding_ids: Vec<crate::dep_graph::BindingId> = global_nodes
             .iter()
@@ -486,14 +457,9 @@ impl<'a> AsgChecker<'a> {
                 continue;
             }
 
-            let globals = mn.file_mod.find_globals();
-            let imports = checker.find_imports(&mn.file_mod, &mn.module_id.package);
             let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&mn.module_id)
-                .with_raw_module_id(&mn.raw_id)
-                .with_globals(&globals)
-                .with_imports(&imports);
-            self.preseed_import_caches(checker, raw_id);
+                .with_raw_module_id(&mn.raw_id);
 
             let ty = checker.check_global_let_bind(&env, lb)?.unpack(diags);
             let unwrapped = match &ty.kind {
@@ -570,49 +536,6 @@ impl<'a> AsgChecker<'a> {
                 .type_level_cache
                 .borrow_mut()
                 .insert(key, type_exports);
-        }
-    }
-
-    // ─── Helpers ────────────────────────────────────────────────────────────────
-
-    /// Pre-seed the TypeChecker's import/type-level caches with already-resolved
-    /// module types so expression-level import resolution returns immediately.
-    fn preseed_import_caches(&self, checker: &TypeChecker<'_>, raw_id: &RawModuleId) {
-        if let Some(imports) = self.global_type_env.import_maps().get(raw_id) {
-            for import_raw_id in imports.values() {
-                if let Some(import_mn) = self.asg.module(import_raw_id)
-                    && let Some(unit_fm) = checker.modules.get(&import_mn.module_id)
-                {
-                    let key = unit_fm as *const ast::FileMod;
-                    let default_ty = Type::Record(RecordType::default());
-                    checker
-                        .import_cache
-                        .borrow_mut()
-                        .entry(key)
-                        .or_insert_with(|| {
-                            self.global_type_env
-                                .get(&GlobalKey::ModuleValue(import_raw_id.clone()))
-                                .cloned()
-                                .unwrap_or_else(|| default_ty.clone())
-                        });
-                    checker
-                        .type_level_cache
-                        .borrow_mut()
-                        .entry(key)
-                        .or_insert_with(|| {
-                            self.global_type_env
-                                .get(&GlobalKey::ModuleTypeLevel(import_raw_id.clone()))
-                                .and_then(|ty| {
-                                    if let TypeKind::Record(rt) = &ty.kind {
-                                        Some(rt.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                                .unwrap_or_default()
-                        });
-                }
-            }
         }
     }
 }
