@@ -73,6 +73,14 @@ impl GlobalEvalEnv {
         self.values.get(key)
     }
 
+    pub fn import_maps(&self) -> &HashMap<RawModuleId, HashMap<String, RawModuleId>> {
+        &self.import_maps
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&GlobalKey, &TrackedValue)> {
+        self.values.iter()
+    }
+
     /// Resolve a value-level variable name in the context of a module.
     /// Checks same-module globals first, then import aliases.
     pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&TrackedValue> {
