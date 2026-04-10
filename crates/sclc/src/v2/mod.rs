@@ -9,6 +9,7 @@ mod cached_package;
 mod composite_finder;
 #[cfg(feature = "fs")]
 mod fs_package;
+mod loader;
 mod mem_package;
 mod package;
 mod std_package;
@@ -18,6 +19,7 @@ pub use cached_package::*;
 pub use composite_finder::*;
 #[cfg(feature = "fs")]
 pub use fs_package::*;
+pub use loader::*;
 pub use mem_package::*;
 pub use package::*;
 pub use std_package::*;
