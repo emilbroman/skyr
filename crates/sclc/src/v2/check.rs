@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     DiagList, Diagnosed, GlobalTypeEnv, RecordType, Type, TypeCheckError, TypeChecker, TypeEnv,
-    ast, checker::CyclicDependency, ty::TypeKind, v2::GlobalKey,
+    ast, checker::{CyclicDependency, next_type_id}, ty::TypeKind, v2::GlobalKey,
 };
 
 use super::{Asg, NodeId, RawModuleId};
@@ -172,32 +172,56 @@ impl<'a> AsgChecker<'a> {
             self.global_type_env
                 .insert(GlobalKey::TypeDecl(raw_id.clone(), name.clone()), ty);
         } else {
-            // Recursive group: register all with Never, iterate until stable.
-            for node in type_decl_nodes {
+            // Recursive group: allocate a type variable for each member,
+            // bootstrap with Var(type_id), resolve once, then wrap with
+            // IsoRec where the variable actually appears in the body.
+            let scc_vars: Vec<(&NodeId, usize)> = type_decl_nodes
+                .iter()
+                .map(|node| (*node, next_type_id()))
+                .collect();
+
+            // Bootstrap: register each type name as its type variable
+            for (node, type_id) in &scc_vars {
                 let NodeId::TypeDecl(raw_id, name) = node else {
                     continue;
                 };
                 self.global_type_env.insert(
                     GlobalKey::TypeDecl(raw_id.clone(), name.clone()),
-                    Type::Never,
+                    Type::Var(*type_id),
                 );
             }
-            for _ in 0..3 {
-                for node in type_decl_nodes {
-                    let NodeId::TypeDecl(raw_id, name) = node else {
-                        continue;
-                    };
-                    let td = self.asg.type_decl(raw_id, name).unwrap();
-                    let mn = self.asg.module(raw_id).unwrap();
 
-                    let env = TypeEnv::new(&self.global_type_env)
-                        .with_module_id(&mn.module_id)
-                        .with_raw_module_id(&mn.raw_id);
+            // Resolve each type body once (references to SCC members
+            // will appear as Var(type_id) in the resolved type).
+            let mut resolved: Vec<(&NodeId, usize, Type)> =
+                Vec::with_capacity(scc_vars.len());
+            for (node, type_id) in &scc_vars {
+                let NodeId::TypeDecl(raw_id, name) = node else {
+                    continue;
+                };
+                let td = self.asg.type_decl(raw_id, name).unwrap();
+                let mn = self.asg.module(raw_id).unwrap();
 
-                    let ty = checker.resolve_type_def(&env, &td.type_def).unpack(diags);
-                    self.global_type_env
-                        .insert(GlobalKey::TypeDecl(raw_id.clone(), name.clone()), ty);
-                }
+                let env = TypeEnv::new(&self.global_type_env)
+                    .with_module_id(&mn.module_id)
+                    .with_raw_module_id(&mn.raw_id);
+
+                let ty = checker.resolve_type_def(&env, &td.type_def).unpack(diags);
+                resolved.push((*node, *type_id, ty));
+            }
+
+            // Wrap with IsoRec where the body actually references the variable
+            for (node, type_id, body) in resolved {
+                let NodeId::TypeDecl(raw_id, name) = node else {
+                    continue;
+                };
+                let ty = if body.contains_var(type_id) {
+                    Type::IsoRec(type_id, Box::new(body))
+                } else {
+                    body
+                };
+                self.global_type_env
+                    .insert(GlobalKey::TypeDecl(raw_id.clone(), name.clone()), ty);
             }
         }
         Ok(())
