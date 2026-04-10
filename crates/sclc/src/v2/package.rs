@@ -187,6 +187,122 @@ impl Package for cdb::DeploymentClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CDB Client → PackageFinder impl
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cdb")]
+pub use cdb_finder::CdbPackageFinder;
+
+#[cfg(feature = "cdb")]
+mod cdb_finder {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use super::{LoadError, Package, PackageFinder};
+    use crate::{PackageId, v2::CachedPackage};
+
+    /// A [`PackageFinder`] backed by the CDB, resolving cross-repository imports.
+    ///
+    /// Given a raw module ID like `["MyOrg", "MyRepo", "Foo", "Bar"]`, extracts
+    /// the first two segments as Org/Repo (per the CDB two-segment convention),
+    /// looks up the active deployment for that repo in the configured environment,
+    /// and returns a cached `DeploymentClient` as the resolved [`Package`].
+    pub struct CdbPackageFinder {
+        client: cdb::Client,
+        environment: ids::EnvironmentId,
+        cache: RwLock<HashMap<PackageId, Option<Arc<dyn Package>>>>,
+    }
+
+    impl CdbPackageFinder {
+        /// Create a new CDB-backed finder.
+        ///
+        /// `environment` scopes which active deployment to use for target repos.
+        pub fn new(client: cdb::Client, environment: ids::EnvironmentId) -> Self {
+            Self {
+                client,
+                environment,
+                cache: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PackageFinder for CdbPackageFinder {
+        async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
+            // CDB always uses two-segment Org/Repo package IDs.
+            if raw_id.len() < 2 {
+                return Ok(None);
+            }
+
+            let org_str = raw_id[0];
+            let repo_str = raw_id[1];
+
+            let Ok(org) = org_str.parse::<ids::OrgId>() else {
+                return Ok(None);
+            };
+            let Ok(repo) = repo_str.parse::<ids::RepoId>() else {
+                return Ok(None);
+            };
+
+            let pkg_id: PackageId = [org_str.to_string(), repo_str.to_string()]
+                .into_iter()
+                .collect();
+
+            // Check cache (including negative results).
+            if let Some(cached) = self.cache.read().await.get(&pkg_id) {
+                return Ok(cached.clone());
+            }
+
+            // Look up the repo and find an active deployment for our environment.
+            let repo_qid = ids::RepoQid::new(org, repo);
+            let repo_client = self.client.repo(repo_qid.clone());
+
+            // Check that the repo exists.
+            match repo_client.get().await {
+                Ok(_) => {}
+                Err(cdb::RepositoryQueryError::NotFound) => {
+                    self.cache.write().await.insert(pkg_id, None);
+                    return Ok(None);
+                }
+                Err(e) => return Err(LoadError::Other(Box::new(e))),
+            }
+
+            // Find active deployment for our environment.
+            use futures_util::StreamExt;
+            let mut deployments = repo_client
+                .active_deployments()
+                .await
+                .map_err(|e| LoadError::Other(Box::new(e)))?;
+
+            let mut found = None;
+            while let Some(result) = deployments.next().await {
+                let deployment = result.map_err(|e| LoadError::Other(Box::new(e)))?;
+                if deployment.environment == self.environment {
+                    found = Some(deployment);
+                    break;
+                }
+            }
+
+            let Some(deployment) = found else {
+                self.cache.write().await.insert(pkg_id, None);
+                return Ok(None);
+            };
+
+            // Construct a cached DeploymentClient.
+            let dc = repo_client.deployment(deployment.environment, deployment.deployment);
+            let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
+            self.cache
+                .write()
+                .await
+                .insert(pkg_id, Some(Arc::clone(&pkg)));
+            Ok(Some(pkg))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

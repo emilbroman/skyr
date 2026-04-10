@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["cdb", "runtime"]
-cdb = ["dep:cdb"]
+cdb = ["dep:cdb", "dep:futures-util"]
 fs = ["tokio/fs"]
 runtime = ["tokio/rt-multi-thread"]
 
@@ -26,6 +26,7 @@ sha1 = "0.10"
 sha2 = "0.10.9"
 hex = "0.4.3"
 stacker = "0.1"
+futures-util = { version = "0.3", optional = true }
 
 [lints]
 workspace = true

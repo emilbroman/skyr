@@ -57,6 +57,24 @@ pub fn build_default_finder(user_package: Arc<dyn Package>) -> Arc<CompositePack
     ]))
 }
 
+/// Build a `PackageFinder` that combines a user package, a CDB-backed
+/// cross-repo finder, and the standard library.
+#[cfg(feature = "cdb")]
+pub fn build_cdb_finder(
+    user_package: Arc<dyn Package>,
+    cdb_client: cdb::Client,
+    environment: ids::EnvironmentId,
+) -> Arc<CompositePackageFinder> {
+    let std_pkg = Arc::new(StdPackage::new());
+    let cdb_finder = Arc::new(super::CdbPackageFinder::new(cdb_client, environment));
+
+    Arc::new(CompositePackageFinder::new(vec![
+        wrap_as_finder(user_package),
+        cdb_finder,
+        wrap_as_finder(std_pkg),
+    ]))
+}
+
 /// Helper to wrap an `Arc<dyn Package>` as an `Arc<dyn PackageFinder>`.
 fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
     struct PkgFinder(Arc<dyn Package>);
