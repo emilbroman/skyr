@@ -1,10 +1,11 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use lsp_types as lsp;
 use serde::{Deserialize, Serialize};
 
-use crate::analysis::{self, OverlaySource, parse_uri, uri_to_path};
+use crate::analysis::{self, OverlayPackage, parse_uri, uri_to_path};
 use crate::document::DocumentCache;
 use crate::handlers;
 
@@ -122,15 +123,11 @@ fn to_json_value(value: &impl Serialize) -> serde_json::Value {
     })
 }
 
-type SourceFactory = Box<dyn Fn(&sclc::PackageId, DocumentCache, &PathBuf) -> OverlaySource + Send>;
-
-/// The concrete program type used in the LSP server.
-pub type LspProgram = sclc::CompilationUnit;
+/// The concrete program type used in the LSP server (v2 ASG).
+pub type LspProgram = sclc::v2::Asg;
 
 /// The main LSP server.
 pub struct LanguageServer {
-    /// Factory for creating source repositories.
-    source_factory: SourceFactory,
     /// In-memory document overlay (open files from editor).
     documents: DocumentCache,
     /// Workspace root path.
@@ -146,16 +143,6 @@ pub struct LanguageServer {
     published_uris: HashSet<String>,
 }
 
-fn default_source_factory() -> SourceFactory {
-    Box::new(|package_id, documents, root| {
-        let inner = sclc::FsSource {
-            root: root.clone(),
-            package_id: package_id.clone(),
-        };
-        OverlaySource::new(inner, documents, root.clone())
-    })
-}
-
 impl Default for LanguageServer {
     fn default() -> Self {
         Self::new()
@@ -165,7 +152,6 @@ impl Default for LanguageServer {
 impl LanguageServer {
     pub fn new() -> Self {
         Self {
-            source_factory: default_source_factory(),
             documents: DocumentCache::new(),
             root: None,
             package_id: sclc::PackageId::default(),
@@ -195,10 +181,27 @@ impl LanguageServer {
         }
     }
 
-    async fn load_program(&self) -> Option<LspProgram> {
+    fn build_finder(&self) -> Option<Arc<dyn sclc::v2::PackageFinder>> {
         let root = self.root.as_ref()?;
-        let source = (self.source_factory)(&self.package_id, self.documents.clone(), root);
-        Some(analysis::load_unit(source).await)
+        let fs_pkg = sclc::v2::FsPackage::new(root.clone(), self.package_id.clone());
+        let overlay = OverlayPackage::new(fs_pkg, self.documents.clone(), root.clone());
+        Some(sclc::v2::build_default_finder(Arc::new(overlay)))
+    }
+
+    fn entry_segments(&self) -> Vec<String> {
+        self.package_id
+            .as_slice()
+            .iter()
+            .cloned()
+            .chain(std::iter::once("Main".to_string()))
+            .collect()
+    }
+
+    async fn load_program(&self) -> Option<LspProgram> {
+        let finder = self.build_finder()?;
+        let entry_segments = self.entry_segments();
+        let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
+        analysis::load_asg(finder, &entry_refs).await
     }
 
     async fn handle_request(
@@ -382,8 +385,13 @@ impl LanguageServer {
             None => return vec![],
         };
 
-        let source = (self.source_factory)(&self.package_id, self.documents.clone(), &root);
-        let result = analysis::analyze(source, &root, &self.package_id).await;
+        let finder = match self.build_finder() {
+            Some(f) => f,
+            None => return vec![],
+        };
+        let entry_segments = self.entry_segments();
+        let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
+        let result = analysis::analyze(finder, &entry_refs, &root, &self.package_id).await;
 
         let mut messages = Vec::new();
 
