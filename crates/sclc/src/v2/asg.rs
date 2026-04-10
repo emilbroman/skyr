@@ -16,6 +16,23 @@ pub enum NodeId {
     TypeDecl(RawModuleId, String),
 }
 
+/// Key for the accumulated global environment (checker and evaluator).
+///
+/// Unlike `NodeId`, this distinguishes between value-level and type-level
+/// results for modules (a module produces both a value-level export record
+/// and a type-level export record).
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GlobalKey {
+    /// A value-level global binding.
+    Global(RawModuleId, String),
+    /// A type-level declaration.
+    TypeDecl(RawModuleId, String),
+    /// A module's value-level export record.
+    ModuleValue(RawModuleId),
+    /// A module's type-level export record (checker only).
+    ModuleTypeLevel(RawModuleId),
+}
+
 impl std::fmt::Display for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

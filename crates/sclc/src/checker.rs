@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::{
     CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, RecordType, Type,
     TypeError, TypeIssue, TypeKind, ast,
+    v2::{GlobalKey, RawModuleId},
 };
 use thiserror::Error;
 
@@ -529,8 +530,77 @@ pub(crate) struct TypeEnvMaps<'a> {
 
 type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GlobalTypeEnv — accumulated type results across SCC iterations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Accumulated global type environment, built up as SCCs are processed in
+/// topological order. `TypeEnv` borrows this to resolve globals and imports
+/// without copying data into each per-SCC environment.
+#[derive(Clone, Debug, Default)]
+pub struct GlobalTypeEnv {
+    types: HashMap<GlobalKey, Type>,
+    /// Per-module import alias → target RawModuleId.
+    import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
+}
+
+impl GlobalTypeEnv {
+    pub fn new(import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>) -> Self {
+        Self {
+            types: HashMap::new(),
+            import_maps,
+        }
+    }
+
+    pub fn insert(&mut self, key: GlobalKey, ty: Type) {
+        self.types.insert(key, ty);
+    }
+
+    pub fn get(&self, key: &GlobalKey) -> Option<&Type> {
+        self.types.get(key)
+    }
+
+    /// Resolve a value-level variable name in the context of a module.
+    /// Checks same-module globals first, then import aliases.
+    pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&Type> {
+        // Same-module global?
+        let global_key = GlobalKey::Global(raw_module_id.to_vec(), name.to_string());
+        if let Some(ty) = self.types.get(&global_key) {
+            return Some(ty);
+        }
+        // Import alias?
+        if let Some(imports) = self.import_maps.get(raw_module_id)
+            && let Some(target_raw_id) = imports.get(name)
+        {
+            let module_key = GlobalKey::ModuleValue(target_raw_id.clone());
+            return self.types.get(&module_key);
+        }
+        None
+    }
+
+    /// Resolve a type-level name in the context of a module.
+    /// Checks same-module type declarations first, then import aliases.
+    pub fn resolve_type(&self, name: &str, raw_module_id: &[String]) -> Option<&Type> {
+        // Same-module type decl?
+        let td_key = GlobalKey::TypeDecl(raw_module_id.to_vec(), name.to_string());
+        if let Some(ty) = self.types.get(&td_key) {
+            return Some(ty);
+        }
+        // Import alias (type-level)?
+        if let Some(imports) = self.import_maps.get(raw_module_id)
+            && let Some(target_raw_id) = imports.get(name)
+        {
+            let module_key = GlobalKey::ModuleTypeLevel(target_raw_id.clone());
+            return self.types.get(&module_key);
+        }
+        None
+    }
+}
+
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
+    raw_module_id: Option<&'a RawModuleId>,
+    pub(crate) global_env: &'a GlobalTypeEnv,
     globals: Option<&'a GlobalsMap<'a>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     pub(crate) maps: Box<TypeEnvMaps<'a>>,
@@ -540,16 +610,12 @@ pub struct TypeEnv<'a> {
     pub(crate) free_vars: Option<Rc<RefCell<FreeVarConstraints>>>,
 }
 
-impl<'a> Default for TypeEnv<'a> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a> TypeEnv<'a> {
-    pub fn new() -> Self {
+    pub fn new(global_env: &'a GlobalTypeEnv) -> Self {
         Self {
             module_id: None,
+            raw_module_id: None,
+            global_env,
             globals: None,
             imports: None,
             maps: Box::new(TypeEnvMaps {
@@ -566,6 +632,8 @@ impl<'a> TypeEnv<'a> {
     pub fn inner(&self) -> Self {
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps: self.maps.clone(),
@@ -579,6 +647,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: Some(globals),
             imports: self.imports,
             maps,
@@ -595,6 +665,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: Some(imports),
             maps,
@@ -606,6 +678,21 @@ impl<'a> TypeEnv<'a> {
     pub fn with_module_id(&self, module_id: &'a crate::ModuleId) -> Self {
         Self {
             module_id: Some(module_id),
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
+            globals: self.globals,
+            imports: self.imports,
+            maps: self.maps.clone(),
+            cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
+        }
+    }
+
+    pub fn with_raw_module_id(&self, raw_module_id: &'a RawModuleId) -> Self {
+        Self {
+            module_id: self.module_id,
+            raw_module_id: Some(raw_module_id),
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps: self.maps.clone(),
@@ -700,6 +787,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps,
@@ -713,10 +802,17 @@ impl<'a> TypeEnv<'a> {
     }
 
     pub fn lookup_type_level(&self, name: &str) -> Option<(&Type, Option<&str>)> {
-        self.maps
-            .type_level
-            .get(name)
-            .map(|(ty, doc)| (ty, doc.as_deref()))
+        // Check local type-level bindings first.
+        if let Some(entry) = self.maps.type_level.get(name) {
+            return Some((&entry.0, entry.1.as_deref()));
+        }
+        // Fall through to global type env.
+        if let Some(raw_id) = self.raw_module_id
+            && let Some(ty) = self.global_env.resolve_type(name, raw_id)
+        {
+            return Some((ty, None));
+        }
+        None
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&(crate::Span, Type)> {
@@ -742,6 +838,10 @@ impl<'a> TypeEnv<'a> {
         self.module_id
             .cloned()
             .ok_or(TypeCheckError::ModuleIdMissing)
+    }
+
+    pub fn raw_module_id(&self) -> Option<&RawModuleId> {
+        self.raw_module_id
     }
 
     pub fn local_names(&self) -> impl Iterator<Item = &str> {
@@ -1165,7 +1265,8 @@ impl<'p> TypeChecker<'p> {
                         if let Some(cached) = self.import_cache.borrow().get(&cache_key) {
                             Some(cached.clone())
                         } else {
-                            let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                            let import_env =
+                                TypeEnv::new(env.global_env).with_module_id(&target_module_id);
                             self.check_file_mod(&import_env, import_file_mod)
                                 .ok()
                                 .map(|d| {
@@ -1925,7 +2026,7 @@ impl<'p> TypeChecker<'p> {
                         .unwrap_or_else(|| {
                             crate::ModuleId::new(crate::PackageId::default(), raw_segments.clone())
                         });
-                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                    let import_env = TypeEnv::new(env.global_env).with_module_id(&target_module_id);
                     let type_exports = self
                         .type_level_exports(&import_env, import_file_mod)
                         .unpack(diags);
@@ -2286,7 +2387,8 @@ mod tests {
     fn record_expr_missing_optional_field_accepted() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let record_expr = loc(
@@ -2338,7 +2440,8 @@ mod tests {
     fn record_field_mismatch_is_reported_at_field_expr_span() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let record_span = Span::new(Position::new(1, 1), Position::new(1, 10));
         let field_span = Span::new(Position::new(1, 5), Position::new(1, 6));
 
@@ -2392,7 +2495,8 @@ mod tests {
     fn dict_infers_key_value_types_from_first_entry() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let dict_expr = loc(
@@ -2427,7 +2531,8 @@ mod tests {
     fn add_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2449,7 +2554,8 @@ mod tests {
     fn add_strings_returns_str() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2471,7 +2577,8 @@ mod tests {
     fn add_mismatched_types_reports_diag() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2498,7 +2605,8 @@ mod tests {
     fn subtract_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let sub_expr = loc(
@@ -2520,7 +2628,8 @@ mod tests {
     fn unary_minus_float_returns_float() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let unary_expr = loc(
@@ -2546,7 +2655,8 @@ mod tests {
     fn multiply_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let mul_expr = loc(
@@ -2568,7 +2678,8 @@ mod tests {
     fn divide_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let div_expr = loc(
@@ -2590,7 +2701,8 @@ mod tests {
     fn equality_returns_bool_and_warns_on_disjoint_types() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let eq_expr = loc(
@@ -2616,7 +2728,8 @@ mod tests {
     fn comparison_requires_numeric_operands() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let cmp_expr = loc(
@@ -2638,7 +2751,8 @@ mod tests {
     fn logical_operators_require_bool() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let and_expr = loc(
@@ -3002,7 +3116,8 @@ mod tests {
         let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
         let modules = Box::leak(Box::new(HashMap::new()));
         let checker = TypeChecker::from_modules(modules, Vec::new());
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         checker
             .check_file_mod(&env, &file_mod)
             .expect("type check should not error")
@@ -3094,7 +3209,8 @@ mod tests {
         .into_inner();
         let modules = Box::leak(Box::new(HashMap::new()));
         let checker = TypeChecker::from_modules(modules, Vec::new());
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let diagnosed = checker.type_level_exports(&env, &file_mod);
         assert!(!diagnosed.diags().has_errors());
         let type_exports = diagnosed.into_inner();

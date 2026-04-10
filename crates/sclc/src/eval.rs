@@ -6,7 +6,10 @@ use tokio::sync::mpsc;
 
 use ids::ResourceId;
 
-use crate::{ExternFnValue, PathValue, Record, TrackedValue, Value, ast};
+use crate::{
+    ExternFnValue, PathValue, Record, TrackedValue, Value, ast,
+    v2::{GlobalKey, RawModuleId},
+};
 
 #[derive(Debug)]
 pub struct StackFrame<'a> {
@@ -40,8 +43,59 @@ impl StackFrame<'_> {
 
 type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GlobalEvalEnv — accumulated evaluation results across SCC iterations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Accumulated global evaluation environment, built up as SCCs are processed
+/// in topological order. `EvalEnv` borrows this to resolve globals and imports
+/// without copying data into each per-SCC environment.
+#[derive(Clone, Debug, Default)]
+pub struct GlobalEvalEnv {
+    values: HashMap<GlobalKey, TrackedValue>,
+    /// Per-module import alias → target RawModuleId.
+    import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
+}
+
+impl GlobalEvalEnv {
+    pub fn new(import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>) -> Self {
+        Self {
+            values: HashMap::new(),
+            import_maps,
+        }
+    }
+
+    pub fn insert(&mut self, key: GlobalKey, value: TrackedValue) {
+        self.values.insert(key, value);
+    }
+
+    pub fn get(&self, key: &GlobalKey) -> Option<&TrackedValue> {
+        self.values.get(key)
+    }
+
+    /// Resolve a value-level variable name in the context of a module.
+    /// Checks same-module globals first, then import aliases.
+    pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&TrackedValue> {
+        // Same-module global?
+        let global_key = GlobalKey::Global(raw_module_id.to_vec(), name.to_string());
+        if let Some(val) = self.values.get(&global_key) {
+            return Some(val);
+        }
+        // Import alias?
+        if let Some(imports) = self.import_maps.get(raw_module_id)
+            && let Some(target_raw_id) = imports.get(name)
+        {
+            let module_key = GlobalKey::ModuleValue(target_raw_id.clone());
+            return self.values.get(&module_key);
+        }
+        None
+    }
+}
+
 pub struct EvalEnv<'a> {
     pub(crate) module_id: Option<&'a crate::ModuleId>,
+    pub(crate) global_env: &'a GlobalEvalEnv,
+    raw_module_id: Option<&'a RawModuleId>,
     globals: Option<&'a GlobalsMap<'a>>,
     locals: HashMap<&'a str, TrackedValue>,
     /// Pre-evaluated globals (e.g., mutually recursive function groups).
@@ -50,16 +104,12 @@ pub struct EvalEnv<'a> {
     pub(crate) stack: Option<&'a StackFrame<'a>>,
 }
 
-impl<'a> Default for EvalEnv<'a> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a> EvalEnv<'a> {
-    pub fn new() -> Self {
+    pub fn new(global_env: &'a GlobalEvalEnv) -> Self {
         Self {
             module_id: None,
+            global_env,
+            raw_module_id: None,
             globals: None,
             locals: HashMap::new(),
             precomputed: HashMap::new(),
@@ -70,6 +120,8 @@ impl<'a> EvalEnv<'a> {
     pub fn inner(&self) -> Self {
         Self {
             module_id: self.module_id,
+            global_env: self.global_env,
+            raw_module_id: self.raw_module_id,
             globals: self.globals,
             locals: self.locals.clone(),
             precomputed: self.precomputed.clone(),
@@ -80,6 +132,8 @@ impl<'a> EvalEnv<'a> {
     pub fn with_globals(&self, globals: &'a GlobalsMap<'a>) -> Self {
         Self {
             module_id: self.module_id,
+            global_env: self.global_env,
+            raw_module_id: self.raw_module_id,
             globals: Some(globals),
             locals: HashMap::new(),
             precomputed: self.precomputed.clone(),
@@ -90,6 +144,20 @@ impl<'a> EvalEnv<'a> {
     pub fn with_module_id(&self, module_id: &'a crate::ModuleId) -> Self {
         Self {
             module_id: Some(module_id),
+            global_env: self.global_env,
+            raw_module_id: self.raw_module_id,
+            globals: self.globals,
+            locals: self.locals.clone(),
+            precomputed: self.precomputed.clone(),
+            stack: self.stack,
+        }
+    }
+
+    pub fn with_raw_module_id(&self, raw_module_id: &'a RawModuleId) -> Self {
+        Self {
+            module_id: self.module_id,
+            global_env: self.global_env,
+            raw_module_id: Some(raw_module_id),
             globals: self.globals,
             locals: self.locals.clone(),
             precomputed: self.precomputed.clone(),
@@ -112,6 +180,8 @@ impl<'a> EvalEnv<'a> {
     pub fn without_locals(&self) -> Self {
         Self {
             module_id: self.module_id,
+            global_env: self.global_env,
+            raw_module_id: self.raw_module_id,
             globals: self.globals,
             locals: HashMap::new(),
             precomputed: self.precomputed.clone(),
@@ -194,8 +264,9 @@ impl FnEnv {
         fn_value: &crate::FnValue,
         args: &[TrackedValue],
         stack: Option<&'a StackFrame<'a>>,
+        global_env: &'a GlobalEvalEnv,
     ) -> EvalEnv<'a> {
-        let mut env = EvalEnv::new().with_module_id(&self.module_id);
+        let mut env = EvalEnv::new(global_env).with_module_id(&self.module_id);
         env.stack = stack;
 
         for (name, value) in &self.captures {
@@ -1003,7 +1074,7 @@ mod tests {
     use std::collections::HashMap;
     use tokio::sync::mpsc;
 
-    use super::{Effect, Eval, EvalEnv};
+    use super::{Effect, Eval, EvalEnv, GlobalEvalEnv};
     use ids::ResourceId;
 
     use crate::{ExternFnValue, ModuleId, Resource, TrackedValue, Value};
@@ -1030,7 +1101,8 @@ mod tests {
             typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
-        let env = EvalEnv::new().with_module_id(&module_id).with_local(
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge).with_module_id(&module_id).with_local(
             "x",
             TrackedValue::new(Value::Int(2)).with_dependency(dependency.clone()),
         );
@@ -1056,7 +1128,8 @@ mod tests {
             typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
-        let env = EvalEnv::new()
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
             .with_module_id(&module_id)
             .with_local(
                 "f",
@@ -1101,7 +1174,8 @@ mod tests {
             typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
-        let env = EvalEnv::new()
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
             .with_module_id(&module_id)
             .with_local(
                 "f",
@@ -1157,7 +1231,8 @@ mod tests {
             },
             body: parse_expr("123", &module_id),
         });
-        let env = EvalEnv::new()
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
             .with_module_id(&module_id)
             .with_local(
                 "f",

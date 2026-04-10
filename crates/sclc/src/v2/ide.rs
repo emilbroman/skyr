@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    CompletionCandidate, Cursor, CursorInfo, ModuleId, PackageId, Position, TypeChecker, TypeEnv,
-    ast, parse_file_mod_with_cursor,
+    CompletionCandidate, Cursor, CursorInfo, GlobalTypeEnv, ModuleId, PackageId, Position,
+    TypeChecker, TypeEnv, ast, parse_file_mod_with_cursor,
 };
 
 use super::Asg;
@@ -36,7 +36,10 @@ pub fn cursor_info(
     let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
     let checker = TypeChecker::from_modules(&modules, package_names);
 
-    let type_env = TypeEnv::new().with_module_id(module_id).with_cursor(cursor);
+    let ge = GlobalTypeEnv::default();
+    let type_env = TypeEnv::new(&ge)
+        .with_module_id(module_id)
+        .with_cursor(cursor);
     let _ = checker.check_file_mod(&type_env, &file_mod);
 
     cursor_info

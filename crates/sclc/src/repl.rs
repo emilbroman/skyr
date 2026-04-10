@@ -5,8 +5,9 @@ use tokio::sync::mpsc;
 
 use crate::v2::{Asg, Loader, PackageFinder, build_default_finder};
 use crate::{
-    DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError, ModuleId, PackageId,
-    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, Value, ast,
+    DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError, GlobalEvalEnv, GlobalTypeEnv,
+    ModuleId, PackageId, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    Value, ast,
 };
 
 #[derive(Clone)]
@@ -22,6 +23,8 @@ pub struct Repl {
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
+    global_type_env: GlobalTypeEnv,
+    global_eval_env: GlobalEvalEnv,
     namespace: String,
     package_id: PackageId,
     /// Import entry points accumulated across REPL lines.
@@ -69,6 +72,8 @@ impl Repl {
             effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
+            global_type_env: GlobalTypeEnv::default(),
+            global_eval_env: GlobalEvalEnv::default(),
             namespace,
             package_id,
             import_entries: Vec::new(),
@@ -122,7 +127,7 @@ impl Repl {
 
     pub fn type_env<'a>(&'a self, module_id: &'a ModuleId) -> TypeEnv<'a> {
         let env = self.bindings.iter().fold(
-            TypeEnv::new().with_module_id(module_id),
+            TypeEnv::new(&self.global_type_env).with_module_id(module_id),
             |env, (name, (ty, _))| {
                 env.with_local(name.as_str(), crate::Span::default(), ty.clone())
             },
@@ -134,7 +139,7 @@ impl Repl {
 
     pub fn eval_env<'a>(&'a self, module_id: &'a ModuleId) -> EvalEnv<'a> {
         self.bindings.iter().fold(
-            EvalEnv::new().with_module_id(module_id),
+            EvalEnv::new(&self.global_eval_env).with_module_id(module_id),
             |env, (name, (_, value))| env.with_local(name.as_str(), value.clone()),
         )
     }
@@ -206,7 +211,7 @@ impl Repl {
 
         let mut diags = DiagList::new();
         let checker = TypeChecker::from_modules(&self.modules, self.package_names.clone());
-        let type_env = TypeEnv::new().with_module_id(&import_path);
+        let type_env = TypeEnv::new(&self.global_type_env).with_module_id(&import_path);
         let ty = checker
             .check_file_mod(&type_env, &file_mod)?
             .unpack(&mut diags);
@@ -223,7 +228,7 @@ impl Repl {
             externs,
             EvalCtx::new(self.effects_tx.clone(), &self.namespace),
         );
-        let eval_env = EvalEnv::new().with_module_id(&import_path);
+        let eval_env = EvalEnv::new(&self.global_eval_env).with_module_id(&import_path);
         let value = Self::eval_file_mod_via_asg(&eval, &eval_env, &file_mod)?;
 
         self.register_import(alias, ty, value, type_exports);

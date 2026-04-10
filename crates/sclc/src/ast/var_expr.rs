@@ -58,7 +58,7 @@ pub(crate) fn synth_var(
         let imported_ty = if let Some(cached_ty) = checker.import_cache.borrow().get(&cache_key) {
             cached_ty.clone()
         } else {
-            let import_env = TypeEnv::new().with_module_id(&target_module_id);
+            let import_env = TypeEnv::new(env.global_env).with_module_id(&target_module_id);
             let imported_ty = checker.check_file_mod(&import_env, import_file_mod)?;
             let imported_ty = imported_ty.into_inner();
             checker

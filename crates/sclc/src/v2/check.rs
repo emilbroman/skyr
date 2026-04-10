@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use crate::{
-    DiagList, Diagnosed, RecordType, Span, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
-    checker::CyclicDependency, ty::TypeKind,
+    DiagList, Diagnosed, GlobalTypeEnv, RecordType, Span, Type, TypeCheckError, TypeChecker,
+    TypeEnv, ast, checker::CyclicDependency, ty::TypeKind,
 };
 
 use super::{Asg, NodeId, RawModuleId};
@@ -25,6 +25,8 @@ pub struct CheckResults {
 /// delegated to the existing `TypeChecker`.
 pub struct AsgChecker<'a> {
     asg: &'a Asg,
+    /// Accumulated global type environment for the v2 pipeline.
+    global_type_env: GlobalTypeEnv,
     /// Resolved types for value-level globals.
     global_types: HashMap<(RawModuleId, String), Type>,
     /// Resolved type declarations.
@@ -39,6 +41,7 @@ impl<'a> AsgChecker<'a> {
     pub fn new(asg: &'a Asg) -> Self {
         Self {
             asg,
+            global_type_env: GlobalTypeEnv::default(),
             global_types: HashMap::new(),
             type_decl_types: HashMap::new(),
             module_types: HashMap::new(),
@@ -74,7 +77,7 @@ impl<'a> AsgChecker<'a> {
                 let globals = module_node.file_mod.find_globals();
                 let imports =
                     checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-                let mut env = TypeEnv::new()
+                let mut env = TypeEnv::new(&self.global_type_env)
                     .with_module_id(&module_node.module_id)
                     .with_globals(&globals)
                     .with_imports(&imports);
@@ -90,7 +93,7 @@ impl<'a> AsgChecker<'a> {
             let globals = module_node.file_mod.find_globals();
             let imports =
                 checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-            let env = TypeEnv::new()
+            let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&module_node.module_id)
                 .with_globals(&globals)
                 .with_imports(&imports);
@@ -196,7 +199,7 @@ impl<'a> AsgChecker<'a> {
             let globals = module_node.file_mod.find_globals();
             let imports =
                 checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-            let mut env = TypeEnv::new()
+            let mut env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&module_node.module_id)
                 .with_globals(&globals)
                 .with_imports(&imports);
@@ -228,7 +231,7 @@ impl<'a> AsgChecker<'a> {
                     let globals = module_node.file_mod.find_globals();
                     let imports =
                         checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-                    let mut env = TypeEnv::new()
+                    let mut env = TypeEnv::new(&self.global_type_env)
                         .with_module_id(&module_node.module_id)
                         .with_globals(&globals)
                         .with_imports(&imports);
@@ -283,7 +286,7 @@ impl<'a> AsgChecker<'a> {
             let globals = module_node.file_mod.find_globals();
             let imports =
                 checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-            let mut env = TypeEnv::new()
+            let mut env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&module_node.module_id)
                 .with_globals(&globals)
                 .with_imports(&imports);
@@ -392,7 +395,7 @@ impl<'a> AsgChecker<'a> {
                 let globals = first_module.file_mod.find_globals();
                 let imports =
                     checker.find_imports(&first_module.file_mod, &first_module.module_id.package);
-                let mut env = TypeEnv::new()
+                let mut env = TypeEnv::new(&self.global_type_env)
                     .with_module_id(&first_module.module_id)
                     .with_globals(&globals)
                     .with_imports(&imports);
@@ -481,7 +484,7 @@ impl<'a> AsgChecker<'a> {
                     let globals = module_node.file_mod.find_globals();
                     let imports =
                         checker.find_imports(&module_node.file_mod, &module_node.module_id.package);
-                    let mut env = TypeEnv::new()
+                    let mut env = TypeEnv::new(&self.global_type_env)
                         .with_module_id(&module_node.module_id)
                         .with_globals(&globals)
                         .with_imports(&imports);

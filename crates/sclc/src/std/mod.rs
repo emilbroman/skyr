@@ -198,7 +198,8 @@ pub async fn stdlib_types()
         if module_id.package != std_package_id {
             continue;
         }
-        let env = crate::TypeEnv::new().with_module_id(module_id);
+        let ge = crate::GlobalTypeEnv::default();
+        let env = crate::TypeEnv::new(&ge).with_module_id(module_id);
 
         let mut diags = crate::DiagList::new();
 

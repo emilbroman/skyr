@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use crate::eval::{FnEnv, tracked, with_dependencies};
 use crate::{
-    Eval, EvalCtx, EvalEnv, EvalError, FnValue, Loc, ModuleId, PackageId, Record, Span,
-    TrackedValue, Value, ast,
+    Eval, EvalCtx, EvalEnv, EvalError, FnValue, GlobalEvalEnv, Loc, ModuleId, PackageId, Record,
+    Span, TrackedValue, Value, ast,
 };
 
 use super::{Asg, NodeId, RawModuleId};
@@ -37,6 +37,7 @@ impl<'a> AsgEvaluator<'a> {
         let evaluator = Eval::from_externs(externs, self.ctx);
 
         let mut state = EvalState {
+            global_eval_env: GlobalEvalEnv::default(),
             import_maps: build_import_maps(self.asg),
             global_values: HashMap::new(),
             module_values: HashMap::new(),
@@ -53,7 +54,7 @@ impl<'a> AsgEvaluator<'a> {
                 && let Some(module_node) = self.asg.module(raw_id)
             {
                 let globals = module_node.file_mod.find_globals();
-                let mut env = EvalEnv::new()
+                let mut env = EvalEnv::new(&state.global_eval_env)
                     .with_module_id(&module_node.module_id)
                     .with_globals(&globals);
                 env = add_resolved_imports(&env, raw_id, &state.import_maps, &state.module_values);
@@ -76,6 +77,7 @@ impl<'a> AsgEvaluator<'a> {
 
 /// Accumulated evaluation state passed through SCC processing.
 struct EvalState {
+    global_eval_env: GlobalEvalEnv,
     import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
     global_values: HashMap<(RawModuleId, String), TrackedValue>,
     module_values: HashMap<RawModuleId, TrackedValue>,
@@ -147,7 +149,7 @@ fn eval_singleton_global(
     let let_bind = find_let_bind(&module_node.file_mod, name).unwrap();
 
     let globals = module_node.file_mod.find_globals();
-    let mut env = EvalEnv::new()
+    let mut env = EvalEnv::new(&state.global_eval_env)
         .with_module_id(&module_node.module_id)
         .with_globals(&globals);
     env = add_resolved_imports(&env, raw_id, &state.import_maps, &state.module_values);
@@ -249,7 +251,7 @@ fn eval_recursive_group(
         };
 
         let globals = module_node.file_mod.find_globals();
-        let mut env = EvalEnv::new()
+        let mut env = EvalEnv::new(&state.global_eval_env)
             .with_module_id(&module_node.module_id)
             .with_globals(&globals);
         env = add_resolved_imports(&env, raw_id, &state.import_maps, &state.module_values);
