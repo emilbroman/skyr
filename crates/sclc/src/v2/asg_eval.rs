@@ -24,19 +24,43 @@ pub struct EvalResults {
 pub struct AsgEvaluator<'a> {
     asg: &'a Asg,
     ctx: EvalCtx,
+    /// Optional pre-seeded evaluation environment from prior iterations
+    /// (e.g. the REPL). Globals already present are skipped.
+    initial_env: Option<GlobalEvalEnv>,
 }
 
 impl<'a> AsgEvaluator<'a> {
     pub fn new(asg: &'a Asg, ctx: EvalCtx) -> Self {
-        Self { asg, ctx }
+        Self {
+            asg,
+            ctx,
+            initial_env: None,
+        }
+    }
+
+    /// Pre-seed the evaluator with an existing `GlobalEvalEnv`.
+    ///
+    /// Globals already present in the initial env will be skipped during
+    /// evaluation, avoiding duplicate side effects in incremental contexts
+    /// like the REPL.
+    pub fn with_initial_env(mut self, env: GlobalEvalEnv) -> Self {
+        self.initial_env = Some(env);
+        self
     }
 
     /// Evaluate the entire program by walking the ASG's SCC ordering.
-    pub fn eval(self) -> Result<EvalResults, EvalError> {
+    pub fn eval(self) -> Result<(EvalResults, GlobalEvalEnv), EvalError> {
         let externs = collect_externs(self.asg);
         let evaluator = Eval::from_externs(externs, self.ctx);
 
-        let mut global_env = GlobalEvalEnv::new(build_import_maps(self.asg));
+        let mut global_env = if let Some(mut env) = self.initial_env {
+            // Merge import maps from the new ASG into the existing env.
+            let new_maps = build_import_maps(self.asg);
+            env.merge_import_maps(new_maps);
+            env
+        } else {
+            GlobalEvalEnv::new(build_import_maps(self.asg))
+        };
 
         let sccs = self.asg.compute_sccs();
         for scc in &sccs {
@@ -65,7 +89,7 @@ impl<'a> AsgEvaluator<'a> {
             }
         }
 
-        Ok(EvalResults { modules })
+        Ok((EvalResults { modules }, global_env))
     }
 }
 
@@ -124,6 +148,12 @@ fn eval_singleton_global(
     has_self_edge: bool,
     global_env: &mut GlobalEvalEnv,
 ) -> Result<(), EvalError> {
+    // Skip if already evaluated (e.g. from a previous REPL iteration).
+    let key = GlobalKey::Global(raw_id.clone(), name.to_string());
+    if global_env.get(&key).is_some() {
+        return Ok(());
+    }
+
     let mn = asg.module(raw_id).unwrap();
     let lb = find_let_bind(&mn.file_mod, name).unwrap();
 
@@ -190,6 +220,20 @@ fn eval_recursive_group(
     global_nodes: &[&NodeId],
     global_env: &mut GlobalEvalEnv,
 ) -> Result<(), EvalError> {
+    // Skip if all members are already evaluated.
+    let all_present = global_nodes.iter().all(|n| {
+        if let NodeId::Global(raw_id, name) = n {
+            global_env
+                .get(&GlobalKey::Global(raw_id.clone(), name.clone()))
+                .is_some()
+        } else {
+            true
+        }
+    });
+    if all_present {
+        return Ok(());
+    }
+
     let scc_names: HashSet<&str> = global_nodes
         .iter()
         .filter_map(|n| {
@@ -406,7 +450,7 @@ mod tests {
         let asg = super::super::Asg::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = EvalCtx::new(tx, "test");
-        let results = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+        let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
         assert!(results.modules.is_empty());
     }
 
@@ -424,7 +468,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = EvalCtx::new(tx, "test");
-        let results = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+        let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
         let main_val = results.modules.get(&main_id).unwrap();
@@ -449,7 +493,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let ctx = EvalCtx::new(tx, "test");
-        let results = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+        let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
         let main_val = results.modules.get(&main_id).unwrap();

@@ -37,6 +37,11 @@ impl<'a> AsgChecker<'a> {
         }
     }
 
+    /// Return the accumulated `GlobalTypeEnv` after checking.
+    pub fn into_global_type_env(self) -> GlobalTypeEnv {
+        self.global_type_env
+    }
+
     /// Type-check the entire program by walking the ASG's SCC ordering.
     pub fn check(&mut self) -> Result<Diagnosed<CheckResults>, TypeCheckError> {
         let mut diags = DiagList::new();

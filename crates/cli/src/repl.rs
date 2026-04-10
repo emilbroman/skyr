@@ -73,8 +73,14 @@ impl completion::Completer for ReplHelper {
 
         // Type-check the statement to populate completion candidates.
         let type_env = state.type_env(&module_id);
-        let checker =
-            sclc::TypeChecker::from_modules(state.modules(), state.package_names().to_vec());
+        let modules: std::collections::HashMap<sclc::ModuleId, sclc::FileMod> = state
+            .cached_asg()
+            .modules()
+            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .collect();
+        let package_names: Vec<sclc::PackageId> =
+            state.cached_asg().packages().keys().cloned().collect();
+        let checker = sclc::TypeChecker::from_modules(&modules, package_names);
         let _ = checker.check_stmt(&type_env, statement);
 
         // Extract candidates from the cursor.
