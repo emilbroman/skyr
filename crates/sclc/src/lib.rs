@@ -23,6 +23,7 @@ mod source_repo;
 mod std;
 pub mod string_escape;
 mod ty;
+pub mod v2;
 mod value;
 
 pub use ast::*;
