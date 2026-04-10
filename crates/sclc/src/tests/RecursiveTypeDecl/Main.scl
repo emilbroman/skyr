@@ -1,0 +1,6 @@
+type Tree { value: Int, children: [Tree] }
+
+let leaf: Tree = { value: 1, children: [] }
+let branch: Tree = { value: 2, children: [leaf] }
+
+export let result = branch.value

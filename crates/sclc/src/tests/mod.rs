@@ -507,3 +507,6 @@ test_case!(OptionalChainCoalesce);
 test_case!(DiagOptionalChainNonOptional);
 test_case!(DiagNilCoalesceNonOptional);
 test_case!(NilCoalesceReExportedOptional);
+
+// Recursive type declarations
+test_case!(RecursiveTypeDecl);

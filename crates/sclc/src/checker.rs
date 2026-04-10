@@ -1050,23 +1050,41 @@ impl<'p> TypeChecker<'p> {
                 *env =
                     env.with_type_level(td.var.name.clone(), resolved_ty, td.doc_comment.clone());
             } else {
-                // Recursive group: register all with Never, then iterate until stable
-                for binding_id in scc {
-                    let td = type_def_by_name[binding_id.name.as_str()];
-                    *env = env.with_type_level(td.var.name.clone(), Type::Never, None);
+                // Recursive group: allocate a type variable for each member,
+                // bootstrap with Var(type_id), resolve once, then wrap with
+                // IsoRec where the variable actually appears in the body.
+                let scc_vars: Vec<(&str, usize)> = scc
+                    .iter()
+                    .map(|bid| {
+                        let td = type_def_by_name[bid.name.as_str()];
+                        let type_id = next_type_id();
+                        (td.var.name.as_str(), type_id)
+                    })
+                    .collect();
+
+                // Bootstrap: register each type name as its type variable
+                for &(name, type_id) in &scc_vars {
+                    *env = env.with_type_level(name.to_owned(), Type::Var(type_id), None);
                 }
-                // Iterate resolution until types stabilize (types are structural,
-                // so this converges quickly — typically 2 iterations).
-                for _ in 0..3 {
-                    for binding_id in scc {
-                        let td = type_def_by_name[binding_id.name.as_str()];
-                        let resolved_ty = self.resolve_type_def(env, td).unpack(diags);
-                        *env = env.with_type_level(
-                            td.var.name.clone(),
-                            resolved_ty,
-                            td.doc_comment.clone(),
-                        );
-                    }
+
+                // Resolve each type body once (references to SCC members
+                // will appear as Var(type_id) in the resolved type).
+                let mut resolved: Vec<(&str, usize, Type, Option<String>)> =
+                    Vec::with_capacity(scc_vars.len());
+                for &(name, type_id) in &scc_vars {
+                    let td = type_def_by_name[name];
+                    let body = self.resolve_type_def(env, td).unpack(diags);
+                    resolved.push((name, type_id, body, td.doc_comment.clone()));
+                }
+
+                // Wrap with IsoRec where the body actually references the variable
+                for (name, type_id, body, doc) in resolved {
+                    let ty = if body.contains_var(type_id) {
+                        Type::IsoRec(type_id, Box::new(body))
+                    } else {
+                        body
+                    };
+                    *env = env.with_type_level(name.to_owned(), ty, doc);
                 }
             }
         }
