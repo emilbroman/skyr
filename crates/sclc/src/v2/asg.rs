@@ -169,6 +169,13 @@ impl Asg {
         self.edges.iter().filter(move |e| &e.from == node)
     }
 
+    /// Returns true if this node has an edge to itself.
+    pub fn has_self_edge(&self, node: &NodeId) -> bool {
+        self.edges
+            .iter()
+            .any(|e| &e.from == node && &e.to == node)
+    }
+
     /// Compute SCCs using Tarjan's algorithm.
     /// Returns SCCs in reverse topological order (dependencies before dependents).
     pub fn compute_sccs(&self) -> Vec<Vec<NodeId>> {

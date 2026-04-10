@@ -126,8 +126,37 @@ impl Loader {
     }
 
     /// Finalize the Loader, returning the ASG with accumulated diagnostics.
-    pub fn finish(self) -> Diagnosed<Asg> {
+    ///
+    /// Performs SCC laziness validation: all intra-SCC edges between globals
+    /// must be lazy (cross a function boundary).
+    pub fn finish(mut self) -> Diagnosed<Asg> {
+        self.validate_scc_laziness();
         Diagnosed::new(self.asg, self.diags)
+    }
+
+    /// Check that all edges within an SCC are lazy.
+    fn validate_scc_laziness(&mut self) {
+        let sccs = self.asg.compute_sccs();
+        for scc in &sccs {
+            if scc.len() < 2 && !self.asg.has_self_edge(&scc[0]) {
+                continue;
+            }
+            let scc_set: HashSet<&NodeId> = scc.iter().collect();
+            for edge in self.asg.edges() {
+                if scc_set.contains(&edge.from)
+                    && scc_set.contains(&edge.to)
+                    && !edge.lazy
+                    // Module → Global/TypeDecl edges are structural, not value references.
+                    && !matches!(edge.from, NodeId::Module(_))
+                {
+                    self.diags.push(CyclicEagerDependency {
+                        from: edge.from.clone(),
+                        to: edge.to.clone(),
+                        span: edge.span.unwrap_or_default(),
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -667,6 +696,7 @@ enum LoaderDiag {
     },
     ModuleNotFound {
         raw_id: RawModuleId,
+        #[allow(dead_code)]
         module_id: ModuleId,
     },
 }
@@ -688,8 +718,33 @@ impl std::error::Error for LoaderDiag {}
 
 impl crate::Diag for LoaderDiag {
     fn locate(&self) -> (ModuleId, Span) {
-        // These diagnostics don't have a precise location in an existing module.
         (ModuleId::default(), Span::default())
+    }
+}
+
+/// Diagnostic for an eager (non-lazy) edge within a strongly connected component.
+#[derive(Debug)]
+struct CyclicEagerDependency {
+    from: NodeId,
+    to: NodeId,
+    span: Span,
+}
+
+impl std::fmt::Display for CyclicEagerDependency {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cyclic dependency between `{}` and `{}` requires a function boundary",
+            self.from, self.to
+        )
+    }
+}
+
+impl std::error::Error for CyclicEagerDependency {}
+
+impl crate::Diag for CyclicEagerDependency {
+    fn locate(&self) -> (ModuleId, Span) {
+        (ModuleId::default(), self.span)
     }
 }
 
@@ -905,5 +960,85 @@ mod tests {
             .collect();
         assert!(a_edges.iter().any(|e| !e.lazy
             && e.to == NodeId::Global(vec!["Test".into(), "Main".into()], "b".into())));
+    }
+
+    // ── SCC laziness validation tests ─────────────────────────────────
+
+    #[tokio::test]
+    async fn eager_cycle_produces_diagnostic() {
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let a = b\nlet b = a".to_vec(),
+        );
+
+        let finder = make_finder(files, PackageId::from(["Test"]));
+        let mut loader = Loader::new(finder);
+        loader.resolve(&["Test", "Main"]).await.unwrap();
+        let result = loader.finish();
+
+        // Eager mutual reference should produce a diagnostic.
+        assert!(result.diags().has_errors());
+        let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
+        assert!(msgs.iter().any(|m| m.contains("cyclic dependency")));
+    }
+
+    #[tokio::test]
+    async fn lazy_cycle_no_diagnostic() {
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let a = () => b()\nlet b = () => a()".to_vec(),
+        );
+
+        let finder = make_finder(files, PackageId::from(["Test"]));
+        let mut loader = Loader::new(finder);
+        loader.resolve(&["Test", "Main"]).await.unwrap();
+        let result = loader.finish();
+
+        // All-lazy cycle should NOT produce a cyclic dependency diagnostic.
+        let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
+        assert!(
+            !msgs.iter().any(|m| m.contains("cyclic dependency")),
+            "unexpected diagnostic: {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn self_referencing_eager_global_diagnostic() {
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let a = a".to_vec(),
+        );
+
+        let finder = make_finder(files, PackageId::from(["Test"]));
+        let mut loader = Loader::new(finder);
+        loader.resolve(&["Test", "Main"]).await.unwrap();
+        let result = loader.finish();
+
+        assert!(result.diags().has_errors());
+        let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
+        assert!(msgs.iter().any(|m| m.contains("cyclic dependency")));
+    }
+
+    #[tokio::test]
+    async fn self_referencing_lazy_global_ok() {
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let a = () => a()".to_vec(),
+        );
+
+        let finder = make_finder(files, PackageId::from(["Test"]));
+        let mut loader = Loader::new(finder);
+        loader.resolve(&["Test", "Main"]).await.unwrap();
+        let result = loader.finish();
+
+        let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
+        assert!(
+            !msgs.iter().any(|m| m.contains("cyclic dependency")),
+            "unexpected diagnostic: {msgs:?}"
+        );
     }
 }
