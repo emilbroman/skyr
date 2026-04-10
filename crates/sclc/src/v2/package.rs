@@ -104,6 +104,79 @@ impl<P: Package + 'static> PackageFinder for Arc<P> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CDB DeploymentClient → Package impl
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cdb")]
+#[async_trait::async_trait]
+impl Package for cdb::DeploymentClient {
+    fn id(&self) -> PackageId {
+        let repo_qid = self.repo_qid();
+        [repo_qid.org.to_string(), repo_qid.repo.to_string()]
+            .into_iter()
+            .collect::<PackageId>()
+    }
+
+    async fn lookup(&self, path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+        // Try path_hash first — it handles both files and trees and returns
+        // None for missing paths without an error.
+        let hash = match self.path_hash(path).await {
+            Ok(Some(h)) => h,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(LoadError::Other(Box::new(e))),
+        };
+
+        // Determine if it's a file or directory by trying to read it as a dir.
+        let dir_path = if path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(path)
+        };
+        match self.read_dir(dir_path).await {
+            Ok(tree) => {
+                let children = tree
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        let name = String::from_utf8_lossy(&entry.filename).into_owned();
+                        let kind = if entry.mode.is_tree() {
+                            DirChildKind::Dir
+                        } else {
+                            DirChildKind::File
+                        };
+                        DirChild {
+                            name,
+                            kind,
+                            hash: entry.oid,
+                        }
+                    })
+                    .collect();
+                Ok(Some(Cow::Owned(PackageEntity::Dir { hash, children })))
+            }
+            Err(cdb::FileError::NotADirectory(_)) => {
+                // It exists but isn't a directory, so it's a file.
+                Ok(Some(Cow::Owned(PackageEntity::File { hash })))
+            }
+            Err(cdb::FileError::NotFound(_)) => {
+                // Shouldn't happen since path_hash found it, but treat as file.
+                Ok(Some(Cow::Owned(PackageEntity::File { hash })))
+            }
+            Err(e) => Err(LoadError::Other(Box::new(e))),
+        }
+    }
+
+    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError> {
+        match self.read_file(path).await {
+            Ok(data) => Ok(Cow::Owned(data)),
+            Err(cdb::FileError::NotFound(_)) => {
+                Err(LoadError::NotFound(path.display().to_string()))
+            }
+            Err(e) => Err(LoadError::Other(Box::new(e))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
