@@ -1,6 +1,6 @@
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
-use crate::{ChildEntry, PackageId, RecordType, SourceError, SourceRepo, Type};
+use crate::{PackageId, RecordType, Type};
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {
@@ -88,65 +88,6 @@ std_modules! {
     option => "Option.scl",
     random => "Random.scl",
     time => "Time.scl",
-}
-
-#[derive(Clone)]
-pub struct StdSourceRepo {
-    files: HashMap<String, &'static [u8]>,
-}
-
-impl StdSourceRepo {
-    pub fn new() -> Self {
-        // These are embedded into the executable at compile-time.
-        let files = BUNDLED_FILES
-            .iter()
-            .map(|(path, bytes)| (path.to_string(), *bytes))
-            .collect();
-        Self { files }
-    }
-
-    fn normalize(path: &Path) -> String {
-        path.to_string_lossy().replace('\\', "/")
-    }
-}
-
-impl Default for StdSourceRepo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[async_trait::async_trait]
-impl SourceRepo for StdSourceRepo {
-    fn package_id(&self) -> PackageId {
-        [String::from("Std")].into()
-    }
-
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, SourceError> {
-        let key = Self::normalize(path);
-        Ok(self.files.get(&key).map(|data| data.to_vec()))
-    }
-
-    async fn list_children(&self, path: &Path) -> Result<Vec<ChildEntry>, SourceError> {
-        let prefix = Self::normalize(path);
-        let mut entries = std::collections::BTreeSet::new();
-        for key in self.files.keys() {
-            let relative = if prefix.is_empty() {
-                key.as_str()
-            } else if let Some(rest) = key.strip_prefix(&prefix).and_then(|r| r.strip_prefix('/')) {
-                rest
-            } else {
-                continue;
-            };
-            // Take the first path segment of `relative`
-            if let Some(slash_pos) = relative.find('/') {
-                entries.insert(ChildEntry::Directory(relative[..slash_pos].to_owned()));
-            } else {
-                entries.insert(ChildEntry::File(relative.to_owned()));
-            }
-        }
-        Ok(entries.into_iter().collect())
-    }
 }
 
 /// Compiles all standard library modules and returns the value-level type and

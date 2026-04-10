@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -872,8 +872,6 @@ pub struct TypeChecker<'p> {
     pub(crate) modules: &'p HashMap<crate::ModuleId, ast::FileMod>,
     /// Package names for import path splitting and IDE completions.
     pub(crate) package_names: Vec<crate::PackageId>,
-    /// Cached directory listings for path validation and IDE completions.
-    pub(crate) children_cache: &'p HashMap<(crate::PackageId, PathBuf), Vec<crate::ChildEntry>>,
     /// Cache for resolved global expression types (keyed by expression pointer).
     pub(crate) global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
     /// Cache for resolved import module types (keyed by FileMod pointer).
@@ -881,11 +879,6 @@ pub struct TypeChecker<'p> {
     /// Cache for type-level exports (keyed by FileMod pointer).
     pub(crate) type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
-
-/// Empty children cache used as default when no IDE context is available.
-static EMPTY_CHILDREN_CACHE: std::sync::LazyLock<
-    HashMap<(crate::PackageId, PathBuf), Vec<crate::ChildEntry>>,
-> = std::sync::LazyLock::new(HashMap::new);
 
 impl<'p> TypeChecker<'p> {
     /// Create a TypeChecker from a module map and package names.
@@ -896,63 +889,10 @@ impl<'p> TypeChecker<'p> {
         Self {
             modules,
             package_names,
-            children_cache: &EMPTY_CHILDREN_CACHE,
             global_cache: RefCell::new(HashMap::new()),
             import_cache: RefCell::new(HashMap::new()),
             type_level_cache: RefCell::new(HashMap::new()),
         }
-    }
-
-    /// Look up cached children for a directory within a package.
-    pub(crate) fn cached_children(
-        &self,
-        package: &crate::PackageId,
-        path: &Path,
-    ) -> Option<&[crate::ChildEntry]> {
-        self.children_cache
-            .get(&(package.clone(), path.to_path_buf()))
-            .map(Vec::as_slice)
-    }
-
-    /// Check whether a resolved path exists by consulting cached directory listings.
-    pub(crate) fn path_exists_cached(
-        &self,
-        package: &crate::PackageId,
-        resolved: &str,
-    ) -> Option<bool> {
-        let rel = resolved.strip_prefix('/')?;
-        let components: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
-        if components.is_empty() {
-            return Some(true);
-        }
-
-        let mut dir = PathBuf::new();
-        for (i, component) in components.iter().enumerate() {
-            let is_last = i == components.len() - 1;
-            let children = self.cached_children(package, &dir)?;
-
-            if is_last {
-                let exists = children.iter().any(|entry| entry.name() == *component);
-                return Some(exists);
-            }
-
-            let is_dir = children.iter().any(
-                |entry| matches!(entry, crate::ChildEntry::Directory(name) if name == component),
-            );
-            if !is_dir {
-                let exists_as_non_dir = children.iter().any(
-                    |entry| matches!(entry, crate::ChildEntry::File(name) if name == component),
-                );
-                if exists_as_non_dir {
-                    return Some(false);
-                }
-                return None;
-            }
-
-            dir.push(component);
-        }
-
-        None
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -2205,94 +2145,18 @@ impl<'p> TypeChecker<'p> {
                     dir_path.push(seg);
                 }
 
-                if let Some(children) = self.cached_children(&package_name, &dir_path) {
-                    for entry in children {
-                        match entry {
-                            crate::ChildEntry::File(name) => {
-                                if let Some(stem) = name.strip_suffix(".scl")
-                                    && stem.starts_with(prefix)
-                                {
-                                    cursor.add_completion_candidate(
-                                        crate::CompletionCandidate::Module(stem.to_owned()),
-                                    );
-                                }
-                                // Non-.scl files are not importable; skip them.
-                            }
-                            crate::ChildEntry::Directory(name) => {
-                                if name.starts_with(prefix) {
-                                    cursor.add_completion_candidate(
-                                        crate::CompletionCandidate::ModuleDir(name.clone()),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                // Children-based completion is handled by the v2 IDE layer;
+                // the TypeChecker no longer carries a children cache.
+                let _ = (package_name, dir_path);
             }
         }
     }
 
     /// Add file/directory completion candidates for path expressions.
-    pub(crate) fn add_path_completions(&self, env: &TypeEnv<'_>, path_expr: &ast::PathExpr) {
-        for (i, segment) in path_expr.segments.iter().enumerate() {
-            let Some((cursor, offset)) = &segment.cursor else {
-                continue;
-            };
-            let prefix = &segment.value[..*offset];
-
-            // Resolve prefix segments to a parent directory path
-            let Ok(module_id) = env.module_id() else {
-                continue;
-            };
-
-            // Build a partial PathExpr from segments before the cursor segment
-            let prior_segments: Vec<&str> = path_expr.values().take(i).collect();
-
-            // Determine the parent directory in the repo
-            let is_relative = prior_segments
-                .first()
-                .is_some_and(|s| *s == "." || *s == "..");
-            let mut components: Vec<&str> = if is_relative {
-                let dir = &module_id.path[..module_id.path.len().saturating_sub(1)];
-                dir.iter().map(|s| s.as_str()).collect()
-            } else {
-                Vec::new()
-            };
-
-            for seg in &prior_segments {
-                match *seg {
-                    "." => {}
-                    ".." => {
-                        components.pop();
-                    }
-                    s => components.push(s),
-                }
-            }
-
-            let dir_path = PathBuf::from(components.join("/"));
-
-            if let Some(children) = self.cached_children(&module_id.package, &dir_path) {
-                for entry in children {
-                    match entry {
-                        crate::ChildEntry::File(name) => {
-                            if name.starts_with(prefix) {
-                                cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::PathFile(name.clone()),
-                                );
-                            }
-                        }
-                        crate::ChildEntry::Directory(name) => {
-                            if name.starts_with(prefix) {
-                                cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::PathDir(name.clone()),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    ///
+    /// Currently a no-op: path completions are handled by the v2 IDE layer.
+    /// The TypeChecker no longer carries a children cache.
+    pub(crate) fn add_path_completions(&self, _env: &TypeEnv<'_>, _path_expr: &ast::PathExpr) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

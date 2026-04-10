@@ -160,11 +160,7 @@ impl Repl {
             crate::ModStmt::Import(import_stmt) => {
                 self.process_import(&module_id, import_stmt).await.map(Some)
             }
-            _ => {
-                self.preload_paths_for_statement(statement, &module_id)
-                    .await;
-                self.process_statement(statement, &module_id).map(Some)
-            }
+            _ => self.process_statement(statement, &module_id).map(Some),
         }
     }
 
@@ -293,16 +289,6 @@ impl Repl {
         } else {
             ModuleId::new(PackageId::default(), segments.to_vec())
         }
-    }
-
-    async fn preload_paths_for_statement(
-        &mut self,
-        statement: &crate::ModStmt,
-        _module_id: &ModuleId,
-    ) {
-        // In v2, path loading is handled by the Package trait's lookup/load
-        // methods. No explicit preloading needed.
-        let _ = statement;
     }
 
     fn process_statement(
