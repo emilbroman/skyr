@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{DiagList, Diagnosed, Type, TypeCheckError, TypeChecker, TypeEnv, ast};
+use crate::{DiagList, Diagnosed, RecordType, Type, TypeCheckError, TypeChecker, TypeEnv, ast};
 
 use super::{Asg, NodeId, RawModuleId};
 
@@ -49,10 +49,52 @@ impl<'a> AsgChecker<'a> {
         // SCCs, exports).
         let sccs = self.asg.compute_sccs();
         for scc in &sccs {
+            let module_nodes_in_scc: Vec<&NodeId> = scc
+                .iter()
+                .filter(|n| matches!(n, NodeId::Module(..)))
+                .collect();
+
+            // For multi-module SCCs (circular imports), pre-seed the
+            // TypeChecker's caches with empty records so that recursive
+            // calls through populate_import_type_level / type_level_exports
+            // find a cached entry instead of recursing infinitely.
+            //
+            // The caches must use CompilationUnit pointers (not ASG
+            // pointers) because the TypeChecker's internal import
+            // resolution via resolve_import returns &FileMod from the
+            // CompilationUnit.
+            if module_nodes_in_scc.len() > 1 {
+                for node in &module_nodes_in_scc {
+                    let NodeId::Module(raw_id) = node else {
+                        continue;
+                    };
+                    if let Some(mn) = self.asg.module(raw_id)
+                        && let Some(unit_fm) = unit.module(&mn.module_id)
+                    {
+                        let key = unit_fm as *const ast::FileMod;
+                        checker
+                            .import_cache
+                            .borrow_mut()
+                            .insert(key, Type::Record(RecordType::default()));
+                        checker
+                            .type_level_cache
+                            .borrow_mut()
+                            .insert(key, RecordType::default());
+                    }
+                }
+            }
+
             for node in scc {
                 if let NodeId::Module(raw_id) = node
                     && let Some(module_node) = self.asg.module(raw_id)
                 {
+                    // check_file_mod is called with the ASG's file_mod
+                    // pointer, which differs from the CompilationUnit's
+                    // pointer. The ASG pointer is NOT pre-seeded, so
+                    // check_file_mod proceeds with its full processing.
+                    // Internal recursive lookups via resolve_import use
+                    // CompilationUnit pointers, which ARE pre-seeded,
+                    // breaking the recursion.
                     let env = TypeEnv::new().with_module_id(&module_node.module_id);
                     checker
                         .check_file_mod(&env, &module_node.file_mod)?

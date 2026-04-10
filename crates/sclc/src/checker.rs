@@ -769,7 +769,7 @@ pub struct TypeChecker<'p> {
     /// Cache for resolved import module types (keyed by FileMod pointer).
     pub(crate) import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
     /// Cache for type-level exports (keyed by FileMod pointer).
-    type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
+    pub(crate) type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
 
 impl<'p> TypeChecker<'p> {

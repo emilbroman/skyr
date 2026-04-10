@@ -510,6 +510,9 @@ test_case!(DiagNamedRecordInFnType);
 test_case!(DiagUntypedParam);
 test_case!(UntypedParamCheck);
 
+// Circular imports
+test_case!(CircularImport);
+
 // Path validation
 test_case!(PathValid);
 test_case!(PathInvalid);
