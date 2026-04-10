@@ -27,10 +27,11 @@ impl Loader {
     /// Resolve all transitive dependencies starting from the given raw module ID.
     /// Can be called multiple times to accumulate more of the graph.
     pub async fn resolve(&mut self, raw_id: &[&str]) -> Result<(), LoadError> {
-        let mut queue: VecDeque<RawModuleId> =
-            VecDeque::from([raw_id.iter().map(|s| s.to_string()).collect()]);
+        // Queue entries: (raw module ID, optional source info for diagnostics).
+        let mut queue: VecDeque<(RawModuleId, Option<ImportSource>)> =
+            VecDeque::from([(raw_id.iter().map(|s| s.to_string()).collect(), None)]);
 
-        while let Some(raw_module_id) = queue.pop_front() {
+        while let Some((raw_module_id, import_source)) = queue.pop_front() {
             if self.asg.has_module(&raw_module_id) {
                 continue;
             }
@@ -42,6 +43,7 @@ impl Loader {
                 None => {
                     self.diags.push(LoaderDiag::PackageNotFound {
                         raw_id: raw_module_id.clone(),
+                        import_source: import_source.clone(),
                     });
                     continue;
                 }
@@ -62,6 +64,7 @@ impl Loader {
                     self.diags.push(LoaderDiag::ModuleNotFound {
                         raw_id: raw_module_id.clone(),
                         module_id: module_id.clone(),
+                        import_source,
                     });
                     continue;
                 }
@@ -83,7 +86,7 @@ impl Loader {
                 .register_package(pkg_id.clone(), Arc::clone(&package));
 
             // Analyze the module: collect globals, type decls, imports, and build edges.
-            let analysis = analyze_module(&raw_module_id, &pkg_id, &file_mod);
+            let analysis = analyze_module(&raw_module_id, &pkg_id, &module_id, &file_mod);
 
             // Add module node.
             self.asg.add_module(ModuleNode {
@@ -114,9 +117,9 @@ impl Loader {
             }
 
             // Enqueue discovered imports.
-            for import_raw_id in analysis.discovered_imports {
+            for (import_raw_id, import_src) in analysis.discovered_imports {
                 if !self.asg.has_module(&import_raw_id) {
-                    queue.push_back(import_raw_id);
+                    queue.push_back((import_raw_id, Some(import_src)));
                 }
             }
         }
@@ -125,10 +128,17 @@ impl Loader {
     }
 
     /// Finalize the Loader, returning the ASG with accumulated diagnostics.
+    pub fn finish(self) -> Diagnosed<Asg> {
+        Diagnosed::new(self.asg, self.diags)
+    }
+
+    /// Finalize with SCC laziness validation: all intra-SCC edges between
+    /// globals must be lazy (cross a function boundary).
     ///
-    /// Performs SCC laziness validation: all intra-SCC edges between globals
-    /// must be lazy (cross a function boundary).
-    pub fn finish(mut self) -> Diagnosed<Asg> {
+    /// This is separate from `finish()` because when bridging to the existing
+    /// checker (which has its own cycle detection), the validation would produce
+    /// duplicate diagnostics.
+    pub fn finish_with_validation(mut self) -> Diagnosed<Asg> {
         self.validate_scc_laziness();
         Diagnosed::new(self.asg, self.diags)
     }
@@ -163,18 +173,26 @@ impl Loader {
 // Module analysis
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// Source location of an import statement, for diagnostics.
+#[derive(Clone, Debug)]
+struct ImportSource {
+    source_module_id: ModuleId,
+    path_span: Span,
+}
+
 struct ModuleAnalysis {
     globals: Vec<GlobalNode>,
     type_decls: Vec<TypeDeclNode>,
     global_exprs: Vec<ModStmt>,
     edges: Vec<Edge>,
-    discovered_imports: Vec<RawModuleId>,
+    discovered_imports: Vec<(RawModuleId, ImportSource)>,
 }
 
 /// Analyze a parsed module, extracting nodes, edges, and import references.
 fn analyze_module(
     raw_id: &RawModuleId,
     pkg_id: &PackageId,
+    module_id: &ModuleId,
     file_mod: &ast::FileMod,
 ) -> ModuleAnalysis {
     // Collect sets of names for classification.
@@ -214,9 +232,32 @@ fn analyze_module(
 
     // Collect discovered imports (deduplicated).
     let mut seen_imports: HashSet<RawModuleId> = HashSet::new();
+    // Also collect import spans for diagnostics.
+    let mut import_spans: HashMap<RawModuleId, Span> = HashMap::new();
+    for stmt in &file_mod.statements {
+        if let ModStmt::Import(import) = stmt {
+            let vars = &import.as_ref().vars;
+            if !vars.is_empty() {
+                let import_raw_id = resolve_import_path(vars, pkg_id);
+                let path_span = Span::new(
+                    vars.first().unwrap().span().start(),
+                    vars.last().unwrap().span().end(),
+                );
+                import_spans.entry(import_raw_id).or_insert(path_span);
+            }
+        }
+    }
+
     for import_raw_id in import_aliases.values() {
         if seen_imports.insert(import_raw_id.clone()) {
-            analysis.discovered_imports.push(import_raw_id.clone());
+            let span = import_spans.get(import_raw_id).copied().unwrap_or_default();
+            analysis.discovered_imports.push((
+                import_raw_id.clone(),
+                ImportSource {
+                    source_module_id: module_id.clone(),
+                    path_span: span,
+                },
+            ));
             // Module → Import module edge.
             analysis.edges.push(Edge {
                 from: NodeId::Module(raw_id.clone()),
@@ -739,22 +780,33 @@ fn collect_type_refs_excluding(
 enum LoaderDiag {
     PackageNotFound {
         raw_id: RawModuleId,
+        import_source: Option<ImportSource>,
     },
     ModuleNotFound {
         raw_id: RawModuleId,
         #[allow(dead_code)]
         module_id: ModuleId,
+        import_source: Option<ImportSource>,
     },
+}
+
+impl LoaderDiag {
+    fn import_source(&self) -> Option<&ImportSource> {
+        match self {
+            LoaderDiag::PackageNotFound { import_source, .. }
+            | LoaderDiag::ModuleNotFound { import_source, .. } => import_source.as_ref(),
+        }
+    }
 }
 
 impl std::fmt::Display for LoaderDiag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LoaderDiag::PackageNotFound { raw_id } => {
-                write!(f, "package not found for `{}`", raw_id.join("/"))
+            LoaderDiag::PackageNotFound { raw_id, .. } => {
+                write!(f, "module not found: {}", raw_id.join("/"))
             }
             LoaderDiag::ModuleNotFound { raw_id, .. } => {
-                write!(f, "module not found: `{}`", raw_id.join("/"))
+                write!(f, "module not found: {}", raw_id.join("/"))
             }
         }
     }
@@ -764,7 +816,11 @@ impl std::error::Error for LoaderDiag {}
 
 impl crate::Diag for LoaderDiag {
     fn locate(&self) -> (ModuleId, Span) {
-        (ModuleId::default(), Span::default())
+        if let Some(src) = self.import_source() {
+            (src.source_module_id.clone(), src.path_span)
+        } else {
+            (ModuleId::default(), Span::default())
+        }
     }
 }
 
@@ -1029,7 +1085,7 @@ mod tests {
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
         loader.resolve(&["Test", "Main"]).await.unwrap();
-        let result = loader.finish();
+        let result = loader.finish_with_validation();
 
         // Eager mutual reference should produce a diagnostic.
         assert!(result.diags().has_errors());
@@ -1048,7 +1104,7 @@ mod tests {
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
         loader.resolve(&["Test", "Main"]).await.unwrap();
-        let result = loader.finish();
+        let result = loader.finish_with_validation();
 
         // All-lazy cycle should NOT produce a cyclic dependency diagnostic.
         let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
@@ -1066,7 +1122,7 @@ mod tests {
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
         loader.resolve(&["Test", "Main"]).await.unwrap();
-        let result = loader.finish();
+        let result = loader.finish_with_validation();
 
         assert!(result.diags().has_errors());
         let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
@@ -1081,7 +1137,7 @@ mod tests {
         let finder = make_finder(files, PackageId::from(["Test"]));
         let mut loader = Loader::new(finder);
         loader.resolve(&["Test", "Main"]).await.unwrap();
-        let result = loader.finish();
+        let result = loader.finish_with_validation();
 
         let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
         assert!(

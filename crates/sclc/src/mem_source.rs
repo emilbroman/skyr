@@ -17,6 +17,11 @@ impl MemSourceRepo {
     pub fn new(package_id: PackageId, files: HashMap<String, Vec<u8>>) -> Self {
         Self { package_id, files }
     }
+
+    /// Consume the repo and return the internal files map.
+    pub fn into_files(self) -> HashMap<String, Vec<u8>> {
+        self.files
+    }
 }
 
 #[async_trait::async_trait]

@@ -90,6 +90,11 @@ fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
 fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
     let mut unit = CompilationUnit::new();
 
+    // Register package names so split_import_segments works.
+    for pkg_id in asg.packages().keys() {
+        unit.register_package_name(pkg_id.clone());
+    }
+
     // Populate modules.
     for module_node in asg.modules() {
         unit.insert_module(module_node.module_id.clone(), module_node.file_mod.clone());

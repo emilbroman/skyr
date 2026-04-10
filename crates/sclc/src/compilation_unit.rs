@@ -264,6 +264,21 @@ impl CompilationUnit {
         self.externs = externs;
     }
 
+    /// Register a package name so that `split_import_segments` can resolve
+    /// import paths. Used by the v2 pipeline to populate the Program with
+    /// package metadata without going through the resolution pipeline.
+    pub fn register_package_name(&mut self, id: PackageId) {
+        use std::sync::Arc;
+        self.program
+            .packages_mut()
+            .entry(id.clone())
+            .or_insert_with(|| {
+                // Create a stub package with an empty in-memory source.
+                let source = crate::MemSourceRepo::new(id, std::collections::HashMap::new());
+                crate::Package::new(Arc::new(source))
+            });
+    }
+
     /// Look up a module by its ID.
     pub fn module(&self, id: &ModuleId) -> Option<&FileMod> {
         self.modules.get(id)
