@@ -1,22 +1,29 @@
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::v2::{Asg, Loader, PackageFinder, build_default_finder};
 use crate::{
-    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, FileMod, ModuleId,
-    PackageId, Program, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, ModuleId, PackageId,
+    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
 };
 
 #[derive(Clone)]
 pub struct Repl {
     line_number: usize,
+    finder: Arc<dyn PackageFinder>,
+    /// Cached ASG built from all resolved imports so far.
+    cached_asg: Asg,
+    /// Cached CompilationUnit derived from the ASG (rebuilt when imports change).
     unit: CompilationUnit,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
     namespace: String,
     package_id: PackageId,
+    /// Import entry points accumulated across REPL lines.
+    import_entries: Vec<Vec<String>>,
 }
 
 pub enum ReplOutcome {
@@ -60,21 +67,22 @@ impl From<crate::ResolveError> for ReplError {
 
 impl Repl {
     pub fn new(
-        program: Program,
+        finder: Arc<dyn PackageFinder>,
         package_id: PackageId,
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
-        let mut unit = CompilationUnit::new();
-        unit.set_program(program);
         Self {
             line_number: 0,
-            unit,
+            finder,
+            cached_asg: Asg::new(),
+            unit: CompilationUnit::new(),
             effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
             namespace,
             package_id,
+            import_entries: Vec::new(),
         }
     }
 
@@ -98,17 +106,15 @@ impl Repl {
         &self.type_defs
     }
 
-    pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
-        self.package_id = source.package_id();
-        self.unit.replace_user_source(source);
+    /// Replace the user package in the finder. Rebuilds the finder from the
+    /// new package while preserving the standard library.
+    pub fn replace_user_package(&mut self, user_package: Arc<dyn crate::v2::Package>) {
+        self.package_id = user_package.id();
+        self.finder = build_default_finder(user_package);
     }
 
     pub fn package_id(&self) -> &PackageId {
         &self.package_id
-    }
-
-    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        self.unit.preload_path_dirs(&self.package_id, dirs).await;
     }
 
     pub fn next_line_module_id(&mut self) -> ModuleId {
@@ -175,12 +181,6 @@ impl Repl {
             .collect();
         let resolved_segments =
             resolve_self_import_segments(raw_segments.clone(), &self.package_id);
-        let import_path = self
-            .unit
-            .split_import_segments(&resolved_segments)
-            .unwrap_or_else(|| {
-                ModuleId::new(crate::PackageId::default(), resolved_segments.clone())
-            });
         let alias = import_stmt
             .as_ref()
             .vars
@@ -190,10 +190,17 @@ impl Repl {
             .name
             .clone();
 
-        let mut diags = DiagList::new();
-        self.unit.resolve(&import_path).await?.unpack(&mut diags);
+        // Add this import to our accumulated entries.
+        self.import_entries.push(resolved_segments.clone());
+
+        // Rebuild the ASG with all accumulated imports.
+        self.rebuild_asg().await?;
+
+        // Determine the module ID for the import.
+        let import_path = self.find_module_id(&resolved_segments);
 
         let Some(file_mod) = self.unit.module(&import_path).cloned() else {
+            let mut diags = DiagList::new();
             diags.push(invalid_import_diag(
                 source_module_id.clone(),
                 import_path.clone(),
@@ -202,6 +209,7 @@ impl Repl {
             return Err(ReplError::Diagnostics(diags));
         };
 
+        let mut diags = DiagList::new();
         let checker = TypeChecker::new(&self.unit);
         let type_env = TypeEnv::new().with_module_id(&import_path);
         let ty = checker
@@ -225,33 +233,67 @@ impl Repl {
         })
     }
 
+    /// Rebuild the cached ASG and CompilationUnit from all accumulated import entries.
+    async fn rebuild_asg(&mut self) -> Result<(), ReplError> {
+        let mut loader = Loader::new(Arc::clone(&self.finder));
+
+        for entry in &self.import_entries {
+            let entry_refs: Vec<&str> = entry.iter().map(String::as_str).collect();
+            if let Err(e) = loader.resolve(&entry_refs).await {
+                // Non-fatal: log but continue
+                eprintln!("repl: failed to resolve import: {e}");
+            }
+        }
+
+        let diagnosed = loader.finish();
+        let mut diags = DiagList::new();
+        self.cached_asg = diagnosed.unpack(&mut diags);
+        self.unit = crate::v2::asg_to_compilation_unit(&self.cached_asg);
+
+        if diags.has_errors() {
+            return Err(ReplError::Diagnostics(diags));
+        }
+
+        Ok(())
+    }
+
+    /// Find the ModuleId that the loader resolved for a set of raw segments.
+    fn find_module_id(&self, segments: &[String]) -> ModuleId {
+        let raw_id: Vec<String> = segments.to_vec();
+        // Search the ASG's modules for a matching raw ID.
+        for module_node in self.cached_asg.modules() {
+            let node_raw: Vec<String> = module_node
+                .module_id
+                .package
+                .as_slice()
+                .iter()
+                .cloned()
+                .chain(module_node.module_id.path.iter().cloned())
+                .collect();
+            if node_raw == raw_id {
+                return module_node.module_id.clone();
+            }
+        }
+        // Fallback: construct a ModuleId with the package ID prefix.
+        let pkg_len = self.package_id.len();
+        if segments.len() > pkg_len {
+            ModuleId::new(
+                PackageId::from(segments[..pkg_len].to_vec()),
+                segments[pkg_len..].to_vec(),
+            )
+        } else {
+            ModuleId::new(PackageId::default(), segments.to_vec())
+        }
+    }
+
     async fn preload_paths_for_statement(
         &mut self,
         statement: &crate::ModStmt,
-        module_id: &ModuleId,
+        _module_id: &ModuleId,
     ) {
-        let file_mod = FileMod {
-            statements: vec![statement.clone()],
-        };
-        let mut collector = crate::CollectPaths::new();
-        crate::visit_file_mod(&mut collector, &file_mod);
-
-        let dirs: HashSet<PathBuf> = collector
-            .paths
-            .iter()
-            .filter_map(|path_expr| {
-                let resolved = path_expr.resolve_with_context(module_id);
-                let resolved_path = std::path::Path::new(&resolved);
-                let parent = resolved_path.parent()?;
-                let parent_str = parent.to_string_lossy();
-                let parent_rel = parent_str.strip_prefix('/').unwrap_or(&parent_str);
-                Some(PathBuf::from(parent_rel))
-            })
-            .collect();
-
-        if !dirs.is_empty() {
-            self.unit.preload_path_dirs(&self.package_id, dirs).await;
-        }
+        // In v2, path loading is handled by the Package trait's lookup/load
+        // methods. No explicit preloading needed.
+        let _ = statement;
     }
 
     fn process_statement(

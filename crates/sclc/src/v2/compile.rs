@@ -85,10 +85,10 @@ fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
 /// Convert an [`Asg`] into a [`CompilationUnit`] by extracting the modules,
 /// externs, and path hashes.
 ///
-/// This is a transitional bridge used internally by `AsgChecker` and
-/// `AsgEvaluator` while they still delegate expression-level processing to
-/// the existing `TypeChecker` and `Eval`.
-pub(super) fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
+/// This is a transitional bridge used by `AsgChecker`, `AsgEvaluator`, and
+/// the v2 IDE module while expression-level processing still delegates to the
+/// existing `TypeChecker` and `Eval`.
+pub fn asg_to_compilation_unit(asg: &Asg) -> CompilationUnit {
     let mut unit = CompilationUnit::new();
 
     // Register package names so split_import_segments works.

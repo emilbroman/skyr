@@ -38,6 +38,7 @@ pub struct Edge {
 }
 
 /// A parsed module with its metadata.
+#[derive(Clone)]
 pub struct ModuleNode {
     pub raw_id: RawModuleId,
     pub module_id: ModuleId,
@@ -46,6 +47,7 @@ pub struct ModuleNode {
 }
 
 /// A global value binding in the ASG.
+#[derive(Clone)]
 pub struct GlobalNode {
     pub raw_module_id: RawModuleId,
     pub name: String,
@@ -55,6 +57,7 @@ pub struct GlobalNode {
 }
 
 /// A type declaration in the ASG.
+#[derive(Clone)]
 pub struct TypeDeclNode {
     pub raw_module_id: RawModuleId,
     pub name: String,
@@ -63,6 +66,7 @@ pub struct TypeDeclNode {
 }
 
 /// The Abstract Syntax Graph — the output of the Loader.
+#[derive(Clone)]
 pub struct Asg {
     modules: HashMap<RawModuleId, ModuleNode>,
     globals: HashMap<(RawModuleId, String), GlobalNode>,

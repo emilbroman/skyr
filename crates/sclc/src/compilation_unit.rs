@@ -441,11 +441,6 @@ impl CompilationUnit {
         }
     }
 
-    /// Set the underlying Program directly (used during REPL initialization).
-    pub(crate) fn set_program(&mut self, program: Program) {
-        self.program = program;
-    }
-
     pub(crate) fn find_imports<'a>(
         &'a self,
         file_mod: &'a FileMod,
