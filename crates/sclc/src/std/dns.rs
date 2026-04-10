@@ -1,6 +1,6 @@
 const A_RECORD_RESOURCE_TYPE: &str = "Std/DNS.ARecord";
 
-pub fn register_extern(eval: &mut crate::Eval<'_>) {
+pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn(A_RECORD_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 

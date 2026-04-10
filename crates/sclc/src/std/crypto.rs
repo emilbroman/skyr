@@ -21,7 +21,7 @@ fn extract_key_outputs(
     Ok(out)
 }
 
-pub fn register_extern(eval: &mut crate::Eval<'_>) {
+pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn(ED25519_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 

@@ -3,7 +3,7 @@ use serde_json::{Map, Number, Value as JsonValue};
 
 use crate::{Dict, EvalError, EvalErrorKind, Record, Value};
 
-pub fn register_extern(eval: &mut crate::Eval<'_>) {
+pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/Encoding.toJson", |args, _ctx| {
         let mut args = args.into_iter();
         let first = args

@@ -9,19 +9,66 @@ macro_rules! std_modules {
     ($($module:ident => $scl:literal),* $(,)?) => {
         $(mod $module;)*
 
-        const BUNDLED_FILES: [(&'static str, &'static [u8]); <[()]>::len(&[$(std_modules!(@unit $module => $scl)),*])] = [
+        pub(crate) const BUNDLED_FILES: [(&'static str, &'static [u8]); <[()]>::len(&[$(std_modules!(@unit $module => $scl)),*])] = [
             $((
                 $scl,
                 include_bytes!($scl) as &'static [u8],
             )),*
         ];
 
-        pub(crate) fn register_std_externs(eval: &mut crate::Eval<'_>) {
+        pub(crate) fn register_std_externs(registry: &mut impl ExternRegistry) {
             $(
-                $module::register_extern(eval);
+                $module::register_extern(registry);
             )*
         }
+
+        /// Collects all standard library extern functions into a map.
+        ///
+        /// This is the v2-compatible equivalent of [`register_std_externs`] that
+        /// doesn't require an `Eval` reference.
+        pub(crate) fn collect_std_externs() -> HashMap<String, crate::Value> {
+            let mut collector = ExternCollector(HashMap::new());
+            register_std_externs(&mut collector);
+            collector.0
+        }
     };
+}
+
+/// Trait for types that can receive extern function registrations.
+///
+/// Implemented by [`crate::Eval`] (for the v1 pipeline) and by
+/// [`ExternCollector`] (for the v2 pipeline).
+pub trait ExternRegistry {
+    fn add_extern_fn(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<crate::TrackedValue>, &crate::EvalCtx) -> Result<crate::TrackedValue, crate::EvalError>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    );
+}
+
+/// Collects extern functions into a `HashMap<String, Value>` without
+/// requiring an [`Eval`](crate::Eval) instance.
+pub(crate) struct ExternCollector(pub HashMap<String, crate::Value>);
+
+impl ExternRegistry for ExternCollector {
+    fn add_extern_fn(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<crate::TrackedValue>, &crate::EvalCtx) -> Result<crate::TrackedValue, crate::EvalError>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
+    ) {
+        self.0.insert(
+            name.into(),
+            crate::Value::ExternFn(crate::ExternFnValue::new(Box::new(f))),
+        );
+    }
 }
 
 std_modules! {

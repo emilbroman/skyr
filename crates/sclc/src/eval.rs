@@ -664,6 +664,23 @@ impl<'p> Eval<'p> {
     ) {
         self.add_extern(name, Value::ExternFn(ExternFnValue::new(Box::new(f))));
     }
+}
+
+impl crate::std::ExternRegistry for Eval<'_> {
+    fn add_extern_fn(
+        &mut self,
+        name: impl Into<String>,
+        f: impl Fn(Vec<TrackedValue>, &EvalCtx) -> Result<TrackedValue, EvalError>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    ) {
+        Eval::add_extern_fn(self, name, f);
+    }
+}
+
+impl<'p> Eval<'p> {
 
     pub fn eval_expr(
         &self,
