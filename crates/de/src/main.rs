@@ -197,6 +197,7 @@ async fn process(
                     deployment.environment.clone(),
                     deployment.deployment.clone(),
                 ),
+                cdb_client: client.clone(),
                 environment_qid: env_qid.clone(),
                 namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
@@ -220,6 +221,7 @@ async fn process(
 
 struct Worker {
     client: DeploymentClient,
+    cdb_client: cdb::Client,
     environment_qid: ids::EnvironmentQid,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
@@ -622,7 +624,11 @@ impl Worker {
 
     async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
         let user_pkg: Arc<dyn sclc::v2::Package> = Arc::new(self.client.clone());
-        let finder = sclc::v2::build_default_finder(user_pkg);
+        let finder = sclc::v2::build_cdb_finder(
+            user_pkg,
+            self.cdb_client.clone(),
+            self.environment_qid.environment.clone(),
+        );
         let repo_qid = self.client.repo_qid();
         let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
 
