@@ -6,6 +6,7 @@
 /// crate; only the orchestration layer is new.
 mod asg;
 mod cached_package;
+mod compile;
 mod composite_finder;
 #[cfg(feature = "fs")]
 mod fs_package;
@@ -16,6 +17,7 @@ mod std_package;
 
 pub use asg::*;
 pub use cached_package::*;
+pub use compile::*;
 pub use composite_finder::*;
 #[cfg(feature = "fs")]
 pub use fs_package::*;

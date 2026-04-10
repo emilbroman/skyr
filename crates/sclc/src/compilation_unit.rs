@@ -253,6 +253,17 @@ impl CompilationUnit {
         }
     }
 
+    /// Insert a module into the compilation unit. Used by the v2 pipeline
+    /// to populate the unit from an ASG.
+    pub fn insert_module(&mut self, id: ModuleId, file_mod: FileMod) {
+        self.modules.insert(id, file_mod);
+    }
+
+    /// Replace the externs map entirely. Used by the v2 pipeline.
+    pub fn set_externs(&mut self, externs: HashMap<String, Value>) {
+        self.externs = externs;
+    }
+
     /// Look up a module by its ID.
     pub fn module(&self, id: &ModuleId) -> Option<&FileMod> {
         self.modules.get(id)
