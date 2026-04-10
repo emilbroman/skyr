@@ -1,18 +1,18 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-fn make_repo(files_json: &str) -> sclc::MemSourceRepo {
+fn make_package(files_json: &str) -> sclc::v2::InMemoryPackage {
     let file_map: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
-    sclc::MemSourceRepo::new(
+    sclc::v2::InMemoryPackage::new(
         sclc::PackageId::from(["Playground"]),
         file_map
             .into_iter()
-            .map(|(name, content)| (name, content.into_bytes()))
+            .map(|(name, content)| (PathBuf::from(name), content.into_bytes()))
             .collect(),
     )
 }
@@ -51,19 +51,20 @@ fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// Load a compilation unit from multiple files (compile + type check), returning diagnostics.
-async fn load_and_compile(files_json: &str) -> (sclc::DiagList, sclc::CompilationUnit) {
-    let repo = make_repo(files_json);
+/// Compile using the v2 pipeline, returning diagnostics and the ASG.
+async fn load_and_compile(files_json: &str) -> (sclc::DiagList, Option<sclc::v2::Asg>) {
+    let pkg = Arc::new(make_package(files_json));
+    let finder = sclc::v2::build_default_finder(pkg);
     let mut diags = sclc::DiagList::new();
 
-    match sclc::compile(repo).await {
+    match sclc::v2::compile(finder, &["Playground", "Main"]).await {
         Ok(diagnosed) => {
-            let unit = diagnosed.unpack(&mut diags);
-            (diags, unit)
+            let asg = diagnosed.unpack(&mut diags);
+            (diags, Some(asg))
         }
         Err(error) => {
             eprintln!("sclc-wasm: compile failed: {error}");
-            (diags, sclc::CompilationUnit::new())
+            (diags, None)
         }
     }
 }
@@ -126,12 +127,13 @@ struct HoverInfo {
 #[wasm_bindgen]
 pub async fn hover(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let (_, unit) = load_and_compile(files_json).await;
+    let (_, asg) = load_and_compile(files_json).await;
+    let asg = asg?;
 
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&unit, source, &module_id, position);
+    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     let ty_str = match (&info.identifier, &info.ty) {
@@ -163,14 +165,17 @@ struct CompletionItem {
 #[wasm_bindgen]
 pub async fn completions(files_json: &str, file: &str, line: u32, col: u32) -> String {
     let file_map = parse_files_json(files_json);
-    let (_, unit) = load_and_compile(files_json).await;
+    let (_, asg) = load_and_compile(files_json).await;
+    let Some(asg) = asg else {
+        return "[]".to_string();
+    };
 
     let module_id = module_id_for_file(file);
     let Some(source) = file_map.get(file) else {
         return "[]".to_string();
     };
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&unit, source, &module_id, position);
+    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     let items: Vec<CompletionItem> = info
@@ -236,12 +241,13 @@ struct LocationInfo {
 #[wasm_bindgen]
 pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let (_, unit) = load_and_compile(files_json).await;
+    let (_, asg) = load_and_compile(files_json).await;
+    let asg = asg?;
 
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = query_cursor(&unit, source, &module_id, position);
+    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     info.declaration.map(|span| {
@@ -273,27 +279,6 @@ pub fn format(source: &str) -> Option<String> {
     }
 }
 
-fn query_cursor(
-    unit: &sclc::CompilationUnit,
-    source: &str,
-    module_id: &sclc::ModuleId,
-    position: sclc::Position,
-) -> Arc<Mutex<sclc::CursorInfo>> {
-    let cursor = sclc::Cursor::new(position);
-    let cursor_info = cursor.info();
-
-    let diagnosed = sclc::parse_file_mod_with_cursor(source, module_id, Some(cursor.clone()));
-    let file_mod = diagnosed.into_inner();
-
-    let type_env = sclc::TypeEnv::new()
-        .with_module_id(module_id)
-        .with_cursor(cursor);
-    let checker = sclc::TypeChecker::new(unit);
-    let _ = checker.check_file_mod(&type_env, &file_mod);
-
-    cursor_info
-}
-
 // ---------------------------------------------------------------------------
 // REPL support
 // ---------------------------------------------------------------------------
@@ -311,10 +296,14 @@ thread_local! {
 #[wasm_bindgen]
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let program = sclc::Program::new();
+    let user_pkg = Arc::new(sclc::v2::InMemoryPackage::new(
+        sclc::PackageId::from(["Playground"]),
+        HashMap::new(),
+    ));
+    let finder = sclc::v2::build_default_finder(user_pkg);
     let state = sclc::Repl::new(
-        program,
-        sclc::PackageId::default(),
+        finder,
+        sclc::PackageId::from(["Playground"]),
         effects_tx,
         "Playground".to_string(),
     );
@@ -402,7 +391,8 @@ pub async fn repl_eval(files_json: &str, line: &str) -> String {
 }
 
 async fn repl_process(wasm_state: &mut WasmReplState, files_json: &str, line: &str) -> ReplResult {
-    wasm_state.state.replace_user_source(make_repo(files_json));
+    let user_pkg = Arc::new(make_package(files_json));
+    wasm_state.state.replace_user_package(user_pkg);
     let effects = drain_effects(&mut wasm_state.effects_rx);
 
     match wasm_state.state.process(line.to_string()).await {
