@@ -623,8 +623,8 @@ impl Worker {
     }
 
     async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
-        let user_pkg: Arc<dyn sclc::v2::Package> = Arc::new(self.client.clone());
-        let finder = sclc::v2::build_cdb_finder(
+        let user_pkg: Arc<dyn sclc::Package> = Arc::new(self.client.clone());
+        let finder = sclc::build_cdb_finder(
             user_pkg,
             self.cdb_client.clone(),
             self.environment_qid.environment.clone(),
@@ -632,7 +632,7 @@ impl Worker {
         let repo_qid = self.client.repo_qid();
         let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
 
-        let diagnosed = sclc::v2::compile(finder, &entry).await?;
+        let diagnosed = sclc::compile(finder, &entry).await?;
         self.publish_diagnostics(diagnosed.diags()).await;
 
         if diagnosed.diags().has_errors() {
@@ -954,7 +954,7 @@ impl Worker {
             .instrument(tracing::Span::current()),
         );
 
-        if let Err(e) = sclc::v2::eval(&asg, eval_ctx) {
+        if let Err(e) = sclc::eval(&asg, eval_ctx) {
             self.log_publisher.error(format!("{e}")).await;
         }
         let outcome = effects_task.await?;

@@ -25,16 +25,16 @@ pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
     sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem])
 }
 
-/// A v2 [`sclc::v2::Package`] that overlays editor document contents on top of
+/// A [`sclc::Package`] that overlays editor document contents on top of
 /// a filesystem-backed package.
 pub struct OverlayPackage {
-    inner: sclc::v2::FsPackage,
+    inner: sclc::FsPackage,
     documents: DocumentCache,
     root: PathBuf,
 }
 
 impl OverlayPackage {
-    pub fn new(inner: sclc::v2::FsPackage, documents: DocumentCache, root: PathBuf) -> Self {
+    pub fn new(inner: sclc::FsPackage, documents: DocumentCache, root: PathBuf) -> Self {
         Self {
             inner,
             documents,
@@ -44,7 +44,7 @@ impl OverlayPackage {
 }
 
 #[async_trait::async_trait]
-impl sclc::v2::Package for OverlayPackage {
+impl sclc::Package for OverlayPackage {
     fn id(&self) -> sclc::PackageId {
         self.inner.id()
     }
@@ -52,19 +52,19 @@ impl sclc::v2::Package for OverlayPackage {
     async fn lookup(
         &self,
         path: &Path,
-    ) -> Result<Option<Cow<'_, sclc::v2::PackageEntity>>, sclc::v2::LoadError> {
+    ) -> Result<Option<Cow<'_, sclc::PackageEntity>>, sclc::LoadError> {
         // If the file is open in the editor, report it as existing.
         let absolute = self.root.join(path);
         if self.documents.get(&absolute).is_some() {
             let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
-            return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::File {
+            return Ok(Some(Cow::Owned(sclc::PackageEntity::File {
                 hash: null_hash,
             })));
         }
 
         // For directories, merge open documents from the editor.
         let result = self.inner.lookup(path).await?;
-        if let Some(Cow::Owned(sclc::v2::PackageEntity::Dir { hash, mut children })) = result {
+        if let Some(Cow::Owned(sclc::PackageEntity::Dir { hash, mut children })) = result {
             // Merge entries from open documents in the editor
             let prefix = self.root.join(path);
             let prefix_str = prefix.to_string_lossy().to_string();
@@ -83,15 +83,12 @@ impl sclc::v2::Package for OverlayPackage {
                 };
                 if let Some(relative) = relative {
                     let (name, kind) = if let Some(slash_pos) = relative.find('/') {
-                        (
-                            relative[..slash_pos].to_owned(),
-                            sclc::v2::DirChildKind::Dir,
-                        )
+                        (relative[..slash_pos].to_owned(), sclc::DirChildKind::Dir)
                     } else {
-                        (relative, sclc::v2::DirChildKind::File)
+                        (relative, sclc::DirChildKind::File)
                     };
                     if !existing_names.contains(&name) {
-                        children.push(sclc::v2::DirChild {
+                        children.push(sclc::DirChild {
                             name,
                             kind,
                             hash: null_hash_child,
@@ -100,7 +97,7 @@ impl sclc::v2::Package for OverlayPackage {
                 }
             }
 
-            return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::Dir {
+            return Ok(Some(Cow::Owned(sclc::PackageEntity::Dir {
                 hash,
                 children,
             })));
@@ -125,14 +122,11 @@ impl sclc::v2::Package for OverlayPackage {
                 };
                 if let Some(relative) = relative {
                     let (name, kind) = if let Some(slash_pos) = relative.find('/') {
-                        (
-                            relative[..slash_pos].to_owned(),
-                            sclc::v2::DirChildKind::Dir,
-                        )
+                        (relative[..slash_pos].to_owned(), sclc::DirChildKind::Dir)
                     } else {
-                        (relative, sclc::v2::DirChildKind::File)
+                        (relative, sclc::DirChildKind::File)
                     };
-                    children.push(sclc::v2::DirChild {
+                    children.push(sclc::DirChild {
                         name,
                         kind,
                         hash: null_hash,
@@ -141,7 +135,7 @@ impl sclc::v2::Package for OverlayPackage {
             }
 
             if !children.is_empty() {
-                return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::Dir {
+                return Ok(Some(Cow::Owned(sclc::PackageEntity::Dir {
                     hash: null_hash,
                     children,
                 })));
@@ -151,7 +145,7 @@ impl sclc::v2::Package for OverlayPackage {
         Ok(result.map(|e| Cow::Owned(e.into_owned())))
     }
 
-    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, sclc::v2::LoadError> {
+    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, sclc::LoadError> {
         let absolute = self.root.join(path);
         if let Some(content) = self.documents.get(&absolute) {
             return Ok(Cow::Owned(content.into_bytes()));
@@ -167,14 +161,14 @@ pub struct AnalysisResult {
 
 /// Run compilation and collect diagnostics.
 pub async fn analyze(
-    finder: Arc<dyn sclc::v2::PackageFinder>,
+    finder: Arc<dyn sclc::PackageFinder>,
     entry: &[&str],
     root: &Path,
     package_id: &sclc::PackageId,
 ) -> AnalysisResult {
     let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
 
-    match sclc::v2::compile(finder, entry).await {
+    match sclc::compile(finder, entry).await {
         Ok(diagnosed) => {
             // Track seen diagnostics per URI to avoid duplicates.
             let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
@@ -221,12 +215,9 @@ pub async fn analyze(
     }
 }
 
-/// Build the v2 ASG for cursor queries.
-pub async fn load_asg(
-    finder: Arc<dyn sclc::v2::PackageFinder>,
-    entry: &[&str],
-) -> Option<sclc::v2::Asg> {
-    match sclc::v2::compile(finder, entry).await {
+/// Build the ASG for cursor queries.
+pub async fn load_asg(finder: Arc<dyn sclc::PackageFinder>, entry: &[&str]) -> Option<sclc::Asg> {
+    match sclc::compile(finder, entry).await {
         Ok(diagnosed) => {
             if diagnosed.diags().has_errors() {
                 // Still return the ASG — partial results are useful for IDE
@@ -239,12 +230,12 @@ pub async fn load_asg(
 
 /// Query cursor information at a specific position in a file.
 pub fn query_cursor(
-    asg: &sclc::v2::Asg,
+    asg: &sclc::Asg,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
 ) -> Arc<Mutex<sclc::CursorInfo>> {
-    sclc::v2::cursor_info(asg, module_id, source, position)
+    sclc::cursor_info(asg, module_id, source, position)
 }
 
 /// Extract document symbols from a parsed file.

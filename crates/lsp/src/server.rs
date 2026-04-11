@@ -123,8 +123,8 @@ fn to_json_value(value: &impl Serialize) -> serde_json::Value {
     })
 }
 
-/// The concrete program type used in the LSP server (v2 ASG).
-pub type LspProgram = sclc::v2::Asg;
+/// The concrete program type used in the LSP server.
+pub type LspProgram = sclc::Asg;
 
 /// The main LSP server.
 pub struct LanguageServer {
@@ -181,11 +181,11 @@ impl LanguageServer {
         }
     }
 
-    fn build_finder(&self) -> Option<Arc<dyn sclc::v2::PackageFinder>> {
+    fn build_finder(&self) -> Option<Arc<dyn sclc::PackageFinder>> {
         let root = self.root.as_ref()?;
-        let fs_pkg = sclc::v2::FsPackage::new(root.clone(), self.package_id.clone());
+        let fs_pkg = sclc::FsPackage::new(root.clone(), self.package_id.clone());
         let overlay = OverlayPackage::new(fs_pkg, self.documents.clone(), root.clone());
-        Some(sclc::v2::build_default_finder(Arc::new(overlay)))
+        Some(sclc::build_default_finder(Arc::new(overlay)))
     }
 
     fn entry_segments(&self) -> Vec<String> {

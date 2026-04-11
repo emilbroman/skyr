@@ -202,7 +202,7 @@ mod cdb_finder {
     use tokio::sync::RwLock;
 
     use super::{LoadError, Package, PackageFinder};
-    use crate::{PackageId, v2::CachedPackage};
+    use crate::{CachedPackage, PackageId};
 
     /// A [`PackageFinder`] backed by the CDB, resolving cross-repository imports.
     ///

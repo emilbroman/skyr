@@ -44,7 +44,7 @@ pub(crate) fn synth_var(
         return Ok(Diagnosed::new(local_ty, DiagList::new()));
     }
 
-    // Global type env (v2 path): resolve via accumulated global types.
+    // Global type env: resolve via accumulated global types.
     if let Some(raw_id) = env.raw_module_id()
         && let Some(ty) = env.global_env.resolve_variable(var.name.as_str(), raw_id)
     {

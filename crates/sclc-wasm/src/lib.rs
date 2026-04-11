@@ -6,9 +6,9 @@ use std::sync::Arc;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-fn make_package(files_json: &str) -> sclc::v2::InMemoryPackage {
+fn make_package(files_json: &str) -> sclc::InMemoryPackage {
     let file_map: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
-    sclc::v2::InMemoryPackage::new(
+    sclc::InMemoryPackage::new(
         sclc::PackageId::from(["Playground"]),
         file_map
             .into_iter()
@@ -51,13 +51,13 @@ fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-/// Compile using the v2 pipeline, returning diagnostics and the ASG.
-async fn load_and_compile(files_json: &str) -> (sclc::DiagList, Option<sclc::v2::Asg>) {
+/// Compile, returning diagnostics and the ASG.
+async fn load_and_compile(files_json: &str) -> (sclc::DiagList, Option<sclc::Asg>) {
     let pkg = Arc::new(make_package(files_json));
-    let finder = sclc::v2::build_default_finder(pkg);
+    let finder = sclc::build_default_finder(pkg);
     let mut diags = sclc::DiagList::new();
 
-    match sclc::v2::compile(finder, &["Playground", "Main"]).await {
+    match sclc::compile(finder, &["Playground", "Main"]).await {
         Ok(diagnosed) => {
             let asg = diagnosed.unpack(&mut diags);
             (diags, Some(asg))
@@ -133,7 +133,7 @@ pub async fn hover(files_json: &str, file: &str, line: u32, col: u32) -> Option<
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
+    let cursor_info = sclc::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     let ty_str = match (&info.identifier, &info.ty) {
@@ -175,7 +175,7 @@ pub async fn completions(files_json: &str, file: &str, line: u32, col: u32) -> S
         return "[]".to_string();
     };
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
+    let cursor_info = sclc::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     let items: Vec<CompletionItem> = info
@@ -247,7 +247,7 @@ pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) 
     let module_id = module_id_for_file(file);
     let source = file_map.get(file)?;
     let position = sclc::Position::new(line + 1, col + 1);
-    let cursor_info = sclc::v2::cursor_info(&asg, &module_id, source, position);
+    let cursor_info = sclc::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
     info.declaration.map(|span| {
@@ -296,11 +296,11 @@ thread_local! {
 #[wasm_bindgen]
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let user_pkg = Arc::new(sclc::v2::InMemoryPackage::new(
+    let user_pkg = Arc::new(sclc::InMemoryPackage::new(
         sclc::PackageId::from(["Playground"]),
         HashMap::new(),
     ));
-    let finder = sclc::v2::build_default_finder(user_pkg);
+    let finder = sclc::build_default_finder(user_pkg);
     let state = sclc::Repl::new(
         finder,
         sclc::PackageId::from(["Playground"]),

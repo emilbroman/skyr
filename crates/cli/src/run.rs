@@ -18,10 +18,10 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
         .collect();
     let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
 
-    let fs_pkg = Arc::new(sclc::v2::FsPackage::new(root, package_id.clone()));
-    let finder = sclc::v2::build_default_finder(fs_pkg);
+    let fs_pkg = Arc::new(sclc::FsPackage::new(root, package_id.clone()));
+    let finder = sclc::build_default_finder(fs_pkg);
 
-    let Some(asg) = report_diagnostics(sclc::v2::compile(finder, &entry_refs).await?) else {
+    let Some(asg) = report_diagnostics(sclc::compile(finder, &entry_refs).await?) else {
         return Ok(());
     };
 
@@ -31,7 +31,7 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
     let ctx = sclc::EvalCtx::new(effects_tx, package_id.to_string());
     let effects_task = spawn_effect_printer(effects_rx);
 
-    let results = sclc::v2::eval(&asg, ctx)?;
+    let results = sclc::eval(&asg, ctx)?;
     if let Some(result) = results.modules.get(&module_id) {
         println!("{}", result.value);
     }

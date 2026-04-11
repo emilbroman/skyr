@@ -185,7 +185,7 @@ impl Expr {
             )),
             Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
             Expr::Path(path_expr) => {
-                // Path validation is handled by the v2 Loader; the TypeChecker
+                // Path validation is handled by the Loader; the TypeChecker
                 // no longer carries a children cache for validation.
                 checker.add_path_completions(env, path_expr);
                 Ok(Diagnosed::new(Type::Path, DiagList::new()))

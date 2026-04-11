@@ -120,7 +120,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::v2::PackageFinder;
+    use crate::PackageFinder;
 
     #[tokio::test]
     async fn lookup_existing_file() {
