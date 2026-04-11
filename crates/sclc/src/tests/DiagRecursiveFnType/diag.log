@@ -1,0 +1,1 @@
+DiagRecursiveFnType/Main 7:17,7:20: invalid type: fn(Bool) Int is not assignable to Str

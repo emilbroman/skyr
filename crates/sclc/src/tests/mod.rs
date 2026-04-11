@@ -485,6 +485,7 @@ test_case!(DiagCyclicDependency);
 test_case!(DiagNumToHexWrongType);
 test_case!(DiagListMapWrongType);
 test_case!(DiagRecordExtraField);
+test_case!(DiagRecursiveFnType);
 
 // Let type annotation tests
 test_case!(LetTypeAnnotation);

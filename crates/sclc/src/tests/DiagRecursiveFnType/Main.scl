@@ -1,0 +1,7 @@
+let rec = fn(b: Bool)
+  if (b)
+    rec(false)
+  else
+    123
+
+let test: Str = rec

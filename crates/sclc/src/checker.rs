@@ -479,6 +479,8 @@ impl FreeVarConstraints {
     /// solutions for free variables found in the constraint.
     fn unify_constraint(constraint: &Type, concrete: &Type, solutions: &mut HashMap<usize, Type>) {
         match (&constraint.kind, &concrete.kind) {
+            // Skip identity mappings (Var(x) → Var(x)) — they mask lower bounds.
+            (TypeKind::Var(id), TypeKind::Var(cid)) if id == cid => {}
             (TypeKind::Var(id), _) => {
                 solutions.entry(*id).or_insert_with(|| concrete.clone());
             }
@@ -932,6 +934,12 @@ impl<'p> TypeChecker<'p> {
         {
             if let Some(fv) = &env.free_vars {
                 fv.borrow_mut().constrain(*id, expected_ty.clone());
+            }
+        } else if let TypeKind::Var(id) = &expected_ty.kind
+            && env.is_free_var(*id)
+        {
+            if let Some(fv) = &env.free_vars {
+                fv.borrow_mut().constrain(*id, actual_ty.clone());
             }
         } else if let Err(error) =
             crate::assign_type_with_bounds(expected_ty, &actual_ty, &env.maps.type_var_bounds)
