@@ -724,24 +724,25 @@ impl<'p> Eval<'p> {
         if rel.is_empty() {
             return null();
         }
-        let path = std::path::Path::new(rel);
-        let package = Arc::clone(package);
+        #[cfg(not(feature = "runtime"))]
+        return null();
 
         // Bridge async Package::lookup into the sync evaluator.
         // block_in_place requires rt-multi-thread (gated behind "runtime" feature).
         #[cfg(feature = "runtime")]
-        let result = match tokio::runtime::Handle::try_current() {
-            Ok(handle) => tokio::task::block_in_place(|| {
-                handle.block_on(async { package.lookup(path).await })
-            }),
-            Err(_) => return null(),
-        };
-        #[cfg(not(feature = "runtime"))]
-        return null();
-
-        match result {
-            Ok(Some(entity)) => entity.hash(),
-            _ => null(),
+        {
+            let path = std::path::Path::new(rel);
+            let package = Arc::clone(package);
+            let result = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| {
+                    handle.block_on(async { package.lookup(path).await })
+                }),
+                Err(_) => return null(),
+            };
+            match result {
+                Ok(Some(entity)) => entity.hash(),
+                _ => null(),
+            }
         }
     }
 
