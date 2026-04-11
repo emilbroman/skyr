@@ -1,0 +1,1 @@
+CrossModuleRecursiveType/Main 5:17,5:18: invalid type: µA.fn() fn() A is not assignable to Str

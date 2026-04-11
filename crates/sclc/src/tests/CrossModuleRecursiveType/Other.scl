@@ -1,0 +1,3 @@
+import Self/Main
+
+export let f = fn() Main.f

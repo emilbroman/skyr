@@ -574,6 +574,17 @@ impl GlobalTypeEnv {
         self.types.get(key)
     }
 
+    /// Resolve an import alias to its target RawModuleId.
+    pub fn resolve_import_alias(
+        &self,
+        alias: &str,
+        raw_module_id: &[String],
+    ) -> Option<&RawModuleId> {
+        self.import_maps
+            .get(raw_module_id)
+            .and_then(|imports| imports.get(alias))
+    }
+
     /// Resolve a value-level variable name in the context of a module.
     /// Checks same-module globals first, then import aliases.
     pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&Type> {

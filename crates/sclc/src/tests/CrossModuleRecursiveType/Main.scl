@@ -1,0 +1,5 @@
+import Self/Other
+
+export let f = fn() Other.f
+
+let test: Str = f

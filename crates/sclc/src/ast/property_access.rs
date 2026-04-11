@@ -20,7 +20,28 @@ impl PropertyAccessExpr {
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+        use crate::GlobalKey;
         use crate::{DiagList, Diagnosed, RecordType, Type, TypeKind};
+
+        // When the LHS is a variable that resolves to an import alias, look up
+        // the property directly as a global in the target module.  This handles
+        // cross-module recursive groups where the full module-value record has
+        // not been assembled yet.
+        if let Expr::Var(var) = self.expr.as_ref().as_ref()
+            && let Some(raw_id) = env.raw_module_id()
+            && let Some(target_raw_id) = env.global_env.resolve_import_alias(&var.name, raw_id)
+        {
+            let prop_name = self.property.name.as_str();
+            let global_key = GlobalKey::Global(target_raw_id.clone(), prop_name.to_string());
+            if let Some(ty) = env.global_env.get(&global_key) {
+                let ty = ty.clone();
+                if let Some((cursor, _)) = &self.property.cursor {
+                    cursor.set_type(ty.clone());
+                    cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
+                }
+                return Ok(Diagnosed::new(ty, DiagList::new()));
+            }
+        }
 
         let mut diags = DiagList::new();
         let raw_lhs_ty = checker

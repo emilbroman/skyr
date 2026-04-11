@@ -420,18 +420,27 @@ pub(crate) fn assign_type_with_bounds(
     rhs: &Type,
     bounds: &HashMap<usize, Type>,
 ) -> Result<(), TypeError> {
-    let lhs = &lhs.unfold();
-    let rhs = &rhs.unfold();
+    assign_type_impl(&lhs.unfold(), &rhs.unfold(), lhs, rhs, bounds)
+}
 
+fn assign_type_impl(
+    lhs: &Type,
+    rhs: &Type,
+    orig_lhs: &Type,
+    orig_rhs: &Type,
+    bounds: &HashMap<usize, Type>,
+) -> Result<(), TypeError> {
     if lhs == rhs || matches!(lhs.kind, TypeKind::Any) || matches!(rhs.kind, TypeKind::Never) {
         return Ok(());
     }
+
+    let mismatch = || TypeIssue::Mismatch(orig_lhs.clone(), orig_rhs.clone());
 
     if let TypeKind::Optional(lhs_inner) = &lhs.kind {
         return match &rhs.kind {
             TypeKind::Optional(rhs_inner) => {
                 assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                    .map_err(|err| err.causing(mismatch()))
             }
             TypeKind::Var(id)
                 if bounds
@@ -440,10 +449,10 @@ pub(crate) fn assign_type_with_bounds(
             {
                 let upper_bound = &bounds[id];
                 assign_type_with_bounds(lhs, upper_bound, bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                    .map_err(|err| err.causing(mismatch()))
             }
             _ => assign_type_with_bounds(lhs_inner.as_ref(), rhs, bounds)
-                .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
+                .map_err(|err| err.causing(mismatch())),
         };
     }
 
@@ -451,7 +460,7 @@ pub(crate) fn assign_type_with_bounds(
         && let Some(upper_bound) = bounds.get(&id)
     {
         return assign_type_with_bounds(lhs, upper_bound, bounds)
-            .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())));
+            .map_err(|err| err.causing(mismatch()));
     }
 
     match &lhs.kind {
@@ -462,57 +471,39 @@ pub(crate) fn assign_type_with_bounds(
                         if matches!(lhs_field.kind, TypeKind::Optional(_)) {
                             continue;
                         }
-                        return Err(TypeError::new(TypeIssue::Mismatch(
-                            lhs.clone(),
-                            rhs.clone(),
-                        )));
+                        return Err(TypeError::new(mismatch()));
                     };
-                    assign_type_with_bounds(lhs_field, rhs_field, bounds).map_err(|err| {
-                        err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))
-                    })?;
+                    assign_type_with_bounds(lhs_field, rhs_field, bounds)
+                        .map_err(|err| err.causing(mismatch()))?;
                 }
                 Ok(())
             }
-            _ => Err(TypeError::new(TypeIssue::Mismatch(
-                lhs.clone(),
-                rhs.clone(),
-            ))),
+            _ => Err(TypeError::new(mismatch())),
         },
         TypeKind::Dict(lhs_dict) => match &rhs.kind {
             TypeKind::Dict(rhs_dict) => {
                 assign_type_with_bounds(lhs_dict.key.as_ref(), rhs_dict.key.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
+                    .map_err(|err| err.causing(mismatch()))?;
                 assign_type_with_bounds(lhs_dict.value.as_ref(), rhs_dict.value.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))?;
+                    .map_err(|err| err.causing(mismatch()))?;
                 Ok(())
             }
-            _ => Err(TypeError::new(TypeIssue::Mismatch(
-                lhs.clone(),
-                rhs.clone(),
-            ))),
+            _ => Err(TypeError::new(mismatch())),
         },
         TypeKind::List(lhs_inner) => match &rhs.kind {
             TypeKind::List(rhs_inner) => {
                 assign_type_with_bounds(lhs_inner.as_ref(), rhs_inner.as_ref(), bounds)
-                    .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone())))
+                    .map_err(|err| err.causing(mismatch()))
             }
-            _ => Err(TypeError::new(TypeIssue::Mismatch(
-                lhs.clone(),
-                rhs.clone(),
-            ))),
+            _ => Err(TypeError::new(mismatch())),
         },
         TypeKind::Fn(lhs_fn) => match &rhs.kind {
-            TypeKind::Fn(rhs_fn) => assign_fn_type(lhs_fn, rhs_fn, bounds)
-                .map_err(|err| err.causing(TypeIssue::Mismatch(lhs.clone(), rhs.clone()))),
-            _ => Err(TypeError::new(TypeIssue::Mismatch(
-                lhs.clone(),
-                rhs.clone(),
-            ))),
+            TypeKind::Fn(rhs_fn) => {
+                assign_fn_type(lhs_fn, rhs_fn, bounds).map_err(|err| err.causing(mismatch()))
+            }
+            _ => Err(TypeError::new(mismatch())),
         },
-        _ => Err(TypeError::new(TypeIssue::Mismatch(
-            lhs.clone(),
-            rhs.clone(),
-        ))),
+        _ => Err(TypeError::new(mismatch())),
     }
 }
 

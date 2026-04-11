@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::{
     DiagList, Diagnosed, GlobalKey, GlobalTypeEnv, RecordType, Type, TypeCheckError, TypeChecker,
     TypeEnv, ast,
-    checker::{CyclicDependency, next_type_id},
+    checker::{CyclicDependency, FreeVarConstraints, next_type_id},
     ty::TypeKind,
 };
 
@@ -461,6 +461,14 @@ impl<'a> AsgChecker<'a> {
         global_nodes: &[&NodeId],
         diags: &mut DiagList,
     ) -> Result<(), TypeCheckError> {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        // Separate non-fn cyclic globals (which get CyclicDependency errors)
+        // from fn globals that participate in the recursive group.
+        let mut fn_nodes: Vec<(&RawModuleId, &str, &ast::LetBind, usize)> = Vec::new();
+        let constraints = Rc::new(RefCell::new(FreeVarConstraints::new()));
+
         for node in global_nodes {
             let NodeId::Global(raw_id, name) = node else {
                 continue;
@@ -487,20 +495,76 @@ impl<'a> AsgChecker<'a> {
                 continue;
             }
 
+            // Assign a free type variable and pre-populate the global type env
+            // so that cross-module property access (e.g. Other.f) can find it.
+            let type_id = next_type_id();
+            constraints.borrow_mut().register(type_id);
+            self.global_type_env.insert(
+                GlobalKey::Global(raw_id.clone(), name.to_string()),
+                Type::Var(type_id),
+            );
+            fn_nodes.push((raw_id, name, lb, type_id));
+        }
+
+        // Check all bodies with the free type variables visible.
+        let mut body_results: Vec<(&RawModuleId, &str, &ast::LetBind, usize, Type)> = Vec::new();
+        for &(raw_id, name, lb, type_id) in &fn_nodes {
+            let mn = self.asg.module(raw_id).unwrap();
             let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&mn.module_id)
                 .with_raw_module_id(&mn.raw_id);
 
-            let ty = checker.check_global_let_bind(&env, lb)?.unpack(diags);
-            let unwrapped = match &ty.kind {
-                TypeKind::IsoRec(_, inner) => inner.as_ref().clone(),
-                _ => ty,
-            };
-            self.global_type_env.insert(
-                GlobalKey::Global(raw_id.clone(), name.to_string()),
-                unwrapped,
+            // Set up self-recursion free variable as a local binding.
+            let self_env = env.with_free_var(
+                lb.var.name.as_str(),
+                lb.var.span(),
+                type_id,
+                constraints.clone(),
             );
+
+            let annotation_ty = lb
+                .ty
+                .as_ref()
+                .map(|te| checker.resolve_type_expr(&self_env, te).unpack(diags));
+
+            let resolved_ty = checker
+                .check_expr(&self_env, lb.expr.as_ref(), annotation_ty.as_ref())?
+                .unpack(diags);
+
+            let binding_ty = annotation_ty.unwrap_or(resolved_ty);
+            body_results.push((raw_id, name, lb, type_id, binding_ty));
         }
+
+        // Build a substitution that maps each member's type variable to its
+        // body type.  This resolves cross-references between group members
+        // while leaving self-references as Var(type_id), which IsoRec wraps.
+        let subst: Vec<(usize, Type)> = body_results
+            .iter()
+            .map(|(_, _, _, id, ty)| (*id, ty.clone()))
+            .collect();
+
+        // Apply substitutions and store final types.
+        for (raw_id, name, lb, type_id, body_ty) in &body_results {
+            let resolved_ty = body_ty.substitute(&subst);
+            let cache_key = lb.expr.as_ref() as *const crate::Loc<ast::Expr>;
+            checker
+                .global_cache
+                .borrow_mut()
+                .insert(cache_key, resolved_ty.clone());
+            let ty = Type::IsoRec(*type_id, Box::new(resolved_ty.clone()));
+            if let Some((cursor, _)) = &lb.var.cursor {
+                cursor.set_type(ty.clone());
+                cursor.set_identifier(crate::CursorIdentifier::Let(lb.var.name.clone()));
+                if let Some(doc) = &lb.doc_comment {
+                    cursor.set_description(doc.clone());
+                }
+            }
+            // Store the IsoRec-wrapped type so that references from outside
+            // the recursive group see the µ-binder.
+            self.global_type_env
+                .insert(GlobalKey::Global((*raw_id).clone(), name.to_string()), ty);
+        }
+
         Ok(())
     }
 
