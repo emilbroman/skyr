@@ -194,10 +194,12 @@ impl TryExpr {
                                 name: "[fn]".to_string(),
                                 parent: env.stack,
                             };
-                            let call_env =
-                                function
-                                    .env
-                                    .as_eval_env(&function, &[arg_value], Some(&frame));
+                            let call_env = function.env.as_eval_env(
+                                &function,
+                                &[arg_value],
+                                Some(&frame),
+                                env.global_env,
+                            );
                             let call_result = evaluator.eval_expr(&call_env, &function.body)?;
                             match call_result.value {
                                 Value::Exception(exc) => {

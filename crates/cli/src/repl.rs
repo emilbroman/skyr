@@ -73,7 +73,14 @@ impl completion::Completer for ReplHelper {
 
         // Type-check the statement to populate completion candidates.
         let type_env = state.type_env(&module_id);
-        let checker = sclc::TypeChecker::new(state.unit());
+        let modules: std::collections::HashMap<sclc::ModuleId, sclc::FileMod> = state
+            .cached_asg()
+            .modules()
+            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .collect();
+        let package_names: Vec<sclc::PackageId> =
+            state.cached_asg().packages().keys().cloned().collect();
+        let checker = sclc::TypeChecker::from_modules(&modules, package_names);
         let _ = checker.check_stmt(&type_env, statement);
 
         // Extract candidates from the cursor.
@@ -392,16 +399,16 @@ fn report_repl_error(err: &sclc::ReplError) {
         }
         sclc::ReplError::TypeCheck(e) => println!("{e}"),
         sclc::ReplError::Eval(e) => println!("{e}"),
-        sclc::ReplError::Resolve(e) => println!("{e}"),
-        sclc::ReplError::ResolveImport(e) => println!("{e}"),
     }
 }
 
 async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
-    state.replace_user_source(sclc::FsSource {
-        root: root.to_path_buf(),
-        package_id: state.package_id().clone(),
-    });
+    // Refresh the user package from the filesystem before each line.
+    let fs_pkg = std::sync::Arc::new(sclc::v2::FsPackage::new(
+        root.to_path_buf(),
+        state.package_id().clone(),
+    ));
+    state.replace_user_package(fs_pkg);
 
     match state.process(line.to_owned()).await {
         Ok(Some(sclc::ReplOutcome::Binding { name, ty })) => {
@@ -430,20 +437,12 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
 
-    // Create a persistent program for the REPL session
-    let mut program = sclc::Program::new();
-    let source = sclc::FsSource {
-        root: root.clone(),
-        package_id: package_id.clone(),
-    };
-    program.open_package(source).await;
-    // Preload root directory listing so path validation works for REPL lines
-    program
-        .preload_path_dirs(&package_id, [PathBuf::new()])
-        .await;
+    // Create a v2 PackageFinder for the REPL session.
+    let fs_pkg = std::sync::Arc::new(sclc::v2::FsPackage::new(root.clone(), package_id.clone()));
+    let finder = sclc::v2::build_default_finder(fs_pkg);
 
     let mut state = sclc::Repl::new(
-        program,
+        finder,
         package_id.clone(),
         effects_tx,
         package_id.to_string(),

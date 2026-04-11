@@ -44,12 +44,24 @@ pub(crate) fn synth_var(
         return Ok(Diagnosed::new(local_ty, DiagList::new()));
     }
 
-    // Global variable
+    // Global type env (v2 path): resolve via accumulated global types.
+    if let Some(raw_id) = env.raw_module_id()
+        && let Some(ty) = env.global_env.resolve_variable(var.name.as_str(), raw_id)
+    {
+        let ty = ty.clone();
+        if let Some((cursor, _)) = &var.cursor {
+            cursor.set_type(ty.clone());
+            cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
+        }
+        return Ok(Diagnosed::new(ty, DiagList::new()));
+    }
+
+    // Legacy global variable (on-demand type checking, used by REPL/IDE)
     if let Some((decl, global_expr, doc_comment)) = env.lookup_global(var.name.as_str()) {
         return synth_global(checker, env, expr, var, decl, global_expr, doc_comment);
     }
 
-    // Import
+    // Legacy import (on-demand module checking, used by REPL/IDE)
     if let Some((target_module_id, maybe_import_file_mod)) = env.lookup_import(var.name.as_str()) {
         let Some(import_file_mod) = maybe_import_file_mod else {
             return Ok(Diagnosed::new(Type::Never, DiagList::new()));
@@ -58,7 +70,7 @@ pub(crate) fn synth_var(
         let imported_ty = if let Some(cached_ty) = checker.import_cache.borrow().get(&cache_key) {
             cached_ty.clone()
         } else {
-            let import_env = TypeEnv::new().with_module_id(&target_module_id);
+            let import_env = TypeEnv::new(env.global_env).with_module_id(&target_module_id);
             let imported_ty = checker.check_file_mod(&import_env, import_file_mod)?;
             let imported_ty = imported_ty.into_inner();
             checker

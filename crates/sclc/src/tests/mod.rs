@@ -1,10 +1,10 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use ids::ResourceId;
 
-use crate::{
-    Effect, EvalCtx, MemSourceRepo, ModuleId, PackageId, Record, Resource, TrackedValue, Value,
-};
+use crate::{Effect, EvalCtx, ModuleId, PackageId, Record, Resource, TrackedValue, Value};
 
 /// Format an effect in compact form.
 fn format_effect(effect: &Effect) -> String {
@@ -188,14 +188,15 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
 }
 
 struct Fixture {
-    source: MemSourceRepo,
+    package: crate::v2::InMemoryPackage,
+    package_id: PackageId,
     rdb: Vec<(ResourceId, Resource)>,
     diag_log: Option<String>,
     exports_txt: Option<String>,
     effects_log: Option<String>,
 }
 
-/// Load fixture files and build a MemSourceRepo for a test case directory.
+/// Load fixture files and build a Package for a test case directory.
 fn load_fixture(dir_name: &str) -> Fixture {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let fixture_dir = format!("{manifest_dir}/src/tests/{dir_name}");
@@ -246,7 +247,12 @@ fn load_fixture(dir_name: &str) -> Fixture {
         "fixture {dir_name} must contain Main.scl"
     );
 
-    let source = MemSourceRepo::new([dir_name.to_string()].into_iter().collect(), files);
+    let pkg_id: PackageId = [dir_name.to_string()].into_iter().collect();
+    let pkg_files: HashMap<PathBuf, Vec<u8>> = files
+        .into_iter()
+        .map(|(k, v)| (PathBuf::from(k), v))
+        .collect();
+    let package = crate::v2::InMemoryPackage::new(pkg_id.clone(), pkg_files);
 
     // Load optional expectation files
     let diag_log = std::fs::read_to_string(fixture_path.join("diag.log")).ok();
@@ -259,7 +265,8 @@ fn load_fixture(dir_name: &str) -> Fixture {
         .unwrap_or_default();
 
     Fixture {
-        source,
+        package,
+        package_id: pkg_id,
         rdb,
         diag_log,
         exports_txt,
@@ -267,18 +274,28 @@ fn load_fixture(dir_name: &str) -> Fixture {
     }
 }
 
-/// Run a single test case by directory name.
+/// Run a single test case by directory name using the v2 pipeline.
 async fn run_test_case(dir_name: &str) {
     let Fixture {
-        source,
+        package,
+        package_id,
         rdb,
         diag_log,
         exports_txt,
         effects_log,
     } = load_fixture(dir_name);
 
-    // Compile
-    let result = crate::compile(source)
+    let user_pkg = Arc::new(package);
+    let finder = crate::v2::build_default_finder(user_pkg);
+
+    // Compile via v2 pipeline.
+    let entry: Vec<&str> = {
+        let mut segments: Vec<&str> = package_id.as_slice().iter().map(String::as_str).collect();
+        segments.push("Main");
+        segments
+    };
+
+    let result = crate::v2::compile(finder, &entry)
         .await
         .unwrap_or_else(|e| panic!("compilation failed for {dir_name}: {e}"));
 
@@ -315,7 +332,7 @@ async fn run_test_case(dir_name: &str) {
 
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let unit = result.into_inner();
+    let asg = result.into_inner();
     let mut eval_ctx = EvalCtx::new(tx, "test");
 
     // Load existing resources from rdb.json
@@ -329,9 +346,9 @@ async fn run_test_case(dir_name: &str) {
         vec!["Main".to_string()],
     );
 
-    let tracked_value: TrackedValue = unit
-        .eval(eval_ctx)
+    let tracked_value: TrackedValue = crate::v2::eval(&asg, eval_ctx)
         .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"))
+        .modules
         .remove(&main_module_id)
         .unwrap_or_else(|| panic!("main module missing from evaluation results for {dir_name}"));
 
@@ -366,7 +383,7 @@ async fn run_test_case(dir_name: &str) {
 macro_rules! test_case {
     ($name:ident) => {
         #[allow(non_snake_case)]
-        #[tokio::test]
+        #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
         async fn $name() {
             run_test_case(stringify!($name)).await;
         }
@@ -493,6 +510,9 @@ test_case!(DiagNamedRecordInFnType);
 test_case!(DiagUntypedParam);
 test_case!(UntypedParamCheck);
 
+// Circular imports
+test_case!(CircularImport);
+
 // Path validation
 test_case!(PathValid);
 test_case!(PathInvalid);
@@ -507,3 +527,6 @@ test_case!(OptionalChainCoalesce);
 test_case!(DiagOptionalChainNonOptional);
 test_case!(DiagNilCoalesceNonOptional);
 test_case!(NilCoalesceReExportedOptional);
+
+// Recursive type declarations
+test_case!(RecursiveTypeDecl);

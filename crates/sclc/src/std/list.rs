@@ -1,4 +1,4 @@
-pub fn register_extern(eval: &mut crate::Eval<'_>) {
+pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/List.range", |args, _ctx| {
         use crate::ValueAssertions;
 

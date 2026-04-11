@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -24,21 +25,18 @@ pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
     sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem])
 }
 
-/// Overlay source that checks the document cache before delegating to an inner source.
-pub struct OverlaySource {
-    inner: Box<dyn sclc::SourceRepo>,
+/// A v2 [`sclc::v2::Package`] that overlays editor document contents on top of
+/// a filesystem-backed package.
+pub struct OverlayPackage {
+    inner: sclc::v2::FsPackage,
     documents: DocumentCache,
     root: PathBuf,
 }
 
-impl OverlaySource {
-    pub fn new(
-        inner: impl sclc::SourceRepo + 'static,
-        documents: DocumentCache,
-        root: PathBuf,
-    ) -> Self {
+impl OverlayPackage {
+    pub fn new(inner: sclc::v2::FsPackage, documents: DocumentCache, root: PathBuf) -> Self {
         Self {
-            inner: Box::new(inner),
+            inner,
             documents,
             root,
         }
@@ -46,48 +44,119 @@ impl OverlaySource {
 }
 
 #[async_trait::async_trait]
-impl sclc::SourceRepo for OverlaySource {
-    fn package_id(&self) -> sclc::PackageId {
-        self.inner.package_id()
+impl sclc::v2::Package for OverlayPackage {
+    fn id(&self) -> sclc::PackageId {
+        self.inner.id()
     }
 
-    async fn read_file(&self, path: &Path) -> Result<Option<Vec<u8>>, sclc::SourceError> {
-        // Check if the document is open in the editor
+    async fn lookup(
+        &self,
+        path: &Path,
+    ) -> Result<Option<Cow<'_, sclc::v2::PackageEntity>>, sclc::v2::LoadError> {
+        // If the file is open in the editor, report it as existing.
         let absolute = self.root.join(path);
-        if let Some(content) = self.documents.get(&absolute) {
-            return Ok(Some(content.into_bytes()));
+        if self.documents.get(&absolute).is_some() {
+            let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::File {
+                hash: null_hash,
+            })));
         }
-        self.inner.read_file(path).await
-    }
 
-    async fn list_children(&self, path: &Path) -> Result<Vec<sclc::ChildEntry>, sclc::SourceError> {
-        let mut entries = self.inner.list_children(path).await?;
+        // For directories, merge open documents from the editor.
+        let result = self.inner.lookup(path).await?;
+        if let Some(Cow::Owned(sclc::v2::PackageEntity::Dir { hash, mut children })) = result {
+            // Merge entries from open documents in the editor
+            let prefix = self.root.join(path);
+            let prefix_str = prefix.to_string_lossy().to_string();
+            let existing_names: HashSet<String> = children.iter().map(|c| c.name.clone()).collect();
+            let null_hash_child = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
 
-        // Merge entries from open documents in the editor
-        let prefix = self.root.join(path);
-        let prefix_str = prefix.to_string_lossy();
-        for doc_path in self.documents.paths() {
-            let doc_str = doc_path.to_string_lossy();
-            let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
-                doc_str.strip_prefix(prefix_str.as_ref())
-            } else {
-                doc_str
-                    .strip_prefix(prefix_str.as_ref())
-                    .and_then(|r| r.strip_prefix('/'))
-            };
-            if let Some(relative) = relative {
-                let entry = if let Some(slash_pos) = relative.find('/') {
-                    sclc::ChildEntry::Directory(relative[..slash_pos].to_owned())
+            for doc_path in self.documents.paths() {
+                let doc_str = doc_path.to_string_lossy().to_string();
+                let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
+                    doc_str.strip_prefix(&prefix_str).map(|s| s.to_string())
                 } else {
-                    sclc::ChildEntry::File(relative.to_owned())
+                    doc_str
+                        .strip_prefix(&prefix_str)
+                        .and_then(|r| r.strip_prefix('/'))
+                        .map(|s| s.to_string())
                 };
-                if !entries.contains(&entry) {
-                    entries.push(entry);
+                if let Some(relative) = relative {
+                    let (name, kind) = if let Some(slash_pos) = relative.find('/') {
+                        (
+                            relative[..slash_pos].to_owned(),
+                            sclc::v2::DirChildKind::Dir,
+                        )
+                    } else {
+                        (relative, sclc::v2::DirChildKind::File)
+                    };
+                    if !existing_names.contains(&name) {
+                        children.push(sclc::v2::DirChild {
+                            name,
+                            kind,
+                            hash: null_hash_child,
+                        });
+                    }
                 }
+            }
+
+            return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::Dir {
+                hash,
+                children,
+            })));
+        }
+
+        // Check if an open document would make a missing directory appear
+        if result.is_none() {
+            let prefix = self.root.join(path);
+            let prefix_str = prefix.to_string_lossy().to_string();
+            let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let mut children = Vec::new();
+
+            for doc_path in self.documents.paths() {
+                let doc_str = doc_path.to_string_lossy().to_string();
+                let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
+                    doc_str.strip_prefix(&prefix_str).map(|s| s.to_string())
+                } else {
+                    doc_str
+                        .strip_prefix(&prefix_str)
+                        .and_then(|r| r.strip_prefix('/'))
+                        .map(|s| s.to_string())
+                };
+                if let Some(relative) = relative {
+                    let (name, kind) = if let Some(slash_pos) = relative.find('/') {
+                        (
+                            relative[..slash_pos].to_owned(),
+                            sclc::v2::DirChildKind::Dir,
+                        )
+                    } else {
+                        (relative, sclc::v2::DirChildKind::File)
+                    };
+                    children.push(sclc::v2::DirChild {
+                        name,
+                        kind,
+                        hash: null_hash,
+                    });
+                }
+            }
+
+            if !children.is_empty() {
+                return Ok(Some(Cow::Owned(sclc::v2::PackageEntity::Dir {
+                    hash: null_hash,
+                    children,
+                })));
             }
         }
 
-        Ok(entries)
+        Ok(result.map(|e| Cow::Owned(e.into_owned())))
+    }
+
+    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, sclc::v2::LoadError> {
+        let absolute = self.root.join(path);
+        if let Some(content) = self.documents.get(&absolute) {
+            return Ok(Cow::Owned(content.into_bytes()));
+        }
+        self.inner.load(path).await
     }
 }
 
@@ -98,13 +167,14 @@ pub struct AnalysisResult {
 
 /// Run compilation and collect diagnostics.
 pub async fn analyze(
-    source: impl sclc::SourceRepo + 'static,
+    finder: Arc<dyn sclc::v2::PackageFinder>,
+    entry: &[&str],
     root: &Path,
     package_id: &sclc::PackageId,
 ) -> AnalysisResult {
     let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
 
-    match sclc::compile(source).await {
+    match sclc::v2::compile(finder, entry).await {
         Ok(diagnosed) => {
             // Track seen diagnostics per URI to avoid duplicates.
             let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
@@ -151,38 +221,30 @@ pub async fn analyze(
     }
 }
 
-/// Load a compilation unit with resolved imports (best-effort).
-pub async fn load_unit(source: impl sclc::SourceRepo + 'static) -> sclc::CompilationUnit {
-    let package_id = source.package_id();
-    let mut unit = sclc::CompilationUnit::new();
-    unit.open_package(source).await;
-    let entry = sclc::ModuleId::new(package_id, vec!["Main".to_string()]);
-    let _ = unit.resolve(&entry).await;
-    unit
+/// Build the v2 ASG for cursor queries.
+pub async fn load_asg(
+    finder: Arc<dyn sclc::v2::PackageFinder>,
+    entry: &[&str],
+) -> Option<sclc::v2::Asg> {
+    match sclc::v2::compile(finder, entry).await {
+        Ok(diagnosed) => {
+            if diagnosed.diags().has_errors() {
+                // Still return the ASG — partial results are useful for IDE
+            }
+            Some(diagnosed.into_inner())
+        }
+        Err(_) => None,
+    }
 }
 
 /// Query cursor information at a specific position in a file.
 pub fn query_cursor(
-    unit: &sclc::CompilationUnit,
+    asg: &sclc::v2::Asg,
     source: &str,
     module_id: &sclc::ModuleId,
     position: sclc::Position,
 ) -> Arc<Mutex<sclc::CursorInfo>> {
-    let cursor = sclc::Cursor::new(position);
-    let cursor_info = cursor.info();
-
-    // Parse with cursor
-    let diagnosed = sclc::parse_file_mod_with_cursor(source, module_id, Some(cursor.clone()));
-    let file_mod = diagnosed.into_inner();
-
-    // Type-check to populate cursor info (declaration, type, references, completions)
-    let type_env = sclc::TypeEnv::new()
-        .with_module_id(module_id)
-        .with_cursor(cursor);
-    let checker = sclc::TypeChecker::new(unit);
-    let _ = checker.check_file_mod(&type_env, &file_mod);
-
-    cursor_info
+    sclc::v2::cursor_info(asg, module_id, source, position)
 }
 
 /// Extract document symbols from a parsed file.

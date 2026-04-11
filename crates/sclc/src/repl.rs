@@ -1,22 +1,31 @@
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
+use crate::v2::{
+    Asg, AsgChecker, AsgEvaluator, GlobalKey, Loader, PackageFinder, build_default_finder,
+};
 use crate::{
-    CompilationUnit, DiagList, Diagnosed, Effect, Eval, EvalEnv, EvalError, FileMod, ModuleId,
-    PackageId, Program, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv,
+    DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError, GlobalEvalEnv, GlobalTypeEnv,
+    ModuleId, PackageId, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
 };
 
 #[derive(Clone)]
 pub struct Repl {
     line_number: usize,
-    unit: CompilationUnit,
+    finder: Arc<dyn PackageFinder>,
+    /// Cached ASG built from all resolved imports so far.
+    cached_asg: Asg,
     effects_tx: mpsc::UnboundedSender<Effect>,
     bindings: HashMap<String, (Type, TrackedValue)>,
     type_defs: HashMap<String, Type>,
+    global_type_env: GlobalTypeEnv,
+    global_eval_env: GlobalEvalEnv,
     namespace: String,
     package_id: PackageId,
+    /// Import entry points accumulated across REPL lines.
+    import_entries: Vec<Vec<String>>,
 }
 
 pub enum ReplOutcome {
@@ -30,8 +39,6 @@ pub enum ReplError {
     Diagnostics(DiagList),
     TypeCheck(TypeCheckError),
     Eval(EvalError),
-    Resolve(crate::ResolveError),
-    ResolveImport(crate::ResolveImportError),
 }
 
 impl From<TypeCheckError> for ReplError {
@@ -46,40 +53,26 @@ impl From<EvalError> for ReplError {
     }
 }
 
-impl From<crate::ResolveImportError> for ReplError {
-    fn from(err: crate::ResolveImportError) -> Self {
-        ReplError::ResolveImport(err)
-    }
-}
-
-impl From<crate::ResolveError> for ReplError {
-    fn from(err: crate::ResolveError) -> Self {
-        ReplError::Resolve(err)
-    }
-}
-
 impl Repl {
     pub fn new(
-        program: Program,
+        finder: Arc<dyn PackageFinder>,
         package_id: PackageId,
         effects_tx: mpsc::UnboundedSender<Effect>,
         namespace: String,
     ) -> Self {
-        let mut unit = CompilationUnit::new();
-        unit.set_program(program);
         Self {
             line_number: 0,
-            unit,
+            finder,
+            cached_asg: Asg::new(),
             effects_tx,
             bindings: HashMap::new(),
             type_defs: HashMap::new(),
+            global_type_env: GlobalTypeEnv::default(),
+            global_eval_env: GlobalEvalEnv::default(),
             namespace,
             package_id,
+            import_entries: Vec::new(),
         }
-    }
-
-    pub fn unit(&self) -> &CompilationUnit {
-        &self.unit
     }
 
     pub fn effects_tx(&self) -> &mpsc::UnboundedSender<Effect> {
@@ -98,17 +91,25 @@ impl Repl {
         &self.type_defs
     }
 
-    pub fn replace_user_source(&mut self, source: impl crate::SourceRepo + 'static) {
-        self.package_id = source.package_id();
-        self.unit.replace_user_source(source);
+    /// Replace the user package in the finder. Rebuilds the finder from the
+    /// new package while preserving the standard library.
+    pub fn replace_user_package(&mut self, user_package: Arc<dyn crate::v2::Package>) {
+        self.package_id = user_package.id();
+        self.finder = build_default_finder(user_package);
     }
 
     pub fn package_id(&self) -> &PackageId {
         &self.package_id
     }
 
-    pub async fn preload_path_dirs(&mut self, dirs: impl IntoIterator<Item = PathBuf>) {
-        self.unit.preload_path_dirs(&self.package_id, dirs).await;
+    /// Get the cached ASG (for completions that need module/package data).
+    pub fn cached_asg(&self) -> &Asg {
+        &self.cached_asg
+    }
+
+    /// Get a reference to the global type environment.
+    pub fn global_type_env(&self) -> &GlobalTypeEnv {
+        &self.global_type_env
     }
 
     pub fn next_line_module_id(&mut self) -> ModuleId {
@@ -121,7 +122,7 @@ impl Repl {
 
     pub fn type_env<'a>(&'a self, module_id: &'a ModuleId) -> TypeEnv<'a> {
         let env = self.bindings.iter().fold(
-            TypeEnv::new().with_module_id(module_id),
+            TypeEnv::new(&self.global_type_env).with_module_id(module_id),
             |env, (name, (ty, _))| {
                 env.with_local(name.as_str(), crate::Span::default(), ty.clone())
             },
@@ -133,7 +134,7 @@ impl Repl {
 
     pub fn eval_env<'a>(&'a self, module_id: &'a ModuleId) -> EvalEnv<'a> {
         self.bindings.iter().fold(
-            EvalEnv::new().with_module_id(module_id),
+            EvalEnv::new(&self.global_eval_env).with_module_id(module_id),
             |env, (name, (_, value))| env.with_local(name.as_str(), value.clone()),
         )
     }
@@ -154,11 +155,7 @@ impl Repl {
             crate::ModStmt::Import(import_stmt) => {
                 self.process_import(&module_id, import_stmt).await.map(Some)
             }
-            _ => {
-                self.preload_paths_for_statement(statement, &module_id)
-                    .await;
-                self.process_statement(statement, &module_id).map(Some)
-            }
+            _ => self.process_statement(statement, &module_id).map(Some),
         }
     }
 
@@ -175,12 +172,6 @@ impl Repl {
             .collect();
         let resolved_segments =
             resolve_self_import_segments(raw_segments.clone(), &self.package_id);
-        let import_path = self
-            .unit
-            .split_import_segments(&resolved_segments)
-            .unwrap_or_else(|| {
-                ModuleId::new(crate::PackageId::default(), resolved_segments.clone())
-            });
         let alias = import_stmt
             .as_ref()
             .vars
@@ -190,34 +181,67 @@ impl Repl {
             .name
             .clone();
 
+        // Add this import to our accumulated entries.
+        self.import_entries.push(resolved_segments.clone());
+
+        // Rebuild the ASG with all accumulated imports.
+        self.rebuild_asg().await?;
+
+        // Determine the module ID for the import.
+        let import_path = self.find_module_id(&resolved_segments);
+        let import_raw_id: Vec<String> = resolved_segments;
+
+        // Type-check the entire ASG via AsgChecker.
+        let mut checker = AsgChecker::new(&self.cached_asg);
+        let check_result = checker.check()?;
         let mut diags = DiagList::new();
-        self.unit.resolve(&import_path).await?.unpack(&mut diags);
-
-        let Some(file_mod) = self.unit.module(&import_path).cloned() else {
-            diags.push(invalid_import_diag(
-                source_module_id.clone(),
-                import_path.clone(),
-                import_stmt,
-            ));
-            return Err(ReplError::Diagnostics(diags));
-        };
-
-        let checker = TypeChecker::new(&self.unit);
-        let type_env = TypeEnv::new().with_module_id(&import_path);
-        let ty = checker
-            .check_file_mod(&type_env, &file_mod)?
-            .unpack(&mut diags);
-        let type_exports = checker
-            .type_level_exports(&type_env, &file_mod)
-            .unpack(&mut diags);
+        let _check_results = check_result.unpack(&mut diags);
 
         if diags.has_errors() {
+            // Check if the module was not found.
+            if self.cached_asg.module(&import_raw_id).is_none() {
+                diags.push(invalid_import_diag(
+                    source_module_id.clone(),
+                    import_path.clone(),
+                    import_stmt,
+                ));
+            }
             return Err(ReplError::Diagnostics(diags));
         }
 
-        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
-        let eval_env = EvalEnv::new().with_module_id(&import_path);
-        let value = eval.eval_file_mod(&eval_env, &file_mod)?;
+        // Extract the module type and type-level exports from the checker's global env.
+        let new_global_type_env = checker.into_global_type_env();
+
+        let ty = new_global_type_env
+            .get(&GlobalKey::ModuleValue(import_raw_id.clone()))
+            .cloned()
+            .unwrap_or(Type::Never);
+
+        let type_exports =
+            match new_global_type_env.get(&GlobalKey::ModuleTypeLevel(import_raw_id.clone())) {
+                Some(ty) => match &ty.kind {
+                    crate::ty::TypeKind::Record(rt) => rt.clone(),
+                    _ => RecordType::default(),
+                },
+                _ => RecordType::default(),
+            };
+
+        // Replace global_type_env with the fully-recomputed one.
+        self.global_type_env = new_global_type_env;
+
+        // Evaluate using AsgEvaluator with pre-seeded env (skips already-evaluated globals).
+        let ctx = EvalCtx::new(self.effects_tx.clone(), &self.namespace);
+        let evaluator =
+            AsgEvaluator::new(&self.cached_asg, ctx).with_initial_env(self.global_eval_env.clone());
+        let (eval_results, new_global_eval_env) = evaluator.eval()?;
+
+        self.global_eval_env = new_global_eval_env;
+
+        let value = eval_results
+            .modules
+            .get(&import_path)
+            .cloned()
+            .unwrap_or_else(|| crate::eval::tracked(crate::Value::Nil));
 
         self.register_import(alias, ty, value, type_exports);
         Ok(ReplOutcome::Import {
@@ -225,32 +249,55 @@ impl Repl {
         })
     }
 
-    async fn preload_paths_for_statement(
-        &mut self,
-        statement: &crate::ModStmt,
-        module_id: &ModuleId,
-    ) {
-        let file_mod = FileMod {
-            statements: vec![statement.clone()],
-        };
-        let mut collector = crate::CollectPaths::new();
-        crate::visit_file_mod(&mut collector, &file_mod);
+    /// Rebuild the cached ASG from all accumulated import entries.
+    async fn rebuild_asg(&mut self) -> Result<(), ReplError> {
+        let mut loader = Loader::new(Arc::clone(&self.finder));
 
-        let dirs: HashSet<PathBuf> = collector
-            .paths
-            .iter()
-            .filter_map(|path_expr| {
-                let resolved = path_expr.resolve_with_context(module_id);
-                let resolved_path = std::path::Path::new(&resolved);
-                let parent = resolved_path.parent()?;
-                let parent_str = parent.to_string_lossy();
-                let parent_rel = parent_str.strip_prefix('/').unwrap_or(&parent_str);
-                Some(PathBuf::from(parent_rel))
-            })
-            .collect();
+        for entry in &self.import_entries {
+            let entry_refs: Vec<&str> = entry.iter().map(String::as_str).collect();
+            if let Err(e) = loader.resolve(&entry_refs).await {
+                // Non-fatal: log but continue
+                eprintln!("repl: failed to resolve import: {e}");
+            }
+        }
 
-        if !dirs.is_empty() {
-            self.unit.preload_path_dirs(&self.package_id, dirs).await;
+        let diagnosed = loader.finish();
+        let mut diags = DiagList::new();
+        self.cached_asg = diagnosed.unpack(&mut diags);
+
+        if diags.has_errors() {
+            return Err(ReplError::Diagnostics(diags));
+        }
+
+        Ok(())
+    }
+
+    /// Find the ModuleId that the loader resolved for a set of raw segments.
+    fn find_module_id(&self, segments: &[String]) -> ModuleId {
+        let raw_id: Vec<String> = segments.to_vec();
+        // Search the ASG's modules for a matching raw ID.
+        for module_node in self.cached_asg.modules() {
+            let node_raw: Vec<String> = module_node
+                .module_id
+                .package
+                .as_slice()
+                .iter()
+                .cloned()
+                .chain(module_node.module_id.path.iter().cloned())
+                .collect();
+            if node_raw == raw_id {
+                return module_node.module_id.clone();
+            }
+        }
+        // Fallback: construct a ModuleId with the package ID prefix.
+        let pkg_len = self.package_id.len();
+        if segments.len() > pkg_len {
+            ModuleId::new(
+                PackageId::from(segments[..pkg_len].to_vec()),
+                segments[pkg_len..].to_vec(),
+            )
+        } else {
+            ModuleId::new(PackageId::default(), segments.to_vec())
         }
     }
 
@@ -260,15 +307,27 @@ impl Repl {
         module_id: &ModuleId,
     ) -> Result<ReplOutcome, ReplError> {
         let type_env = self.type_env(module_id);
-        let eval = Eval::new(&self.unit, self.effects_tx.clone(), self.namespace.clone());
+        let externs = self.collect_externs();
+        let eval = Eval::from_externs(
+            externs,
+            EvalCtx::new(self.effects_tx.clone(), &self.namespace),
+        );
         let eval_env = self.eval_env(module_id);
+
+        // Build a TypeChecker with modules/package_names derived from the ASG.
+        let modules: HashMap<ModuleId, ast::FileMod> = self
+            .cached_asg
+            .modules()
+            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .collect();
+        let package_names: Vec<PackageId> = self.cached_asg.packages().keys().cloned().collect();
+        let checker = TypeChecker::from_modules(&modules, package_names);
 
         match statement {
             crate::ast::ModStmt::Import(_) => {
                 panic!("imports must be handled by process_import, not process_statement")
             }
             crate::ast::ModStmt::Let(let_bind) | crate::ast::ModStmt::Export(let_bind) => {
-                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
                 let ty = check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
@@ -277,7 +336,6 @@ impl Repl {
                 Ok(ReplOutcome::Binding { name, ty })
             }
             crate::ast::ModStmt::Expr(expr) => {
-                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.check_stmt(&type_env, statement)?;
                 check_diagnosed(diagnosed)?;
                 let value = eval.eval_expr(&eval_env, expr)?;
@@ -285,7 +343,6 @@ impl Repl {
             }
             crate::ast::ModStmt::TypeDef(type_def)
             | crate::ast::ModStmt::ExportTypeDef(type_def) => {
-                let checker = TypeChecker::new(&self.unit);
                 let diagnosed = checker.resolve_type_def(&type_env, type_def);
                 let ty = check_diagnosed(diagnosed)?;
                 let name = type_def.var.name.clone();
@@ -293,6 +350,15 @@ impl Repl {
                 Ok(ReplOutcome::TypeDef { name })
             }
         }
+    }
+
+    /// Collect extern values from all packages in the cached ASG.
+    fn collect_externs(&self) -> std::collections::HashMap<String, crate::Value> {
+        let mut externs = std::collections::HashMap::new();
+        for pkg in self.cached_asg.packages().values() {
+            pkg.register_externs(&mut externs);
+        }
+        externs
     }
 
     fn register_import(

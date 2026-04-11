@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use crate::Loc;
+use crate::{Loc, Span};
 
 use super::{
     BinaryExpr, CallExpr, CatchClause, DictExpr, Expr, FileMod, FnExpr, IfExpr, IndexedAccessExpr,
@@ -10,7 +8,7 @@ use super::{
 
 /// Trait for visiting AST nodes.
 pub trait Visitor {
-    fn visit_path(&mut self, path: &PathExpr);
+    fn visit_path(&mut self, path: &PathExpr, span: Span);
 }
 
 /// Walk a `FileMod`, dispatching to the visitor for each `PathExpr`.
@@ -34,7 +32,7 @@ fn visit_let_bind(visitor: &mut dyn Visitor, bind: &LetBind) {
 
 fn visit_expr(visitor: &mut dyn Visitor, expr: &Loc<Expr>) {
     match expr.as_ref() {
-        Expr::Path(path) => visitor.visit_path(path),
+        Expr::Path(path) => visitor.visit_path(path, expr.span()),
         Expr::Binary(e) => visit_binary(visitor, e),
         Expr::Call(e) => visit_call(visitor, e),
         Expr::Dict(e) => visit_dict(visitor, e),
@@ -170,10 +168,10 @@ fn visit_unary(visitor: &mut dyn Visitor, e: &UnaryExpr) {
     visit_expr(visitor, &e.expr);
 }
 
-/// Collects all unique `PathExpr` values from an AST.
+/// Collects all `PathExpr` values with their spans from an AST.
 #[derive(Default)]
 pub struct CollectPaths {
-    pub paths: HashSet<PathExpr>,
+    pub paths: Vec<(PathExpr, Span)>,
 }
 
 impl CollectPaths {
@@ -183,7 +181,7 @@ impl CollectPaths {
 }
 
 impl Visitor for CollectPaths {
-    fn visit_path(&mut self, path: &PathExpr) {
-        self.paths.insert(path.clone());
+    fn visit_path(&mut self, path: &PathExpr, span: Span) {
+        self.paths.push((path.clone(), span));
     }
 }

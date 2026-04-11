@@ -5,8 +5,9 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    CompilationUnit, CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType,
-    RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
+    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, RecordType, Type,
+    TypeError, TypeIssue, TypeKind, ast,
+    v2::{GlobalKey, RawModuleId},
 };
 use thiserror::Error;
 
@@ -529,8 +530,92 @@ pub(crate) struct TypeEnvMaps<'a> {
 
 type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// GlobalTypeEnv — accumulated type results across SCC iterations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Accumulated global type environment, built up as SCCs are processed in
+/// topological order. `TypeEnv` borrows this to resolve globals and imports
+/// without copying data into each per-SCC environment.
+#[derive(Clone, Debug, Default)]
+pub struct GlobalTypeEnv {
+    types: HashMap<GlobalKey, Type>,
+    /// Per-module import alias → target RawModuleId.
+    import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
+}
+
+impl GlobalTypeEnv {
+    pub fn new(import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>) -> Self {
+        Self {
+            types: HashMap::new(),
+            import_maps,
+        }
+    }
+
+    pub fn insert(&mut self, key: GlobalKey, ty: Type) {
+        self.types.insert(key, ty);
+    }
+
+    pub fn import_maps(&self) -> &HashMap<RawModuleId, HashMap<String, RawModuleId>> {
+        &self.import_maps
+    }
+
+    /// Merge additional import maps into this environment.
+    pub fn merge_import_maps(&mut self, maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>) {
+        for (raw_id, aliases) in maps {
+            self.import_maps.entry(raw_id).or_default().extend(aliases);
+        }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&GlobalKey, &Type)> {
+        self.types.iter()
+    }
+
+    pub fn get(&self, key: &GlobalKey) -> Option<&Type> {
+        self.types.get(key)
+    }
+
+    /// Resolve a value-level variable name in the context of a module.
+    /// Checks same-module globals first, then import aliases.
+    pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&Type> {
+        // Same-module global?
+        let global_key = GlobalKey::Global(raw_module_id.to_vec(), name.to_string());
+        if let Some(ty) = self.types.get(&global_key) {
+            return Some(ty);
+        }
+        // Import alias?
+        if let Some(imports) = self.import_maps.get(raw_module_id)
+            && let Some(target_raw_id) = imports.get(name)
+        {
+            let module_key = GlobalKey::ModuleValue(target_raw_id.clone());
+            return self.types.get(&module_key);
+        }
+        None
+    }
+
+    /// Resolve a type-level name in the context of a module.
+    /// Checks same-module type declarations first, then import aliases.
+    pub fn resolve_type(&self, name: &str, raw_module_id: &[String]) -> Option<&Type> {
+        // Same-module type decl?
+        let td_key = GlobalKey::TypeDecl(raw_module_id.to_vec(), name.to_string());
+        if let Some(ty) = self.types.get(&td_key) {
+            return Some(ty);
+        }
+        // Import alias (type-level)?
+        if let Some(imports) = self.import_maps.get(raw_module_id)
+            && let Some(target_raw_id) = imports.get(name)
+        {
+            let module_key = GlobalKey::ModuleTypeLevel(target_raw_id.clone());
+            return self.types.get(&module_key);
+        }
+        None
+    }
+}
+
 pub struct TypeEnv<'a> {
     module_id: Option<&'a crate::ModuleId>,
+    raw_module_id: Option<&'a RawModuleId>,
+    pub(crate) global_env: &'a GlobalTypeEnv,
     globals: Option<&'a GlobalsMap<'a>>,
     imports: Option<&'a HashMap<&'a str, (crate::ModuleId, Option<&'a ast::FileMod>)>>,
     pub(crate) maps: Box<TypeEnvMaps<'a>>,
@@ -540,16 +625,12 @@ pub struct TypeEnv<'a> {
     pub(crate) free_vars: Option<Rc<RefCell<FreeVarConstraints>>>,
 }
 
-impl<'a> Default for TypeEnv<'a> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl<'a> TypeEnv<'a> {
-    pub fn new() -> Self {
+    pub fn new(global_env: &'a GlobalTypeEnv) -> Self {
         Self {
             module_id: None,
+            raw_module_id: None,
+            global_env,
             globals: None,
             imports: None,
             maps: Box::new(TypeEnvMaps {
@@ -566,6 +647,8 @@ impl<'a> TypeEnv<'a> {
     pub fn inner(&self) -> Self {
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps: self.maps.clone(),
@@ -579,6 +662,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: Some(globals),
             imports: self.imports,
             maps,
@@ -595,6 +680,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: Some(imports),
             maps,
@@ -606,6 +693,21 @@ impl<'a> TypeEnv<'a> {
     pub fn with_module_id(&self, module_id: &'a crate::ModuleId) -> Self {
         Self {
             module_id: Some(module_id),
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
+            globals: self.globals,
+            imports: self.imports,
+            maps: self.maps.clone(),
+            cursor: self.cursor.clone(),
+            free_vars: self.free_vars.clone(),
+        }
+    }
+
+    pub fn with_raw_module_id(&self, raw_module_id: &'a RawModuleId) -> Self {
+        Self {
+            module_id: self.module_id,
+            raw_module_id: Some(raw_module_id),
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps: self.maps.clone(),
@@ -700,6 +802,8 @@ impl<'a> TypeEnv<'a> {
         maps.locals = HashMap::new();
         Self {
             module_id: self.module_id,
+            raw_module_id: self.raw_module_id,
+            global_env: self.global_env,
             globals: self.globals,
             imports: self.imports,
             maps,
@@ -713,10 +817,17 @@ impl<'a> TypeEnv<'a> {
     }
 
     pub fn lookup_type_level(&self, name: &str) -> Option<(&Type, Option<&str>)> {
-        self.maps
-            .type_level
-            .get(name)
-            .map(|(ty, doc)| (ty, doc.as_deref()))
+        // Check local type-level bindings first.
+        if let Some(entry) = self.maps.type_level.get(name) {
+            return Some((&entry.0, entry.1.as_deref()));
+        }
+        // Fall through to global type env.
+        if let Some(raw_id) = self.raw_module_id
+            && let Some(ty) = self.global_env.resolve_type(name, raw_id)
+        {
+            return Some((ty, None));
+        }
+        None
     }
 
     pub fn lookup_local(&self, name: &str) -> Option<&(crate::Span, Type)> {
@@ -744,6 +855,10 @@ impl<'a> TypeEnv<'a> {
             .ok_or(TypeCheckError::ModuleIdMissing)
     }
 
+    pub fn raw_module_id(&self) -> Option<&RawModuleId> {
+        self.raw_module_id
+    }
+
     pub fn local_names(&self) -> impl Iterator<Item = &str> {
         self.maps.locals.keys().copied()
     }
@@ -760,22 +875,27 @@ impl<'a> TypeEnv<'a> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub struct TypeChecker<'p> {
-    pub(crate) unit: &'p CompilationUnit,
+    /// Module map for import resolution.
+    pub(crate) modules: &'p HashMap<crate::ModuleId, ast::FileMod>,
+    /// Package names for import path splitting and IDE completions.
+    pub(crate) package_names: Vec<crate::PackageId>,
     /// Cache for resolved global expression types (keyed by expression pointer).
-    /// Avoids re-checking the same global expression multiple times within a
-    /// single type-checking pass. Diagnostics are not cached — they are only
-    /// emitted during the canonical check in `check_global_let_bind`.
     pub(crate) global_cache: RefCell<HashMap<*const crate::Loc<ast::Expr>, Type>>,
     /// Cache for resolved import module types (keyed by FileMod pointer).
     pub(crate) import_cache: RefCell<HashMap<*const ast::FileMod, Type>>,
     /// Cache for type-level exports (keyed by FileMod pointer).
-    type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
+    pub(crate) type_level_cache: RefCell<HashMap<*const ast::FileMod, RecordType>>,
 }
 
 impl<'p> TypeChecker<'p> {
-    pub fn new(unit: &'p CompilationUnit) -> Self {
+    /// Create a TypeChecker from a module map and package names.
+    pub fn from_modules(
+        modules: &'p HashMap<crate::ModuleId, ast::FileMod>,
+        package_names: Vec<crate::PackageId>,
+    ) -> Self {
         Self {
-            unit,
+            modules,
+            package_names,
             global_cache: RefCell::new(HashMap::new()),
             import_cache: RefCell::new(HashMap::new()),
             type_level_cache: RefCell::new(HashMap::new()),
@@ -819,17 +939,6 @@ impl<'p> TypeChecker<'p> {
     // ═══════════════════════════════════════════════════════════════════════════
     // Module-level checking
     // ═══════════════════════════════════════════════════════════════════════════
-
-    pub fn check_program(&self) -> Result<Diagnosed<()>, TypeCheckError> {
-        let mut diags = DiagList::new();
-
-        for (module_id, file_mod) in self.unit.modules() {
-            let env = TypeEnv::new().with_module_id(module_id);
-            let _ = self.check_file_mod(&env, file_mod)?.unpack(&mut diags);
-        }
-
-        Ok(Diagnosed::new((), diags))
-    }
 
     #[inline(never)]
     pub fn check_file_mod(
@@ -1018,7 +1127,7 @@ impl<'p> TypeChecker<'p> {
     /// Build the type-level environment for a module:
     /// 1. Populate import type-level bindings.
     /// 2. Resolve local type defs in SCC-based topological order.
-    fn build_module_type_env(
+    pub(crate) fn build_module_type_env(
         &self,
         env: &mut TypeEnv<'_>,
         file_mod: &ast::FileMod,
@@ -1050,23 +1159,41 @@ impl<'p> TypeChecker<'p> {
                 *env =
                     env.with_type_level(td.var.name.clone(), resolved_ty, td.doc_comment.clone());
             } else {
-                // Recursive group: register all with Never, then iterate until stable
-                for binding_id in scc {
-                    let td = type_def_by_name[binding_id.name.as_str()];
-                    *env = env.with_type_level(td.var.name.clone(), Type::Never, None);
+                // Recursive group: allocate a type variable for each member,
+                // bootstrap with Var(type_id), resolve once, then wrap with
+                // IsoRec where the variable actually appears in the body.
+                let scc_vars: Vec<(&str, usize)> = scc
+                    .iter()
+                    .map(|bid| {
+                        let td = type_def_by_name[bid.name.as_str()];
+                        let type_id = next_type_id();
+                        (td.var.name.as_str(), type_id)
+                    })
+                    .collect();
+
+                // Bootstrap: register each type name as its type variable
+                for &(name, type_id) in &scc_vars {
+                    *env = env.with_type_level(name.to_owned(), Type::Var(type_id), None);
                 }
-                // Iterate resolution until types stabilize (types are structural,
-                // so this converges quickly — typically 2 iterations).
-                for _ in 0..3 {
-                    for binding_id in scc {
-                        let td = type_def_by_name[binding_id.name.as_str()];
-                        let resolved_ty = self.resolve_type_def(env, td).unpack(diags);
-                        *env = env.with_type_level(
-                            td.var.name.clone(),
-                            resolved_ty,
-                            td.doc_comment.clone(),
-                        );
-                    }
+
+                // Resolve each type body once (references to SCC members
+                // will appear as Var(type_id) in the resolved type).
+                let mut resolved: Vec<(&str, usize, Type, Option<String>)> =
+                    Vec::with_capacity(scc_vars.len());
+                for &(name, type_id) in &scc_vars {
+                    let td = type_def_by_name[name];
+                    let body = self.resolve_type_def(env, td).unpack(diags);
+                    resolved.push((name, type_id, body, td.doc_comment.clone()));
+                }
+
+                // Wrap with IsoRec where the body actually references the variable
+                for (name, type_id, body, doc) in resolved {
+                    let ty = if body.contains_var(type_id) {
+                        Type::IsoRec(type_id, Box::new(body))
+                    } else {
+                        body
+                    };
+                    *env = env.with_type_level(name.to_owned(), ty, doc);
                 }
             }
         }
@@ -1111,7 +1238,8 @@ impl<'p> TypeChecker<'p> {
                         if let Some(cached) = self.import_cache.borrow().get(&cache_key) {
                             Some(cached.clone())
                         } else {
-                            let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                            let import_env =
+                                TypeEnv::new(env.global_env).with_module_id(&target_module_id);
                             self.check_file_mod(&import_env, import_file_mod)
                                 .ok()
                                 .map(|d| {
@@ -1709,7 +1837,7 @@ impl<'p> TypeChecker<'p> {
     /// Check a mutually recursive SCC group where all bindings are function literals.
     /// Creates type variables for all bindings, checks all bodies with all variables
     /// in scope, then solves the combined constraint system.
-    fn check_recursive_scc_group(
+    pub(crate) fn check_recursive_scc_group(
         &self,
         env: &TypeEnv<'_>,
         scc: &[crate::dep_graph::BindingId],
@@ -1871,7 +1999,7 @@ impl<'p> TypeChecker<'p> {
                         .unwrap_or_else(|| {
                             crate::ModuleId::new(crate::PackageId::default(), raw_segments.clone())
                         });
-                    let import_env = TypeEnv::new().with_module_id(&target_module_id);
+                    let import_env = TypeEnv::new(env.global_env).with_module_id(&target_module_id);
                     let type_exports = self
                         .type_level_exports(&import_env, import_file_mod)
                         .unpack(diags);
@@ -1911,7 +2039,7 @@ impl<'p> TypeChecker<'p> {
         Some(crate::ModuleId::new(package, path))
     }
 
-    fn find_imports<'a>(
+    pub(crate) fn find_imports<'a>(
         &'a self,
         file_mod: &'a ast::FileMod,
         current_package: &crate::PackageId,
@@ -1966,12 +2094,12 @@ impl<'p> TypeChecker<'p> {
         if module_id.path.is_empty() {
             return None;
         }
-        self.unit.module(&module_id)
+        self.modules.get(&module_id)
     }
 
     fn package_name_for_import(&self, segments: &[String]) -> Option<crate::PackageId> {
-        self.unit
-            .package_names()
+        self.package_names
+            .iter()
             .filter(|package_name| segments.starts_with(package_name.as_slice()))
             .max_by_key(|package_name| package_name.len())
             .cloned()
@@ -1991,7 +2119,7 @@ impl<'p> TypeChecker<'p> {
 
             if i == 0 {
                 // First segment: suggest package names and "Self"
-                for package_name in self.unit.package_names() {
+                for package_name in &self.package_names {
                     if let Some(first) = package_name.as_slice().first()
                         && first.starts_with(prefix)
                     {
@@ -2024,100 +2152,18 @@ impl<'p> TypeChecker<'p> {
                     dir_path.push(seg);
                 }
 
-                if let Some(children) = self
-                    .unit
-                    .cached_children_for_import(&package_name, &dir_path)
-                {
-                    for entry in children {
-                        match entry {
-                            crate::ChildEntry::File(name) => {
-                                if let Some(stem) = name.strip_suffix(".scl")
-                                    && stem.starts_with(prefix)
-                                {
-                                    cursor.add_completion_candidate(
-                                        crate::CompletionCandidate::Module(stem.to_owned()),
-                                    );
-                                }
-                                // Non-.scl files are not importable; skip them.
-                            }
-                            crate::ChildEntry::Directory(name) => {
-                                if name.starts_with(prefix) {
-                                    cursor.add_completion_candidate(
-                                        crate::CompletionCandidate::ModuleDir(name.clone()),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
+                // Children-based completion is handled by the v2 IDE layer;
+                // the TypeChecker no longer carries a children cache.
+                let _ = (package_name, dir_path);
             }
         }
     }
 
     /// Add file/directory completion candidates for path expressions.
-    pub(crate) fn add_path_completions(&self, env: &TypeEnv<'_>, path_expr: &ast::PathExpr) {
-        for (i, segment) in path_expr.segments.iter().enumerate() {
-            let Some((cursor, offset)) = &segment.cursor else {
-                continue;
-            };
-            let prefix = &segment.value[..*offset];
-
-            // Resolve prefix segments to a parent directory path
-            let Ok(module_id) = env.module_id() else {
-                continue;
-            };
-
-            // Build a partial PathExpr from segments before the cursor segment
-            let prior_segments: Vec<&str> = path_expr.values().take(i).collect();
-
-            // Determine the parent directory in the repo
-            let is_relative = prior_segments
-                .first()
-                .is_some_and(|s| *s == "." || *s == "..");
-            let mut components: Vec<&str> = if is_relative {
-                let dir = &module_id.path[..module_id.path.len().saturating_sub(1)];
-                dir.iter().map(|s| s.as_str()).collect()
-            } else {
-                Vec::new()
-            };
-
-            for seg in &prior_segments {
-                match *seg {
-                    "." => {}
-                    ".." => {
-                        components.pop();
-                    }
-                    s => components.push(s),
-                }
-            }
-
-            let dir_path = PathBuf::from(components.join("/"));
-
-            if let Some(children) = self
-                .unit
-                .cached_children_for_path(&module_id.package, &dir_path)
-            {
-                for entry in children {
-                    match entry {
-                        crate::ChildEntry::File(name) => {
-                            if name.starts_with(prefix) {
-                                cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::PathFile(name.clone()),
-                                );
-                            }
-                        }
-                        crate::ChildEntry::Directory(name) => {
-                            if name.starts_with(prefix) {
-                                cursor.add_completion_candidate(
-                                    crate::CompletionCandidate::PathDir(name.clone()),
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    ///
+    /// Currently a no-op: path completions are handled by the v2 IDE layer.
+    /// The TypeChecker no longer carries a children cache.
+    pub(crate) fn add_path_completions(&self, _env: &TypeEnv<'_>, _path_expr: &ast::PathExpr) {}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2126,10 +2172,11 @@ impl<'p> TypeChecker<'p> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::{TypeChecker, next_type_id};
     use crate::{
-        CompilationUnit, DictType, FnType, Loc, ModuleId, Position, RecordType, Span, Type,
-        TypeKind,
+        DictType, FnType, Loc, ModuleId, Position, RecordType, Span, Type, TypeKind,
         ast::{
             BinaryExpr, BinaryOp, DictEntry, DictExpr, Expr, Int, RecordExpr, RecordField, StrExpr,
             UnaryExpr, UnaryOp, Var,
@@ -2137,9 +2184,8 @@ mod tests {
     };
 
     fn checker() -> TypeChecker<'static> {
-        let unit = Box::new(CompilationUnit::new());
-        let unit = Box::leak(unit);
-        TypeChecker::new(unit)
+        let modules = Box::leak(Box::new(HashMap::new()));
+        TypeChecker::from_modules(modules, Vec::new())
     }
 
     fn loc<T>(value: T, span: Span) -> Loc<T> {
@@ -2238,7 +2284,8 @@ mod tests {
     fn record_expr_missing_optional_field_accepted() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let record_expr = loc(
@@ -2290,7 +2337,8 @@ mod tests {
     fn record_field_mismatch_is_reported_at_field_expr_span() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let record_span = Span::new(Position::new(1, 1), Position::new(1, 10));
         let field_span = Span::new(Position::new(1, 5), Position::new(1, 6));
 
@@ -2344,7 +2392,8 @@ mod tests {
     fn dict_infers_key_value_types_from_first_entry() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let dict_expr = loc(
@@ -2379,7 +2428,8 @@ mod tests {
     fn add_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2401,7 +2451,8 @@ mod tests {
     fn add_strings_returns_str() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2423,7 +2474,8 @@ mod tests {
     fn add_mismatched_types_reports_diag() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let add_expr = loc(
@@ -2450,7 +2502,8 @@ mod tests {
     fn subtract_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let sub_expr = loc(
@@ -2472,7 +2525,8 @@ mod tests {
     fn unary_minus_float_returns_float() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let unary_expr = loc(
@@ -2498,7 +2552,8 @@ mod tests {
     fn multiply_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let mul_expr = loc(
@@ -2520,7 +2575,8 @@ mod tests {
     fn divide_ints_returns_int() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let div_expr = loc(
@@ -2542,7 +2598,8 @@ mod tests {
     fn equality_returns_bool_and_warns_on_disjoint_types() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let eq_expr = loc(
@@ -2568,7 +2625,8 @@ mod tests {
     fn comparison_requires_numeric_operands() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let cmp_expr = loc(
@@ -2590,7 +2648,8 @@ mod tests {
     fn logical_operators_require_bool() {
         let checker = checker();
         let module_id = ModuleId::default();
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let span = Span::new(Position::new(1, 1), Position::new(1, 10));
 
         let and_expr = loc(
@@ -2952,10 +3011,10 @@ mod tests {
     fn check_module(source: &str) -> crate::Diagnosed<Type> {
         let module_id = ModuleId::default();
         let file_mod = crate::parser::parse_file_mod(source, &module_id).into_inner();
-        let unit = Box::new(CompilationUnit::new());
-        let unit: &'static CompilationUnit = Box::leak(unit);
-        let checker = TypeChecker::new(unit);
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let modules = Box::leak(Box::new(HashMap::new()));
+        let checker = TypeChecker::from_modules(modules, Vec::new());
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         checker
             .check_file_mod(&env, &file_mod)
             .expect("type check should not error")
@@ -3045,10 +3104,10 @@ mod tests {
             &module_id,
         )
         .into_inner();
-        let unit = Box::new(CompilationUnit::new());
-        let unit: &'static CompilationUnit = Box::leak(unit);
-        let checker = TypeChecker::new(unit);
-        let env = super::TypeEnv::new().with_module_id(&module_id);
+        let modules = Box::leak(Box::new(HashMap::new()));
+        let checker = TypeChecker::from_modules(modules, Vec::new());
+        let ge = super::GlobalTypeEnv::default();
+        let env = super::TypeEnv::new(&ge).with_module_id(&module_id);
         let diagnosed = checker.type_level_exports(&env, &file_mod);
         assert!(!diagnosed.diags().has_errors());
         let type_exports = diagnosed.into_inner();

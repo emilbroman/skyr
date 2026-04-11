@@ -135,3 +135,18 @@ impl<T> std::ops::DerefMut for Diagnosed<T> {
         &mut self.value
     }
 }
+
+/// Diagnostic for an unresolvable import path.
+#[derive(thiserror::Error, Debug)]
+#[error("module not found: {import_path}")]
+pub struct InvalidImport {
+    pub source_module_id: ModuleId,
+    pub import_path: ModuleId,
+    pub path_span: Span,
+}
+
+impl Diag for InvalidImport {
+    fn locate(&self) -> (ModuleId, Span) {
+        (self.source_module_id.clone(), self.path_span)
+    }
+}

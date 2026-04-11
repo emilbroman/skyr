@@ -305,7 +305,10 @@ impl CallExpr {
                     name: frame_name,
                     parent: env.stack,
                 };
-                let call_env = function.env.as_eval_env(function, &args, Some(&frame));
+                let call_env =
+                    function
+                        .env
+                        .as_eval_env(function, &args, Some(&frame), env.global_env);
                 evaluator
                     .eval_expr(&call_env, &function.body)
                     .map(|value| value.with_dependencies(callee_dependencies))

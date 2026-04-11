@@ -185,26 +185,10 @@ impl Expr {
             )),
             Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
             Expr::Path(path_expr) => {
-                let mut diags = DiagList::new();
-                if let Ok(module_id) = env.module_id() {
-                    let resolved = path_expr.resolve_with_context(&module_id);
-                    // `path_exists_cached` returns None when the parent directory
-                    // hasn't been cached — in that case we skip validation rather
-                    // than emit a false positive.
-                    if checker
-                        .unit
-                        .path_exists_cached(&module_id.package, &resolved)
-                        == Some(false)
-                    {
-                        diags.push(crate::InvalidPath {
-                            module_id,
-                            resolved_path: resolved,
-                            span: expr.span(),
-                        });
-                    }
-                }
+                // Path validation is handled by the v2 Loader; the TypeChecker
+                // no longer carries a children cache for validation.
                 checker.add_path_completions(env, path_expr);
-                Ok(Diagnosed::new(Type::Path, diags))
+                Ok(Diagnosed::new(Type::Path, DiagList::new()))
             }
             Expr::Extern(extern_expr) => extern_expr.type_synth(checker, env),
             Expr::If(if_expr) => if_expr.type_synth(checker, env, expr),
@@ -267,11 +251,12 @@ impl Expr {
             Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
-                let hash = evaluator
-                    .unit
-                    .path_hash(&resolved)
-                    .copied()
-                    .unwrap_or_else(|| gix_hash::ObjectId::null(gix_hash::Kind::Sha1));
+                let package_id = env
+                    .module_id
+                    .map(|m| &m.package)
+                    .cloned()
+                    .unwrap_or_default();
+                let hash = evaluator.resolve_path_hash(&resolved, &package_id);
                 Ok(crate::eval::tracked(Value::Path(crate::PathValue {
                     path: resolved,
                     hash,

@@ -1,0 +1,395 @@
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::Arc;
+
+use crate::{PackageId, Value};
+
+/// A filesystem-like entity within a [`Package`].
+#[derive(Clone, Debug)]
+pub enum PackageEntity {
+    File {
+        hash: gix_hash::ObjectId,
+    },
+    Dir {
+        hash: gix_hash::ObjectId,
+        children: Vec<DirChild>,
+    },
+}
+
+/// A child entry within a [`PackageEntity::Dir`].
+#[derive(Clone, Debug)]
+pub struct DirChild {
+    pub name: String,
+    pub kind: DirChildKind,
+    pub hash: gix_hash::ObjectId,
+}
+
+/// Whether a [`DirChild`] is a file or directory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirChildKind {
+    File,
+    Dir,
+}
+
+impl PackageEntity {
+    /// Returns the git hash of this entity.
+    pub fn hash(&self) -> gix_hash::ObjectId {
+        match self {
+            PackageEntity::File { hash } => *hash,
+            PackageEntity::Dir { hash, .. } => *hash,
+        }
+    }
+}
+
+/// Errors that can occur when loading from a [`Package`].
+#[derive(Debug, thiserror::Error)]
+pub enum LoadError {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    #[error("encoding error: {0}")]
+    Encoding(#[from] std::string::FromUtf8Error),
+
+    #[error("{0}")]
+    Other(Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// A package that can look up and load files.
+///
+/// Object-safe trait representing a package. Implementations include
+/// `StdPackage` (bundled stdlib), `InMemoryPackage` (for tests/LSP),
+/// `FsPackage` (filesystem), and CDB-backed packages.
+#[async_trait::async_trait]
+pub trait Package: Send + Sync {
+    /// Returns the package identifier (e.g. `Std`, `MyOrg/MyRepo`).
+    fn id(&self) -> PackageId;
+
+    /// Looks up a filesystem entity at the given path within this package.
+    ///
+    /// Returns `Ok(None)` if the path does not exist, or `Err` on I/O failure.
+    async fn lookup(&self, path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError>;
+
+    /// Loads the raw bytes of a file at the given path.
+    ///
+    /// Unlike [`lookup`](Package::lookup), a missing file is an error here.
+    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError>;
+
+    /// Registers native (Rust) extern function implementations provided by this package.
+    ///
+    /// Most packages return nothing; `StdPackage` uses this to register stdlib externs.
+    fn register_externs(&self, _externs: &mut HashMap<String, Value>) {}
+}
+
+/// Finds the [`Package`] that owns a given raw module ID.
+///
+/// The raw module ID is an unresolved slice of path segments (e.g.
+/// `["MyOrg", "MyRepo", "Foo", "Bar"]`). The finder returns a package whose
+/// [`Package::id`] matches the leading segments of the raw ID.
+#[async_trait::async_trait]
+pub trait PackageFinder: Send + Sync {
+    async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError>;
+}
+
+/// Blanket impl: any `Arc<P: Package>` can act as a `PackageFinder` by checking
+/// whether the raw module ID starts with its own package ID segments.
+#[async_trait::async_trait]
+impl<P: Package + 'static> PackageFinder for Arc<P> {
+    async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
+        let pkg_id = self.id();
+        let segments = pkg_id.as_slice();
+        if raw_id.len() >= segments.len()
+            && raw_id[..segments.len()]
+                .iter()
+                .zip(segments.iter())
+                .all(|(a, b)| *a == b.as_str())
+        {
+            Ok(Some(Arc::clone(self) as Arc<dyn Package>))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CDB DeploymentClient → Package impl
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cdb")]
+#[async_trait::async_trait]
+impl Package for cdb::DeploymentClient {
+    fn id(&self) -> PackageId {
+        let repo_qid = self.repo_qid();
+        [repo_qid.org.to_string(), repo_qid.repo.to_string()]
+            .into_iter()
+            .collect::<PackageId>()
+    }
+
+    async fn lookup(&self, path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+        // Try path_hash first — it handles both files and trees and returns
+        // None for missing paths without an error.
+        let hash = match self.path_hash(path).await {
+            Ok(Some(h)) => h,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(LoadError::Other(Box::new(e))),
+        };
+
+        // Determine if it's a file or directory by trying to read it as a dir.
+        let dir_path = if path.as_os_str().is_empty() {
+            None
+        } else {
+            Some(path)
+        };
+        match self.read_dir(dir_path).await {
+            Ok(tree) => {
+                let children = tree
+                    .entries
+                    .iter()
+                    .map(|entry| {
+                        let name = String::from_utf8_lossy(&entry.filename).into_owned();
+                        let kind = if entry.mode.is_tree() {
+                            DirChildKind::Dir
+                        } else {
+                            DirChildKind::File
+                        };
+                        DirChild {
+                            name,
+                            kind,
+                            hash: entry.oid,
+                        }
+                    })
+                    .collect();
+                Ok(Some(Cow::Owned(PackageEntity::Dir { hash, children })))
+            }
+            Err(cdb::FileError::NotADirectory(_)) => {
+                // It exists but isn't a directory, so it's a file.
+                Ok(Some(Cow::Owned(PackageEntity::File { hash })))
+            }
+            Err(cdb::FileError::NotFound(_)) => {
+                // Shouldn't happen since path_hash found it, but treat as file.
+                Ok(Some(Cow::Owned(PackageEntity::File { hash })))
+            }
+            Err(e) => Err(LoadError::Other(Box::new(e))),
+        }
+    }
+
+    async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError> {
+        match self.read_file(path).await {
+            Ok(data) => Ok(Cow::Owned(data)),
+            Err(cdb::FileError::NotFound(_)) => {
+                Err(LoadError::NotFound(path.display().to_string()))
+            }
+            Err(e) => Err(LoadError::Other(Box::new(e))),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CDB Client → PackageFinder impl
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cdb")]
+pub use cdb_finder::CdbPackageFinder;
+
+#[cfg(feature = "cdb")]
+mod cdb_finder {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use tokio::sync::RwLock;
+
+    use super::{LoadError, Package, PackageFinder};
+    use crate::{PackageId, v2::CachedPackage};
+
+    /// A [`PackageFinder`] backed by the CDB, resolving cross-repository imports.
+    ///
+    /// Given a raw module ID like `["MyOrg", "MyRepo", "Foo", "Bar"]`, extracts
+    /// the first two segments as Org/Repo (per the CDB two-segment convention),
+    /// looks up the active deployment for that repo in the configured environment,
+    /// and returns a cached `DeploymentClient` as the resolved [`Package`].
+    pub struct CdbPackageFinder {
+        client: cdb::Client,
+        environment: ids::EnvironmentId,
+        cache: RwLock<HashMap<PackageId, Option<Arc<dyn Package>>>>,
+    }
+
+    impl CdbPackageFinder {
+        /// Create a new CDB-backed finder.
+        ///
+        /// `environment` scopes which active deployment to use for target repos.
+        pub fn new(client: cdb::Client, environment: ids::EnvironmentId) -> Self {
+            Self {
+                client,
+                environment,
+                cache: RwLock::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PackageFinder for CdbPackageFinder {
+        async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
+            // CDB always uses two-segment Org/Repo package IDs.
+            if raw_id.len() < 2 {
+                return Ok(None);
+            }
+
+            let org_str = raw_id[0];
+            let repo_str = raw_id[1];
+
+            let Ok(org) = org_str.parse::<ids::OrgId>() else {
+                return Ok(None);
+            };
+            let Ok(repo) = repo_str.parse::<ids::RepoId>() else {
+                return Ok(None);
+            };
+
+            let pkg_id: PackageId = [org_str.to_string(), repo_str.to_string()]
+                .into_iter()
+                .collect();
+
+            // Check cache (including negative results).
+            if let Some(cached) = self.cache.read().await.get(&pkg_id) {
+                return Ok(cached.clone());
+            }
+
+            // Look up the repo and find an active deployment for our environment.
+            let repo_qid = ids::RepoQid::new(org, repo);
+            let repo_client = self.client.repo(repo_qid.clone());
+
+            // Check that the repo exists.
+            match repo_client.get().await {
+                Ok(_) => {}
+                Err(cdb::RepositoryQueryError::NotFound) => {
+                    self.cache.write().await.insert(pkg_id, None);
+                    return Ok(None);
+                }
+                Err(e) => return Err(LoadError::Other(Box::new(e))),
+            }
+
+            // Find active deployment for our environment.
+            use futures_util::StreamExt;
+            let mut deployments = repo_client
+                .active_deployments()
+                .await
+                .map_err(|e| LoadError::Other(Box::new(e)))?;
+
+            let mut found = None;
+            while let Some(result) = deployments.next().await {
+                let deployment = result.map_err(|e| LoadError::Other(Box::new(e)))?;
+                if deployment.environment == self.environment {
+                    found = Some(deployment);
+                    break;
+                }
+            }
+
+            let Some(deployment) = found else {
+                self.cache.write().await.insert(pkg_id, None);
+                return Ok(None);
+            };
+
+            // Construct a cached DeploymentClient.
+            let dc = repo_client.deployment(deployment.environment, deployment.deployment);
+            let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
+            self.cache
+                .write()
+                .await
+                .insert(pkg_id, Some(Arc::clone(&pkg)));
+            Ok(Some(pkg))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal test package for unit tests.
+    struct TestPackage {
+        pkg_id: PackageId,
+    }
+
+    #[async_trait::async_trait]
+    impl Package for TestPackage {
+        fn id(&self) -> PackageId {
+            self.pkg_id.clone()
+        }
+
+        async fn lookup(&self, _path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
+            Ok(None)
+        }
+
+        async fn load(&self, path: &Path) -> Result<Cow<'_, Vec<u8>>, LoadError> {
+            Err(LoadError::NotFound(path.display().to_string()))
+        }
+    }
+
+    #[test]
+    fn package_entity_construction() {
+        let file = PackageEntity::File {
+            hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+        };
+        assert!(matches!(file, PackageEntity::File { .. }));
+
+        let dir = PackageEntity::Dir {
+            hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+            children: vec![DirChild {
+                name: "foo.scl".into(),
+                kind: DirChildKind::File,
+                hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+            }],
+        };
+        if let PackageEntity::Dir { children, .. } = &dir {
+            assert_eq!(children.len(), 1);
+            assert_eq!(children[0].name, "foo.scl");
+            assert_eq!(children[0].kind, DirChildKind::File);
+        } else {
+            panic!("expected Dir");
+        }
+    }
+
+    #[tokio::test]
+    async fn arc_package_finder_matching() {
+        let pkg = Arc::new(TestPackage {
+            pkg_id: PackageId::from(["Std"]),
+        });
+
+        // Should match: raw ID starts with package ID
+        let result = pkg.find(&["Std", "Time"]).await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id(), PackageId::from(["Std"]));
+    }
+
+    #[tokio::test]
+    async fn arc_package_finder_non_matching() {
+        let pkg = Arc::new(TestPackage {
+            pkg_id: PackageId::from(["Std"]),
+        });
+
+        // Should not match: different prefix
+        let result = pkg.find(&["Other", "Time"]).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn arc_package_finder_multi_segment() {
+        let pkg = Arc::new(TestPackage {
+            pkg_id: PackageId::from(["MyOrg", "MyRepo"]),
+        });
+
+        // Should match: raw ID starts with both segments
+        let result = pkg.find(&["MyOrg", "MyRepo", "Foo", "Bar"]).await.unwrap();
+        assert!(result.is_some());
+
+        // Should not match: only first segment matches
+        let result = pkg.find(&["MyOrg", "Other"]).await.unwrap();
+        assert!(result.is_none());
+
+        // Should not match: raw ID too short
+        let result = pkg.find(&["MyOrg"]).await.unwrap();
+        assert!(result.is_none());
+    }
+}
