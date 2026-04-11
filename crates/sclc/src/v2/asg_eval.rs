@@ -302,20 +302,23 @@ fn eval_recursive_group(
     }
 
     // Second pass: wire up shared recursive group.
+    // The Arc holds unwired copies (recursive_group: None), which is fine because
+    // FnEnv::as_eval_env wires them lazily at call time. The copies stored in
+    // global_env below come from `preliminary` and carry the Arc reference.
     let shared_group = Arc::new(preliminary.clone());
     for (_, fn_val) in &mut preliminary {
         fn_val.env.recursive_group = Some(shared_group.clone());
     }
 
-    // Store results.
-    for (i, node) in global_nodes.iter().enumerate() {
+    // Store results using name-based lookup into preliminary.
+    for node in global_nodes {
         let NodeId::Global(raw_id, name) = node else {
             continue;
         };
-        if i < preliminary.len() && preliminary[i].0 == *name {
+        if let Some((_, fn_val)) = preliminary.iter().find(|(n, _)| n == name) {
             global_env.insert(
                 GlobalKey::Global(raw_id.clone(), name.clone()),
-                TrackedValue::new(Value::Fn(preliminary[i].1.clone())),
+                TrackedValue::new(Value::Fn(fn_val.clone())),
             );
         }
     }
