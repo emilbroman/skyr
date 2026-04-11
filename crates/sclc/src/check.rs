@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 
 use crate::{
-    DiagList, Diagnosed, GlobalTypeEnv, RecordType, Type, TypeCheckError, TypeChecker, TypeEnv,
-    ast,
+    DiagList, Diagnosed, GlobalKey, GlobalTypeEnv, RecordType, Type, TypeCheckError, TypeChecker,
+    TypeEnv, ast,
     checker::{CyclicDependency, next_type_id},
     ty::TypeKind,
-    v2::GlobalKey,
 };
 
-use super::{Asg, NodeId, RawModuleId};
+use crate::{Asg, NodeId, RawModuleId};
 
 /// Results from the ASG-driven type checker.
 pub struct CheckResults {
@@ -616,7 +615,7 @@ mod tests {
     use std::sync::Arc;
 
     use crate::PackageId;
-    use crate::v2::{InMemoryPackage, Loader, build_default_finder};
+    use crate::{InMemoryPackage, Loader, build_default_finder};
 
     #[tokio::test]
     async fn checker_instantiation() {

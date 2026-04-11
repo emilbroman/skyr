@@ -188,7 +188,7 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
 }
 
 struct Fixture {
-    package: crate::v2::InMemoryPackage,
+    package: crate::InMemoryPackage,
     package_id: PackageId,
     rdb: Vec<(ResourceId, Resource)>,
     diag_log: Option<String>,
@@ -252,7 +252,7 @@ fn load_fixture(dir_name: &str) -> Fixture {
         .into_iter()
         .map(|(k, v)| (PathBuf::from(k), v))
         .collect();
-    let package = crate::v2::InMemoryPackage::new(pkg_id.clone(), pkg_files);
+    let package = crate::InMemoryPackage::new(pkg_id.clone(), pkg_files);
 
     // Load optional expectation files
     let diag_log = std::fs::read_to_string(fixture_path.join("diag.log")).ok();
@@ -274,7 +274,7 @@ fn load_fixture(dir_name: &str) -> Fixture {
     }
 }
 
-/// Run a single test case by directory name using the v2 pipeline.
+/// Run a single test case by directory name.
 async fn run_test_case(dir_name: &str) {
     let Fixture {
         package,
@@ -286,16 +286,16 @@ async fn run_test_case(dir_name: &str) {
     } = load_fixture(dir_name);
 
     let user_pkg = Arc::new(package);
-    let finder = crate::v2::build_default_finder(user_pkg);
+    let finder = crate::build_default_finder(user_pkg);
 
-    // Compile via v2 pipeline.
+    // Compile.
     let entry: Vec<&str> = {
         let mut segments: Vec<&str> = package_id.as_slice().iter().map(String::as_str).collect();
         segments.push("Main");
         segments
     };
 
-    let result = crate::v2::compile(finder, &entry)
+    let result = crate::compile(finder, &entry)
         .await
         .unwrap_or_else(|e| panic!("compilation failed for {dir_name}: {e}"));
 
@@ -346,7 +346,7 @@ async fn run_test_case(dir_name: &str) {
         vec!["Main".to_string()],
     );
 
-    let tracked_value: TrackedValue = crate::v2::eval(&asg, eval_ctx)
+    let tracked_value: TrackedValue = crate::eval(&asg, eval_ctx)
         .unwrap_or_else(|e| panic!("evaluation failed for {dir_name}: {e}"))
         .modules
         .remove(&main_module_id)

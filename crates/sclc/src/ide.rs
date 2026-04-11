@@ -63,7 +63,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use crate::v2::{InMemoryPackage, build_default_finder, compile};
+    use crate::{InMemoryPackage, build_default_finder, compile};
     use crate::{ModuleId, PackageId, Position};
 
     #[tokio::test]

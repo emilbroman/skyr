@@ -909,8 +909,8 @@ impl crate::Diag for CyclicEagerDependency {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::v2::CompositePackageFinder;
-    use crate::v2::{InMemoryPackage, StdPackage};
+    use crate::CompositePackageFinder;
+    use crate::{InMemoryPackage, StdPackage};
 
     use super::*;
 

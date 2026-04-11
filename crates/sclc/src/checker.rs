@@ -5,9 +5,8 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::{
-    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, RecordType, Type,
-    TypeError, TypeIssue, TypeKind, ast,
-    v2::{GlobalKey, RawModuleId},
+    CompletionMember, CursorIdentifier, DiagList, Diagnosed, DictType, FnType, GlobalKey,
+    RawModuleId, RecordType, Type, TypeError, TypeIssue, TypeKind, ast,
 };
 use thiserror::Error;
 
@@ -2152,7 +2151,7 @@ impl<'p> TypeChecker<'p> {
                     dir_path.push(seg);
                 }
 
-                // Children-based completion is handled by the v2 IDE layer;
+                // Children-based completion is handled by the IDE layer;
                 // the TypeChecker no longer carries a children cache.
                 let _ = (package_name, dir_path);
             }
@@ -2161,7 +2160,7 @@ impl<'p> TypeChecker<'p> {
 
     /// Add file/directory completion candidates for path expressions.
     ///
-    /// Currently a no-op: path completions are handled by the v2 IDE layer.
+    /// Currently a no-op: path completions are handled by the IDE layer.
     /// The TypeChecker no longer carries a children cache.
     pub(crate) fn add_path_completions(&self, _env: &TypeEnv<'_>, _path_expr: &ast::PathExpr) {}
 }

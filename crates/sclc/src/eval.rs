@@ -6,10 +6,7 @@ use tokio::sync::mpsc;
 
 use ids::ResourceId;
 
-use crate::{
-    ExternFnValue, PathValue, Record, TrackedValue, Value, ast,
-    v2::{GlobalKey, RawModuleId},
-};
+use crate::{ExternFnValue, GlobalKey, PathValue, RawModuleId, Record, TrackedValue, Value, ast};
 
 #[derive(Debug)]
 pub struct StackFrame<'a> {
@@ -316,7 +313,7 @@ pub struct Eval<'p> {
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
     /// Package map for on-demand path hash resolution at runtime.
-    pub(crate) packages: Option<Arc<HashMap<crate::PackageId, Arc<dyn crate::v2::Package>>>>,
+    pub(crate) packages: Option<Arc<HashMap<crate::PackageId, Arc<dyn crate::Package>>>>,
     /// Marker to keep the lifetime parameter used by callers.
     _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -697,7 +694,7 @@ impl<'p> Eval<'p> {
     /// Set the package map for on-demand path hash resolution.
     pub fn with_packages(
         mut self,
-        packages: Arc<HashMap<crate::PackageId, Arc<dyn crate::v2::Package>>>,
+        packages: Arc<HashMap<crate::PackageId, Arc<dyn crate::Package>>>,
     ) -> Self {
         self.packages = Some(packages);
         self
@@ -1055,7 +1052,7 @@ impl<'p> Eval<'p> {
         if let Some(precomputed) = env.precomputed.get(name) {
             return Ok(precomputed.clone());
         }
-        // Global eval env (v2 path): resolve via accumulated global values.
+        // Global eval env: resolve via accumulated global values.
         if let Some(raw_id) = env.raw_module_id.as_ref()
             && let Some(value) = env.global_env.resolve_variable(name, raw_id)
         {

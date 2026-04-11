@@ -3,12 +3,11 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 
-use crate::v2::{
-    Asg, AsgChecker, AsgEvaluator, GlobalKey, Loader, PackageFinder, build_default_finder,
-};
 use crate::{
-    DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError, GlobalEvalEnv, GlobalTypeEnv,
-    ModuleId, PackageId, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
+    Asg, AsgChecker, AsgEvaluator, DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError,
+    GlobalEvalEnv, GlobalKey, GlobalTypeEnv, Loader, ModuleId, PackageFinder, PackageId,
+    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
+    build_default_finder,
 };
 
 #[derive(Clone)]
@@ -93,7 +92,7 @@ impl Repl {
 
     /// Replace the user package in the finder. Rebuilds the finder from the
     /// new package while preserving the standard library.
-    pub fn replace_user_package(&mut self, user_package: Arc<dyn crate::v2::Package>) {
+    pub fn replace_user_package(&mut self, user_package: Arc<dyn crate::Package>) {
         self.package_id = user_package.id();
         self.finder = build_default_finder(user_package);
     }

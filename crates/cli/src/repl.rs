@@ -404,7 +404,7 @@ fn report_repl_error(err: &sclc::ReplError) {
 
 async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
     // Refresh the user package from the filesystem before each line.
-    let fs_pkg = std::sync::Arc::new(sclc::v2::FsPackage::new(
+    let fs_pkg = std::sync::Arc::new(sclc::FsPackage::new(
         root.to_path_buf(),
         state.package_id().clone(),
     ));
@@ -437,9 +437,9 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
 
-    // Create a v2 PackageFinder for the REPL session.
-    let fs_pkg = std::sync::Arc::new(sclc::v2::FsPackage::new(root.clone(), package_id.clone()));
-    let finder = sclc::v2::build_default_finder(fs_pkg);
+    // Create a PackageFinder for the REPL session.
+    let fs_pkg = std::sync::Arc::new(sclc::FsPackage::new(root.clone(), package_id.clone()));
+    let finder = sclc::build_default_finder(fs_pkg);
 
     let mut state = sclc::Repl::new(
         finder,

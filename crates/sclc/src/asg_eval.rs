@@ -3,11 +3,11 @@ use std::sync::Arc;
 
 use crate::eval::{FnEnv, tracked, with_dependencies};
 use crate::{
-    Eval, EvalCtx, EvalEnv, EvalError, FnValue, GlobalEvalEnv, Loc, ModuleId, PackageId, Record,
-    Span, TrackedValue, Value, ast, v2::GlobalKey,
+    Eval, EvalCtx, EvalEnv, EvalError, FnValue, GlobalEvalEnv, GlobalKey, Loc, ModuleId, PackageId,
+    Record, Span, TrackedValue, Value, ast,
 };
 
-use super::{Asg, NodeId, RawModuleId};
+use crate::{Asg, NodeId, RawModuleId};
 
 /// Results from the ASG-driven evaluator.
 pub struct EvalResults {
@@ -447,7 +447,7 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    use crate::v2::{InMemoryPackage, Loader, build_default_finder};
+    use crate::{InMemoryPackage, Loader, build_default_finder};
 
     #[tokio::test]
     async fn evaluator_on_empty_asg() {

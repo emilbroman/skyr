@@ -8,9 +8,9 @@ use super::{
     check::AsgChecker,
 };
 
-/// Errors from the v2 compilation pipeline.
+/// Errors from the compilation pipeline.
 #[derive(Debug, thiserror::Error)]
-pub enum V2CompileError {
+pub enum CompileError {
     #[error("load error: {0}")]
     Load(#[from] LoadError),
 
@@ -18,14 +18,14 @@ pub enum V2CompileError {
     TypeCheck(#[from] crate::TypeCheckError),
 }
 
-/// Compile using the v2 pipeline: Loader → ASG → AsgChecker.
+/// Compile using the Loader → ASG → AsgChecker pipeline.
 ///
 /// Returns the type-checked ASG. Diagnostics (warnings, errors) are attached
 /// to the `Diagnosed` wrapper.
 pub async fn compile(
     finder: Arc<dyn PackageFinder>,
     entry: &[&str],
-) -> Result<Diagnosed<Asg>, V2CompileError> {
+) -> Result<Diagnosed<Asg>, CompileError> {
     let mut diags = DiagList::new();
 
     // Build the ASG.
@@ -106,7 +106,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::v2::InMemoryPackage;
+    use crate::InMemoryPackage;
     use crate::{ModuleId, PackageId};
 
     #[tokio::test]

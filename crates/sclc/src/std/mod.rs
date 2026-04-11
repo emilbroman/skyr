@@ -24,8 +24,7 @@ macro_rules! std_modules {
 
         /// Collects all standard library extern functions into a map.
         ///
-        /// This is the v2-compatible equivalent of [`register_std_externs`] that
-        /// doesn't require an `Eval` reference.
+        /// Doesn't require an `Eval` reference.
         pub(crate) fn collect_std_externs() -> HashMap<String, crate::Value> {
             let mut collector = ExternCollector(HashMap::new());
             register_std_externs(&mut collector);
@@ -36,8 +35,7 @@ macro_rules! std_modules {
 
 /// Trait for types that can receive extern function registrations.
 ///
-/// Implemented by [`crate::Eval`] (for the v1 pipeline) and by
-/// [`ExternCollector`] (for the v2 pipeline).
+/// Implemented by [`crate::Eval`] and by [`ExternCollector`].
 pub trait ExternRegistry {
     fn add_extern_fn(
         &mut self,
@@ -93,7 +91,7 @@ std_modules! {
 /// Compiles all standard library modules and returns the value-level type and
 /// type-level type exports for each module, keyed by module ID (e.g. `Std/Time`).
 pub async fn stdlib_types()
--> Result<HashMap<crate::ModuleId, (Type, RecordType)>, crate::v2::V2CompileError> {
+-> Result<HashMap<crate::ModuleId, (Type, RecordType)>, crate::CompileError> {
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -114,14 +112,14 @@ pub async fn stdlib_types()
     let mut files = HashMap::new();
     files.insert(PathBuf::from("Main.scl"), main_scl.into_bytes());
 
-    let user_pkg = Arc::new(crate::v2::InMemoryPackage::new(
+    let user_pkg = Arc::new(crate::InMemoryPackage::new(
         crate::PackageId::from(["_StdlibTypes"]),
         files,
     ));
-    let finder = crate::v2::build_default_finder(user_pkg);
+    let finder = crate::build_default_finder(user_pkg);
 
     let mut diags = crate::DiagList::new();
-    let asg = crate::v2::compile(finder, &["_StdlibTypes", "Main"])
+    let asg = crate::compile(finder, &["_StdlibTypes", "Main"])
         .await?
         .unpack(&mut diags);
 
