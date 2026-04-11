@@ -514,6 +514,7 @@ test_case!(UntypedParamCheck);
 // Circular imports
 test_case!(CircularImport);
 test_case!(CrossModuleRecursiveType);
+test_case!(CrossModuleRecursiveEval);
 
 // Path validation
 test_case!(PathValid);

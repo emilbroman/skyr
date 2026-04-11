@@ -195,6 +195,7 @@ impl FnExpr {
         Ok(crate::eval::tracked(Value::Fn(FnValue {
             env: FnEnv {
                 module_id: env.module_id()?,
+                raw_module_id: env.raw_module_id().cloned(),
                 captures,
                 parameters: self
                     .params

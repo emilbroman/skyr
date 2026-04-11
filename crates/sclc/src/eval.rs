@@ -85,6 +85,17 @@ impl GlobalEvalEnv {
         self.values.iter()
     }
 
+    /// Resolve an import alias to its target RawModuleId.
+    pub fn resolve_import_alias(
+        &self,
+        alias: &str,
+        raw_module_id: &[String],
+    ) -> Option<&RawModuleId> {
+        self.import_maps
+            .get(raw_module_id)
+            .and_then(|imports| imports.get(alias))
+    }
+
     /// Resolve a value-level variable name in the context of a module.
     /// Checks same-module globals first, then import aliases.
     pub fn resolve_variable(&self, name: &str, raw_module_id: &[String]) -> Option<&TrackedValue> {
@@ -183,6 +194,10 @@ impl<'a> EvalEnv<'a> {
         env
     }
 
+    pub fn raw_module_id(&self) -> Option<&RawModuleId> {
+        self.raw_module_id
+    }
+
     pub fn with_precomputed(&self, name: String, value: TrackedValue) -> Self {
         let mut env = self.inner();
         env.precomputed.insert(name, value);
@@ -260,6 +275,8 @@ impl<'a> EvalEnv<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FnEnv {
     pub module_id: crate::ModuleId,
+    /// Raw module ID for import alias resolution in the global eval env.
+    pub raw_module_id: Option<RawModuleId>,
     pub captures: HashMap<String, TrackedValue>,
     pub parameters: Vec<String>,
     /// When set, the function is recursive and should be bound under this name
@@ -279,6 +296,9 @@ impl FnEnv {
         global_env: &'a GlobalEvalEnv,
     ) -> EvalEnv<'a> {
         let mut env = EvalEnv::new(global_env).with_module_id(&self.module_id);
+        if let Some(raw_id) = &self.raw_module_id {
+            env = env.with_raw_module_id(raw_id);
+        }
         env.stack = stack;
 
         for (name, value) in &self.captures {
@@ -1103,6 +1123,7 @@ impl<'p> Eval<'p> {
                     let fn_val = crate::FnValue {
                         env: FnEnv {
                             module_id: fn_module_id,
+                            raw_module_id: env.raw_module_id().cloned(),
                             captures,
                             parameters,
                             self_name: Some(name.to_string()),
@@ -1295,6 +1316,7 @@ mod tests {
         let fn_value = Value::Fn(crate::FnValue {
             env: crate::FnEnv {
                 module_id: module_id.clone(),
+                raw_module_id: None,
                 captures: std::collections::HashMap::new(),
                 parameters: vec!["x".to_string()],
                 self_name: None,

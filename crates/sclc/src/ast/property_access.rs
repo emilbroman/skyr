@@ -177,7 +177,20 @@ impl PropertyAccessExpr {
         evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
-        use crate::Value;
+        use crate::{GlobalKey, Value};
+
+        // When the LHS is an import alias, resolve the property directly as a
+        // global in the target module (mirrors the type-checking bypass).
+        if let Expr::Var(var) = self.expr.as_ref().as_ref()
+            && let Some(raw_id) = env.raw_module_id()
+            && let Some(target_raw_id) = env.global_env.resolve_import_alias(&var.name, raw_id)
+        {
+            let global_key =
+                GlobalKey::Global(target_raw_id.clone(), self.property.name.to_string());
+            if let Some(val) = env.global_env.get(&global_key) {
+                return Ok(val.clone());
+            }
+        }
 
         let value = evaluator.eval_expr(env, self.expr.as_ref())?;
         match value.value {

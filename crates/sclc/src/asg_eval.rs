@@ -203,6 +203,7 @@ fn build_self_recursive_fn(
     let fn_val = FnValue {
         env: FnEnv {
             module_id: fn_module_id,
+            raw_module_id: env.raw_module_id().cloned(),
             captures,
             parameters,
             self_name: Some(name.to_string()),
@@ -291,6 +292,7 @@ fn eval_recursive_group(
             FnValue {
                 env: FnEnv {
                     module_id: fn_module_id,
+                    raw_module_id: Some(raw_id.clone()),
                     captures,
                     parameters,
                     self_name: None,
