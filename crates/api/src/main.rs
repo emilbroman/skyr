@@ -216,12 +216,32 @@ impl Query {
 
     async fn organizations(context: &Context) -> FieldResult<Vec<Organization>> {
         let (_, user) = context.check_auth().await?;
-        Ok(vec![Organization {
-            name: user
-                .username
-                .parse::<ids::OrgId>()
-                .map_err(|_| field_error("Invalid organization name"))?,
-        }])
+        let user_client = context.udb_client.user(&user.username);
+
+        let org_names = user_client.list_orgs().await.map_err(|e| {
+            tracing::error!("Failed to list organizations: {}", e);
+            internal_error()
+        })?;
+
+        let mut orgs: Vec<Organization> = org_names
+            .into_iter()
+            .filter_map(|name| {
+                name.parse::<ids::OrgId>()
+                    .ok()
+                    .map(|id| Organization { name: id })
+            })
+            .collect();
+
+        // Always include the user's own "personal org" (username)
+        let personal_org = user
+            .username
+            .parse::<ids::OrgId>()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        if !orgs.iter().any(|o| o.name == personal_org) {
+            orgs.insert(0, Organization { name: personal_org });
+        }
+
+        Ok(orgs)
     }
 
     async fn organization(context: &Context, name: String) -> FieldResult<Organization> {
@@ -229,9 +249,23 @@ impl Query {
         let org: ids::OrgId = name
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
+
         if org.as_str() != user.username {
-            return Err(field_error("Permission denied"));
+            let is_member = context
+                .udb_client
+                .org(org.as_str())
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
         }
+
         Ok(Organization { name: org })
     }
 
@@ -298,7 +332,19 @@ impl Mutation {
         let (_, user) = context.check_auth().await?;
 
         if organization != user.username {
-            return Err(field_error("Permission denied"));
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
         }
 
         if !USERNAME_REGEX.is_match(&repository) {
@@ -502,6 +548,81 @@ impl Mutation {
             user: User { user },
             token,
         })
+    }
+
+    #[graphql(name = "createOrganization")]
+    async fn create_organization(context: &Context, name: String) -> FieldResult<Organization> {
+        let (_, user) = context.check_auth().await?;
+
+        if !USERNAME_REGEX.is_match(&name) {
+            return Err(field_error("Invalid organization name"));
+        }
+
+        let org_id: ids::OrgId = name
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+
+        let org_client = context.udb_client.org(org_id.as_str());
+        org_client
+            .create(&user.username)
+            .await
+            .map_err(|e| match e {
+                udb::CreateOrgError::NameTaken => field_error("Name already taken"),
+                udb::CreateOrgError::InvalidName(msg) => {
+                    field_error(&format!("Invalid name: {msg}"))
+                }
+                udb::CreateOrgError::CreatorNotFound => field_error("User not found"),
+                _ => {
+                    tracing::error!("Failed to create organization: {}", e);
+                    internal_error()
+                }
+            })?;
+
+        Ok(Organization { name: org_id })
+    }
+
+    #[graphql(name = "addOrganizationMember")]
+    async fn add_organization_member(
+        context: &Context,
+        organization: String,
+        username: String,
+    ) -> FieldResult<Organization> {
+        let (_, user) = context.check_auth().await?;
+
+        let org_id: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+
+        let org_client = context.udb_client.org(org_id.as_str());
+
+        // Verify the caller is a member of this org
+        let is_member = org_client
+            .members()
+            .contains(&user.username)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to check org membership: {}", e);
+                internal_error()
+            })?;
+        if !is_member {
+            return Err(field_error("Permission denied"));
+        }
+
+        org_client
+            .members()
+            .add(&username)
+            .await
+            .map_err(|e| match e {
+                udb::OrgQueryError::UserNotFound => field_error("User not found"),
+                udb::OrgQueryError::AlreadyMember => field_error("User is already a member"),
+                udb::OrgQueryError::NotFound => field_error("Organization not found"),
+                _ => {
+                    tracing::error!("Failed to add org member: {}", e);
+                    internal_error()
+                }
+            })?;
+
+        Ok(Organization { name: org_id })
     }
 }
 
@@ -904,6 +1025,19 @@ struct Organization {
 impl Organization {
     fn name(&self) -> String {
         self.name.to_string()
+    }
+
+    async fn members(&self, context: &Context) -> FieldResult<Vec<String>> {
+        context
+            .udb_client
+            .org(self.name.as_str())
+            .members()
+            .list()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list org members for {}: {}", self.name, e);
+                internal_error()
+            })
     }
 
     async fn repository(&self, context: &Context, name: String) -> FieldResult<Repository> {

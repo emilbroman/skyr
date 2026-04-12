@@ -5,6 +5,7 @@ mod auth;
 mod deployment;
 mod fmt;
 mod lsp;
+mod org;
 mod output;
 mod port_forward;
 mod repl;
@@ -42,6 +43,7 @@ enum Command {
     Signin(signin::SigninArgs),
     Signup(signup::SignupArgs),
     Whoami(whoami::WhoamiArgs),
+    Org(org::OrgArgs),
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
     Resources(resource::ResourcesArgs),
@@ -78,6 +80,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Whoami(args) => {
             whoami::run_whoami(args, program.format).await?;
+        }
+        Command::Org(args) => {
+            org::run_org(args, program.format).await?;
         }
         Command::Repo(args) => {
             repo::run_repo(args, program.format).await?;
