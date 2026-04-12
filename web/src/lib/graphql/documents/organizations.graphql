@@ -13,6 +13,9 @@ query Organizations {
 query OrganizationDetail($org: String!) {
   organization(name: $org) {
     name
+    members {
+      username
+    }
     repositories {
       name
       environments {
@@ -35,5 +38,14 @@ query OrganizationDetail($org: String!) {
 mutation CreateOrganization($name: String!) {
   createOrganization(name: $name) {
     name
+  }
+}
+
+mutation AddOrganizationMember($organization: String!, $username: String!) {
+  addOrganizationMember(organization: $organization, username: $username) {
+    name
+    members {
+      username
+    }
   }
 }
