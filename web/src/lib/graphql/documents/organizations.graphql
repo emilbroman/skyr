@@ -31,3 +31,9 @@ query OrganizationDetail($org: String!) {
     }
   }
 }
+
+mutation CreateOrganization($name: String!) {
+  createOrganization(name: $name) {
+    name
+  }
+}
