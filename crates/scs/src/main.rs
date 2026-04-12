@@ -246,6 +246,7 @@ impl Handler for ConfigHandler {
         let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
         let user = self.user.clone();
         let client = self.client.clone();
+        let udb_client = self.udb_client.clone();
         let rdb_client = self.rdb_client.clone();
         let node_registry_redis = self.node_registry_redis.clone();
         task::spawn(
@@ -257,7 +258,7 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(ChannelMessage::Command(Ok(cmd)))) => match cmd {
                         ChannelCommand::ReceivePack { ref repo }
                         | ChannelCommand::UploadPack { ref repo } => {
-                            if let Err(err) = ensure_repo_access(user, repo) {
+                            if let Err(err) = ensure_repo_access(user, repo, &udb_client).await {
                                 Err(err)
                             } else if let Err(err) = ensure_repo_exists(&client, repo).await {
                                 Err(err)
@@ -285,6 +286,7 @@ impl Handler for ConfigHandler {
                                 &mut channel,
                                 &mut rx,
                                 &rdb_client,
+                                &udb_client,
                                 node_registry_redis,
                             )
                             .await
@@ -483,6 +485,7 @@ async fn handle_port_forward(
     channel: &mut Channel<server::Msg>,
     rx: &mut mpsc::Receiver<ChannelMessage>,
     rdb_client: &rdb::Client,
+    udb_client: &udb::Client,
     mut node_registry_redis: redis::aio::MultiplexedConnection,
 ) -> anyhow::Result<()> {
     use redis::AsyncCommands;
@@ -492,15 +495,9 @@ async fn handle_port_forward(
         .parse()
         .map_err(|_| UserFacingError(format!("invalid resource QID: {resource_qid_str}")))?;
 
-    // Access check: user must own the organization
-    let org = resource_qid.environment_qid().repo_qid().org.as_str();
-    if org != user.username {
-        return Err(UserFacingError(format!(
-            "permission denied: user '{}' cannot access resource '{}'",
-            user.username, resource_qid
-        ))
-        .into());
-    }
+    // Access check: user must be a member of the organization
+    let repo_qid = resource_qid.environment_qid().repo_qid();
+    ensure_repo_access(user, repo_qid, udb_client).await?;
 
     let resource_type = &resource_qid.resource().typ;
     if resource_type != POD_PORT_TYPE && resource_type != HOST_PORT_TYPE {
@@ -649,8 +646,25 @@ async fn handle_port_forward(
     Ok(())
 }
 
-fn ensure_repo_access(user: &udb::User, repo: &RepoQid) -> anyhow::Result<()> {
-    if repo.org.as_str() != user.username {
+async fn ensure_repo_access(
+    user: &udb::User,
+    repo: &RepoQid,
+    udb_client: &udb::Client,
+) -> anyhow::Result<()> {
+    // Personal org: username matches org name
+    if repo.org.as_str() == user.username {
+        return Ok(());
+    }
+
+    // Check org membership
+    let is_member = udb_client
+        .org(repo.org.as_str())
+        .members()
+        .contains(&user.username)
+        .await
+        .map_err(|e| anyhow!("failed to check org membership: {e}"))?;
+
+    if !is_member {
         return Err(UserFacingError(format!(
             "permission denied: user '{}' cannot access repository '{}'",
             user.username, repo,

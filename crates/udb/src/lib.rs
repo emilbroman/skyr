@@ -106,6 +106,36 @@ pub enum LookupTokenError {
 }
 
 #[derive(Error, Debug)]
+pub enum CreateOrgError {
+    #[error("failed to execute query: {0}")]
+    Redis(#[from] redis::RedisError),
+
+    #[error("name already taken")]
+    NameTaken,
+
+    #[error("invalid organization name: {0}")]
+    InvalidName(String),
+
+    #[error("creator user does not exist")]
+    CreatorNotFound,
+}
+
+#[derive(Error, Debug)]
+pub enum OrgQueryError {
+    #[error("failed to execute query: {0}")]
+    Redis(#[from] redis::RedisError),
+
+    #[error("organization not found")]
+    NotFound,
+
+    #[error("user not found")]
+    UserNotFound,
+
+    #[error("user is already a member")]
+    AlreadyMember,
+}
+
+#[derive(Error, Debug)]
 pub enum CoseKeyError {
     #[error("invalid CBOR encoding: {0}")]
     Cbor(String),
@@ -132,6 +162,12 @@ pub struct User {
     pub fullname: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct Org {
+    pub name: String,
+    pub creator: String,
+}
+
 #[derive(Clone)]
 pub struct Client {
     conn: redis::aio::MultiplexedConnection,
@@ -156,6 +192,22 @@ fn credential_key(username: &str, fingerprint: &str) -> String {
     format!("c:{username}:{fingerprint}")
 }
 
+fn org_key(orgname: &str) -> String {
+    format!("o:{orgname}")
+}
+
+fn org_members_key(orgname: &str) -> String {
+    format!("m:{orgname}")
+}
+
+fn user_orgs_key(username: &str) -> String {
+    format!("om:{username}")
+}
+
+fn namespace_key(name: &str) -> String {
+    format!("ns:{name}")
+}
+
 /// Validates that a username is safe for use in Redis key construction.
 /// Returns the validation error message if invalid, or Ok(()) if valid.
 fn validate_username(username: &str) -> Result<(), String> {
@@ -164,6 +216,17 @@ fn validate_username(username: &str) -> Result<(), String> {
     }
     if username.contains(':') {
         return Err("username must not contain ':'".into());
+    }
+    Ok(())
+}
+
+/// Validates that an organization name is safe for use in Redis key construction.
+fn validate_orgname(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("organization name must not be empty".into());
+    }
+    if name.contains(':') {
+        return Err("organization name must not contain ':'".into());
     }
     Ok(())
 }
@@ -188,6 +251,13 @@ impl Client {
         UserClient {
             client: self.clone(),
             username: username.into(),
+        }
+    }
+
+    pub fn org(&self, name: impl Into<String>) -> OrgClient {
+        OrgClient {
+            client: self.clone(),
+            name: name.into(),
         }
     }
 
@@ -253,14 +323,34 @@ impl UserClient {
         let email = email.into();
         validate_email(&email).map_err(RegisterUserError::InvalidEmail)?;
 
+        // Atomically check namespace reservation and create user.
+        // Returns 0 on success, 1 if namespace is taken (org exists with that name),
+        // 2 if username is already taken (user hash already exists).
+        let script = redis::Script::new(
+            r#"
+            if redis.call('EXISTS', KEYS[1]) == 1 then
+                return 1
+            end
+            local created = redis.call('HSETNX', KEYS[2], 'email', ARGV[1])
+            if created == 0 then
+                return 2
+            end
+            redis.call('SET', KEYS[1], 'user')
+            return 0
+            "#,
+        );
         let mut conn = self.client.conn.clone();
-
-        let result: i32 = conn
-            .hset_nx(user_key(&self.username), "email", &email)
+        let result: i32 = script
+            .key(namespace_key(&self.username))
+            .key(user_key(&self.username))
+            .arg(&email)
+            .invoke_async(&mut conn)
             .await?;
 
-        if result == 0 {
-            return Err(RegisterUserError::UsernameTaken);
+        match result {
+            1 | 2 => return Err(RegisterUserError::UsernameTaken),
+            0 => {}
+            _ => return Err(RegisterUserError::UsernameTaken),
         }
 
         if let Some(ref fullname) = fullname {
@@ -274,6 +364,12 @@ impl UserClient {
             email,
             fullname,
         })
+    }
+
+    pub async fn list_orgs(&self) -> Result<Vec<String>, UserQueryError> {
+        let mut conn = self.client.conn.clone();
+        let orgs: Vec<String> = conn.smembers(user_orgs_key(&self.username)).await?;
+        Ok(orgs)
     }
 
     pub async fn set_fullname(&self, fullname: impl Into<String>) -> Result<(), UserQueryError> {
@@ -508,6 +604,140 @@ impl PubkeysClient {
             .hset(&cred_key, "sign_count", sign_count.to_string())
             .await?;
 
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct OrgClient {
+    client: Client,
+    name: String,
+}
+
+impl OrgClient {
+    pub fn members(&self) -> OrgMembersClient {
+        OrgMembersClient { org: self.clone() }
+    }
+
+    pub async fn create(&self, creator: &str) -> Result<Org, CreateOrgError> {
+        validate_orgname(&self.name).map_err(CreateOrgError::InvalidName)?;
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .to_string();
+
+        // Atomically: check namespace not taken, check creator exists, then create org.
+        // Returns 0 on success, 1 if name taken, 2 if creator not found.
+        let script = redis::Script::new(
+            r#"
+            if redis.call('EXISTS', KEYS[1]) == 1 then
+                return 1
+            end
+            if redis.call('EXISTS', KEYS[2]) == 0 then
+                return 2
+            end
+            redis.call('SET', KEYS[1], 'org')
+            redis.call('HSET', KEYS[3], 'creator', ARGV[1], 'created_at', ARGV[2])
+            redis.call('SADD', KEYS[4], ARGV[1])
+            redis.call('SADD', KEYS[5], ARGV[3])
+            return 0
+            "#,
+        );
+        let mut conn = self.client.conn.clone();
+        let result: i32 = script
+            .key(namespace_key(&self.name))
+            .key(user_key(creator))
+            .key(org_key(&self.name))
+            .key(org_members_key(&self.name))
+            .key(user_orgs_key(creator))
+            .arg(creator)
+            .arg(&now)
+            .arg(&self.name)
+            .invoke_async(&mut conn)
+            .await?;
+
+        match result {
+            0 => Ok(Org {
+                name: self.name.clone(),
+                creator: creator.to_owned(),
+            }),
+            1 => Err(CreateOrgError::NameTaken),
+            2 => Err(CreateOrgError::CreatorNotFound),
+            _ => Err(CreateOrgError::NameTaken),
+        }
+    }
+
+    pub async fn get(&self) -> Result<Org, OrgQueryError> {
+        let mut conn = self.client.conn.clone();
+        let (creator,): (Option<String>,) = conn.hget(org_key(&self.name), &["creator"]).await?;
+
+        let Some(creator) = creator else {
+            return Err(OrgQueryError::NotFound);
+        };
+
+        Ok(Org {
+            name: self.name.clone(),
+            creator,
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct OrgMembersClient {
+    org: OrgClient,
+}
+
+impl OrgMembersClient {
+    pub async fn list(&self) -> Result<Vec<String>, OrgQueryError> {
+        let mut conn = self.org.client.conn.clone();
+        let members: Vec<String> = conn.smembers(org_members_key(&self.org.name)).await?;
+        Ok(members)
+    }
+
+    pub async fn add(&self, username: &str) -> Result<(), OrgQueryError> {
+        let mut conn = self.org.client.conn.clone();
+
+        // Verify the org exists
+        let org_exists: bool = conn.exists(org_key(&self.org.name)).await?;
+        if !org_exists {
+            return Err(OrgQueryError::NotFound);
+        }
+
+        // Verify the user exists
+        let user_exists: bool = conn.exists(user_key(username)).await?;
+        if !user_exists {
+            return Err(OrgQueryError::UserNotFound);
+        }
+
+        // Check if already a member
+        let is_member: bool = conn
+            .sismember(org_members_key(&self.org.name), username)
+            .await?;
+        if is_member {
+            return Err(OrgQueryError::AlreadyMember);
+        }
+
+        // Add to both sets
+        let _: () = conn.sadd(org_members_key(&self.org.name), username).await?;
+        let _: () = conn.sadd(user_orgs_key(username), &self.org.name).await?;
+
+        Ok(())
+    }
+
+    pub async fn contains(&self, username: &str) -> Result<bool, OrgQueryError> {
+        let mut conn = self.org.client.conn.clone();
+        let is_member: bool = conn
+            .sismember(org_members_key(&self.org.name), username)
+            .await?;
+        Ok(is_member)
+    }
+
+    pub async fn remove(&self, username: &str) -> Result<(), OrgQueryError> {
+        let mut conn = self.org.client.conn.clone();
+        let _: () = conn.srem(org_members_key(&self.org.name), username).await?;
+        let _: () = conn.srem(user_orgs_key(username), &self.org.name).await?;
         Ok(())
     }
 }

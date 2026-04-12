@@ -91,10 +91,13 @@ type Mutation {
   addPublicKey(proof: JSON!): User!
   removePublicKey(fingerprint: String!): User!
   signin(username: String!, proof: JSON!): AuthSuccess!
+  createOrganization(name: String!): Organization!
+  addOrganizationMember(organization: String!, username: String!): Organization!
 }
 
 type Organization {
   name: String!
+  members: [String!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
 }
