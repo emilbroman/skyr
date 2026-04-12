@@ -39,7 +39,7 @@ type AuthChallenge {
 }
 
 type AuthSuccess {
-  user: User!
+  user: SignedInUser!
   token: String!
 }
 
@@ -87,9 +87,9 @@ type Log {
 type Mutation {
   createRepository(organization: String!, repository: String!): Repository!
   signup(username: String!, email: String!, proof: JSON!, fullname: String): AuthSuccess!
-  updateFullname(fullname: String!): User!
-  addPublicKey(proof: JSON!): User!
-  removePublicKey(fingerprint: String!): User!
+  updateFullname(fullname: String!): SignedInUser!
+  addPublicKey(proof: JSON!): SignedInUser!
+  removePublicKey(fingerprint: String!): SignedInUser!
   signin(username: String!, proof: JSON!): AuthSuccess!
   createOrganization(name: String!): Organization!
   addOrganizationMember(organization: String!, username: String!): Organization!
@@ -98,14 +98,14 @@ type Mutation {
 
 type Organization {
   name: String!
-  members: [String!]!
+  members: [User!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
 }
 
 type Query {
   health: Boolean!
-  me: User!
+  me: SignedInUser!
   authChallenge(username: String!): AuthChallenge!
   refreshToken: AuthSuccess!
   organizations: [Organization!]!
@@ -133,6 +133,13 @@ type Resource {
   lastLogs(amount: Int): [Log!]!
 }
 
+type SignedInUser {
+  username: String!
+  email: String!
+  fullname: String
+  publicKeys: [String!]!
+}
+
 type SourceFrame {
   moduleId: String!
   span: String!
@@ -155,7 +162,6 @@ type User {
   username: String!
   email: String!
   fullname: String
-  publicKeys: [String!]!
 }
 
 union TreeEntry = Blob | Tree

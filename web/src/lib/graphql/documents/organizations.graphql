@@ -1,6 +1,9 @@
 query Organizations {
   organizations {
     name
+    members {
+      username
+    }
     repositories {
       name
     }

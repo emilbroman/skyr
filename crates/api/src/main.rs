@@ -100,10 +100,10 @@ impl Query {
         true
     }
 
-    async fn me(context: &Context) -> FieldResult<User> {
+    async fn me(context: &Context) -> FieldResult<SignedInUser> {
         let (_, user) = context.check_auth().await?;
 
-        Ok(User { user })
+        Ok(SignedInUser { user })
     }
 
     async fn auth_challenge(context: &Context, username: String) -> FieldResult<AuthChallenge> {
@@ -209,7 +209,7 @@ impl Query {
         })?;
 
         Ok(AuthSuccess {
-            user: User { user },
+            user: SignedInUser { user },
             token,
         })
     }
@@ -432,13 +432,13 @@ impl Mutation {
         })?;
 
         Ok(AuthSuccess {
-            user: User { user },
+            user: SignedInUser { user },
             token,
         })
     }
 
     #[graphql(name = "updateFullname")]
-    async fn update_fullname(context: &Context, fullname: String) -> FieldResult<User> {
+    async fn update_fullname(context: &Context, fullname: String) -> FieldResult<SignedInUser> {
         let (user_client, _) = context.check_auth().await?;
 
         user_client.set_fullname(&fullname).await.map_err(|e| {
@@ -451,11 +451,11 @@ impl Mutation {
             internal_error()
         })?;
 
-        Ok(User { user })
+        Ok(SignedInUser { user })
     }
 
     #[graphql(name = "addPublicKey")]
-    async fn add_public_key(context: &Context, proof: JsonValue) -> FieldResult<User> {
+    async fn add_public_key(context: &Context, proof: JsonValue) -> FieldResult<SignedInUser> {
         let (user_client, user) = context.check_auth().await?;
         let now = Utc::now();
 
@@ -476,11 +476,14 @@ impl Mutation {
             internal_error()
         })?;
 
-        Ok(User { user })
+        Ok(SignedInUser { user })
     }
 
     #[graphql(name = "removePublicKey")]
-    async fn remove_public_key(context: &Context, fingerprint: String) -> FieldResult<User> {
+    async fn remove_public_key(
+        context: &Context,
+        fingerprint: String,
+    ) -> FieldResult<SignedInUser> {
         let (user_client, _) = context.check_auth().await?;
 
         user_client
@@ -497,7 +500,7 @@ impl Mutation {
             internal_error()
         })?;
 
-        Ok(User { user })
+        Ok(SignedInUser { user })
     }
 
     async fn signin(
@@ -545,7 +548,7 @@ impl Mutation {
         })?;
 
         Ok(AuthSuccess {
-            user: User { user },
+            user: SignedInUser { user },
             token,
         })
     }
@@ -1009,13 +1012,13 @@ async fn signin_webauthn(
 }
 
 struct AuthSuccess {
-    user: User,
+    user: SignedInUser,
     token: String,
 }
 
 #[juniper::graphql_object(Context = Context)]
 impl AuthSuccess {
-    fn user(&self) -> &User {
+    fn user(&self) -> &SignedInUser {
         &self.user
     }
 
@@ -1030,6 +1033,25 @@ struct User {
 
 #[juniper::graphql_object(Context = Context)]
 impl User {
+    fn username(&self) -> &str {
+        &self.user.username
+    }
+
+    fn email(&self) -> &str {
+        &self.user.email
+    }
+
+    fn fullname(&self) -> Option<&str> {
+        self.user.fullname.as_deref()
+    }
+}
+
+struct SignedInUser {
+    user: udb::User,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl SignedInUser {
     fn username(&self) -> &str {
         &self.user.username
     }
@@ -1067,8 +1089,8 @@ impl Organization {
         self.name.to_string()
     }
 
-    async fn members(&self, context: &Context) -> FieldResult<Vec<String>> {
-        context
+    async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
+        let usernames = context
             .udb_client
             .org(self.name.as_str())
             .members()
@@ -1077,7 +1099,23 @@ impl Organization {
             .map_err(|e| {
                 tracing::error!("Failed to list org members for {}: {}", self.name, e);
                 internal_error()
-            })
+            })?;
+
+        let mut users = Vec::with_capacity(usernames.len());
+        for username in usernames {
+            match context.udb_client.user(&username).get().await {
+                Ok(user) => users.push(User { user }),
+                Err(udb::UserQueryError::NotFound) => {
+                    tracing::warn!("Org member {} not found in UDB", username);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to fetch org member {}: {}", username, e);
+                    return Err(internal_error());
+                }
+            }
+        }
+
+        Ok(users)
     }
 
     async fn repository(&self, context: &Context, name: String) -> FieldResult<Repository> {

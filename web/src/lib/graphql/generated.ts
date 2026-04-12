@@ -34,7 +34,7 @@ export type AuthChallenge = {
 export type AuthSuccess = {
   __typename?: 'AuthSuccess';
   token: Scalars['String']['output'];
-  user: User;
+  user: SignedInUser;
 };
 
 export type Blob = {
@@ -118,12 +118,21 @@ export type Log = {
 
 export type Mutation = {
   __typename?: 'Mutation';
-  addPublicKey: User;
+  addOrganizationMember: Organization;
+  addPublicKey: SignedInUser;
+  createOrganization: Organization;
   createRepository: Repository;
-  removePublicKey: User;
+  leaveOrganization: Scalars['Boolean']['output'];
+  removePublicKey: SignedInUser;
   signin: AuthSuccess;
   signup: AuthSuccess;
-  updateFullname: User;
+  updateFullname: SignedInUser;
+};
+
+
+export type MutationAddOrganizationMemberArgs = {
+  organization: Scalars['String']['input'];
+  username: Scalars['String']['input'];
 };
 
 
@@ -132,9 +141,19 @@ export type MutationAddPublicKeyArgs = {
 };
 
 
+export type MutationCreateOrganizationArgs = {
+  name: Scalars['String']['input'];
+};
+
+
 export type MutationCreateRepositoryArgs = {
   organization: Scalars['String']['input'];
   repository: Scalars['String']['input'];
+};
+
+
+export type MutationLeaveOrganizationArgs = {
+  organization: Scalars['String']['input'];
 };
 
 
@@ -163,6 +182,7 @@ export type MutationUpdateFullnameArgs = {
 
 export type Organization = {
   __typename?: 'Organization';
+  members: Array<User>;
   name: Scalars['String']['output'];
   repositories: Array<Repository>;
   repository: Repository;
@@ -177,7 +197,7 @@ export type Query = {
   __typename?: 'Query';
   authChallenge: AuthChallenge;
   health: Scalars['Boolean']['output'];
-  me: User;
+  me: SignedInUser;
   organization: Organization;
   organizations: Array<Organization>;
   refreshToken: AuthSuccess;
@@ -242,6 +262,14 @@ export enum Severity {
   Warning = 'WARNING'
 }
 
+export type SignedInUser = {
+  __typename?: 'SignedInUser';
+  email: Scalars['String']['output'];
+  fullname?: Maybe<Scalars['String']['output']>;
+  publicKeys: Array<Scalars['String']['output']>;
+  username: Scalars['String']['output'];
+};
+
 export type SourceFrame = {
   __typename?: 'SourceFrame';
   moduleId: Scalars['String']['output'];
@@ -287,7 +315,6 @@ export type User = {
   __typename?: 'User';
   email: Scalars['String']['output'];
   fullname?: Maybe<Scalars['String']['output']>;
-  publicKeys: Array<Scalars['String']['output']>;
   username: Scalars['String']['output'];
 };
 
@@ -304,7 +331,7 @@ export type SignInMutationVariables = Exact<{
 }>;
 
 
-export type SignInMutation = { __typename?: 'Mutation', signin: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
+export type SignInMutation = { __typename?: 'Mutation', signin: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
 
 export type SignupMutationVariables = Exact<{
   username: Scalars['String']['input'];
@@ -314,17 +341,17 @@ export type SignupMutationVariables = Exact<{
 }>;
 
 
-export type SignupMutation = { __typename?: 'Mutation', signup: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
+export type SignupMutation = { __typename?: 'Mutation', signup: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
 
 export type RefreshTokenQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type RefreshTokenQuery = { __typename?: 'Query', refreshToken: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
+export type RefreshTokenQuery = { __typename?: 'Query', refreshToken: { __typename?: 'AuthSuccess', token: string, user: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } } };
 
 export type MeQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type MeQuery = { __typename?: 'Query', me: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
+export type MeQuery = { __typename?: 'Query', me: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
 
 export type EnvironmentDetailQueryVariables = Exact<{
   org: Scalars['String']['input'];
@@ -382,7 +409,7 @@ export type ResourceLogsSubscription = { __typename?: 'Subscription', resourceLo
 export type OrganizationsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type OrganizationsQuery = { __typename?: 'Query', organizations: Array<{ __typename?: 'Organization', name: string, repositories: Array<{ __typename?: 'Repository', name: string }> }> };
+export type OrganizationsQuery = { __typename?: 'Query', organizations: Array<{ __typename?: 'Organization', name: string, members: Array<{ __typename?: 'User', username: string }>, repositories: Array<{ __typename?: 'Repository', name: string }> }> };
 
 export type OrganizationDetailQueryVariables = Exact<{
   org: Scalars['String']['input'];
@@ -410,28 +437,28 @@ export type RepositoryDetailQuery = { __typename?: 'Query', organization: { __ty
 export type UserSettingsQueryVariables = Exact<{ [key: string]: never; }>;
 
 
-export type UserSettingsQuery = { __typename?: 'Query', me: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
+export type UserSettingsQuery = { __typename?: 'Query', me: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
 
 export type UpdateFullnameMutationVariables = Exact<{
   fullname: Scalars['String']['input'];
 }>;
 
 
-export type UpdateFullnameMutation = { __typename?: 'Mutation', updateFullname: { __typename?: 'User', username: string, email: string, fullname?: string | null } };
+export type UpdateFullnameMutation = { __typename?: 'Mutation', updateFullname: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null } };
 
 export type AddPublicKeyMutationVariables = Exact<{
   proof: Scalars['JSON']['input'];
 }>;
 
 
-export type AddPublicKeyMutation = { __typename?: 'Mutation', addPublicKey: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
+export type AddPublicKeyMutation = { __typename?: 'Mutation', addPublicKey: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
 
 export type RemovePublicKeyMutationVariables = Exact<{
   fingerprint: Scalars['String']['input'];
 }>;
 
 
-export type RemovePublicKeyMutation = { __typename?: 'Mutation', removePublicKey: { __typename?: 'User', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
+export type RemovePublicKeyMutation = { __typename?: 'Mutation', removePublicKey: { __typename?: 'SignedInUser', username: string, email: string, fullname?: string | null, publicKeys: Array<string> } };
 
 export type CommitTreeEntryQueryVariables = Exact<{
   org: Scalars['String']['input'];
@@ -464,7 +491,7 @@ export const DeploymentDetailDocument = {"kind":"Document","definitions":[{"kind
 export const DeploymentLogsDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"subscription","name":{"kind":"Name","value":"DeploymentLogs"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"deploymentId"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}},{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}},"type":{"kind":"NamedType","name":{"kind":"Name","value":"Int"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"deploymentLogs"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"deploymentId"},"value":{"kind":"Variable","name":{"kind":"Name","value":"deploymentId"}}},{"kind":"Argument","name":{"kind":"Name","value":"initialAmount"},"value":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"severity"}},{"kind":"Field","name":{"kind":"Name","value":"timestamp"}},{"kind":"Field","name":{"kind":"Name","value":"message"}}]}}]}}]} as unknown as DocumentNode<DeploymentLogsSubscription, DeploymentLogsSubscriptionVariables>;
 export const EnvironmentLogsDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"subscription","name":{"kind":"Name","value":"EnvironmentLogs"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"environmentQid"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}},{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}},"type":{"kind":"NamedType","name":{"kind":"Name","value":"Int"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"environmentLogs"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"environmentQid"},"value":{"kind":"Variable","name":{"kind":"Name","value":"environmentQid"}}},{"kind":"Argument","name":{"kind":"Name","value":"initialAmount"},"value":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"severity"}},{"kind":"Field","name":{"kind":"Name","value":"timestamp"}},{"kind":"Field","name":{"kind":"Name","value":"message"}}]}}]}}]} as unknown as DocumentNode<EnvironmentLogsSubscription, EnvironmentLogsSubscriptionVariables>;
 export const ResourceLogsDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"subscription","name":{"kind":"Name","value":"ResourceLogs"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"resourceQid"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}},{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}},"type":{"kind":"NamedType","name":{"kind":"Name","value":"Int"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"resourceLogs"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"resourceQid"},"value":{"kind":"Variable","name":{"kind":"Name","value":"resourceQid"}}},{"kind":"Argument","name":{"kind":"Name","value":"initialAmount"},"value":{"kind":"Variable","name":{"kind":"Name","value":"initialAmount"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"severity"}},{"kind":"Field","name":{"kind":"Name","value":"timestamp"}},{"kind":"Field","name":{"kind":"Name","value":"message"}}]}}]}}]} as unknown as DocumentNode<ResourceLogsSubscription, ResourceLogsSubscriptionVariables>;
-export const OrganizationsDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"Organizations"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"organizations"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"repositories"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}}]}}]}}]}}]} as unknown as DocumentNode<OrganizationsQuery, OrganizationsQueryVariables>;
+export const OrganizationsDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"Organizations"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"organizations"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"members"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"username"}}]}},{"kind":"Field","name":{"kind":"Name","value":"repositories"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}}]}}]}}]}}]} as unknown as DocumentNode<OrganizationsQuery, OrganizationsQueryVariables>;
 export const OrganizationDetailDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"OrganizationDetail"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"org"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"organization"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"name"},"value":{"kind":"Variable","name":{"kind":"Name","value":"org"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"repositories"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"environments"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"qid"}},{"kind":"Field","name":{"kind":"Name","value":"deployments"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"id"}},{"kind":"Field","name":{"kind":"Name","value":"ref"}},{"kind":"Field","name":{"kind":"Name","value":"state"}},{"kind":"Field","name":{"kind":"Name","value":"commit"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"hash"}},{"kind":"Field","name":{"kind":"Name","value":"message"}}]}}]}}]}}]}}]}}]}}]} as unknown as DocumentNode<OrganizationDetailQuery, OrganizationDetailQueryVariables>;
 export const CreateRepositoryDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"mutation","name":{"kind":"Name","value":"CreateRepository"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"organization"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}},{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"repository"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"createRepository"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"organization"},"value":{"kind":"Variable","name":{"kind":"Name","value":"organization"}}},{"kind":"Argument","name":{"kind":"Name","value":"repository"},"value":{"kind":"Variable","name":{"kind":"Name","value":"repository"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}}]}}]}}]} as unknown as DocumentNode<CreateRepositoryMutation, CreateRepositoryMutationVariables>;
 export const RepositoryDetailDocument = {"kind":"Document","definitions":[{"kind":"OperationDefinition","operation":"query","name":{"kind":"Name","value":"RepositoryDetail"},"variableDefinitions":[{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"org"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}},{"kind":"VariableDefinition","variable":{"kind":"Variable","name":{"kind":"Name","value":"repo"}},"type":{"kind":"NonNullType","type":{"kind":"NamedType","name":{"kind":"Name","value":"String"}}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"organization"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"name"},"value":{"kind":"Variable","name":{"kind":"Name","value":"org"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"repository"},"arguments":[{"kind":"Argument","name":{"kind":"Name","value":"name"},"value":{"kind":"Variable","name":{"kind":"Name","value":"repo"}}}],"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"organization"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}}]}},{"kind":"Field","name":{"kind":"Name","value":"environments"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}},{"kind":"Field","name":{"kind":"Name","value":"qid"}},{"kind":"Field","name":{"kind":"Name","value":"resources"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"name"}}]}},{"kind":"Field","name":{"kind":"Name","value":"deployments"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"id"}},{"kind":"Field","name":{"kind":"Name","value":"ref"}},{"kind":"Field","name":{"kind":"Name","value":"state"}},{"kind":"Field","name":{"kind":"Name","value":"commit"},"selectionSet":{"kind":"SelectionSet","selections":[{"kind":"Field","name":{"kind":"Name","value":"hash"}},{"kind":"Field","name":{"kind":"Name","value":"message"}}]}}]}}]}}]}}]}}]}}]} as unknown as DocumentNode<RepositoryDetailQuery, RepositoryDetailQueryVariables>;
