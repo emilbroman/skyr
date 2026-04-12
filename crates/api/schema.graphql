@@ -93,6 +93,7 @@ type Mutation {
   signin(username: String!, proof: JSON!): AuthSuccess!
   createOrganization(name: String!): Organization!
   addOrganizationMember(organization: String!, username: String!): Organization!
+  leaveOrganization(organization: String!): Boolean!
 }
 
 type Organization {

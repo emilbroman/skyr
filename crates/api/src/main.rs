@@ -624,6 +624,46 @@ impl Mutation {
 
         Ok(Organization { name: org_id })
     }
+
+    #[graphql(name = "leaveOrganization")]
+    async fn leave_organization(context: &Context, organization: String) -> FieldResult<bool> {
+        let (_, user) = context.check_auth().await?;
+
+        let org_id: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+
+        // Cannot leave your own personal org (username)
+        if org_id.as_str() == user.username {
+            return Err(field_error("Cannot leave your own personal organization"));
+        }
+
+        let org_client = context.udb_client.org(org_id.as_str());
+
+        // Verify the caller is actually a member
+        let is_member = org_client
+            .members()
+            .contains(&user.username)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to check org membership: {}", e);
+                internal_error()
+            })?;
+        if !is_member {
+            return Err(field_error("Not a member of this organization"));
+        }
+
+        org_client
+            .members()
+            .remove(&user.username)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to leave organization: {}", e);
+                internal_error()
+            })?;
+
+        Ok(true)
+    }
 }
 
 /// Dispatch proof verification: SSH (string) or WebAuthn (object).

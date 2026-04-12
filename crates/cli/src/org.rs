@@ -23,6 +23,9 @@ enum OrgCommand {
         organization: String,
         username: String,
     },
+    Leave {
+        organization: String,
+    },
 }
 
 #[derive(GraphQLQuery)]
@@ -46,6 +49,13 @@ struct CreateOrganization;
 )]
 struct AddOrganizationMember;
 
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/leave_organization.graphql"
+)]
+struct LeaveOrganization;
+
 pub async fn run_org(args: OrgArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, &args.api_url).await?;
@@ -64,6 +74,9 @@ pub async fn run_org(args: OrgArgs, format: OutputFormat) -> anyhow::Result<()> 
         } => {
             add_organization_member(&client, &endpoint, &token, &organization, &username, format)
                 .await?;
+        }
+        OrgCommand::Leave { organization } => {
+            leave_organization(&client, &endpoint, &token, &organization, format).await?;
         }
     }
 
@@ -213,6 +226,49 @@ async fn add_organization_member(
             println!("Added {} to {}", username, output.name);
             println!("Members: {}", output.members.join(", "));
         }
+    }
+
+    Ok(())
+}
+
+async fn leave_organization(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    organization: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let body = LeaveOrganization::build_query(leave_organization::Variables {
+        organization: organization.to_owned(),
+    });
+    let response = client
+        .post(endpoint)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            auth::bearer_header_value(token)?,
+        )
+        .json(&body)
+        .send()
+        .await
+        .context("failed to send leave organization mutation")?;
+    let response: graphql_client::Response<leave_organization::ResponseData> = response
+        .json()
+        .await
+        .context("failed to decode leave organization response")?;
+    auth::graphql_response_data(response, "organization leave")?;
+
+    #[derive(Serialize)]
+    struct LeaveOrgOutput {
+        organization: String,
+    }
+
+    let output = LeaveOrgOutput {
+        organization: organization.to_owned(),
+    };
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => println!("Left {}", organization),
     }
 
     Ok(())

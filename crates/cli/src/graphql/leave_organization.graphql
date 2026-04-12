@@ -1,0 +1,3 @@
+mutation LeaveOrganization($organization: String!) {
+  leaveOrganization(organization: $organization)
+}
