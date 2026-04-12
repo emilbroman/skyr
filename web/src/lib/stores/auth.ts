@@ -1,7 +1,7 @@
 import { derived, get, writable } from "svelte/store";
 import { browser } from "$app/environment";
 import { query } from "$lib/graphql/client";
-import type { User } from "$lib/graphql/generated";
+import type { SignedInUser } from "$lib/graphql/generated";
 import { RefreshTokenDocument } from "$lib/graphql/generated";
 
 const TOKEN_KEY = "skyr_token";
@@ -12,7 +12,7 @@ function loadToken(): string | null {
     return localStorage.getItem(TOKEN_KEY);
 }
 
-function loadUser(): User | null {
+function loadSignedInUser(): SignedInUser | null {
     if (!browser) return null;
     const raw = localStorage.getItem(USER_KEY);
     if (!raw) return null;
@@ -32,7 +32,7 @@ function parseTokenExpiry(token: string): number | null {
 }
 
 export const token = writable<string | null>(loadToken());
-export const user = writable<User | null>(loadUser());
+export const user = writable<SignedInUser | null>(loadSignedInUser());
 
 export const isAuthenticated = derived(token, ($token) => {
     if (!$token) return false;
@@ -41,11 +41,11 @@ export const isAuthenticated = derived(token, ($token) => {
     return Date.now() / 1000 < expiry;
 });
 
-export function setAuth(newToken: string, newUser: User) {
+export function setAuth(newToken: string, newSignedInUser: SignedInUser) {
     token.set(newToken);
-    user.set(newUser);
+    user.set(newSignedInUser);
     localStorage.setItem(TOKEN_KEY, newToken);
-    localStorage.setItem(USER_KEY, JSON.stringify(newUser));
+    localStorage.setItem(USER_KEY, JSON.stringify(newSignedInUser));
 }
 
 export function clearAuth() {

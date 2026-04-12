@@ -1,6 +1,8 @@
 mutation AddOrganizationMember($organization: String!, $username: String!) {
   addOrganizationMember(organization: $organization, username: $username) {
     name
-    members
+    members {
+      username
+    }
   }
 }

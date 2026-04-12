@@ -1,6 +1,8 @@
 query ListOrganizations {
   organizations {
     name
-    members
+    members {
+      username
+    }
   }
 }

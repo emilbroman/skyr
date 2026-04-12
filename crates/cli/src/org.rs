@@ -117,7 +117,7 @@ async fn list_organizations(
         .into_iter()
         .map(|org| OrgOutput {
             name: org.name,
-            members: org.members,
+            members: org.members.into_iter().map(|m| m.username).collect(),
         })
         .collect::<Vec<_>>();
 
@@ -217,7 +217,12 @@ async fn add_organization_member(
 
     let output = AddMemberOutput {
         name: data.add_organization_member.name,
-        members: data.add_organization_member.members,
+        members: data
+            .add_organization_member
+            .members
+            .into_iter()
+            .map(|m| m.username)
+            .collect(),
     };
 
     match format {
