@@ -1960,12 +1960,24 @@ impl Subscription {
         let organization = deployment_qid.repo_qid().org.to_string();
 
         if organization != user.username {
-            tracing::warn!(
-                "Rejected deployment logs subscription for deployment outside user organization: deployment={} user={}",
-                deployment_id,
-                user.username
-            );
-            return Err(field_error("deployment outside user organization"));
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                tracing::warn!(
+                    "Rejected deployment logs subscription: user is not a member of organization: deployment={} user={}",
+                    deployment_id,
+                    user.username
+                );
+                return Err(field_error("Permission denied"));
+            }
         }
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
@@ -2021,12 +2033,24 @@ impl Subscription {
 
         let organization = env_qid.repo.org.to_string();
         if organization != user.username {
-            tracing::warn!(
-                "Rejected environment logs subscription for environment outside user organization: environment={} user={}",
-                environment_qid,
-                user.username
-            );
-            return Err(field_error("environment outside user organization"));
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                tracing::warn!(
+                    "Rejected environment logs subscription: user is not a member of organization: environment={} user={}",
+                    environment_qid,
+                    user.username
+                );
+                return Err(field_error("Permission denied"));
+            }
         }
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
@@ -2132,12 +2156,24 @@ impl Subscription {
         let organization = parsed_qid.environment_qid().repo.org.to_string();
 
         if organization != user.username {
-            tracing::warn!(
-                "Rejected resource logs subscription for resource outside user organization: resource={} user={}",
-                resource_qid,
-                user.username
-            );
-            return Err(field_error("resource outside user organization"));
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                tracing::warn!(
+                    "Rejected resource logs subscription: user is not a member of organization: resource={} user={}",
+                    resource_qid,
+                    user.username
+                );
+                return Err(field_error("Permission denied"));
+            }
         }
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
