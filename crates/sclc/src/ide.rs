@@ -129,6 +129,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cursor_info_resolves_let_with_imported_rhs() {
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("A.scl"), b"export let x = 123".to_vec());
+        files.insert(
+            PathBuf::from("B.scl"),
+            b"import Self/A\n\nlet first: Str = A.x\nlet second = A.x\n".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+
+        let result = compile(finder, &["Test", "B"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["B".to_string()]);
+        let src = "import Self/A\n\nlet first: Str = A.x\nlet second = A.x\n";
+
+        // Cursor on `second` identifier (line 4, col 5)
+        let info = super::cursor_info(&asg, &module_id, src, Position::new(4, 5));
+        let locked = info.lock().unwrap();
+        let ty = locked.ty.clone().expect("expected a type for 'second'");
+        let printed = ty.to_string();
+        assert!(
+            !printed.contains("Never"),
+            "expected non-Never type display for 'second' (= A.x), got: {printed}"
+        );
+        assert!(
+            printed.contains("Int"),
+            "expected Int in display for 'second' (= A.x), got: {printed}"
+        );
+    }
+
+    #[tokio::test]
     async fn completions_returns_candidates() {
         let mut files = HashMap::new();
         files.insert(
