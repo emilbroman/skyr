@@ -85,6 +85,12 @@ pub fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
         async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
             let pkg_id = self.0.id();
             let segments = pkg_id.as_slice();
+            // An empty package id would otherwise match every import via the
+            // vacuously-true prefix check below, shadowing every other finder
+            // (notably `StdPackage`) in a `CompositePackageFinder`.
+            if segments.is_empty() {
+                return Ok(None);
+            }
             if raw_id.len() >= segments.len()
                 && raw_id[..segments.len()]
                     .iter()
@@ -154,6 +160,29 @@ mod tests {
         let result = compile(finder, &["Test", "Main"]).await.unwrap();
         let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
         assert!(msgs.is_empty(), "unexpected diagnostics: {msgs:?}");
+    }
+
+    #[tokio::test]
+    async fn empty_user_package_id_does_not_shadow_stdlib() {
+        // Regression: an empty `PackageId` used to match every import via the
+        // vacuously-true prefix check, swallowing `Std/...` lookups before
+        // they could fall through to `StdPackage`.
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Std/Time\nexport let m = Time.minute".to_vec(),
+        );
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::default(), files));
+        let finder = build_default_finder(user_pkg);
+
+        let result = compile(finder, &["Main"]).await.unwrap();
+        let msgs: Vec<String> = result.diags().iter().map(|d| d.to_string()).collect();
+        assert!(
+            !msgs
+                .iter()
+                .any(|m| m.contains("module not found: Std/Time")),
+            "Std/Time should resolve via StdPackage, got: {msgs:?}"
+        );
     }
 
     #[tokio::test]
