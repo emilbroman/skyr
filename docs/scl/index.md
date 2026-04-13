@@ -152,6 +152,8 @@ import Self/Config
 let port = Config.defaultPort
 ```
 
+To import modules from a *different* repository in the same organisation, declare a dependency in `Package.scle` at the repo root and import using the dependency's `Org/Repo/Module` path. See [Cross-Repo Imports](../cross-repo-imports.md).
+
 See [Syntax Reference — Import](syntax.md#import) for details.
 
 ## Resources
