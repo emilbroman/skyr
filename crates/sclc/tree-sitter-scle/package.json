@@ -1,0 +1,22 @@
+{
+  "name": "tree-sitter-scle",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for SCLE (SCL Expression)",
+  "main": "bindings/node",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.scle",
+      "file-types": ["scle"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm"
+    }
+  ],
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  }
+}

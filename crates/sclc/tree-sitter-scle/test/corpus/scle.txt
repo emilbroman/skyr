@@ -1,0 +1,84 @@
+================================================================================
+Simple SCLE without imports
+================================================================================
+
+Int
+42
+
+--------------------------------------------------------------------------------
+
+(source_file
+  type: (type_identifier)
+  body: (integer))
+
+================================================================================
+SCLE with one import
+================================================================================
+
+import Std/Option
+
+Int?
+
+Option.default(42, 0)
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    (import_path
+      (identifier)
+      (identifier)))
+  type: (optional_type
+    (type_identifier))
+  body: (call_expression
+    function: (property_access
+      object: (identifier)
+      property: (identifier))
+    (integer)
+    (integer)))
+
+================================================================================
+SCLE with record type and let-binding body
+================================================================================
+
+import Std/Option
+
+{
+  hello: Str
+}
+
+let f = fn(param: Bool)
+  if (param) nil
+  else 123;
+{
+  hello: "message"
+}
+
+--------------------------------------------------------------------------------
+
+(source_file
+  (import_statement
+    (import_path
+      (identifier)
+      (identifier)))
+  type: (record_type
+    (record_type_field
+      name: (identifier)
+      type: (type_identifier)))
+  body: (let_expression
+    (let_binding
+      name: (identifier)
+      value: (fn_expression
+        (fn_parameters
+          (fn_parameter
+            name: (identifier)
+            type: (type_identifier)))
+        body: (if_expression
+          condition: (identifier)
+          consequence: (nil)
+          alternative: (integer))))
+    body: (record
+      (record_field
+        name: (identifier)
+        value: (string
+          (string_content))))))

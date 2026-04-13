@@ -1,0 +1,21 @@
+{
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Tree-sitter grammar for SCLE (SCL Expression)",
+    "authors": [],
+    "links": {
+      "repository": ""
+    }
+  },
+  "grammars": [
+    {
+      "name": "scle",
+      "scope": "source.scle",
+      "file-types": ["scle"],
+      "highlights": "queries/highlights.scm",
+      "locals": "queries/locals.scm",
+      "path": "."
+    }
+  ]
+}
