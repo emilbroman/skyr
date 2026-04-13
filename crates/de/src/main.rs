@@ -677,7 +677,12 @@ impl Worker {
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
-        let mut eval_ctx = sclc::EvalCtx::new(effects_tx, environment_qid_str);
+        let local_deployment_qid = self.client.deployment_qid();
+        let mut eval_ctx = sclc::EvalCtx::new(
+            effects_tx,
+            environment_qid_str,
+            local_deployment_qid.clone(),
+        );
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
@@ -707,6 +712,7 @@ impl Worker {
         let log_publisher = self.log_publisher.clone();
         let env_qid = self.environment_qid.clone();
         let rtq_publisher = self.rtq_publisher.clone();
+        let local_deployment_qid_for_drain = local_deployment_qid.clone();
         let effects_task = task::spawn(
             {
                 async move {
@@ -714,12 +720,24 @@ impl Worker {
                     let mut had_mutation = false;
                     let mut touched_resource_ids = HashSet::new();
                     while let Some(effect) = effects_rx.recv().await {
+                        // Drop foreign-owned effects. Phase 3 will route
+                        // these through remote-state-read logic; for now we
+                        // simply log and skip.
+                        if effect.owner() != &local_deployment_qid_for_drain {
+                            tracing::debug!(
+                                owner = %effect.owner(),
+                                local_owner = %local_deployment_qid_for_drain,
+                                "dropping foreign-owned effect",
+                            );
+                            continue;
+                        }
                         match effect {
                             sclc::Effect::CreateResource {
                                 id,
                                 inputs,
                                 dependencies,
                                 source_trace,
+                                owner: _,
                             } => {
                                 had_effect = true;
                                 had_mutation = true;
@@ -765,6 +783,7 @@ impl Worker {
                                 inputs,
                                 dependencies,
                                 source_trace,
+                                owner: _,
                             } => {
                                 had_effect = true;
                                 had_mutation = true;
@@ -852,6 +871,7 @@ impl Worker {
                                 inputs,
                                 dependencies,
                                 source_trace,
+                                owner: _,
                             } => {
                                 touched_resource_ids.insert(id.clone());
                                 if let Some(from_owner_deployment_qid) =

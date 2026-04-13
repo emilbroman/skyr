@@ -28,7 +28,11 @@ pub async fn run_program(root: PathBuf, package: String) -> anyhow::Result<()> {
     let module_id = sclc::ModuleId::new(package_id.clone(), vec!["Main".to_string()]);
 
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = sclc::EvalCtx::new(effects_tx, package_id.to_string());
+    let ctx = sclc::EvalCtx::new(
+        effects_tx,
+        package_id.to_string(),
+        sclc::placeholder_deployment_qid(),
+    );
     let effects_task = spawn_effect_printer(effects_rx);
 
     let results = sclc::eval(&asg, ctx)?;

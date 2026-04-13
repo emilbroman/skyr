@@ -76,7 +76,10 @@ impl<'a> AsgEvaluator<'a> {
                 let env = EvalEnv::new(&global_env)
                     .with_module_id(&mn.module_id)
                     .with_raw_module_id(&mn.raw_id);
-                evaluator.eval_expr(&env, expr)?;
+                let owner = evaluator.ctx.owner_for_package(&mn.package_id);
+                evaluator
+                    .ctx
+                    .with_owner(owner, || evaluator.eval_expr(&env, expr))?;
             }
         }
 
@@ -165,7 +168,10 @@ fn eval_singleton_global(
     let value = if has_self_edge {
         build_self_recursive_fn(evaluator, &env, name, lb)?
     } else {
-        evaluator.eval_expr(&env, lb.expr.as_ref())?
+        let owner = evaluator.ctx.owner_for_package(&mn.package_id);
+        evaluator
+            .ctx
+            .with_owner(owner, || evaluator.eval_expr(&env, lb.expr.as_ref()))?
     };
 
     global_env.insert(GlobalKey::Global(raw_id.clone(), name.to_string()), value);
@@ -455,7 +461,7 @@ mod tests {
     async fn evaluator_on_empty_asg() {
         let asg = super::super::Asg::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test");
+        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
         assert!(results.modules.is_empty());
     }
@@ -473,7 +479,7 @@ mod tests {
         let asg = loader.finish().into_inner();
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test");
+        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
@@ -498,7 +504,7 @@ mod tests {
         let asg = loader.finish().into_inner();
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test");
+        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
