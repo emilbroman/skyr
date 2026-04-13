@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 fn make_package(files_json: &str) -> sclc::InMemoryPackage {
     let file_map: HashMap<String, String> = serde_json::from_str(files_json).unwrap_or_default();
     sclc::InMemoryPackage::new(
-        sclc::PackageId::from(["Playground"]),
+        sclc::PackageId::from(["Local"]),
         file_map
             .into_iter()
             .map(|(name, content)| (PathBuf::from(name), content.into_bytes()))
@@ -22,7 +22,7 @@ fn parse_files_json(files_json: &str) -> HashMap<String, String> {
 }
 
 /// Derive module ID from a file path relative to the package root.
-/// e.g. "models/User.scl" -> ["Playground", "models", "User"]
+/// e.g. "models/User.scl" -> ["Local", "models", "User"]
 fn module_id_for_file(file: &str) -> sclc::ModuleId {
     let path = Path::new(file);
     let mut path_segments: Vec<String> = Vec::new();
@@ -34,11 +34,11 @@ fn module_id_for_file(file: &str) -> sclc::ModuleId {
     if let Some(stem) = path.file_stem() {
         path_segments.push(stem.to_string_lossy().into_owned());
     }
-    sclc::ModuleId::new(sclc::PackageId::from(["Playground"]), path_segments)
+    sclc::ModuleId::new(sclc::PackageId::from(["Local"]), path_segments)
 }
 
 /// Convert a module ID back to a file path relative to the package root.
-/// e.g. ["Playground", "models", "User"] -> "models/User.scl"
+/// e.g. ["Local", "models", "User"] -> "models/User.scl"
 fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
     if module_id.path.is_empty() {
         return None;
@@ -57,7 +57,7 @@ async fn load_and_compile(files_json: &str) -> (sclc::DiagList, Option<sclc::Asg
     let finder = sclc::build_default_finder(pkg);
     let mut diags = sclc::DiagList::new();
 
-    match sclc::compile(finder, &["Playground", "Main"]).await {
+    match sclc::compile(finder, &["Local", "Main"]).await {
         Ok(diagnosed) => {
             let asg = diagnosed.unpack(&mut diags);
             (diags, Some(asg))
@@ -85,7 +85,7 @@ struct DiagnosticInfo {
 pub async fn analyze(files_json: &str) -> String {
     let (diags, _) = load_and_compile(files_json).await;
 
-    let package_id = sclc::PackageId::from(["Playground"]);
+    let package_id = sclc::PackageId::from(["Local"]);
 
     let result: Vec<DiagnosticInfo> = diags
         .iter()
@@ -265,10 +265,7 @@ pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) 
 /// Format source code (single file).
 #[wasm_bindgen]
 pub fn format(source: &str) -> Option<String> {
-    let module_id = sclc::ModuleId::new(
-        sclc::PackageId::from(["Playground"]),
-        vec!["Main".to_string()],
-    );
+    let module_id = sclc::ModuleId::new(sclc::PackageId::from(["Local"]), vec!["Main".to_string()]);
     let diagnosed = sclc::parse_file_mod(source, &module_id);
     let file_mod = diagnosed.into_inner();
     let formatted = sclc::Formatter::format(source, &file_mod);
@@ -302,13 +299,13 @@ pub async fn analyze_scle(source: &str) -> String {
         source.as_bytes().to_vec(),
     );
     let user_pkg = Arc::new(sclc::InMemoryPackage::new(
-        sclc::PackageId::from(["Playground"]),
+        sclc::PackageId::from(["Local"]),
         files,
     ));
     let finder = sclc::build_default_finder(user_pkg);
 
     let mut diags = sclc::DiagList::new();
-    match sclc::compile(finder, &["Playground", "Main"]).await {
+    match sclc::compile(finder, &["Local", "Main"]).await {
         Ok(diagnosed) => {
             let _ = diagnosed.unpack(&mut diags);
         }
@@ -358,15 +355,15 @@ thread_local! {
 pub fn repl_init() {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let user_pkg = Arc::new(sclc::InMemoryPackage::new(
-        sclc::PackageId::from(["Playground"]),
+        sclc::PackageId::from(["Local"]),
         HashMap::new(),
     ));
     let finder = sclc::build_default_finder(user_pkg);
     let state = sclc::Repl::new(
         finder,
-        sclc::PackageId::from(["Playground"]),
+        sclc::PackageId::from(["Local"]),
         effects_tx,
-        "Playground".to_string(),
+        "Local".to_string(),
     );
     REPL_STATE.with(|cell| {
         *cell.borrow_mut() = Some(WasmReplState { state, effects_rx });
