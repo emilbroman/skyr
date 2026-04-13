@@ -190,6 +190,66 @@ pub fn is_scle_path(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "scle")
 }
 
+/// Recursively discover all `.scl` and `.scle` files under `root`, skipping
+/// hidden directories and common build/dependency directories.
+pub async fn discover_workspace_files(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut rd = match tokio::fs::read_dir(&dir).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        loop {
+            let entry = match rd.next_entry().await {
+                Ok(Some(e)) => e,
+                _ => break,
+            };
+            let path = entry.path();
+            let ft = match entry.file_type().await {
+                Ok(f) => f,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default();
+                if name.starts_with('.') || name == "target" || name == "node_modules" {
+                    continue;
+                }
+                stack.push(path);
+            } else if ft.is_file()
+                && let Some(ext) = path.extension()
+                && (ext == "scl" || ext == "scle")
+            {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Compute the workspace entry list: every `.scl`/`.scle` file under `root`
+/// plus any open editor documents (which may be unsaved or outside the
+/// on-disk tree we discovered).
+async fn workspace_entry_paths(root: &Path, extra_paths: &[PathBuf]) -> Vec<PathBuf> {
+    let mut paths = discover_workspace_files(root).await;
+    let existing: HashSet<PathBuf> = paths.iter().cloned().collect();
+    for p in extra_paths {
+        if existing.contains(p) {
+            continue;
+        }
+        if p.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e == "scl" || e == "scle")
+        {
+            paths.push(p.clone());
+        }
+    }
+    paths
+}
+
 /// Result of analyzing a workspace — diagnostics grouped by file URI string.
 pub struct AnalysisResult {
     pub diagnostics: HashMap<String, Vec<lsp::Diagnostic>>,
@@ -197,85 +257,6 @@ pub struct AnalysisResult {
     /// workspace import graph. Callers can use this to avoid redundantly
     /// analysing the same file through other entry points (e.g. `analyze_scle`).
     pub analyzed_paths: HashSet<PathBuf>,
-}
-
-/// Run compilation and collect diagnostics.
-pub async fn analyze(
-    finder: Arc<dyn sclc::PackageFinder>,
-    entry: &[&str],
-    root: &Path,
-    package_id: &sclc::PackageId,
-) -> AnalysisResult {
-    let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
-    let mut analyzed_paths: HashSet<PathBuf> = HashSet::new();
-
-    match sclc::compile(finder, entry).await {
-        Ok(diagnosed) => {
-            // Build an extension lookup from the ASG: each loaded module knows
-            // whether it was parsed as `.scl` or `.scle`. Modules outside the
-            // workspace package (stdlib, cross-repo) won't map to workspace
-            // paths and are skipped below.
-            let mut extensions: HashMap<sclc::RawModuleId, &'static str> = HashMap::new();
-            for module in diagnosed.modules() {
-                let ext = if module.body.is_scle() { "scle" } else { "scl" };
-                extensions.insert(module.raw_id.clone(), ext);
-                if module.package_id == *package_id {
-                    analyzed_paths.insert(module_id_to_path(root, &module.module_id, ext));
-                }
-            }
-
-            // Track seen diagnostics per URI to avoid duplicates.
-            let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
-            for diag in diagnosed.diags().iter() {
-                let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
-                let raw_id: sclc::RawModuleId = module_id
-                    .package
-                    .as_slice()
-                    .iter()
-                    .cloned()
-                    .chain(module_id.path.iter().cloned())
-                    .collect();
-                let ext = extensions.get(&raw_id).copied().unwrap_or("scl");
-                let path = module_id_to_path(root, &module_id, ext);
-                let uri = path_to_uri_string(&path);
-                let severity_str = match lsp_diag.severity {
-                    Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
-                    Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
-                    Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
-                    Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
-                    _ => "unknown",
-                };
-                let key = (
-                    lsp_diag.range,
-                    lsp_diag.message.clone(),
-                    severity_str.to_string(),
-                );
-                if seen.entry(uri.clone()).or_default().insert(key) {
-                    file_diagnostics.entry(uri).or_default().push(lsp_diag);
-                }
-            }
-        }
-        Err(err) => {
-            // Compilation hard-failed; report a single diagnostic on Main.scl
-            let path = root.join("Main.scl");
-            let uri = path_to_uri_string(&path);
-            file_diagnostics
-                .entry(uri)
-                .or_default()
-                .push(lsp::Diagnostic {
-                    range: lsp::Range::default(),
-                    severity: Some(lsp::DiagnosticSeverity::ERROR),
-                    source: Some("scl".to_string()),
-                    message: err.to_string(),
-                    ..Default::default()
-                });
-        }
-    }
-
-    AnalysisResult {
-        diagnostics: file_diagnostics,
-        analyzed_paths,
-    }
 }
 
 /// Parse, load and type-check a standalone `.scle` file, returning
@@ -322,17 +303,144 @@ pub async fn analyze_scle(
     diagnostics
 }
 
-/// Build the ASG for cursor queries.
-pub async fn load_asg(finder: Arc<dyn sclc::PackageFinder>, entry: &[&str]) -> Option<sclc::Asg> {
-    match sclc::compile(finder, entry).await {
-        Ok(diagnosed) => {
-            if diagnosed.diags().has_errors() {
-                // Still return the ASG — partial results are useful for IDE
-            }
-            Some(diagnosed.into_inner())
+/// Resolve every workspace `.scl`/`.scle` file (plus any extra open documents)
+/// into a single shared `Loader`, then run the type checker. Returns the
+/// accumulated ASG and the diagnostic list.
+async fn build_workspace_asg(
+    finder: Arc<dyn sclc::PackageFinder>,
+    root: &Path,
+    package_id: &sclc::PackageId,
+    extra_paths: &[PathBuf],
+) -> (sclc::Asg, sclc::DiagList, HashMap<PathBuf, sclc::LoadError>) {
+    let paths = workspace_entry_paths(root, extra_paths).await;
+
+    let mut diags = sclc::DiagList::new();
+    let mut loader = sclc::Loader::new(finder);
+    let mut load_errors: HashMap<PathBuf, sclc::LoadError> = HashMap::new();
+    for path in &paths {
+        let module_id = module_id_from_path(path, Some(root), package_id);
+        let segments: Vec<String> = module_id
+            .package
+            .as_slice()
+            .iter()
+            .cloned()
+            .chain(module_id.path.iter().cloned())
+            .collect();
+        let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+        if let Err(err) = loader.resolve(&refs).await {
+            load_errors.insert(path.clone(), err);
         }
-        Err(_) => None,
     }
+    let asg = loader.finish().unpack(&mut diags);
+    if let Ok(checked) = sclc::AsgChecker::new(&asg).check() {
+        let _ = checked.unpack(&mut diags);
+    }
+    (asg, diags, load_errors)
+}
+
+/// Discover and analyze every `.scl`/`.scle` file in the workspace as part of
+/// a single shared compilation. Diagnostics are reported regardless of
+/// whether a `Main.scl` entry point exists.
+pub async fn analyze_workspace(
+    finder: Arc<dyn sclc::PackageFinder>,
+    root: &Path,
+    package_id: &sclc::PackageId,
+    extra_paths: &[PathBuf],
+) -> AnalysisResult {
+    let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
+    let mut analyzed_paths: HashSet<PathBuf> = HashSet::new();
+
+    let (asg, diags, load_errors) =
+        build_workspace_asg(finder, root, package_id, extra_paths).await;
+
+    for (path, err) in &load_errors {
+        let uri = path_to_uri_string(path);
+        file_diagnostics
+            .entry(uri)
+            .or_default()
+            .push(lsp::Diagnostic {
+                range: lsp::Range::default(),
+                severity: Some(lsp::DiagnosticSeverity::ERROR),
+                source: Some(if is_scle_path(path) { "scle" } else { "scl" }.to_string()),
+                message: err.to_string(),
+                ..Default::default()
+            });
+    }
+
+    let mut extensions: HashMap<sclc::RawModuleId, &'static str> = HashMap::new();
+    for module in asg.modules() {
+        let ext = if module.body.is_scle() { "scle" } else { "scl" };
+        extensions.insert(module.raw_id.clone(), ext);
+        if module.package_id == *package_id {
+            analyzed_paths.insert(module_id_to_path(root, &module.module_id, ext));
+        }
+    }
+
+    let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
+    // Pre-seed `seen` with any load-error diagnostics already pushed so they
+    // don't get duplicated by the diag loop below.
+    for (uri, items) in &file_diagnostics {
+        for d in items {
+            let severity_str = match d.severity {
+                Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
+                Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
+                Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
+                Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
+                _ => "unknown",
+            };
+            seen.entry(uri.clone()).or_default().insert((
+                d.range,
+                d.message.clone(),
+                severity_str.to_string(),
+            ));
+        }
+    }
+
+    for diag in diags.iter() {
+        let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
+        let raw_id: sclc::RawModuleId = module_id
+            .package
+            .as_slice()
+            .iter()
+            .cloned()
+            .chain(module_id.path.iter().cloned())
+            .collect();
+        let ext = extensions.get(&raw_id).copied().unwrap_or("scl");
+        let path = module_id_to_path(root, &module_id, ext);
+        let uri = path_to_uri_string(&path);
+        let severity_str = match lsp_diag.severity {
+            Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
+            Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
+            Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
+            Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
+            _ => "unknown",
+        };
+        let key = (
+            lsp_diag.range,
+            lsp_diag.message.clone(),
+            severity_str.to_string(),
+        );
+        if seen.entry(uri.clone()).or_default().insert(key) {
+            file_diagnostics.entry(uri).or_default().push(lsp_diag);
+        }
+    }
+
+    AnalysisResult {
+        diagnostics: file_diagnostics,
+        analyzed_paths,
+    }
+}
+
+/// Build an ASG covering every workspace file, for cursor queries that need
+/// to operate without a `Main.scl` entry point.
+pub async fn load_workspace_asg(
+    finder: Arc<dyn sclc::PackageFinder>,
+    root: &Path,
+    package_id: &sclc::PackageId,
+    extra_paths: &[PathBuf],
+) -> Option<sclc::Asg> {
+    let (asg, _diags, _errs) = build_workspace_asg(finder, root, package_id, extra_paths).await;
+    Some(asg)
 }
 
 /// Query cursor information at a specific position in a file.
@@ -598,5 +706,90 @@ mod tests {
         for diag in &diagnostics {
             assert_eq!(diag.source.as_deref(), Some("scle"));
         }
+    }
+
+    /// Build a real on-disk workspace with the given files and return the
+    /// `tempfile::TempDir` (kept alive for the duration of the test) and the
+    /// canonicalized root path.
+    fn make_workspace(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir
+            .path()
+            .canonicalize()
+            .expect("canonicalize tempdir root");
+        for (rel, contents) in files {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("mkdir -p");
+            }
+            std::fs::write(&path, contents).expect("write");
+        }
+        (dir, root)
+    }
+
+    #[tokio::test]
+    async fn analyze_workspace_reports_diagnostics_without_main() {
+        // No Main.scl exists — but A.scl has a type error that should still
+        // be surfaced as a diagnostic.
+        let (_dir, root) = make_workspace(&[("A.scl", "export let x: Int = \"not an int\"\n")]);
+        let pkg = sclc::PackageId::from(["WS"]);
+        let fs_pkg = sclc::FsPackage::new(root.clone(), pkg.clone());
+        let finder = sclc::build_default_finder(Arc::new(fs_pkg));
+
+        let result = analyze_workspace(finder, &root, &pkg, &[]).await;
+        let a_uri = path_to_uri_string(&root.join("A.scl"));
+        let diags = result
+            .diagnostics
+            .get(&a_uri)
+            .expect("expected diagnostics for A.scl");
+        assert!(
+            !diags.is_empty(),
+            "expected at least one diagnostic for A.scl: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn analyze_workspace_covers_all_files() {
+        // Two unrelated files, each with its own type error: both should
+        // show up in the diagnostics map.
+        let (_dir, root) = make_workspace(&[
+            ("A.scl", "export let x: Int = \"oops\"\n"),
+            ("sub/B.scl", "export let y: String = 1\n"),
+        ]);
+        let pkg = sclc::PackageId::from(["WS"]);
+        let fs_pkg = sclc::FsPackage::new(root.clone(), pkg.clone());
+        let finder = sclc::build_default_finder(Arc::new(fs_pkg));
+
+        let result = analyze_workspace(finder, &root, &pkg, &[]).await;
+        let a_uri = path_to_uri_string(&root.join("A.scl"));
+        let b_uri = path_to_uri_string(&root.join("sub").join("B.scl"));
+        assert!(
+            result.diagnostics.contains_key(&a_uri),
+            "expected diagnostics for A.scl: {:?}",
+            result.diagnostics.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            result.diagnostics.contains_key(&b_uri),
+            "expected diagnostics for sub/B.scl: {:?}",
+            result.diagnostics.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_workspace_files_skips_hidden_and_build_dirs() {
+        let (_dir, root) = make_workspace(&[
+            ("A.scl", ""),
+            ("sub/B.scle", ""),
+            (".hidden/C.scl", ""),
+            ("target/D.scl", ""),
+            ("node_modules/E.scl", ""),
+            ("README.md", ""),
+        ]);
+        let mut found = discover_workspace_files(&root).await;
+        found.sort();
+        let mut expected = vec![root.join("A.scl"), root.join("sub").join("B.scle")];
+        expected.sort();
+        assert_eq!(found, expected);
     }
 }

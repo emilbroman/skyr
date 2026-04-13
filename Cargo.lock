@@ -3593,6 +3593,7 @@ dependencies = [
  "sclc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

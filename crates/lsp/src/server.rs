@@ -188,20 +188,11 @@ impl LanguageServer {
         Some(sclc::build_default_finder(Arc::new(overlay)))
     }
 
-    fn entry_segments(&self) -> Vec<String> {
-        self.package_id
-            .as_slice()
-            .iter()
-            .cloned()
-            .chain(std::iter::once("Main".to_string()))
-            .collect()
-    }
-
     async fn load_program(&self) -> Option<LspProgram> {
         let finder = self.build_finder()?;
-        let entry_segments = self.entry_segments();
-        let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
-        analysis::load_asg(finder, &entry_refs).await
+        let root = self.root.as_ref()?;
+        let extra_paths = self.documents.paths();
+        analysis::load_workspace_asg(finder, root, &self.package_id, &extra_paths).await
     }
 
     async fn handle_request(
@@ -421,13 +412,12 @@ impl LanguageServer {
             Some(f) => f,
             None => return vec![],
         };
-        let entry_segments = self.entry_segments();
-        let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
-        let mut result = analysis::analyze(finder, &entry_refs, &root, &self.package_id).await;
+        let extra_paths = self.documents.paths();
+        let mut result =
+            analysis::analyze_workspace(finder, &root, &self.package_id, &extra_paths).await;
 
-        // Analyse open .scle files that are NOT part of the workspace import
-        // graph standalone — files already covered by the main `analyze` pass
-        // would otherwise produce duplicate diagnostics.
+        // Analyse any open .scle file that lives outside the discovered
+        // workspace tree (e.g. a scratch file the user opened from elsewhere).
         for path in self.documents.paths() {
             if analysis::is_scle_path(&path) && !result.analyzed_paths.contains(&path) {
                 let scle_finder = match self.build_finder() {
