@@ -20,13 +20,7 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
-    let parent_name = args
-        .file
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Local".to_string());
-    let module_id = sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem]);
+    let module_id = sclc::ModuleId::new(sclc::PackageId::from(["Local"]), vec![stem]);
 
     let is_scle = args.file.extension().is_some_and(|ext| ext == "scle");
 
