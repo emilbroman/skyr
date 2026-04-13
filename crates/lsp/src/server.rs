@@ -154,7 +154,7 @@ impl LanguageServer {
         Self {
             documents: DocumentCache::new(),
             root: None,
-            package_id: sclc::PackageId::default(),
+            package_id: sclc::PackageId::from(["Local"]),
             shutdown_requested: false,
             exit_code: None,
             published_uris: HashSet::new(),
@@ -381,24 +381,11 @@ impl LanguageServer {
         if let Some(path) = uri_to_path(uri)
             && let Some(parent) = path.parent()
         {
-            // Canonicalize the path to resolve symlinks and ".." components,
-            // preventing path traversal from influencing the package ID.
+            // Canonicalize the path to resolve symlinks and ".." components.
             let canonical = parent
                 .canonicalize()
                 .unwrap_or_else(|_| parent.to_path_buf());
-            self.root = Some(canonical.clone());
-            // Derive package ID from directory name
-            if let Some(name) = canonical.file_name() {
-                let name_str = name.to_string_lossy();
-                // Validate that the directory name is a reasonable identifier
-                if !name_str.is_empty()
-                    && name_str
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-                {
-                    self.package_id = sclc::PackageId::from([name_str.as_ref()]);
-                }
-            }
+            self.root = Some(canonical);
         }
     }
 

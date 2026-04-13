@@ -48,12 +48,7 @@ pub fn module_id_from_path(
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "Main".to_string());
-    let parent_name = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "Local".to_string());
-    sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem])
+    sclc::ModuleId::new(sclc::PackageId::from(["Local"]), vec![stem])
 }
 
 /// A [`sclc::Package`] that overlays editor document contents on top of
@@ -603,8 +598,8 @@ mod tests {
         let root = Path::new("/work/myproj");
         let pkg = sclc::PackageId::from(["MyProj"]);
         let id = module_id_from_path(Path::new("/elsewhere/B.scl"), Some(root), &pkg);
-        // Outside root → fallback uses parent dir name as package
-        assert_eq!(id.package, sclc::PackageId::from(["elsewhere"]));
+        // Outside root → fallback uses the constant `Local` package id.
+        assert_eq!(id.package, sclc::PackageId::from(["Local"]));
         assert_eq!(id.path, vec!["B".to_string()]);
     }
 

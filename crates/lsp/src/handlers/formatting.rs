@@ -29,7 +29,7 @@ pub fn formatting(
     } else {
         // Module ID is only used as a parse-diagnostic label here, so the
         // package details don't need to match the workspace.
-        let module_id = module_id_from_path(&path, None, &sclc::PackageId::default());
+        let module_id = module_id_from_path(&path, None, &sclc::PackageId::from(["Local"]));
         format_scl(&source, &module_id)
     };
 
