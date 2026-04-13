@@ -391,7 +391,22 @@ impl LanguageServer {
         };
         let entry_segments = self.entry_segments();
         let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
-        let result = analysis::analyze(finder, &entry_refs, &root, &self.package_id).await;
+        let mut result = analysis::analyze(finder, &entry_refs, &root, &self.package_id).await;
+
+        // Analyse open .scle files standalone (they are not part of the module graph)
+        for path in self.documents.paths() {
+            if analysis::is_scle_path(&path)
+                && let Some(source) = self.documents.get(&path)
+            {
+                let scle_finder = match self.build_finder() {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let diagnostics = analysis::analyze_scle(scle_finder, &source, &path).await;
+                let uri = format!("file://{}", path.display());
+                result.diagnostics.insert(uri, diagnostics);
+            }
+        }
 
         let mut messages = Vec::new();
 

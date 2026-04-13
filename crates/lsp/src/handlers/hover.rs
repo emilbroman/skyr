@@ -1,5 +1,8 @@
 use lsp_types as lsp;
 
+// TODO: Add hover support for .scle files. The synthesised __Scle__/Main ASG
+// produced by evaluate_scle could support hover, but cursor positions in the
+// original SCLE source need to map correctly into the synthesised module.
 use crate::analysis::{self, module_id_from_path, uri_to_path};
 use crate::convert;
 use crate::document::DocumentCache;
