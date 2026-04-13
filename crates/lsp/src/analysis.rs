@@ -193,6 +193,10 @@ pub fn is_scle_path(path: &Path) -> bool {
 /// Result of analyzing a workspace — diagnostics grouped by file URI string.
 pub struct AnalysisResult {
     pub diagnostics: HashMap<String, Vec<lsp::Diagnostic>>,
+    /// Absolute paths of files (`.scl` or `.scle`) that were part of the
+    /// workspace import graph. Callers can use this to avoid redundantly
+    /// analysing the same file through other entry points (e.g. `analyze_scle`).
+    pub analyzed_paths: HashSet<PathBuf>,
 }
 
 /// Run compilation and collect diagnostics.
@@ -203,14 +207,36 @@ pub async fn analyze(
     package_id: &sclc::PackageId,
 ) -> AnalysisResult {
     let mut file_diagnostics: HashMap<String, Vec<lsp::Diagnostic>> = HashMap::new();
+    let mut analyzed_paths: HashSet<PathBuf> = HashSet::new();
 
     match sclc::compile(finder, entry).await {
         Ok(diagnosed) => {
+            // Build an extension lookup from the ASG: each loaded module knows
+            // whether it was parsed as `.scl` or `.scle`. Modules outside the
+            // workspace package (stdlib, cross-repo) won't map to workspace
+            // paths and are skipped below.
+            let mut extensions: HashMap<sclc::RawModuleId, &'static str> = HashMap::new();
+            for module in diagnosed.modules() {
+                let ext = if module.body.is_scle() { "scle" } else { "scl" };
+                extensions.insert(module.raw_id.clone(), ext);
+                if module.package_id == *package_id {
+                    analyzed_paths.insert(module_id_to_path(root, &module.module_id, ext));
+                }
+            }
+
             // Track seen diagnostics per URI to avoid duplicates.
             let mut seen: HashMap<String, HashSet<(lsp::Range, String, String)>> = HashMap::new();
             for diag in diagnosed.diags().iter() {
                 let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
-                let path = module_id_to_path(root, &module_id, package_id);
+                let raw_id: sclc::RawModuleId = module_id
+                    .package
+                    .as_slice()
+                    .iter()
+                    .cloned()
+                    .chain(module_id.path.iter().cloned())
+                    .collect();
+                let ext = extensions.get(&raw_id).copied().unwrap_or("scl");
+                let path = module_id_to_path(root, &module_id, ext);
                 let uri = path_to_uri_string(&path);
                 let severity_str = match lsp_diag.severity {
                     Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
@@ -248,35 +274,34 @@ pub async fn analyze(
 
     AnalysisResult {
         diagnostics: file_diagnostics,
+        analyzed_paths,
     }
 }
 
 /// Parse, load and type-check a standalone `.scle` file, returning
 /// diagnostics.
 ///
-/// `.scle` files can `import` from packages the finder can resolve. We wrap
-/// the source as `Main.scle` in a synthetic package and run the standard
-/// compile pipeline (no evaluation) so the editor surfaces the same semantic
-/// diagnostics as `.scl` files.
+/// The file is loaded via the workspace finder using its real module ID
+/// (derived from the path under `root`), so that `Self/...` imports resolve
+/// against the workspace package and not a synthetic wrapper.
 pub async fn analyze_scle(
     finder: Arc<dyn sclc::PackageFinder>,
-    source: &str,
-    _path: &Path,
+    path: &Path,
+    root: &Path,
+    package_id: &sclc::PackageId,
 ) -> Vec<lsp::Diagnostic> {
-    const SCLE_PKG: &str = "__ScleBuffer__";
-    let mut files = HashMap::new();
-    files.insert(PathBuf::from("Main.scle"), source.as_bytes().to_vec());
-    let scle_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::InMemoryPackage::new(
-        sclc::PackageId::from([SCLE_PKG]),
-        files,
-    ));
-    let combined: Arc<dyn sclc::PackageFinder> = Arc::new(sclc::CompositePackageFinder::new(vec![
-        sclc::wrap_as_finder(scle_pkg),
-        finder,
-    ]));
+    let module_id = module_id_from_path(path, Some(root), package_id);
+    let entry: Vec<String> = module_id
+        .package
+        .as_slice()
+        .iter()
+        .cloned()
+        .chain(module_id.path.iter().cloned())
+        .collect();
+    let entry_refs: Vec<&str> = entry.iter().map(String::as_str).collect();
 
     let mut diagnostics = Vec::new();
-    match sclc::compile(combined, &[SCLE_PKG, "Main"]).await {
+    match sclc::compile(finder, &entry_refs).await {
         Ok(diagnosed) => {
             for diag in diagnosed.diags().iter() {
                 let (_module_id, mut lsp_diag) = convert::to_lsp_diagnostic(diag);
@@ -394,22 +419,18 @@ fn symbol_kind_for_expr(expr: &sclc::Loc<sclc::Expr>) -> lsp::SymbolKind {
     }
 }
 
-fn module_id_to_path(
-    root: &Path,
-    module_id: &sclc::ModuleId,
-    _package_id: &sclc::PackageId,
-) -> PathBuf {
+fn module_id_to_path(root: &Path, module_id: &sclc::ModuleId, ext: &str) -> PathBuf {
     // Use the module path directly — it already excludes the package prefix.
     let segments = &module_id.path;
 
     if segments.is_empty() {
-        return root.join("Main.scl");
+        return root.join(format!("Main.{ext}"));
     }
 
     let mut path = root.to_path_buf();
     for (i, segment) in segments.iter().enumerate() {
         if i == segments.len() - 1 {
-            path.push(format!("{segment}.scl"));
+            path.push(format!("{segment}.{ext}"));
         } else {
             path.push(segment);
         }
@@ -486,18 +507,26 @@ mod tests {
         assert!(!is_scle_path(Path::new("/tmp/test.rs")));
     }
 
-    fn test_finder() -> Arc<dyn sclc::PackageFinder> {
+    /// Build a finder backed by an in-memory package containing a single
+    /// `Foo.scle` file with the given source.
+    fn scle_finder(source: &str) -> (Arc<dyn sclc::PackageFinder>, std::path::PathBuf) {
+        let mut files = std::collections::HashMap::new();
+        files.insert(PathBuf::from("Foo.scle"), source.as_bytes().to_vec());
         let user_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::InMemoryPackage::new(
             sclc::PackageId::from(["Test"]),
-            std::collections::HashMap::new(),
+            files,
         ));
-        sclc::build_default_finder(user_pkg)
+        let finder = sclc::build_default_finder(user_pkg);
+        // The InMemoryPackage uses bare paths, so a "root" of "" combined
+        // with a path of "Foo.scle" yields module id Test/Foo.
+        (finder, PathBuf::from("Foo.scle"))
     }
 
     #[tokio::test]
     async fn analyze_scle_valid_source_no_diagnostics() {
-        let path = Path::new("/tmp/test.scle");
-        let diagnostics = analyze_scle(test_finder(), "Int\n42", path).await;
+        let (finder, path) = scle_finder("Int\n42");
+        let pkg = sclc::PackageId::from(["Test"]);
+        let diagnostics = analyze_scle(finder, &path, Path::new(""), &pkg).await;
         assert!(
             diagnostics.is_empty(),
             "expected no diagnostics for valid SCLE, got: {:?}",
@@ -507,13 +536,13 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_scle_syntax_error_produces_diagnostics() {
-        let path = Path::new("/tmp/test.scle");
-        let diagnostics = analyze_scle(test_finder(), "Int", path).await;
+        let (finder, path) = scle_finder("Int");
+        let pkg = sclc::PackageId::from(["Test"]);
+        let diagnostics = analyze_scle(finder, &path, Path::new(""), &pkg).await;
         assert!(
             !diagnostics.is_empty(),
             "expected diagnostics for incomplete SCLE"
         );
-        // Verify the source is "scle"
         for diag in &diagnostics {
             assert_eq!(diag.source.as_deref(), Some("scle"));
         }
@@ -521,9 +550,9 @@ mod tests {
 
     #[tokio::test]
     async fn analyze_scle_with_import() {
-        let path = Path::new("/tmp/test.scle");
-        let diagnostics =
-            analyze_scle(test_finder(), "import Std/List\n[Int]\n[1, 2, 3]", path).await;
+        let (finder, path) = scle_finder("import Std/List\n[Int]\n[1, 2, 3]");
+        let pkg = sclc::PackageId::from(["Test"]);
+        let diagnostics = analyze_scle(finder, &path, Path::new(""), &pkg).await;
         assert!(
             diagnostics.is_empty(),
             "expected no diagnostics for valid SCLE with import, got: {:?}",
@@ -532,9 +561,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn analyze_scle_self_import_resolves_against_workspace_package() {
+        // Regression: previously `analyze_scle` wrapped the source as
+        // `__ScleBuffer__/Main`, so `import Self/A` would resolve to
+        // `__ScleBuffer__/A` and produce a spurious "module not found" error.
+        let mut files = std::collections::HashMap::new();
+        files.insert(
+            PathBuf::from("Foo.scle"),
+            b"import Self/Bar\n\nBar".to_vec(),
+        );
+        files.insert(PathBuf::from("Bar.scl"), b"export let bar = 1\n".to_vec());
+        let user_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::InMemoryPackage::new(
+            sclc::PackageId::from(["Test"]),
+            files,
+        ));
+        let finder = sclc::build_default_finder(user_pkg);
+        let pkg = sclc::PackageId::from(["Test"]);
+        let diagnostics = analyze_scle(finder, Path::new("Foo.scle"), Path::new(""), &pkg).await;
+        let messages: Vec<&str> = diagnostics.iter().map(|d| d.message.as_str()).collect();
+        assert!(
+            !messages.iter().any(|m| m.contains("__ScleBuffer__")),
+            "diagnostics should not mention __ScleBuffer__: {:?}",
+            messages
+        );
+    }
+
+    #[tokio::test]
     async fn analyze_scle_type_error_produces_diagnostics() {
-        let path = Path::new("/tmp/test.scle");
-        let diagnostics = analyze_scle(test_finder(), "Int\n\"not an int\"", path).await;
+        let (finder, path) = scle_finder("Int\n\"not an int\"");
+        let pkg = sclc::PackageId::from(["Test"]);
+        let diagnostics = analyze_scle(finder, &path, Path::new(""), &pkg).await;
         assert!(
             !diagnostics.is_empty(),
             "expected type error diagnostics for mismatched SCLE body"

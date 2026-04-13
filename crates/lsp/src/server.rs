@@ -425,16 +425,17 @@ impl LanguageServer {
         let entry_refs: Vec<&str> = entry_segments.iter().map(String::as_str).collect();
         let mut result = analysis::analyze(finder, &entry_refs, &root, &self.package_id).await;
 
-        // Analyse open .scle files standalone (they are not part of the module graph)
+        // Analyse open .scle files that are NOT part of the workspace import
+        // graph standalone — files already covered by the main `analyze` pass
+        // would otherwise produce duplicate diagnostics.
         for path in self.documents.paths() {
-            if analysis::is_scle_path(&path)
-                && let Some(source) = self.documents.get(&path)
-            {
+            if analysis::is_scle_path(&path) && !result.analyzed_paths.contains(&path) {
                 let scle_finder = match self.build_finder() {
                     Some(f) => f,
                     None => continue,
                 };
-                let diagnostics = analysis::analyze_scle(scle_finder, &source, &path).await;
+                let diagnostics =
+                    analysis::analyze_scle(scle_finder, &path, &root, &self.package_id).await;
                 let uri = format!("file://{}", path.display());
                 result.diagnostics.insert(uri, diagnostics);
             }
