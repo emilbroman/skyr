@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     AsgChecker, CompletionCandidate, Cursor, CursorInfo, ModuleId, PackageId, Position,
-    TypeChecker, TypeEnv, ast, parse_file_mod_with_cursor,
+    TypeChecker, TypeEnv, ast, parse_file_mod_with_cursor, parse_scle_with_cursor,
 };
 
 use super::Asg;
@@ -15,6 +15,11 @@ use super::Asg;
 /// differ from the version the ASG was built from). This function re-parses
 /// the source with a cursor, then type-checks against the ASG's context to
 /// populate `CursorInfo`.
+///
+/// If the module is registered as `.scle` in the ASG, the source is parsed
+/// as a SCLE module and only its imports / type expression / body expression
+/// are checked (SCLE modules have no statement-level constructs beyond
+/// imports).
 pub fn cursor_info(
     asg: &Asg,
     module_id: &ModuleId,
@@ -24,9 +29,19 @@ pub fn cursor_info(
     let cursor = Cursor::new(position);
     let cursor_info = cursor.info();
 
-    // Parse with cursor attached
-    let diagnosed = parse_file_mod_with_cursor(source, module_id, Some(cursor.clone()));
-    let file_mod = diagnosed.into_inner();
+    // Detect SCLE-vs-SCL by consulting the ASG. If the module isn't in the
+    // ASG (e.g. the workspace failed to load it), fall back to SCL parsing.
+    let raw_id: Vec<String> = module_id
+        .package
+        .as_slice()
+        .iter()
+        .cloned()
+        .chain(module_id.path.iter().cloned())
+        .collect();
+    let is_scle = asg
+        .module(&raw_id)
+        .map(|mn| mn.body.is_scle())
+        .unwrap_or(false);
 
     // Build module map and checker directly from the ASG.
     let modules: HashMap<ModuleId, ast::FileMod> = asg
@@ -50,8 +65,38 @@ pub fn cursor_info(
 
     let type_env = TypeEnv::new(&ge)
         .with_module_id(module_id)
-        .with_cursor(cursor);
-    let _ = checker.check_file_mod(&type_env, &file_mod);
+        .with_raw_module_id(&raw_id)
+        .with_cursor(cursor.clone());
+
+    if is_scle {
+        let diagnosed = parse_scle_with_cursor(source, module_id, Some(cursor));
+        if let Some(scle_mod) = diagnosed.into_inner() {
+            // Mirror `AsgChecker::assemble_module`'s SCLE branch so cursor
+            // queries see the same type-checking shape as the rest of the
+            // pipeline.
+            for import in &scle_mod.imports {
+                let stmt = ast::ModStmt::Import(import.clone());
+                let _ = checker.check_stmt(&type_env, &stmt);
+            }
+            match (&scle_mod.type_expr, &scle_mod.body) {
+                (Some(type_expr), Some(body)) => {
+                    let expected = checker.resolve_type_expr(&type_env, type_expr).into_inner();
+                    let _ = checker.check_expr(&type_env, body, Some(&expected));
+                }
+                (Some(type_expr), None) => {
+                    let _ = checker.resolve_type_expr(&type_env, type_expr);
+                }
+                (None, Some(body)) => {
+                    let _ = checker.check_expr(&type_env, body, None);
+                }
+                (None, None) => {}
+            }
+        }
+    } else {
+        let diagnosed = parse_file_mod_with_cursor(source, module_id, Some(cursor));
+        let file_mod = diagnosed.into_inner();
+        let _ = checker.check_file_mod(&type_env, &file_mod);
+    }
 
     cursor_info
 }
@@ -194,6 +239,41 @@ mod tests {
         assert!(
             printed.contains("Int"),
             "expected Int in display for 'second' (= A.x), got: {printed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_info_resolves_scle_import_from_scl() {
+        // Foo.scle imports a value from Bar.scl; hover on the imported
+        // reference inside the SCLE body must resolve to its type.
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Bar.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Foo.scle"),
+            b"import Self/Bar\n\nBar.answer\n".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+
+        // Drive the loader from Foo.scle so the workspace ASG covers both.
+        let mut loader = crate::Loader::new(finder);
+        loader.resolve(&["Test", "Foo"]).await.unwrap();
+        let asg = loader.finish().into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Foo".to_string()]);
+        let src = "import Self/Bar\n\nBar.answer\n";
+        // Cursor on `answer` in `Bar.answer` (line 3, col 5)
+        let info = super::cursor_info(&asg, &module_id, src, Position::new(3, 5));
+        let locked = info.lock().unwrap();
+        let ty = locked
+            .ty
+            .clone()
+            .expect("expected a type for the imported value at cursor");
+        let printed = ty.to_string();
+        assert!(
+            printed.contains("Int"),
+            "expected Int in display for Bar.answer, got: {printed}"
         );
     }
 
