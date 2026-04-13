@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use thiserror::Error;
@@ -407,6 +407,15 @@ pub struct EvalCtx {
     /// resolving cross-repo dependencies. Local globals are absent from this
     /// map and fall through to `local_owner`.
     package_owner: HashMap<crate::PackageId, ids::DeploymentQid>,
+    /// Pre-loaded foreign resources, keyed by the foreign deployment's QID
+    /// and the resource id within that deployment. The DE populates this
+    /// from each foreign environment's RDB namespace before evaluation.
+    /// `EvalCtx::resource()` consults this map (instead of `resources`)
+    /// when the current owner is foreign.
+    foreign_resources: HashMap<ids::DeploymentQid, HashMap<ResourceId, crate::Resource>>,
+    /// Cross-deployment dependencies recorded as foreign reads have happened.
+    /// Drained by callers via [`EvalCtx::take_foreign_dependencies`].
+    foreign_deps: Mutex<HashSet<(ids::EnvironmentQid, ResourceId)>>,
     pub(crate) source_trace: Mutex<ids::SourceTrace>,
 }
 
@@ -429,12 +438,36 @@ impl EvalCtx {
             local_owner,
             owner_stack: Mutex::new(Vec::new()),
             package_owner: HashMap::new(),
+            foreign_resources: HashMap::new(),
+            foreign_deps: Mutex::new(HashSet::new()),
             source_trace: Mutex::new(Vec::new()),
         }
     }
 
     pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {
         self.resources.insert(id, resource);
+    }
+
+    /// Register a foreign resource (one that already exists in some other
+    /// deployment's RDB namespace). Used when evaluating code in a foreign
+    /// owner scope so resource lookups can return concrete outputs without
+    /// emitting a Create/Update.
+    pub fn add_foreign_resource(
+        &mut self,
+        owner: ids::DeploymentQid,
+        id: ResourceId,
+        resource: crate::Resource,
+    ) {
+        self.foreign_resources
+            .entry(owner)
+            .or_default()
+            .insert(id, resource);
+    }
+
+    /// Drain the set of recorded cross-deployment dependencies. Each entry is
+    /// `(foreign environment QID, resource id within that env)`.
+    pub fn take_foreign_dependencies(&self) -> HashSet<(ids::EnvironmentQid, ResourceId)> {
+        std::mem::take(&mut *self.foreign_deps.lock().unwrap())
     }
 
     /// Register a foreign package owner. Globals defined in `package` will be
@@ -518,7 +551,68 @@ impl EvalCtx {
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         let source_trace = self.source_trace.lock().unwrap().clone();
         let owner = self.current_owner();
+        let is_foreign = owner != self.local_owner;
 
+        // Foreign-owner path: read remote state from the foreign deployment's
+        // RDB namespace if available. Always emit the foreign-owned effect
+        // (the DE drops it) so the data dependency is preserved on the
+        // event stream.
+        if is_foreign {
+            let foreign_resource = self
+                .foreign_resources
+                .get(&owner)
+                .and_then(|map| map.get(&resource_id))
+                .cloned();
+
+            // Record the cross-deployment dependency for downstream tracking.
+            self.foreign_deps
+                .lock()
+                .unwrap()
+                .insert((owner.environment.clone(), resource_id.clone()));
+
+            // Emit the appropriate foreign-owned effect (the DE drops it).
+            let effect = match &foreign_resource {
+                None => Effect::CreateResource {
+                    id: resource_id,
+                    inputs: inputs.clone(),
+                    dependencies,
+                    source_trace,
+                    owner,
+                },
+                Some(existing)
+                    if existing.inputs != *inputs || existing.dependencies != dependencies =>
+                {
+                    Effect::UpdateResource {
+                        id: resource_id,
+                        inputs: inputs.clone(),
+                        dependencies,
+                        source_trace,
+                        owner,
+                    }
+                }
+                Some(_) => Effect::TouchResource {
+                    id: resource_id,
+                    inputs: inputs.clone(),
+                    dependencies,
+                    source_trace,
+                    owner,
+                },
+            };
+            self.emit(effect)?;
+
+            // Return concrete outputs only when the foreign resource is
+            // already materialised AND its inputs match — otherwise the
+            // local read should be `<pending>`.
+            return Ok(foreign_resource.and_then(|r| {
+                if r.inputs == *inputs {
+                    Some(r.outputs.clone())
+                } else {
+                    None
+                }
+            }));
+        }
+
+        // Local-owner path (unchanged).
         let Some(resource) = self.get_resource(ty, name) else {
             self.emit(Effect::CreateResource {
                 id: resource_id,
