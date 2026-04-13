@@ -279,6 +279,62 @@ pub fn format(source: &str) -> Option<String> {
     }
 }
 
+/// Format SCLE source code.
+#[wasm_bindgen]
+pub fn format_scle(source: &str) -> Option<String> {
+    let module_id = sclc::scle_module_id();
+    let diagnosed = sclc::parse_scle(source, &module_id);
+    let scle_mod = diagnosed.into_inner()?;
+    let formatted = sclc::Formatter::format_scle(source, &scle_mod);
+    if formatted == source {
+        None
+    } else {
+        Some(formatted)
+    }
+}
+
+/// Analyze SCLE source and return diagnostics as JSON.
+#[wasm_bindgen]
+pub async fn analyze_scle(source: &str) -> String {
+    let empty_pkg = Arc::new(sclc::InMemoryPackage::new(
+        sclc::PackageId::from(["Playground"]),
+        HashMap::new(),
+    ));
+    let finder = sclc::build_default_finder(empty_pkg);
+
+    let mut diags = sclc::DiagList::new();
+    match sclc::evaluate_scle(finder, source).await {
+        Ok(diagnosed) => {
+            let _ = diagnosed.unpack(&mut diags);
+        }
+        Err(error) => {
+            eprintln!("sclc-wasm: analyze_scle failed: {error}");
+        }
+    }
+
+    let result: Vec<DiagnosticInfo> = diags
+        .iter()
+        .map(|d| {
+            let (_module_id, span) = d.locate();
+            let level = d.level();
+            DiagnosticInfo {
+                file: String::new(),
+                line: span.start().line().saturating_sub(1),
+                character: span.start().character().saturating_sub(1),
+                end_line: span.end().line().saturating_sub(1),
+                end_character: span.end().character().saturating_sub(1),
+                message: d.to_string(),
+                severity: match level {
+                    sclc::DiagLevel::Error => "error",
+                    sclc::DiagLevel::Warning => "warning",
+                },
+            }
+        })
+        .collect();
+
+    serde_json::to_string(&result).unwrap_or_else(|_| "[]".to_string())
+}
+
 // ---------------------------------------------------------------------------
 // REPL support
 // ---------------------------------------------------------------------------

@@ -15,7 +15,7 @@ export function registerSclLanguage() {
     if (languageRegistered) return;
     languageRegistered = true;
 
-    monaco.languages.register({ id: LANGUAGE_ID, extensions: [".scl"] });
+    monaco.languages.register({ id: LANGUAGE_ID, extensions: [".scl", ".scle"] });
 
     // Monarch tokenizer for basic syntax highlighting
     monaco.languages.setMonarchTokensProvider(LANGUAGE_ID, {
@@ -270,7 +270,11 @@ export function registerProviders(
     disposables.push(
         monaco.languages.registerDocumentFormattingEditProvider(LANGUAGE_ID, {
             async provideDocumentFormattingEdits(model) {
-                const formatted = await worker.format(model.getValue());
+                const file = activeFileForModel(model);
+                const isScle = file.endsWith(".scle");
+                const formatted = isScle
+                    ? await worker.formatScle(model.getValue())
+                    : await worker.format(model.getValue());
                 if (!formatted) return [];
                 const fullRange = model.getFullModelRange();
                 return [{ range: fullRange, text: formatted }];
@@ -308,7 +312,27 @@ export function setupDiagnostics(
         const snapshot = JSON.stringify(files);
         lastFilesSnapshot = snapshot;
 
-        const diags = await worker.analyze(files);
+        // Separate .scl and .scle files for different analysis pipelines
+        const sclFiles: Record<string, string> = {};
+        const scleFiles: Record<string, string> = {};
+        for (const [name, content] of Object.entries(files)) {
+            if (name.endsWith(".scle")) {
+                scleFiles[name] = content;
+            } else {
+                sclFiles[name] = content;
+            }
+        }
+
+        // Run both analysis pipelines in parallel
+        const [sclDiags, ...scleDiagArrays] = await Promise.all([
+            Object.keys(sclFiles).length > 0 ? worker.analyze(sclFiles) : Promise.resolve([]),
+            ...Object.entries(scleFiles).map(async ([name, content]) => {
+                const diags = await worker.analyzeScle(content);
+                // Tag each diagnostic with its file name
+                return diags.map((d) => ({ ...d, file: name }));
+            }),
+        ]);
+        const diags: DiagnosticInfo[] = [...sclDiags, ...scleDiagArrays.flat()];
 
         // Only update if files haven't changed while we were analyzing
         if (JSON.stringify(getFiles()) !== snapshot) return;

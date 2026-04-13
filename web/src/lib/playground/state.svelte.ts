@@ -49,7 +49,7 @@ function createPlaygroundState() {
 
     function createFile(path: string) {
         if (path in files) return false;
-        if (!path.endsWith(".scl")) {
+        if (!path.endsWith(".scl") && !path.endsWith(".scle")) {
             path = `${path}.scl`;
         }
         files = { ...files, [path]: "" };
@@ -74,7 +74,7 @@ function createPlaygroundState() {
 
     function deleteEntry(path: string) {
         const newFiles: Record<string, string> = {};
-        const isFolder = !path.endsWith(".scl");
+        const isFolder = !path.endsWith(".scl") && !path.endsWith(".scle");
         const prefix = isFolder ? (path.endsWith("/") ? path : `${path}/`) : null;
 
         for (const [name, content] of Object.entries(files)) {
@@ -106,7 +106,7 @@ function createPlaygroundState() {
         if (oldPath === newPath) return;
 
         const newFiles: Record<string, string> = {};
-        const isFolder = !oldPath.endsWith(".scl");
+        const isFolder = !oldPath.endsWith(".scl") && !oldPath.endsWith(".scle");
         const oldPrefix = isFolder ? (oldPath.endsWith("/") ? oldPath : `${oldPath}/`) : null;
         const newPrefix = isFolder ? (newPath.endsWith("/") ? newPath : `${newPath}/`) : null;
 
