@@ -716,6 +716,11 @@ impl Worker {
         // reads can return concrete outputs.
         if let Some(finder) = &cross_repo_finder {
             for (foreign_repo, foreign_owner) in finder.resolved_owners().await {
+                self.log_publisher
+                    .info(format!(
+                        "loaded foreign package {foreign_repo} -> {foreign_owner}"
+                    ))
+                    .await;
                 let pkg_id = sclc::package_id_for_repo(&foreign_repo);
                 eval_ctx.set_package_owner(pkg_id, foreign_owner.clone());
 
