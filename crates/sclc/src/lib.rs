@@ -60,5 +60,14 @@ pub use std_package::*;
 pub use ty::*;
 pub use value::*;
 
+/// A placeholder [`ids::DeploymentQid`] suitable for tests and other contexts
+/// that need to construct an [`EvalCtx`] without a real deployment behind it
+/// (e.g. the REPL, the wasm playground, or in-memory unit tests).
+pub fn placeholder_deployment_qid() -> ids::DeploymentQid {
+    "placeholder/placeholder::main@0000000000000000000000000000000000000000"
+        .parse()
+        .expect("placeholder deployment QID is well-formed")
+}
+
 #[cfg(test)]
 mod tests;

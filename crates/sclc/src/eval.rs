@@ -357,19 +357,36 @@ pub enum Effect {
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
+        /// The deployment that owns this effect — i.e. the deployment whose
+        /// code path produced it. The DE drops effects whose owner is not
+        /// the local deployment.
+        owner: ids::DeploymentQid,
     },
     UpdateResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
+        owner: ids::DeploymentQid,
     },
     TouchResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
+        owner: ids::DeploymentQid,
     },
+}
+
+impl Effect {
+    /// The owning deployment of this effect.
+    pub fn owner(&self) -> &ids::DeploymentQid {
+        match self {
+            Effect::CreateResource { owner, .. }
+            | Effect::UpdateResource { owner, .. }
+            | Effect::TouchResource { owner, .. } => owner,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -377,6 +394,19 @@ pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<ResourceId, crate::Resource>,
     namespace: String,
+    /// The local deployment's QID — the bottom of the owner stack and the
+    /// fallback when no scope has been pushed.
+    local_owner: ids::DeploymentQid,
+    /// Stack of effect-owner overrides. The current owner is the top of the
+    /// stack, or `local_owner` if the stack is empty. Pushed only when
+    /// entering a global expression defined by a foreign package; function
+    /// calls do not push (closures are ownership-transparent).
+    owner_stack: Mutex<Vec<ids::DeploymentQid>>,
+    /// Map from package id to the deployment that owns globals defined in
+    /// that package. Populated by the caller (typically the DE) after
+    /// resolving cross-repo dependencies. Local globals are absent from this
+    /// map and fall through to `local_owner`.
+    package_owner: HashMap<crate::PackageId, ids::DeploymentQid>,
     pub(crate) source_trace: Mutex<ids::SourceTrace>,
 }
 
@@ -387,17 +417,67 @@ pub(crate) enum ListItemOutcome {
 }
 
 impl EvalCtx {
-    pub fn new(effects: mpsc::UnboundedSender<Effect>, namespace: impl Into<String>) -> Self {
+    pub fn new(
+        effects: mpsc::UnboundedSender<Effect>,
+        namespace: impl Into<String>,
+        local_owner: ids::DeploymentQid,
+    ) -> Self {
         Self {
             effects,
             resources: HashMap::new(),
             namespace: namespace.into(),
+            local_owner,
+            owner_stack: Mutex::new(Vec::new()),
+            package_owner: HashMap::new(),
             source_trace: Mutex::new(Vec::new()),
         }
     }
 
     pub fn add_resource(&mut self, id: ResourceId, resource: crate::Resource) {
         self.resources.insert(id, resource);
+    }
+
+    /// Register a foreign package owner. Globals defined in `package` will be
+    /// evaluated with `owner` on top of the owner stack and emit
+    /// foreign-owned effects.
+    pub fn set_package_owner(&mut self, package: crate::PackageId, owner: ids::DeploymentQid) {
+        self.package_owner.insert(package, owner);
+    }
+
+    /// The local deployment QID. Used by callers (e.g. the DE) to compare
+    /// against the owner stamped on emitted effects.
+    pub fn local_owner(&self) -> &ids::DeploymentQid {
+        &self.local_owner
+    }
+
+    /// The owner of effects emitted right now — top of the owner stack, or
+    /// the local owner if the stack is empty.
+    pub fn current_owner(&self) -> ids::DeploymentQid {
+        self.owner_stack
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap_or_else(|| self.local_owner.clone())
+    }
+
+    /// The owner of globals defined by `package`, falling back to the local
+    /// deployment when the package isn't a registered foreign package.
+    pub fn owner_for_package(&self, package: &crate::PackageId) -> ids::DeploymentQid {
+        self.package_owner
+            .get(package)
+            .cloned()
+            .unwrap_or_else(|| self.local_owner.clone())
+    }
+
+    /// Run `f` with `owner` pushed on the owner stack. The owner is popped
+    /// when `f` returns (success or panic).
+    pub fn with_owner<R>(&self, owner: ids::DeploymentQid, f: impl FnOnce() -> R) -> R {
+        self.owner_stack.lock().unwrap().push(owner);
+        let guard = OwnerStackGuard { ctx: self };
+        let result = f();
+        drop(guard);
+        result
     }
 
     pub fn emit(&self, effect: Effect) -> Result<(), EvalError> {
@@ -437,6 +517,7 @@ impl EvalCtx {
         };
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         let source_trace = self.source_trace.lock().unwrap().clone();
+        let owner = self.current_owner();
 
         let Some(resource) = self.get_resource(ty, name) else {
             self.emit(Effect::CreateResource {
@@ -444,6 +525,7 @@ impl EvalCtx {
                 inputs: inputs.clone(),
                 dependencies,
                 source_trace,
+                owner,
             })?;
             return Ok(None);
         };
@@ -454,6 +536,7 @@ impl EvalCtx {
                 inputs: inputs.clone(),
                 dependencies,
                 source_trace,
+                owner,
             })?;
             return Ok(None);
         }
@@ -463,9 +546,23 @@ impl EvalCtx {
             inputs: inputs.clone(),
             dependencies,
             source_trace,
+            owner,
         })?;
 
         Ok(Some(resource.outputs.clone()))
+    }
+}
+
+/// RAII guard returned indirectly via [`EvalCtx::with_owner`] — pops the
+/// owner stack on drop so panics within the wrapped closure still leave the
+/// stack balanced.
+struct OwnerStackGuard<'a> {
+    ctx: &'a EvalCtx,
+}
+
+impl Drop for OwnerStackGuard<'_> {
+    fn drop(&mut self) {
+        self.ctx.owner_stack.lock().unwrap().pop();
     }
 }
 
@@ -1187,7 +1284,10 @@ mod tests {
     #[test]
     fn eval_expr_propagates_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let module_id = ModuleId::default();
         let dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1210,7 +1310,10 @@ mod tests {
     #[test]
     fn eval_extern_call_can_explicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1256,7 +1359,10 @@ mod tests {
     #[test]
     fn eval_extern_call_does_not_implicitly_include_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1303,7 +1409,10 @@ mod tests {
     #[test]
     fn eval_fn_call_constant_body_does_not_inherit_unused_argument_dependencies() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let eval = Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
             typ: "Std/Random.Int".to_string(),
@@ -1348,8 +1457,10 @@ mod tests {
     #[test]
     fn resource_effect_updates_when_dependencies_change() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval =
-            Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let mut eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
@@ -1396,8 +1507,10 @@ mod tests {
     #[test]
     fn resource_effect_touches_when_unchanged() {
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut eval =
-            Eval::from_externs(HashMap::new(), super::EvalCtx::new(tx, "test/namespace"));
+        let mut eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
         let id = ResourceId {
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),

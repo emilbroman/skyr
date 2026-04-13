@@ -229,7 +229,11 @@ impl Repl {
         self.global_type_env = new_global_type_env;
 
         // Evaluate using AsgEvaluator with pre-seeded env (skips already-evaluated globals).
-        let ctx = EvalCtx::new(self.effects_tx.clone(), &self.namespace);
+        let ctx = EvalCtx::new(
+            self.effects_tx.clone(),
+            &self.namespace,
+            crate::placeholder_deployment_qid(),
+        );
         let evaluator =
             AsgEvaluator::new(&self.cached_asg, ctx).with_initial_env(self.global_eval_env.clone());
         let (eval_results, new_global_eval_env) = evaluator.eval()?;
@@ -309,7 +313,11 @@ impl Repl {
         let externs = self.collect_externs();
         let eval = Eval::from_externs(
             externs,
-            EvalCtx::new(self.effects_tx.clone(), &self.namespace),
+            EvalCtx::new(
+                self.effects_tx.clone(),
+                &self.namespace,
+                crate::placeholder_deployment_qid(),
+            ),
         );
         let eval_env = self.eval_env(module_id);
 

@@ -112,7 +112,7 @@ pub async fn evaluate_scle(
 
     // Evaluate.
     let (effects_tx, _effects_rx) = mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(effects_tx, "scle");
+    let ctx = EvalCtx::new(effects_tx, "scle", crate::placeholder_deployment_qid());
     let (_results, env) = crate::AsgEvaluator::new(&asg, ctx).eval()?;
 
     let key = GlobalKey::Global(

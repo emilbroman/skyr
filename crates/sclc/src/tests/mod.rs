@@ -14,6 +14,7 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
             source_trace: _,
+            owner: _,
         } => {
             let mut s = format!(
                 "CreateResource ty={} name={} inputs={}",
@@ -36,6 +37,7 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
             source_trace: _,
+            owner: _,
         } => {
             let mut s = format!(
                 "UpdateResource ty={} name={} inputs={}",
@@ -58,6 +60,7 @@ fn format_effect(effect: &Effect) -> String {
             inputs,
             dependencies,
             source_trace: _,
+            owner: _,
         } => {
             let mut s = format!(
                 "TouchResource ty={} name={} inputs={}",
@@ -333,7 +336,7 @@ async fn run_test_case(dir_name: &str) {
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let asg = result.into_inner();
-    let mut eval_ctx = EvalCtx::new(tx, "test");
+    let mut eval_ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
 
     // Load existing resources from rdb.json
     for (id, resource) in rdb {
@@ -534,4 +537,5 @@ test_case!(NilCoalesceReExportedOptional);
 // Recursive type declarations
 test_case!(RecursiveTypeDecl);
 
+mod effect_owner;
 mod scle;
