@@ -1,3 +1,5 @@
+// TODO: Add goto-definition/references/document-symbol support for .scle files
+// (see hover.rs TODO).
 use lsp_types as lsp;
 
 use crate::analysis::{self, module_id_from_path, uri_to_path};

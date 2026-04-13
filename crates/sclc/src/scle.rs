@@ -64,6 +64,21 @@ pub fn parse_scle_source(source: &str) -> Diagnosed<Option<ScleMod>> {
     parse_scle(source, &scle_module_id())
 }
 
+/// Parse, load and type-check an SCLE source string, returning all
+/// diagnostics produced along the way.
+///
+/// Unlike [`evaluate_scle`], this does not evaluate the body expression — it
+/// stops after type-checking. Intended for IDE/LSP usage where diagnostics
+/// for open `.scle` buffers are needed without running side effects.
+pub async fn check_scle(
+    finder: Arc<dyn PackageFinder>,
+    source: &str,
+) -> Result<Diagnosed<()>, ScleError> {
+    let mut diags = DiagList::new();
+    let _ = load_and_check_scle(finder, source, &mut diags).await?;
+    Ok(Diagnosed::new((), diags))
+}
+
 /// Evaluate an SCLE source string against the provided [`PackageFinder`].
 ///
 /// The finder is used to resolve any imports declared by the SCLE source.
@@ -78,10 +93,40 @@ pub async fn evaluate_scle(
 ) -> Result<Diagnosed<Option<TrackedValue>>, ScleError> {
     let mut diags = DiagList::new();
 
-    // Parse.
-    let scle = match parse_scle_source(source).unpack(&mut diags) {
-        Some(s) => s,
+    let asg = match load_and_check_scle(finder, source, &mut diags).await? {
+        Some(asg) => asg,
         None => return Ok(Diagnosed::new(None, diags)),
+    };
+
+    // Evaluate.
+    let (effects_tx, _effects_rx) = mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(effects_tx, "scle", crate::placeholder_deployment_qid());
+    let (_results, env) = crate::AsgEvaluator::new(&asg, ctx).eval()?;
+
+    let key = GlobalKey::Global(
+        vec![SCLE_PACKAGE.to_string(), SCLE_MODULE.to_string()],
+        SCLE_VALUE_NAME.to_string(),
+    );
+    let value = env.get(&key).cloned();
+
+    Ok(Diagnosed::new(value, diags))
+}
+
+/// Shared parse + load + type-check pipeline for SCLE sources.
+///
+/// Returns `Ok(Some(asg))` when parsing, loading and type-checking produce no
+/// errors; `Ok(None)` when parsing failed or type-checking reported errors
+/// (with diagnostics recorded in `diags`). Load and type-check hard errors
+/// are propagated via `ScleError`.
+async fn load_and_check_scle(
+    finder: Arc<dyn PackageFinder>,
+    source: &str,
+    diags: &mut DiagList,
+) -> Result<Option<crate::Asg>, ScleError> {
+    // Parse.
+    let scle = match parse_scle_source(source).unpack(diags) {
+        Some(s) => s,
+        None => return Ok(None),
     };
 
     // Synthesise a FileMod with the imports and a single exported binding.
@@ -102,26 +147,15 @@ pub async fn evaluate_scle(
     loader
         .resolve_with_entry(&[SCLE_PACKAGE, SCLE_MODULE], scle_pkg, file_mod)
         .await?;
-    let asg = loader.finish().unpack(&mut diags);
+    let asg = loader.finish().unpack(diags);
 
     // Type-check.
-    let _ = AsgChecker::new(&asg).check()?.unpack(&mut diags);
+    let _ = AsgChecker::new(&asg).check()?.unpack(diags);
     if diags.has_errors() {
-        return Ok(Diagnosed::new(None, diags));
+        return Ok(None);
     }
 
-    // Evaluate.
-    let (effects_tx, _effects_rx) = mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(effects_tx, "scle", crate::placeholder_deployment_qid());
-    let (_results, env) = crate::AsgEvaluator::new(&asg, ctx).eval()?;
-
-    let key = GlobalKey::Global(
-        vec![SCLE_PACKAGE.to_string(), SCLE_MODULE.to_string()],
-        SCLE_VALUE_NAME.to_string(),
-    );
-    let value = env.get(&key).cloned();
-
-    Ok(Diagnosed::new(value, diags))
+    Ok(Some(asg))
 }
 
 /// The [`ModuleId`] used by synthetic SCLE modules.

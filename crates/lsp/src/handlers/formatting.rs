@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::analysis::{module_id_from_path, uri_to_path};
+use crate::analysis::{is_scle_path, module_id_from_path, uri_to_path};
 use crate::document::DocumentCache;
 use crate::server::{OutgoingMessage, RequestId};
 
@@ -24,18 +24,16 @@ pub fn formatting(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
-    let diagnosed = sclc::parse_file_mod(&source, &module_id);
+    let formatted = if is_scle_path(&path) {
+        format_scle(&source)
+    } else {
+        format_scl(&source, &path)
+    };
 
-    // If there are parse errors, don't format — return null so the editor
-    // keeps the current text and the user sees the diagnostics instead.
-    if diagnosed.diags().has_errors() {
-        return vec![OutgoingMessage::response(id, serde_json::Value::Null)];
-    }
-
-    let file_mod = diagnosed.into_inner();
-
-    let formatted = sclc::Formatter::format(&source, &file_mod);
+    let formatted = match formatted {
+        Some(f) => f,
+        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
+    };
 
     // If the formatted output is the same, return an empty edit list
     if formatted == source {
@@ -69,4 +67,32 @@ pub fn formatting(
         serde_json::Value::Null
     });
     vec![OutgoingMessage::response(id, result)]
+}
+
+/// Format an `.scl` file. Returns `None` if parsing fails.
+fn format_scl(source: &str, path: &std::path::Path) -> Option<String> {
+    let module_id = module_id_from_path(path);
+    let diagnosed = sclc::parse_file_mod(source, &module_id);
+
+    // If there are parse errors, don't format.
+    if diagnosed.diags().has_errors() {
+        return None;
+    }
+
+    let file_mod = diagnosed.into_inner();
+    Some(sclc::Formatter::format(source, &file_mod))
+}
+
+/// Format an `.scle` file. Returns `None` if parsing fails.
+fn format_scle(source: &str) -> Option<String> {
+    let module_id = sclc::ModuleId::default();
+    let diagnosed = sclc::parse_scle(source, &module_id);
+
+    // If there are parse errors, don't format.
+    if diagnosed.diags().has_errors() {
+        return None;
+    }
+
+    let scle_mod = diagnosed.into_inner()?;
+    Some(sclc::Formatter::format_scle(source, &scle_mod))
 }

@@ -154,6 +154,11 @@ impl sclc::Package for OverlayPackage {
     }
 }
 
+/// Returns `true` if the path has a `.scle` extension.
+pub fn is_scle_path(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "scle")
+}
+
 /// Result of analyzing a workspace — diagnostics grouped by file URI string.
 pub struct AnalysisResult {
     pub diagnostics: HashMap<String, Vec<lsp::Diagnostic>>,
@@ -213,6 +218,40 @@ pub async fn analyze(
     AnalysisResult {
         diagnostics: file_diagnostics,
     }
+}
+
+/// Parse, load and type-check a standalone `.scle` file, returning
+/// diagnostics.
+///
+/// `.scle` files are not part of the module graph, but they can `import` from
+/// packages the finder can resolve. We run the full SCLE pipeline up to
+/// type-checking (no evaluation) so the editor surfaces the same semantic
+/// diagnostics as `.scl` files.
+pub async fn analyze_scle(
+    finder: Arc<dyn sclc::PackageFinder>,
+    source: &str,
+    _path: &Path,
+) -> Vec<lsp::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    match sclc::check_scle(finder, source).await {
+        Ok(diagnosed) => {
+            for diag in diagnosed.diags().iter() {
+                let (_module_id, mut lsp_diag) = convert::to_lsp_diagnostic(diag);
+                lsp_diag.source = Some("scle".to_string());
+                diagnostics.push(lsp_diag);
+            }
+        }
+        Err(err) => {
+            diagnostics.push(lsp::Diagnostic {
+                range: lsp::Range::default(),
+                severity: Some(lsp::DiagnosticSeverity::ERROR),
+                source: Some("scle".to_string()),
+                message: err.to_string(),
+                ..Default::default()
+            });
+        }
+    }
+    diagnostics
 }
 
 /// Build the ASG for cursor queries.
@@ -368,4 +407,74 @@ pub fn uri_to_path(uri: &lsp::Uri) -> Option<PathBuf> {
         return None;
     }
     Some(PathBuf::from(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_scle_path_recognizes_extension() {
+        assert!(is_scle_path(Path::new("/tmp/test.scle")));
+        assert!(!is_scle_path(Path::new("/tmp/test.scl")));
+        assert!(!is_scle_path(Path::new("/tmp/test.rs")));
+    }
+
+    fn test_finder() -> Arc<dyn sclc::PackageFinder> {
+        let user_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::InMemoryPackage::new(
+            sclc::PackageId::from(["Test"]),
+            std::collections::HashMap::new(),
+        ));
+        sclc::build_default_finder(user_pkg)
+    }
+
+    #[tokio::test]
+    async fn analyze_scle_valid_source_no_diagnostics() {
+        let path = Path::new("/tmp/test.scle");
+        let diagnostics = analyze_scle(test_finder(), "Int\n42", path).await;
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics for valid SCLE, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn analyze_scle_syntax_error_produces_diagnostics() {
+        let path = Path::new("/tmp/test.scle");
+        let diagnostics = analyze_scle(test_finder(), "Int", path).await;
+        assert!(
+            !diagnostics.is_empty(),
+            "expected diagnostics for incomplete SCLE"
+        );
+        // Verify the source is "scle"
+        for diag in &diagnostics {
+            assert_eq!(diag.source.as_deref(), Some("scle"));
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_scle_with_import() {
+        let path = Path::new("/tmp/test.scle");
+        let diagnostics =
+            analyze_scle(test_finder(), "import Std/List\n[Int]\n[1, 2, 3]", path).await;
+        assert!(
+            diagnostics.is_empty(),
+            "expected no diagnostics for valid SCLE with import, got: {:?}",
+            diagnostics
+        );
+    }
+
+    #[tokio::test]
+    async fn analyze_scle_type_error_produces_diagnostics() {
+        let path = Path::new("/tmp/test.scle");
+        let diagnostics = analyze_scle(test_finder(), "Int\n\"not an int\"", path).await;
+        assert!(
+            !diagnostics.is_empty(),
+            "expected type error diagnostics for mismatched SCLE body"
+        );
+        for diag in &diagnostics {
+            assert_eq!(diag.source.as_deref(), Some("scle"));
+        }
+    }
 }
