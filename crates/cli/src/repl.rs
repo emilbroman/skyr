@@ -76,7 +76,11 @@ impl completion::Completer for ReplHelper {
         let modules: std::collections::HashMap<sclc::ModuleId, sclc::FileMod> = state
             .cached_asg()
             .modules()
-            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .filter_map(|mn| {
+                mn.body
+                    .as_file_mod()
+                    .map(|fm| (mn.module_id.clone(), fm.clone()))
+            })
             .collect();
         let package_names: Vec<sclc::PackageId> =
             state.cached_asg().packages().keys().cloned().collect();

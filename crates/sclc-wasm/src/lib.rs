@@ -296,14 +296,19 @@ pub fn format_scle(source: &str) -> Option<String> {
 /// Analyze SCLE source and return diagnostics as JSON.
 #[wasm_bindgen]
 pub async fn analyze_scle(source: &str) -> String {
-    let empty_pkg = Arc::new(sclc::InMemoryPackage::new(
+    let mut files = HashMap::new();
+    files.insert(
+        std::path::PathBuf::from("Main.scle"),
+        source.as_bytes().to_vec(),
+    );
+    let user_pkg = Arc::new(sclc::InMemoryPackage::new(
         sclc::PackageId::from(["Playground"]),
-        HashMap::new(),
+        files,
     ));
-    let finder = sclc::build_default_finder(empty_pkg);
+    let finder = sclc::build_default_finder(user_pkg);
 
     let mut diags = sclc::DiagList::new();
-    match sclc::evaluate_scle(finder, source).await {
+    match sclc::compile(finder, &["Playground", "Main"]).await {
         Ok(diagnosed) => {
             let _ = diagnosed.unpack(&mut diags);
         }

@@ -6,55 +6,18 @@
 //!
 //! The grammar is `import_stmt* type_expr expr` (see [`crate::ast::ScleMod`]).
 //!
-//! Evaluation reuses the standard SCLC pipeline (Loader → AsgChecker →
-//! AsgEvaluator) by synthesising a virtual module that wraps the body in a
-//! single `export let __scle_value: T = body` binding under a synthetic
-//! package id `__Scle__`.
+//! SCLE modules are first-class citizens of the module graph: any module
+//! (including a package's `Main`) may use the `.scle` extension. The loader
+//! discovers `.scl` and `.scle` alternatives when resolving imports, the
+//! checker validates the body against the declared type expression, and the
+//! evaluator evaluates the body to produce the module's value.
+//!
+//! This module exposes only the parser entry points; loading, checking, and
+//! evaluation are handled by the standard pipeline in `loader`, `check`, and
+//! `asg_eval`.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use thiserror::Error;
-use tokio::sync::mpsc;
-
-use crate::ast::{FileMod, LetBind, ModStmt, ScleMod, Var};
-use crate::{
-    AsgChecker, CompileError, CompositePackageFinder, DiagList, Diagnosed, EvalCtx, EvalError,
-    GlobalKey, InMemoryPackage, LoadError, Loader, Loc, ModuleId, Package, PackageFinder,
-    PackageId, TrackedValue, TypeCheckError, parse_scle,
-};
-
-/// The synthetic package id used to host SCLE evaluations.
-const SCLE_PACKAGE: &str = "__Scle__";
-
-/// The synthetic module name within [`SCLE_PACKAGE`].
-const SCLE_MODULE: &str = "Main";
-
-/// The name of the synthesised export binding holding the SCLE value.
-const SCLE_VALUE_NAME: &str = "__scle_value";
-
-/// Errors from the SCLE pipeline.
-#[derive(Debug, Error)]
-pub enum ScleError {
-    #[error("load error: {0}")]
-    Load(#[from] LoadError),
-
-    #[error("type check error: {0}")]
-    TypeCheck(#[from] TypeCheckError),
-
-    #[error("evaluation error: {0}")]
-    Eval(#[from] EvalError),
-}
-
-impl From<CompileError> for ScleError {
-    fn from(e: CompileError) -> Self {
-        match e {
-            CompileError::Load(e) => ScleError::Load(e),
-            CompileError::TypeCheck(e) => ScleError::TypeCheck(e),
-        }
-    }
-}
+use crate::ast::ScleMod;
+use crate::{Diagnosed, ModuleId, PackageId, parse_scle};
 
 /// Parse an SCLE source string.
 ///
@@ -64,157 +27,8 @@ pub fn parse_scle_source(source: &str) -> Diagnosed<Option<ScleMod>> {
     parse_scle(source, &scle_module_id())
 }
 
-/// Parse, load and type-check an SCLE source string, returning all
-/// diagnostics produced along the way.
-///
-/// Unlike [`evaluate_scle`], this does not evaluate the body expression — it
-/// stops after type-checking. Intended for IDE/LSP usage where diagnostics
-/// for open `.scle` buffers are needed without running side effects.
-pub async fn check_scle(
-    finder: Arc<dyn PackageFinder>,
-    source: &str,
-) -> Result<Diagnosed<()>, ScleError> {
-    let mut diags = DiagList::new();
-    let _ = load_and_check_scle(finder, source, &mut diags).await?;
-    Ok(Diagnosed::new((), diags))
-}
-
-/// Evaluate an SCLE source string against the provided [`PackageFinder`].
-///
-/// The finder is used to resolve any imports declared by the SCLE source.
-/// The synthetic `__Scle__` package is automatically prepended so callers do
-/// not need to thread it through.
-///
-/// Returns the evaluated value alongside any diagnostics produced during
-/// loading, type-checking or evaluation.
-pub async fn evaluate_scle(
-    finder: Arc<dyn PackageFinder>,
-    source: &str,
-) -> Result<Diagnosed<Option<TrackedValue>>, ScleError> {
-    let mut diags = DiagList::new();
-
-    let asg = match load_and_check_scle(finder, source, &mut diags).await? {
-        Some(asg) => asg,
-        None => return Ok(Diagnosed::new(None, diags)),
-    };
-
-    // Evaluate.
-    let (effects_tx, _effects_rx) = mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(effects_tx, "scle", crate::placeholder_deployment_qid());
-    let (_results, env) = crate::AsgEvaluator::new(&asg, ctx).eval()?;
-
-    let key = GlobalKey::Global(
-        vec![SCLE_PACKAGE.to_string(), SCLE_MODULE.to_string()],
-        SCLE_VALUE_NAME.to_string(),
-    );
-    let value = env.get(&key).cloned();
-
-    Ok(Diagnosed::new(value, diags))
-}
-
-/// Shared parse + load + type-check pipeline for SCLE sources.
-///
-/// Returns `Ok(Some(asg))` when parsing, loading and type-checking produce no
-/// errors; `Ok(None)` when parsing failed or type-checking reported errors
-/// (with diagnostics recorded in `diags`). Load and type-check hard errors
-/// are propagated via `ScleError`.
-async fn load_and_check_scle(
-    finder: Arc<dyn PackageFinder>,
-    source: &str,
-    diags: &mut DiagList,
-) -> Result<Option<crate::Asg>, ScleError> {
-    // Parse.
-    let scle = match parse_scle_source(source).unpack(diags) {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-
-    // Synthesise a FileMod with the imports and a single exported binding.
-    let file_mod = synthesise_file_mod(scle);
-
-    // Compose the user-supplied finder with our synthetic SCLE package.
-    let scle_pkg: Arc<dyn Package> = Arc::new(InMemoryPackage::new(
-        PackageId::from([SCLE_PACKAGE]),
-        HashMap::from([(PathBuf::from("Main.scl"), Vec::new())]),
-    ));
-    let combined: Arc<dyn PackageFinder> = Arc::new(CompositePackageFinder::new(vec![
-        wrap_package_as_finder(Arc::clone(&scle_pkg)),
-        finder,
-    ]));
-
-    // Inject the synthetic module and resolve transitive imports.
-    let mut loader = Loader::new(combined);
-    loader
-        .resolve_with_entry(&[SCLE_PACKAGE, SCLE_MODULE], scle_pkg, file_mod)
-        .await?;
-    let asg = loader.finish().unpack(diags);
-
-    // Type-check.
-    let _ = AsgChecker::new(&asg).check()?.unpack(diags);
-    if diags.has_errors() {
-        return Ok(None);
-    }
-
-    Ok(Some(asg))
-}
-
-/// The [`ModuleId`] used by synthetic SCLE modules.
+/// A generic [`ModuleId`] used as a placeholder when parsing an SCLE source
+/// without a specific module context (e.g. formatter, IDE helpers).
 pub fn scle_module_id() -> ModuleId {
-    ModuleId::new(
-        PackageId::from([SCLE_PACKAGE]),
-        vec![SCLE_MODULE.to_string()],
-    )
-}
-
-fn synthesise_file_mod(scle: ScleMod) -> FileMod {
-    let ScleMod {
-        imports,
-        type_expr,
-        body,
-    } = scle;
-
-    let mut statements: Vec<ModStmt> = imports.into_iter().map(ModStmt::Import).collect();
-
-    let var_span = type_expr.span();
-    let bind = LetBind {
-        doc_comment: None,
-        var: Loc::new(
-            Var {
-                name: SCLE_VALUE_NAME.to_string(),
-                cursor: None,
-            },
-            var_span,
-        ),
-        ty: Some(type_expr),
-        expr: Box::new(body),
-    };
-    statements.push(ModStmt::Export(bind));
-
-    FileMod { statements }
-}
-
-/// Wrap an `Arc<dyn Package>` as a `PackageFinder` that matches when the raw
-/// id is prefixed by the package id.
-fn wrap_package_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
-    struct PkgFinder(Arc<dyn Package>);
-
-    #[async_trait::async_trait]
-    impl PackageFinder for PkgFinder {
-        async fn find(&self, raw_id: &[&str]) -> Result<Option<Arc<dyn Package>>, LoadError> {
-            let pkg_id = self.0.id();
-            let segments = pkg_id.as_slice();
-            if raw_id.len() >= segments.len()
-                && raw_id[..segments.len()]
-                    .iter()
-                    .zip(segments.iter())
-                    .all(|(a, b)| *a == b.as_str())
-            {
-                Ok(Some(Arc::clone(&self.0)))
-            } else {
-                Ok(None)
-            }
-        }
-    }
-
-    Arc::new(PkgFinder(pkg))
+    ModuleId::new(PackageId::default(), vec!["Scle".to_string()])
 }

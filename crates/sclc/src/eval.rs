@@ -52,6 +52,9 @@ pub struct GlobalEvalEnv {
     values: HashMap<GlobalKey, TrackedValue>,
     /// Per-module import alias → target RawModuleId.
     import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
+    /// Raw IDs of modules whose body is `.scle`. See
+    /// [`crate::checker::GlobalTypeEnv::scle_modules`] for the rationale.
+    scle_modules: std::collections::HashSet<RawModuleId>,
 }
 
 impl GlobalEvalEnv {
@@ -59,6 +62,7 @@ impl GlobalEvalEnv {
         Self {
             values: HashMap::new(),
             import_maps,
+            scle_modules: std::collections::HashSet::new(),
         }
     }
 
@@ -72,6 +76,16 @@ impl GlobalEvalEnv {
 
     pub fn import_maps(&self) -> &HashMap<RawModuleId, HashMap<String, RawModuleId>> {
         &self.import_maps
+    }
+
+    /// Mark a module id as SCLE.
+    pub fn mark_scle_module(&mut self, raw_id: RawModuleId) {
+        self.scle_modules.insert(raw_id);
+    }
+
+    /// Whether the module at `raw_id` is an SCLE module.
+    pub fn is_scle_module(&self, raw_id: &[String]) -> bool {
+        self.scle_modules.contains(raw_id)
     }
 
     /// Merge additional import maps into this environment.

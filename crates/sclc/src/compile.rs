@@ -75,8 +75,9 @@ pub fn build_cdb_finder(
     ]))
 }
 
-/// Helper to wrap an `Arc<dyn Package>` as an `Arc<dyn PackageFinder>`.
-fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
+/// Helper to wrap an `Arc<dyn Package>` as an `Arc<dyn PackageFinder>` that
+/// matches when the raw module ID is prefixed by the package's id segments.
+pub fn wrap_as_finder(pkg: Arc<dyn Package>) -> Arc<dyn PackageFinder> {
     struct PkgFinder(Arc<dyn Package>);
 
     #[async_trait::async_trait]

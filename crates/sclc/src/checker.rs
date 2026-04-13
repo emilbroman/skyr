@@ -543,6 +543,11 @@ pub struct GlobalTypeEnv {
     types: HashMap<GlobalKey, Type>,
     /// Per-module import alias → target RawModuleId.
     import_maps: HashMap<RawModuleId, HashMap<String, RawModuleId>>,
+    /// Raw IDs of modules whose body is `.scle`. The `Alias.member` →
+    /// `Global(alias_target, member)` shortcut only applies to `.scl`
+    /// targets; SCLE modules have no globals and must go through ordinary
+    /// property access on the module's value.
+    scle_modules: std::collections::HashSet<RawModuleId>,
 }
 
 impl GlobalTypeEnv {
@@ -550,6 +555,7 @@ impl GlobalTypeEnv {
         Self {
             types: HashMap::new(),
             import_maps,
+            scle_modules: std::collections::HashSet::new(),
         }
     }
 
@@ -559,6 +565,16 @@ impl GlobalTypeEnv {
 
     pub fn import_maps(&self) -> &HashMap<RawModuleId, HashMap<String, RawModuleId>> {
         &self.import_maps
+    }
+
+    /// Mark a module id as SCLE.
+    pub fn mark_scle_module(&mut self, raw_id: RawModuleId) {
+        self.scle_modules.insert(raw_id);
+    }
+
+    /// Whether the module at `raw_id` is an SCLE module.
+    pub fn is_scle_module(&self, raw_id: &[String]) -> bool {
+        self.scle_modules.contains(raw_id)
     }
 
     /// Merge additional import maps into this environment.

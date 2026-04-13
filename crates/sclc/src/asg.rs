@@ -54,12 +54,60 @@ pub struct Edge {
     pub span: Option<Span>,
 }
 
+/// The parsed body of a module. Either a regular `.scl` [`ast::FileMod`] or a
+/// `.scle` [`ast::ScleMod`].
+#[derive(Clone)]
+pub enum ModuleBody {
+    File(ast::FileMod),
+    Scle(ast::ScleMod),
+}
+
+impl ModuleBody {
+    /// Returns the module's statements. SCLE modules have no statements
+    /// beyond imports, so this returns an empty slice for them.
+    pub fn statements(&self) -> &[ast::ModStmt] {
+        match self {
+            ModuleBody::File(fm) => &fm.statements,
+            ModuleBody::Scle(_) => &[],
+        }
+    }
+
+    /// Returns the module's imports, regardless of kind.
+    pub fn imports(&self) -> Box<dyn Iterator<Item = &crate::Loc<ast::ImportStmt>> + '_> {
+        match self {
+            ModuleBody::File(fm) => Box::new(fm.statements.iter().filter_map(|s| match s {
+                ast::ModStmt::Import(i) => Some(i),
+                _ => None,
+            })),
+            ModuleBody::Scle(sm) => Box::new(sm.imports.iter()),
+        }
+    }
+
+    pub fn as_file_mod(&self) -> Option<&ast::FileMod> {
+        match self {
+            ModuleBody::File(fm) => Some(fm),
+            ModuleBody::Scle(_) => None,
+        }
+    }
+
+    pub fn as_scle(&self) -> Option<&ast::ScleMod> {
+        match self {
+            ModuleBody::File(_) => None,
+            ModuleBody::Scle(sm) => Some(sm),
+        }
+    }
+
+    pub fn is_scle(&self) -> bool {
+        matches!(self, ModuleBody::Scle(_))
+    }
+}
+
 /// A parsed module with its metadata.
 #[derive(Clone)]
 pub struct ModuleNode {
     pub raw_id: RawModuleId,
     pub module_id: ModuleId,
-    pub file_mod: ast::FileMod,
+    pub body: ModuleBody,
     pub package_id: PackageId,
 }
 
@@ -130,6 +178,22 @@ impl Asg {
 
     pub(crate) fn add_edge(&mut self, edge: Edge) {
         self.edges.push(edge);
+    }
+
+    /// Rewrite each edge whose `to` is a `Global(raw_id, name)` for which no
+    /// such Global node exists into a `Module(raw_id)` edge. This is used to
+    /// repoint the loader's `Import.member` shortcut edges when the target is
+    /// an SCLE module (which has no globals); ordering should then depend on
+    /// the target Module being assembled instead.
+    pub(crate) fn rewrite_dangling_global_edges(&mut self) {
+        for edge in &mut self.edges {
+            if let NodeId::Global(raw_id, name) = &edge.to
+                && !self.globals.contains_key(&(raw_id.clone(), name.clone()))
+                && self.modules.contains_key(raw_id)
+            {
+                edge.to = NodeId::Module(raw_id.clone());
+            }
+        }
     }
 
     pub(crate) fn add_global_expr(&mut self, raw_id: RawModuleId, stmt: ast::ModStmt) {

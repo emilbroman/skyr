@@ -4,7 +4,9 @@ use std::sync::Arc;
 use crate::ast::{self, Expr, ListItem, ModStmt, TypeExpr};
 use crate::{DiagList, Diagnosed, Loc, ModuleId, PackageId, Span};
 
-use super::asg::{Asg, Edge, GlobalNode, ModuleNode, NodeId, RawModuleId, TypeDeclNode};
+use super::asg::{
+    Asg, Edge, GlobalNode, ModuleBody, ModuleNode, NodeId, RawModuleId, TypeDeclNode,
+};
 use super::{LoadError, PackageFinder};
 
 /// The Loader builds an [`Asg`] by spidering the import graph starting from
@@ -30,40 +32,6 @@ impl Loader {
         // Queue entries: (raw module ID, optional source info for diagnostics).
         let mut queue: VecDeque<(RawModuleId, Option<ImportSource>)> =
             VecDeque::from([(raw_id.iter().map(|s| s.to_string()).collect(), None)]);
-
-        self.drain_queue(&mut queue).await
-    }
-
-    /// Inject a pre-parsed [`ast::FileMod`] as if it had been loaded from
-    /// `package` at `raw_id`, then resolve its transitive imports through the
-    /// configured [`PackageFinder`]. This skips the normal load + parse step
-    /// for the entry; useful for synthetic entry points (e.g. SCLE).
-    pub async fn resolve_with_entry(
-        &mut self,
-        raw_id: &[&str],
-        package: Arc<dyn super::Package>,
-        file_mod: ast::FileMod,
-    ) -> Result<(), LoadError> {
-        let raw_module_id: RawModuleId = raw_id.iter().map(|s| s.to_string()).collect();
-        if self.asg.has_module(&raw_module_id) {
-            return Ok(());
-        }
-
-        let pkg_id = package.id();
-        let pkg_len = pkg_id.len();
-        let module_path: Vec<String> = raw_module_id[pkg_len..].to_vec();
-        let module_id = ModuleId::new(pkg_id.clone(), module_path);
-
-        let mut queue: VecDeque<(RawModuleId, Option<ImportSource>)> = VecDeque::new();
-        self.process_module(
-            raw_module_id,
-            module_id,
-            pkg_id,
-            package,
-            file_mod,
-            &mut queue,
-        )
-        .await;
 
         self.drain_queue(&mut queue).await
     }
@@ -97,11 +65,14 @@ impl Loader {
             let module_path: Vec<String> = raw_module_id[pkg_len..].to_vec();
             let module_id = ModuleId::new(pkg_id.clone(), module_path);
 
-            // Load and parse the module source.
+            // Probe for both `.scl` and `.scle` in the package.
             let scl_path = module_id.to_path_buf_with_extension("scl");
-            let source_bytes = match package.load(&scl_path).await {
-                Ok(data) => data.into_owned(),
-                Err(LoadError::NotFound(_)) => {
+            let scle_path = module_id.to_path_buf_with_extension("scle");
+            let has_scl = matches!(package.lookup(&scl_path).await, Ok(Some(_)));
+            let has_scle = matches!(package.lookup(&scle_path).await, Ok(Some(_)));
+
+            match (has_scl, has_scle) {
+                (false, false) => {
                     self.diags.push(LoaderDiag::ModuleNotFound {
                         raw_id: raw_module_id.clone(),
                         module_id: module_id.clone(),
@@ -109,21 +80,75 @@ impl Loader {
                     });
                     continue;
                 }
-                Err(e) => return Err(e),
-            };
-
-            let source = String::from_utf8(source_bytes).map_err(LoadError::Encoding)?;
-
-            let file_mod = {
-                let mut parse_diags = DiagList::new();
-                let parsed = crate::parse_file_mod(&source, &module_id);
-                let file_mod = parsed.unpack(&mut parse_diags);
-                self.diags.extend(parse_diags);
-                file_mod
-            };
-
-            self.process_module(raw_module_id, module_id, pkg_id, package, file_mod, queue)
-                .await;
+                (true, true) => {
+                    // Ambiguous: both extensions present. Fatal at entrypoint
+                    // (no import_source), otherwise a diagnostic attributed to
+                    // the import site.
+                    if import_source.is_none() {
+                        return Err(LoadError::Other(
+                            format!(
+                                "ambiguous module {}: both `.scl` and `.scle` exist",
+                                raw_module_id.join("/")
+                            )
+                            .into(),
+                        ));
+                    }
+                    self.diags.push(LoaderDiag::AmbiguousModule {
+                        raw_id: raw_module_id.clone(),
+                        import_source,
+                    });
+                    continue;
+                }
+                (true, false) => {
+                    let source_bytes = match package.load(&scl_path).await {
+                        Ok(data) => data.into_owned(),
+                        Err(e) => return Err(e),
+                    };
+                    let source = String::from_utf8(source_bytes).map_err(LoadError::Encoding)?;
+                    let file_mod = {
+                        let mut parse_diags = DiagList::new();
+                        let parsed = crate::parse_file_mod(&source, &module_id);
+                        let file_mod = parsed.unpack(&mut parse_diags);
+                        self.diags.extend(parse_diags);
+                        file_mod
+                    };
+                    self.process_module(
+                        raw_module_id,
+                        module_id,
+                        pkg_id,
+                        package,
+                        ModuleBody::File(file_mod),
+                        queue,
+                    )
+                    .await;
+                }
+                (false, true) => {
+                    let source_bytes = match package.load(&scle_path).await {
+                        Ok(data) => data.into_owned(),
+                        Err(e) => return Err(e),
+                    };
+                    let source = String::from_utf8(source_bytes).map_err(LoadError::Encoding)?;
+                    let scle_mod = {
+                        let mut parse_diags = DiagList::new();
+                        let parsed = crate::parse_scle(&source, &module_id);
+                        let scle_mod = parsed.unpack(&mut parse_diags);
+                        self.diags.extend(parse_diags);
+                        match scle_mod {
+                            Some(s) => s,
+                            None => continue,
+                        }
+                    };
+                    self.process_module(
+                        raw_module_id,
+                        module_id,
+                        pkg_id,
+                        package,
+                        ModuleBody::Scle(scle_mod),
+                        queue,
+                    )
+                    .await;
+                }
+            }
         }
 
         Ok(())
@@ -135,24 +160,34 @@ impl Loader {
         module_id: ModuleId,
         pkg_id: PackageId,
         package: Arc<dyn super::Package>,
-        file_mod: ast::FileMod,
+        body: ModuleBody,
         queue: &mut VecDeque<(RawModuleId, Option<ImportSource>)>,
     ) {
-        // Validate path expressions.
-        self.validate_paths(&module_id, &file_mod, &*package).await;
+        // Validate path expressions (only `.scl` modules have statement-level
+        // path expressions worth validating).
+        if let Some(file_mod) = body.as_file_mod() {
+            self.validate_paths(&module_id, file_mod, &*package).await;
+        }
 
         // Register the package.
         self.asg
             .register_package(pkg_id.clone(), Arc::clone(&package));
 
         // Analyze the module: collect globals, type decls, imports, and build edges.
-        let analysis = analyze_module(&raw_module_id, &pkg_id, &module_id, &file_mod);
+        let analysis = match &body {
+            ModuleBody::File(file_mod) => {
+                analyze_module(&raw_module_id, &pkg_id, &module_id, file_mod)
+            }
+            ModuleBody::Scle(scle_mod) => {
+                analyze_scle_module(&raw_module_id, &pkg_id, &module_id, scle_mod)
+            }
+        };
 
         // Add module node.
         self.asg.add_module(ModuleNode {
             raw_id: raw_module_id.clone(),
             module_id,
-            file_mod,
+            body,
             package_id: pkg_id,
         });
 
@@ -237,7 +272,8 @@ impl Loader {
     }
 
     /// Finalize the Loader, returning the ASG with accumulated diagnostics.
-    pub fn finish(self) -> Diagnosed<Asg> {
+    pub fn finish(mut self) -> Diagnosed<Asg> {
+        self.asg.rewrite_dangling_global_edges();
         Diagnosed::new(self.asg, self.diags)
     }
 
@@ -248,6 +284,7 @@ impl Loader {
     /// checker (which has its own cycle detection), the validation would produce
     /// duplicate diagnostics.
     pub fn finish_with_validation(mut self) -> Diagnosed<Asg> {
+        self.asg.rewrite_dangling_global_edges();
         self.validate_scc_laziness();
         Diagnosed::new(self.asg, self.diags)
     }
@@ -499,6 +536,97 @@ fn analyze_module(
     analysis
 }
 
+/// Analyze a parsed SCLE module, extracting import references and edges. SCLE
+/// modules contribute no globals or type declarations — just the `type_expr`
+/// and `body` expression, whose references are attached to the module node.
+fn analyze_scle_module(
+    raw_id: &RawModuleId,
+    pkg_id: &PackageId,
+    module_id: &ModuleId,
+    scle_mod: &ast::ScleMod,
+) -> ModuleAnalysis {
+    let mut global_names: HashSet<String> = HashSet::new();
+    let type_names: HashSet<String> = HashSet::new();
+    let mut import_aliases: HashMap<String, RawModuleId> = HashMap::new();
+
+    for import in &scle_mod.imports {
+        let vars = &import.as_ref().vars;
+        if !vars.is_empty() {
+            let alias = vars.last().unwrap().name.clone();
+            let import_raw_id = resolve_import_path(vars, pkg_id);
+            import_aliases.insert(alias, import_raw_id);
+        }
+    }
+    // SCLE has no same-module globals; `global_names` stays empty. (Kept as a
+    // variable so RefContext can hold a reference.)
+    let _ = &mut global_names;
+
+    let mut analysis = ModuleAnalysis {
+        globals: Vec::new(),
+        type_decls: Vec::new(),
+        global_exprs: Vec::new(),
+        edges: Vec::new(),
+        discovered_imports: Vec::new(),
+    };
+
+    let mut seen_imports: HashSet<RawModuleId> = HashSet::new();
+    let mut import_spans: HashMap<RawModuleId, Span> = HashMap::new();
+    for import in &scle_mod.imports {
+        let vars = &import.as_ref().vars;
+        if !vars.is_empty() {
+            let import_raw_id = resolve_import_path(vars, pkg_id);
+            let path_span = Span::new(
+                vars.first().unwrap().span().start(),
+                vars.last().unwrap().span().end(),
+            );
+            import_spans.entry(import_raw_id).or_insert(path_span);
+        }
+    }
+
+    for import_raw_id in import_aliases.values() {
+        if seen_imports.insert(import_raw_id.clone()) {
+            let span = import_spans.get(import_raw_id).copied().unwrap_or_default();
+            analysis.discovered_imports.push((
+                import_raw_id.clone(),
+                ImportSource {
+                    source_module_id: module_id.clone(),
+                    path_span: span,
+                },
+            ));
+            analysis.edges.push(Edge {
+                from: NodeId::Module(raw_id.clone()),
+                to: NodeId::Module(import_raw_id.clone()),
+                lazy: false,
+                span: None,
+            });
+        }
+    }
+
+    let ctx = RefContext {
+        raw_id,
+        global_names: &global_names,
+        type_names: &type_names,
+        import_aliases: &import_aliases,
+    };
+
+    // Collect references from the type expression and the body expression.
+    let mut refs = Vec::new();
+    collect_type_refs(&ctx, scle_mod.type_expr.as_ref(), &mut refs);
+    collect_expr_refs(&ctx, scle_mod.body.as_ref(), false, &mut refs);
+
+    let from = NodeId::Module(raw_id.clone());
+    for r in refs {
+        analysis.edges.push(Edge {
+            from: from.clone(),
+            to: r.target,
+            lazy: r.lazy,
+            span: Some(r.span),
+        });
+    }
+
+    analysis
+}
+
 /// Resolve an import path to a raw module ID, replacing `Self` with the
 /// current package's segments.
 fn resolve_import_path(vars: &[Loc<ast::Var>], pkg_id: &PackageId) -> RawModuleId {
@@ -575,6 +703,12 @@ fn collect_expr_refs_with_scope(
                     && let Some(import_id) = ctx.import_aliases.get(name.as_str())
                 {
                     // This is Import.member — add edge to the specific global.
+                    // For `.scl` targets the checker/evaluator take a shortcut
+                    // straight to that global (so this fine-grained edge gives
+                    // the right SCC ordering). For `.scle` targets the global
+                    // doesn't exist; the loader's `finish()` rewrites such
+                    // dangling edges to point at the target Module node so
+                    // ordering remains correct.
                     out.push(Ref {
                         target: NodeId::Global(import_id.clone(), pa.property.name.clone()),
                         lazy: in_fn,
@@ -897,13 +1031,18 @@ enum LoaderDiag {
         module_id: ModuleId,
         import_source: Option<ImportSource>,
     },
+    AmbiguousModule {
+        raw_id: RawModuleId,
+        import_source: Option<ImportSource>,
+    },
 }
 
 impl LoaderDiag {
     fn import_source(&self) -> Option<&ImportSource> {
         match self {
             LoaderDiag::PackageNotFound { import_source, .. }
-            | LoaderDiag::ModuleNotFound { import_source, .. } => import_source.as_ref(),
+            | LoaderDiag::ModuleNotFound { import_source, .. }
+            | LoaderDiag::AmbiguousModule { import_source, .. } => import_source.as_ref(),
         }
     }
 }
@@ -916,6 +1055,13 @@ impl std::fmt::Display for LoaderDiag {
             }
             LoaderDiag::ModuleNotFound { raw_id, .. } => {
                 write!(f, "module not found: {}", raw_id.join("/"))
+            }
+            LoaderDiag::AmbiguousModule { raw_id, .. } => {
+                write!(
+                    f,
+                    "ambiguous module {}: both `.scl` and `.scle` exist",
+                    raw_id.join("/")
+                )
             }
         }
     }
