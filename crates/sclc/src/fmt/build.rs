@@ -97,6 +97,48 @@ impl BlockBuilder {
         blocks
     }
 
+    // ── SCLE Module ──────────────────────────────────────────────
+
+    pub fn build_scle_mod(&mut self, scle: &ScleMod) -> Block {
+        let mut blocks = vec![];
+
+        for (i, import) in scle.imports.iter().enumerate() {
+            if i == 0 {
+                blocks.extend(self.collect_comments_before(import.span().start()));
+            } else {
+                let prev_end = scle.imports[i - 1].span().end();
+                blocks.extend(self.collect_comments_between(prev_end, import.span().start()));
+            }
+            blocks.push(self.build_import(import));
+            blocks.push(Block::Newline);
+        }
+
+        // Blank line between imports and type expression (if there are imports)
+        if !scle.imports.is_empty() {
+            blocks.push(Block::Newline);
+            let prev_end = scle.imports.last().unwrap().span().end();
+            blocks.extend(self.collect_comments_between(prev_end, scle.type_expr.span().start()));
+        } else {
+            blocks.extend(self.collect_comments_before(scle.type_expr.span().start()));
+        }
+
+        blocks.push(self.build_type_expr(&scle.type_expr));
+        blocks.push(Block::Newline);
+
+        // Blank line between type expression and body
+        blocks.push(Block::Newline);
+        blocks.extend(
+            self.collect_comments_between(scle.type_expr.span().end(), scle.body.span().start()),
+        );
+
+        blocks.push(self.build_expr(&scle.body));
+        blocks.push(Block::Newline);
+
+        blocks.extend(self.collect_remaining_comments());
+
+        Block::Seq(blocks)
+    }
+
     // ── File / Module ────────────────────────────────────────────
 
     pub fn build_file_mod(&mut self, file_mod: &FileMod) -> Block {

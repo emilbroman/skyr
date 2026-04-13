@@ -28,18 +28,37 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
         .unwrap_or_else(|| "Local".to_string());
     let module_id = sclc::ModuleId::new(sclc::PackageId::from([parent_name]), vec![stem]);
 
-    let diagnosed = sclc::parse_file_mod(&source, &module_id);
+    let is_scle = args.file.extension().is_some_and(|ext| ext == "scle");
 
-    if diagnosed.diags().has_errors() {
-        for diag in diagnosed.diags().iter() {
-            eprintln!("{diag}");
+    let formatted = if is_scle {
+        let diagnosed = sclc::parse_scle(&source, &module_id);
+
+        if diagnosed.diags().has_errors() {
+            for diag in diagnosed.diags().iter() {
+                eprintln!("{diag}");
+            }
+            anyhow::bail!("cannot format file with syntax errors");
         }
-        anyhow::bail!("cannot format file with syntax errors");
-    }
 
-    let file_mod = diagnosed.into_inner();
+        let scle = diagnosed
+            .into_inner()
+            .ok_or_else(|| anyhow::anyhow!("cannot format file with syntax errors"))?;
 
-    let formatted = sclc::Formatter::format(&source, &file_mod);
+        sclc::Formatter::format_scle(&source, &scle)
+    } else {
+        let diagnosed = sclc::parse_file_mod(&source, &module_id);
+
+        if diagnosed.diags().has_errors() {
+            for diag in diagnosed.diags().iter() {
+                eprintln!("{diag}");
+            }
+            anyhow::bail!("cannot format file with syntax errors");
+        }
+
+        let file_mod = diagnosed.into_inner();
+
+        sclc::Formatter::format(&source, &file_mod)
+    };
 
     if args.write {
         std::fs::write(&args.file, &formatted)?;
