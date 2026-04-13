@@ -609,10 +609,15 @@ fn analyze_scle_module(
         import_aliases: &import_aliases,
     };
 
-    // Collect references from the type expression and the body expression.
+    // Collect references from the type expression and the body expression
+    // (either may be absent — SCLE parts are optional).
     let mut refs = Vec::new();
-    collect_type_refs(&ctx, scle_mod.type_expr.as_ref(), &mut refs);
-    collect_expr_refs(&ctx, scle_mod.body.as_ref(), false, &mut refs);
+    if let Some(type_expr) = &scle_mod.type_expr {
+        collect_type_refs(&ctx, type_expr.as_ref(), &mut refs);
+    }
+    if let Some(body) = &scle_mod.body {
+        collect_expr_refs(&ctx, body.as_ref(), false, &mut refs);
+    }
 
     let from = NodeId::Module(raw_id.clone());
     for r in refs {

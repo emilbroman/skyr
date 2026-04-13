@@ -55,14 +55,18 @@ pub struct ReplLine {
     pub statement: Option<ModStmt>,
 }
 
-/// An SCLE (SCL Expression) source: a sequence of imports, followed by a
-/// declared type expression and a body expression that evaluates to a value
-/// of that type.
+/// An SCLE (SCL Expression) source: a sequence of imports, followed by an
+/// optional declared type expression and a body expression that evaluates
+/// to a value of that type.
+///
+/// Both `type_expr` and `body` are optional at the AST level. When
+/// `type_expr` is absent the body's type is synthesized; when `body` is
+/// absent a `MissingBody` diagnostic is emitted during parsing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScleMod {
     pub imports: Vec<Loc<ImportStmt>>,
-    pub type_expr: Loc<TypeExpr>,
-    pub body: Loc<Expr>,
+    pub type_expr: Option<Loc<TypeExpr>>,
+    pub body: Option<Loc<Expr>>,
 }
 
 impl FileMod {

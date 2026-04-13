@@ -203,9 +203,32 @@ peg::parser! {
             = statement:mod_stmt()? eof() { ReplLine { statement } }
 
         pub rule scle_mod() -> ScleMod
-            = imports:scle_import()* type_expr:type_expr() body:expr() eof() {
+            = imports:scle_import()* parts:scle_body_parts() {
+                let (type_expr, body) = parts;
+                if body.is_none() {
+                    let span = type_expr
+                        .as_ref()
+                        .map(|t| {
+                            let end = t.span().end();
+                            Span::new(end, end)
+                        })
+                        .or_else(|| {
+                            imports.last().map(|i| {
+                                let end = i.span().end();
+                                Span::new(end, end)
+                            })
+                        })
+                        .unwrap_or_else(Span::default);
+                    diags.push(MissingBody { module_id: module_id.clone(), span });
+                }
                 ScleMod { imports, type_expr, body }
             }
+
+        rule scle_body_parts() -> (Option<Loc<TypeExpr>>, Option<Loc<Expr>>)
+            = body:expr() eof() { (None, Some(body)) }
+            / type_expr:type_expr() body:expr() eof() { (Some(type_expr), Some(body)) }
+            / type_expr:type_expr() eof() { (Some(type_expr), None) }
+            / eof() { (None, None) }
 
         rule scle_import() -> Loc<ImportStmt>
             = stmt:import_stmt() {

@@ -396,15 +396,19 @@ fn assemble_module(
     match &mn.body {
         crate::ModuleBody::Scle(scle) => {
             // SCLE: evaluate the body expression; the result IS the module's
-            // value. No export record, no recursive wrapper.
-            let env = EvalEnv::new(global_env)
-                .with_module_id(&mn.module_id)
-                .with_raw_module_id(&mn.raw_id);
-            let owner = evaluator.ctx.owner_for_package(&mn.package_id);
-            let value = evaluator
-                .ctx
-                .with_owner(owner, || evaluator.eval_expr(&env, &scle.body))?;
-            global_env.insert(GlobalKey::ModuleValue(raw_id.clone()), value);
+            // value. No export record, no recursive wrapper. If the body is
+            // missing (a parse-time diagnostic was already emitted), skip
+            // evaluation — downstream code must tolerate the absent value.
+            if let Some(body) = &scle.body {
+                let env = EvalEnv::new(global_env)
+                    .with_module_id(&mn.module_id)
+                    .with_raw_module_id(&mn.raw_id);
+                let owner = evaluator.ctx.owner_for_package(&mn.package_id);
+                let value = evaluator
+                    .ctx
+                    .with_owner(owner, || evaluator.eval_expr(&env, body))?;
+                global_env.insert(GlobalKey::ModuleValue(raw_id.clone()), value);
+            }
         }
         crate::ModuleBody::File(file_mod) => {
             let mut exports = Record::default();

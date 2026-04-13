@@ -592,18 +592,27 @@ impl<'a> AsgChecker<'a> {
 
         match &mn.body {
             crate::ModuleBody::Scle(scle) => {
-                // Resolve the declared type expression and check the body
-                // against it. The resulting type IS the module's value-level
-                // type; no `Record` wrapping, no iso-recursion.
+                // Resolve the declared type expression (if any) and check the
+                // body against it; if no type_expr is given, synthesize the
+                // body's type instead. The resulting type IS the module's
+                // value-level type; no `Record` wrapping, no iso-recursion.
                 let env = TypeEnv::new(&self.global_type_env)
                     .with_module_id(&mn.module_id)
                     .with_raw_module_id(&mn.raw_id);
-                let expected_ty = checker
-                    .resolve_type_expr(&env, &scle.type_expr)
-                    .unpack(diags);
-                checker
-                    .check_expr(&env, &scle.body, Some(&expected_ty))?
-                    .unpack(diags);
+                let expected_ty = match (&scle.type_expr, &scle.body) {
+                    (Some(type_expr), Some(body)) => {
+                        let expected = checker.resolve_type_expr(&env, type_expr).unpack(diags);
+                        checker
+                            .check_expr(&env, body, Some(&expected))?
+                            .unpack(diags);
+                        expected
+                    }
+                    (Some(type_expr), None) => {
+                        checker.resolve_type_expr(&env, type_expr).unpack(diags)
+                    }
+                    (None, Some(body)) => checker.check_expr(&env, body, None)?.unpack(diags),
+                    (None, None) => Type::Any,
+                };
 
                 self.global_type_env
                     .insert(GlobalKey::ModuleValue(raw_id.clone()), expected_ty);

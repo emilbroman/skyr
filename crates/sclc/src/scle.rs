@@ -4,7 +4,11 @@
 //! type expression declaring the expected type, and a single body expression
 //! that evaluates to a value of that type.
 //!
-//! The grammar is `import_stmt* type_expr expr` (see [`crate::ast::ScleMod`]).
+//! The grammar is `import_stmt* type_expr? expr?` (see [`crate::ast::ScleMod`]).
+//! Both the type expression and the body expression are optional at the
+//! grammar level: when only one expression is present, the parser prefers
+//! to treat it as the body (synthesizing its type); when the body is
+//! missing, a diagnostic is emitted.
 //!
 //! SCLE modules are first-class citizens of the module graph: any module
 //! (including a package's `Main`) may use the `.scle` extension. The loader

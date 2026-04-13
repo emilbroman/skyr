@@ -45,6 +45,37 @@ async fn evaluate_scle_main(source: &str) -> (Option<crate::TrackedValue>, DiagL
     (value, diags)
 }
 
+/// When only a single expression is provided (no type expression), the
+/// body's type is synthesized and evaluation produces its value.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn evaluates_body_only_synthesizes_type() {
+    let source = "{ hello: \"world\", n: 42 }\n";
+    let (value, diags) = evaluate_scle_main(source).await;
+    assert_no_diags(&diags);
+    let value = value.expect("expected a value");
+    let Value::Record(rec) = &value.value else {
+        panic!("expected record, got {:?}", value.value);
+    };
+    assert_eq!(rec.get("hello"), &Value::Str("world".to_string()));
+    assert_eq!(rec.get("n"), &Value::Int(42));
+}
+
+/// An SCLE source containing only a type expression (no body) emits a
+/// `MissingBody` diagnostic.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn type_only_emits_missing_body_diagnostic() {
+    // A function type (`fn(Int) -> Int`) is syntactically a type expression
+    // only — it cannot be parsed as an expression — so the parser reaches
+    // the "type expression without body" alternative.
+    let source = "fn(Int) -> Int\n";
+    let (_value, diags) = evaluate_scle_main(source).await;
+    let msgs: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("missing body")),
+        "expected missing-body diagnostic, got {msgs:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn evaluates_basic_record() {
     let source = r#"

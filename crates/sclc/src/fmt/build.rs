@@ -113,26 +113,41 @@ impl BlockBuilder {
             blocks.push(Block::Newline);
         }
 
-        // Blank line between imports and type expression (if there are imports)
+        // Determine the anchor position for comment collection before the
+        // type expression (if present) or body (if no type expression).
+        let next_start = scle
+            .type_expr
+            .as_ref()
+            .map(|t| t.span().start())
+            .or_else(|| scle.body.as_ref().map(|b| b.span().start()));
+
         if !scle.imports.is_empty() {
             blocks.push(Block::Newline);
-            let prev_end = scle.imports.last().unwrap().span().end();
-            blocks.extend(self.collect_comments_between(prev_end, scle.type_expr.span().start()));
-        } else {
-            blocks.extend(self.collect_comments_before(scle.type_expr.span().start()));
+            if let Some(start) = next_start {
+                let prev_end = scle.imports.last().unwrap().span().end();
+                blocks.extend(self.collect_comments_between(prev_end, start));
+            }
+        } else if let Some(start) = next_start {
+            blocks.extend(self.collect_comments_before(start));
         }
 
-        blocks.push(self.build_type_expr(&scle.type_expr));
-        blocks.push(Block::Newline);
+        if let Some(type_expr) = &scle.type_expr {
+            blocks.push(self.build_type_expr(type_expr));
+            blocks.push(Block::Newline);
 
-        // Blank line between type expression and body
-        blocks.push(Block::Newline);
-        blocks.extend(
-            self.collect_comments_between(scle.type_expr.span().end(), scle.body.span().start()),
-        );
+            // Blank line between type expression and body
+            if let Some(body) = &scle.body {
+                blocks.push(Block::Newline);
+                blocks.extend(
+                    self.collect_comments_between(type_expr.span().end(), body.span().start()),
+                );
+            }
+        }
 
-        blocks.push(self.build_expr(&scle.body));
-        blocks.push(Block::Newline);
+        if let Some(body) = &scle.body {
+            blocks.push(self.build_expr(body));
+            blocks.push(Block::Newline);
+        }
 
         blocks.extend(self.collect_remaining_comments());
 
