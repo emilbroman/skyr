@@ -226,22 +226,54 @@ impl LanguageServer {
             }
             "textDocument/hover" => {
                 let program = self.load_program().await;
-                handlers::hover::hover(id, params, &self.documents, program.as_ref())
+                handlers::hover::hover(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                )
             }
             "textDocument/definition" => {
                 let program = self.load_program().await;
-                handlers::navigation::goto_definition(id, params, &self.documents, program.as_ref())
+                handlers::navigation::goto_definition(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                )
             }
             "textDocument/references" => {
                 let program = self.load_program().await;
-                handlers::navigation::references(id, params, &self.documents, program.as_ref())
+                handlers::navigation::references(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                )
             }
-            "textDocument/documentSymbol" => {
-                handlers::navigation::document_symbol(id, params, &self.documents)
-            }
+            "textDocument/documentSymbol" => handlers::navigation::document_symbol(
+                id,
+                params,
+                &self.documents,
+                self.root.as_deref(),
+                &self.package_id,
+            ),
             "textDocument/completion" => {
                 let program = self.load_program().await;
-                handlers::completion::completion(id, params, &self.documents, program.as_ref())
+                handlers::completion::completion(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                )
             }
             "textDocument/formatting" => {
                 handlers::formatting::formatting(id, params, &self.documents)

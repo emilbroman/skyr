@@ -1,4 +1,6 @@
 // TODO: Add completion support for .scle files (see hover.rs TODO).
+use std::path::Path;
+
 use lsp_types as lsp;
 
 use crate::analysis::{self, module_id_from_path, uri_to_path};
@@ -11,6 +13,8 @@ pub fn completion(
     params: serde_json::Value,
     documents: &DocumentCache,
     program: Option<&LspProgram>,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::CompletionParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -27,7 +31,7 @@ pub fn completion(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
+    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position.position);
     let cursor_info = match program {
         Some(program) => analysis::query_cursor(program, &source, &module_id, position),

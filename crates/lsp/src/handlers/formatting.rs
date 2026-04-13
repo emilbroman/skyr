@@ -27,7 +27,10 @@ pub fn formatting(
     let formatted = if is_scle_path(&path) {
         format_scle(&source)
     } else {
-        format_scl(&source, &path)
+        // Module ID is only used as a parse-diagnostic label here, so the
+        // package details don't need to match the workspace.
+        let module_id = module_id_from_path(&path, None, &sclc::PackageId::default());
+        format_scl(&source, &module_id)
     };
 
     let formatted = match formatted {
@@ -70,9 +73,8 @@ pub fn formatting(
 }
 
 /// Format an `.scl` file. Returns `None` if parsing fails.
-fn format_scl(source: &str, path: &std::path::Path) -> Option<String> {
-    let module_id = module_id_from_path(path);
-    let diagnosed = sclc::parse_file_mod(source, &module_id);
+fn format_scl(source: &str, module_id: &sclc::ModuleId) -> Option<String> {
+    let diagnosed = sclc::parse_file_mod(source, module_id);
 
     // If there are parse errors, don't format.
     if diagnosed.diags().has_errors() {

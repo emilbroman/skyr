@@ -10,9 +10,40 @@ use crate::document::DocumentCache;
 
 /// Derive a module ID from a file path.
 ///
-/// Uses the parent directory name as the package and file stem as the module.
-/// Falls back to "Local" if the parent directory name cannot be determined.
-pub fn module_id_from_path(path: &Path) -> sclc::ModuleId {
+/// When `root` is provided and the path is under it, the module path is
+/// computed relative to the workspace root (so `<root>/sub/Foo.scl`
+/// becomes `<package_id>/sub/Foo`). This must match the IDs that the
+/// compiler uses when building the ASG; otherwise `Self/...` imports in
+/// the file won't resolve during cursor queries and types will appear as
+/// `Never`.
+///
+/// Falls back to using the parent directory name as the package and the
+/// file stem as the module path when no root is given.
+pub fn module_id_from_path(
+    path: &Path,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
+) -> sclc::ModuleId {
+    if let Some(root) = root
+        && let Ok(rel) = path.strip_prefix(root)
+    {
+        let mut segments: Vec<String> = rel
+            .parent()
+            .into_iter()
+            .flat_map(|p| p.components())
+            .filter_map(|c| match c {
+                std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+                _ => None,
+            })
+            .collect();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "Main".to_string());
+        segments.push(stem);
+        return sclc::ModuleId::new(package_id.clone(), segments);
+    }
+
     let stem = path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -424,6 +455,29 @@ pub fn uri_to_path(uri: &lsp::Uri) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn module_id_from_path_uses_workspace_package_when_root_provided() {
+        let root = Path::new("/work/myproj");
+        let pkg = sclc::PackageId::from(["MyProj"]);
+        let id = module_id_from_path(Path::new("/work/myproj/B.scl"), Some(root), &pkg);
+        assert_eq!(id.package, pkg);
+        assert_eq!(id.path, vec!["B".to_string()]);
+
+        let id = module_id_from_path(Path::new("/work/myproj/sub/Foo.scl"), Some(root), &pkg);
+        assert_eq!(id.package, pkg);
+        assert_eq!(id.path, vec!["sub".to_string(), "Foo".to_string()]);
+    }
+
+    #[test]
+    fn module_id_from_path_falls_back_when_outside_root() {
+        let root = Path::new("/work/myproj");
+        let pkg = sclc::PackageId::from(["MyProj"]);
+        let id = module_id_from_path(Path::new("/elsewhere/B.scl"), Some(root), &pkg);
+        // Outside root → fallback uses parent dir name as package
+        assert_eq!(id.package, sclc::PackageId::from(["elsewhere"]));
+        assert_eq!(id.path, vec!["B".to_string()]);
+    }
 
     #[test]
     fn is_scle_path_recognizes_extension() {

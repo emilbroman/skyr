@@ -1,5 +1,7 @@
 // TODO: Add goto-definition/references/document-symbol support for .scle files
 // (see hover.rs TODO).
+use std::path::Path;
+
 use lsp_types as lsp;
 
 use crate::analysis::{self, module_id_from_path, uri_to_path};
@@ -12,6 +14,8 @@ pub fn goto_definition(
     params: serde_json::Value,
     documents: &DocumentCache,
     program: Option<&LspProgram>,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::GotoDefinitionParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -29,7 +33,7 @@ pub fn goto_definition(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
+    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position_params.position);
     let cursor_info = match program {
         Some(program) => analysis::query_cursor(program, &source, &module_id, position),
@@ -59,6 +63,8 @@ pub fn references(
     params: serde_json::Value,
     documents: &DocumentCache,
     program: Option<&LspProgram>,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::ReferenceParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -76,7 +82,7 @@ pub fn references(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
+    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position.position);
     let cursor_info = match program {
         Some(program) => analysis::query_cursor(program, &source, &module_id, position),
@@ -123,6 +129,8 @@ pub fn document_symbol(
     id: RequestId,
     params: serde_json::Value,
     documents: &DocumentCache,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::DocumentSymbolParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -139,7 +147,7 @@ pub fn document_symbol(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
+    let module_id = module_id_from_path(&path, root, package_id);
     let symbols = analysis::document_symbols(&source, &module_id);
 
     let result = serde_json::to_value(symbols).unwrap_or_else(|err| {

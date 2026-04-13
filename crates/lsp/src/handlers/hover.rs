@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use lsp_types as lsp;
 
 // TODO: Add hover support for .scle files. The synthesised __Scle__/Main ASG
@@ -13,6 +15,8 @@ pub fn hover(
     params: serde_json::Value,
     documents: &DocumentCache,
     program: Option<&LspProgram>,
+    root: Option<&Path>,
+    package_id: &sclc::PackageId,
 ) -> Vec<OutgoingMessage> {
     let params: lsp::HoverParams = match serde_json::from_value(params) {
         Ok(p) => p,
@@ -29,7 +33,7 @@ pub fn hover(
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let module_id = module_id_from_path(&path);
+    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position_params.position);
     let cursor_info = match program {
         Some(program) => analysis::query_cursor(program, &source, &module_id, position),
