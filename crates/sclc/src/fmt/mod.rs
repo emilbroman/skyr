@@ -4,7 +4,7 @@ mod render;
 
 use crate::{Lexer, Span, Token};
 
-use crate::ast::FileMod;
+use crate::ast::{FileMod, ScleMod};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Comment {
@@ -42,11 +42,27 @@ impl Formatter {
             trimmed + "\n"
         }
     }
+
+    pub fn format_scle(source: &str, scle: &ScleMod) -> String {
+        let comments = collect_comments(source);
+        let mut builder = build::BlockBuilder::new(comments);
+        let block = builder.build_scle_mod(scle);
+        let mut renderer = render::Renderer::new(100, 4);
+        renderer.render(&block);
+        let output = renderer.into_output();
+        // Ensure file ends with a single newline
+        let trimmed = output.trim_end().to_owned();
+        if trimmed.is_empty() {
+            trimmed
+        } else {
+            trimmed + "\n"
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{ModuleId, PackageId, parse_file_mod};
+    use crate::{ModuleId, PackageId, parse_file_mod, parse_scle};
 
     use super::Formatter;
 
@@ -497,5 +513,55 @@ mod tests {
         // Same-line short record in a call → folds entirely inline
         let result = format("let x = f({ a: 1 })");
         assert_eq!(result, "let x = f({ a: 1 })\n");
+    }
+
+    // ── SCLE formatting tests ───────────────────────────────────
+
+    fn format_scle(source: &str) -> String {
+        let module_id = ModuleId::new(PackageId::default(), vec!["Test".to_owned()]);
+        let diagnosed = parse_scle(source, &module_id);
+        assert!(
+            !diagnosed.diags().has_errors(),
+            "parse errors: {:?}",
+            diagnosed
+                .diags()
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+        );
+        let scle = diagnosed.into_inner().expect("expected parsed SCLE");
+        Formatter::format_scle(source, &scle)
+    }
+
+    #[test]
+    fn formats_scle_trivial() {
+        let result = format_scle("Int\n42");
+        assert_eq!(result, "Int\n\n42\n");
+    }
+
+    #[test]
+    fn formats_scle_trivial_round_trip() {
+        let source = "Int\n\n42\n";
+        let result = format_scle(source);
+        assert_eq!(result, source);
+    }
+
+    #[test]
+    fn formats_scle_with_imports() {
+        let result = format_scle("import Std/List\nimport Std/Map\nStr\n\"hello\"");
+        assert_eq!(
+            result,
+            "import Std/List\nimport Std/Map\n\nStr\n\n\"hello\"\n"
+        );
+    }
+
+    #[test]
+    fn formats_scle_record_with_let() {
+        let result =
+            format_scle("{ name: Str, age: Int }\nlet n = \"Alice\";\n{ name: n, age: 30 }");
+        assert_eq!(
+            result,
+            "{ name: Str, age: Int }\n\nlet n = \"Alice\";\n{ name: n, age: 30 }\n"
+        );
     }
 }
