@@ -38,8 +38,13 @@ fn module_id_for_file(file: &str) -> sclc::ModuleId {
 }
 
 /// Convert a module ID back to a file path relative to the package root.
-/// e.g. ["Local", "models", "User"] -> "models/User.scl"
-fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
+///
+/// Probes the supplied file map for `<path>.scl` first, then `<path>.scle`,
+/// so diagnostics on `.scle` modules get routed to the correct editor file.
+fn file_for_module_id(
+    module_id: &sclc::ModuleId,
+    file_map: &HashMap<String, String>,
+) -> Option<String> {
     if module_id.path.is_empty() {
         return None;
     }
@@ -47,26 +52,59 @@ fn file_for_module_id(module_id: &sclc::ModuleId) -> Option<String> {
     for s in &module_id.path {
         path.push(s);
     }
-    path.set_extension("scl");
-    Some(path.to_string_lossy().into_owned())
+    let scl = path.with_extension("scl").to_string_lossy().into_owned();
+    if file_map.contains_key(&scl) {
+        return Some(scl);
+    }
+    let scle = path.with_extension("scle").to_string_lossy().into_owned();
+    if file_map.contains_key(&scle) {
+        return Some(scle);
+    }
+    // Fallback: use `.scl` so the diagnostic at least has a stable filename.
+    Some(scl)
 }
 
-/// Compile, returning diagnostics and the ASG.
-async fn load_and_compile(files_json: &str) -> (sclc::DiagList, Option<sclc::Asg>) {
-    let pkg = Arc::new(make_package(files_json));
-    let finder = sclc::build_default_finder(pkg);
-    let mut diags = sclc::DiagList::new();
-
-    match sclc::compile(finder, &["Local", "Main"]).await {
-        Ok(diagnosed) => {
-            let asg = diagnosed.unpack(&mut diags);
-            (diags, Some(asg))
-        }
-        Err(error) => {
-            eprintln!("sclc-wasm: compile failed: {error}");
-            (diags, None)
+/// Module ID segments (package + path) for a given workspace file path.
+fn entry_segments_for_file(file: &str) -> Vec<String> {
+    let path = Path::new(file);
+    let mut segments: Vec<String> = vec!["Local".to_string()];
+    if let Some(parent) = path.parent() {
+        for component in parent.components() {
+            segments.push(component.as_os_str().to_string_lossy().into_owned());
         }
     }
+    if let Some(stem) = path.file_stem() {
+        segments.push(stem.to_string_lossy().into_owned());
+    }
+    segments
+}
+
+/// Build an ASG covering every workspace file (both `.scl` and `.scle`),
+/// not just what's reachable from `Local/Main`. Mirrors the LSP's
+/// `analyze_workspace` so files that are never imported (notably `.scle`
+/// files, which can't export) still get type-checked.
+async fn load_workspace(files_json: &str) -> (sclc::DiagList, Option<sclc::Asg>) {
+    let file_map = parse_files_json(files_json);
+    let pkg = Arc::new(make_package(files_json));
+    let finder = sclc::build_default_finder(pkg);
+
+    let mut diags = sclc::DiagList::new();
+    let mut loader = sclc::Loader::new(finder);
+    for file in file_map.keys() {
+        if !file.ends_with(".scl") && !file.ends_with(".scle") {
+            continue;
+        }
+        let segments = entry_segments_for_file(file);
+        let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
+        if let Err(err) = loader.resolve(&refs).await {
+            eprintln!("sclc-wasm: load error for {file}: {err}");
+        }
+    }
+    let asg = loader.finish().unpack(&mut diags);
+    if let Ok(checked) = sclc::AsgChecker::new(&asg).check() {
+        let _ = checked.unpack(&mut diags);
+    }
+    (diags, Some(asg))
 }
 
 #[derive(Serialize)]
@@ -83,7 +121,8 @@ struct DiagnosticInfo {
 /// Analyze all files and return diagnostics as JSON.
 #[wasm_bindgen]
 pub async fn analyze(files_json: &str) -> String {
-    let (diags, _) = load_and_compile(files_json).await;
+    let file_map = parse_files_json(files_json);
+    let (diags, _) = load_workspace(files_json).await;
 
     let package_id = sclc::PackageId::from(["Local"]);
 
@@ -96,7 +135,7 @@ pub async fn analyze(files_json: &str) -> String {
         .map(|d| {
             let (module_id, span) = d.locate();
             let level = d.level();
-            let file = file_for_module_id(&module_id).unwrap_or_default();
+            let file = file_for_module_id(&module_id, &file_map).unwrap_or_default();
             DiagnosticInfo {
                 file,
                 line: span.start().line().saturating_sub(1),
@@ -127,7 +166,7 @@ struct HoverInfo {
 #[wasm_bindgen]
 pub async fn hover(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let (_, asg) = load_and_compile(files_json).await;
+    let (_, asg) = load_workspace(files_json).await;
     let asg = asg?;
 
     let module_id = module_id_for_file(file);
@@ -165,7 +204,7 @@ struct CompletionItem {
 #[wasm_bindgen]
 pub async fn completions(files_json: &str, file: &str, line: u32, col: u32) -> String {
     let file_map = parse_files_json(files_json);
-    let (_, asg) = load_and_compile(files_json).await;
+    let (_, asg) = load_workspace(files_json).await;
     let Some(asg) = asg else {
         return "[]".to_string();
     };
@@ -241,7 +280,7 @@ struct LocationInfo {
 #[wasm_bindgen]
 pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) -> Option<String> {
     let file_map = parse_files_json(files_json);
-    let (_, asg) = load_and_compile(files_json).await;
+    let (_, asg) = load_workspace(files_json).await;
     let asg = asg?;
 
     let module_id = module_id_for_file(file);
