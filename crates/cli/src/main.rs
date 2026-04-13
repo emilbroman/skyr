@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 mod auth;
 mod deployment;
+mod deps;
 mod fmt;
 mod lsp;
 mod org;
@@ -46,6 +47,7 @@ enum Command {
     Org(org::OrgArgs),
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
+    Deps(deps::DepsArgs),
     Resources(resource::ResourcesArgs),
     PortForward(port_forward::PortForwardArgs),
     Fmt(fmt::FmtArgs),
@@ -89,6 +91,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::Deployments(args) => {
             deployment::run_deployments(args, program.format).await?;
+        }
+        Command::Deps(args) => {
+            deps::run_deps(args, program.format).await?;
         }
         Command::Resources(args) => {
             resource::run_resources(args, program.format).await?;
