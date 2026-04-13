@@ -114,6 +114,14 @@ export class SclWorker {
         return (await this.request({ type: "format", source })) as string | null;
     }
 
+    async formatScle(source: string): Promise<string | null> {
+        return (await this.request({ type: "formatScle", source })) as string | null;
+    }
+
+    async analyzeScle(source: string): Promise<DiagnosticInfo[]> {
+        return (await this.request({ type: "analyzeScle", source })) as DiagnosticInfo[];
+    }
+
     async replInit(): Promise<void> {
         await this.request({ type: "replInit" });
     }

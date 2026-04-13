@@ -831,7 +831,7 @@ impl<'p> Eval<'p> {
         let Some(packages) = &self.packages else {
             return null();
         };
-        let Some(package) = packages.get(package_id) else {
+        let Some(_package) = packages.get(package_id) else {
             return null();
         };
         let rel = resolved_path.strip_prefix('/').unwrap_or(resolved_path);
@@ -846,7 +846,7 @@ impl<'p> Eval<'p> {
         #[cfg(feature = "runtime")]
         {
             let path = std::path::Path::new(rel);
-            let package = Arc::clone(package);
+            let package = Arc::clone(_package);
             let result = match tokio::runtime::Handle::try_current() {
                 Ok(handle) => tokio::task::block_in_place(|| {
                     handle.block_on(async { package.lookup(path).await })

@@ -1,7 +1,9 @@
 import init, {
     analyze,
+    analyze_scle,
     completions,
     format,
+    format_scle,
     goto_definition,
     hover,
     repl_eval,
@@ -36,6 +38,8 @@ type Request =
           col: number;
       }
     | { id: number; type: "format"; source: string }
+    | { id: number; type: "formatScle"; source: string }
+    | { id: number; type: "analyzeScle"; source: string }
     | { id: number; type: "replInit" }
     | { id: number; type: "replEval"; files: Record<string, string>; line: string }
     | { id: number; type: "replReset" };
@@ -75,6 +79,12 @@ async function handleMessage(msg: Request) {
             }
             case "format":
                 result = format(msg.source) ?? null;
+                break;
+            case "formatScle":
+                result = format_scle(msg.source) ?? null;
+                break;
+            case "analyzeScle":
+                result = JSON.parse(await analyze_scle(msg.source));
                 break;
             case "replInit":
                 repl_init();

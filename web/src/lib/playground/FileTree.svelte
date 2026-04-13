@@ -77,7 +77,7 @@ function confirmCreate() {
         expandedFolders = new Set([...expandedFolders, path]);
     } else {
         let fileName = name;
-        if (!fileName.endsWith(".scl")) fileName += ".scl";
+        if (!fileName.endsWith(".scl") && !fileName.endsWith(".scle")) fileName += ".scl";
         const filePath = creatingIn ? `${creatingIn}/${fileName}` : fileName;
         onCreateFile(filePath);
     }
