@@ -304,6 +304,24 @@ impl Worker {
 
             DeploymentState::Desired => {
                 tracing::info!("{sid} reconciling");
+
+                // If the commit has no Main.scl, there is nothing to
+                // evaluate. Log an info note and transition directly to
+                // Up instead of treating it as a compilation error.
+                if self
+                    .client
+                    .path_hash(std::path::Path::new("Main.scl"))
+                    .await?
+                    .is_none()
+                {
+                    tracing::info!("{sid} no Main.scl; transitioning to UP");
+                    self.log_publisher
+                        .info(format!("{sid} is up (no Main.scl in commit)"))
+                        .await;
+                    self.client.set(DeploymentState::Up).await?;
+                    return Ok(());
+                }
+
                 let outcome = self.compile_and_evaluate().await?;
                 let owner_deployment_qid = deployment.deployment_qid().to_string();
 
