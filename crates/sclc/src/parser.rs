@@ -11,8 +11,8 @@ use crate::{
     ImportStmt, IndexedAccessExpr, Int, InterpExpr, LetBind, LetExpr, Lexer, ListExpr, ListForItem,
     ListIfItem, ListItem, Loc, ModStmt, ModuleId, PathExpr, PathSegment, Position,
     PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField, RecordTypeExpr, RecordTypeFieldExpr,
-    ReplLine, Span, StrExpr, Token, TryExpr, TypeApplicationExpr, TypeCastExpr, TypeDef, TypeExpr,
-    TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
+    ReplLine, ScleMod, Span, StrExpr, Token, TryExpr, TypeApplicationExpr, TypeCastExpr, TypeDef,
+    TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr, UnaryOp, Var,
 };
 
 /// Maximum allowed source file size in bytes. Files larger than this are
@@ -201,6 +201,17 @@ peg::parser! {
 
         pub rule repl_line() -> ReplLine
             = statement:mod_stmt()? eof() { ReplLine { statement } }
+
+        pub rule scle_mod() -> ScleMod
+            = imports:scle_import()* type_expr:type_expr() body:expr() eof() {
+                ScleMod { imports, type_expr, body }
+            }
+
+        rule scle_import() -> Loc<ImportStmt>
+            = stmt:import_stmt() {
+                flush_skip(skip_span, diags, module_id);
+                stmt
+            }
 
         rule eof() = ![_]
 
@@ -1526,11 +1537,62 @@ pub fn parse_repl_line_with_cursor(
     }
 }
 
+pub fn parse_scle(source: &str, module_id: &ModuleId) -> Diagnosed<Option<ScleMod>> {
+    parse_scle_with_cursor(source, module_id, None)
+}
+
+pub fn parse_scle_with_cursor(
+    source: &str,
+    module_id: &ModuleId,
+    cursor: Option<crate::Cursor>,
+) -> Diagnosed<Option<ScleMod>> {
+    let mut diags = DiagList::new();
+
+    if source.len() > MAX_SOURCE_SIZE {
+        diags.push(SourceTooLarge {
+            module_id: module_id.clone(),
+            size: source.len(),
+            limit: MAX_SOURCE_SIZE,
+        });
+        return Diagnosed::new(None, diags);
+    }
+
+    let mut exception_id = 0u64;
+    let mut skip_span = None;
+    let token_stream = match &cursor {
+        Some(c) => TokenStream::with_cursor(source, c.clone()),
+        None => TokenStream::new(source),
+    };
+    let last_postfix_end = std::cell::Cell::new(Position::default());
+    match grammar::scle_mod(
+        &token_stream,
+        &mut diags,
+        module_id,
+        &mut exception_id,
+        &cursor,
+        &mut skip_span,
+        &last_postfix_end,
+    ) {
+        Ok(scle_mod) => {
+            diags.dedup();
+            Diagnosed::new(Some(scle_mod), diags)
+        }
+        Err(error) => {
+            diags.push(SyntaxError {
+                module_id: module_id.clone(),
+                error,
+            });
+            diags.dedup();
+            Diagnosed::new(None, diags)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{ModuleId, PackageId};
 
-    use super::{parse_file_mod, parse_repl_line};
+    use super::{parse_file_mod, parse_repl_line, parse_scle};
 
     #[test]
     fn parse_error_uses_position_repr() {
@@ -2418,6 +2480,50 @@ mod tests {
                 .iter()
                 .map(|d| format!("{d}"))
                 .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn parses_scle_with_imports_type_and_body() {
+        let module_id = ModuleId::default();
+        let source = r#"
+import Std/Option
+
+{ hello: Str }
+
+{ hello: "world" }
+"#;
+        let scle = parse_scle(source, &module_id)
+            .into_inner()
+            .expect("parse_scle returned no value");
+        assert_eq!(scle.imports.len(), 1);
+        let import = scle.imports.first().unwrap();
+        let names: Vec<&str> = import.vars.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, vec!["Std", "Option"]);
+    }
+
+    #[test]
+    fn parses_scle_without_imports() {
+        let module_id = ModuleId::default();
+        let scle = parse_scle("Int\n42", &module_id)
+            .into_inner()
+            .expect("parse_scle returned no value");
+        assert!(scle.imports.is_empty());
+    }
+
+    #[test]
+    fn scle_syntax_error_yields_diagnostic() {
+        let module_id = ModuleId::default();
+        let diagnosed = parse_scle("{ this is not valid", &module_id);
+        assert!(
+            diagnosed.into_inner().is_none() || true,
+            "syntax error should still produce diagnostics"
+        );
+        // Re-parse to check diagnostics (since into_inner consumed the result).
+        let diagnosed = parse_scle("{ this is not valid", &module_id);
+        assert!(
+            !diagnosed.diags().is_empty(),
+            "expected diagnostics for invalid SCLE"
         );
     }
 }

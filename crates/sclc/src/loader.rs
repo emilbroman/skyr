@@ -31,6 +31,47 @@ impl Loader {
         let mut queue: VecDeque<(RawModuleId, Option<ImportSource>)> =
             VecDeque::from([(raw_id.iter().map(|s| s.to_string()).collect(), None)]);
 
+        self.drain_queue(&mut queue).await
+    }
+
+    /// Inject a pre-parsed [`ast::FileMod`] as if it had been loaded from
+    /// `package` at `raw_id`, then resolve its transitive imports through the
+    /// configured [`PackageFinder`]. This skips the normal load + parse step
+    /// for the entry; useful for synthetic entry points (e.g. SCLE).
+    pub async fn resolve_with_entry(
+        &mut self,
+        raw_id: &[&str],
+        package: Arc<dyn super::Package>,
+        file_mod: ast::FileMod,
+    ) -> Result<(), LoadError> {
+        let raw_module_id: RawModuleId = raw_id.iter().map(|s| s.to_string()).collect();
+        if self.asg.has_module(&raw_module_id) {
+            return Ok(());
+        }
+
+        let pkg_id = package.id();
+        let pkg_len = pkg_id.len();
+        let module_path: Vec<String> = raw_module_id[pkg_len..].to_vec();
+        let module_id = ModuleId::new(pkg_id.clone(), module_path);
+
+        let mut queue: VecDeque<(RawModuleId, Option<ImportSource>)> = VecDeque::new();
+        self.process_module(
+            raw_module_id,
+            module_id,
+            pkg_id,
+            package,
+            file_mod,
+            &mut queue,
+        )
+        .await;
+
+        self.drain_queue(&mut queue).await
+    }
+
+    async fn drain_queue(
+        &mut self,
+        queue: &mut VecDeque<(RawModuleId, Option<ImportSource>)>,
+    ) -> Result<(), LoadError> {
         while let Some((raw_module_id, import_source)) = queue.pop_front() {
             if self.asg.has_module(&raw_module_id) {
                 continue;
@@ -81,53 +122,66 @@ impl Loader {
                 file_mod
             };
 
-            // Validate path expressions.
-            self.validate_paths(&module_id, &file_mod, &*package).await;
-
-            // Register the package.
-            self.asg
-                .register_package(pkg_id.clone(), Arc::clone(&package));
-
-            // Analyze the module: collect globals, type decls, imports, and build edges.
-            let analysis = analyze_module(&raw_module_id, &pkg_id, &module_id, &file_mod);
-
-            // Add module node.
-            self.asg.add_module(ModuleNode {
-                raw_id: raw_module_id.clone(),
-                module_id,
-                file_mod,
-                package_id: pkg_id,
-            });
-
-            // Add global nodes.
-            for g in analysis.globals {
-                self.asg.add_global(g);
-            }
-
-            // Add type declaration nodes.
-            for td in analysis.type_decls {
-                self.asg.add_type_decl(td);
-            }
-
-            // Add global expression statements.
-            for stmt in analysis.global_exprs {
-                self.asg.add_global_expr(raw_module_id.clone(), stmt);
-            }
-
-            // Add edges.
-            for edge in analysis.edges {
-                self.asg.add_edge(edge);
-            }
-
-            // Enqueue discovered imports.
-            for (import_raw_id, import_src) in analysis.discovered_imports {
-                if !self.asg.has_module(&import_raw_id) {
-                    queue.push_back((import_raw_id, Some(import_src)));
-                }
-            }
+            self.process_module(raw_module_id, module_id, pkg_id, package, file_mod, queue)
+                .await;
         }
 
         Ok(())
+    }
+
+    async fn process_module(
+        &mut self,
+        raw_module_id: RawModuleId,
+        module_id: ModuleId,
+        pkg_id: PackageId,
+        package: Arc<dyn super::Package>,
+        file_mod: ast::FileMod,
+        queue: &mut VecDeque<(RawModuleId, Option<ImportSource>)>,
+    ) {
+        // Validate path expressions.
+        self.validate_paths(&module_id, &file_mod, &*package).await;
+
+        // Register the package.
+        self.asg
+            .register_package(pkg_id.clone(), Arc::clone(&package));
+
+        // Analyze the module: collect globals, type decls, imports, and build edges.
+        let analysis = analyze_module(&raw_module_id, &pkg_id, &module_id, &file_mod);
+
+        // Add module node.
+        self.asg.add_module(ModuleNode {
+            raw_id: raw_module_id.clone(),
+            module_id,
+            file_mod,
+            package_id: pkg_id,
+        });
+
+        // Add global nodes.
+        for g in analysis.globals {
+            self.asg.add_global(g);
+        }
+
+        // Add type declaration nodes.
+        for td in analysis.type_decls {
+            self.asg.add_type_decl(td);
+        }
+
+        // Add global expression statements.
+        for stmt in analysis.global_exprs {
+            self.asg.add_global_expr(raw_module_id.clone(), stmt);
+        }
+
+        // Add edges.
+        for edge in analysis.edges {
+            self.asg.add_edge(edge);
+        }
+
+        // Enqueue discovered imports.
+        for (import_raw_id, import_src) in analysis.discovered_imports {
+            if !self.asg.has_module(&import_raw_id) {
+                queue.push_back((import_raw_id, Some(import_src)));
+            }
+        }
     }
 
     /// Validate path expressions in a parsed module, emitting `InvalidPath`

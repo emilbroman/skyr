@@ -1,0 +1,13 @@
+/// A repository's dependency manifest.
+///
+/// The contents of a `Package.scle` file at the root of a repository declare
+/// that repository's dependencies on other repositories within the same Skyr
+/// organization.
+///
+/// Each entry maps an `Org/Repo` string to a Git-ref-like specifier:
+/// - A bare branch name, e.g. `"main"` (follow-the-channel; volatile).
+/// - A tag, prefixed with `tag:`, e.g. `"tag:v1.2.0"`.
+/// - A 40-character hex commit hash for a deterministic pin.
+export type Manifest {
+	dependencies: #{ Str: Str }
+}

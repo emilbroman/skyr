@@ -533,3 +533,5 @@ test_case!(NilCoalesceReExportedOptional);
 
 // Recursive type declarations
 test_case!(RecursiveTypeDecl);
+
+mod scle;

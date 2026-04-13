@@ -55,6 +55,16 @@ pub struct ReplLine {
     pub statement: Option<ModStmt>,
 }
 
+/// An SCLE (SCL Expression) source: a sequence of imports, followed by a
+/// declared type expression and a body expression that evaluates to a value
+/// of that type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScleMod {
+    pub imports: Vec<Loc<ImportStmt>>,
+    pub type_expr: Loc<TypeExpr>,
+    pub body: Loc<Expr>,
+}
+
 impl FileMod {
     pub fn find_globals(&self) -> HashMap<&str, (crate::Span, &Loc<Expr>, Option<&str>)> {
         let mut globals = HashMap::new();
