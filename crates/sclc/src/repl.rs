@@ -325,7 +325,11 @@ impl Repl {
         let modules: HashMap<ModuleId, ast::FileMod> = self
             .cached_asg
             .modules()
-            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .filter_map(|mn| {
+                mn.body
+                    .as_file_mod()
+                    .map(|fm| (mn.module_id.clone(), fm.clone()))
+            })
             .collect();
         let package_names: Vec<PackageId> = self.cached_asg.packages().keys().cloned().collect();
         let checker = TypeChecker::from_modules(&modules, package_names);

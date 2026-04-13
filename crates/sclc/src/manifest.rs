@@ -27,7 +27,10 @@ use std::sync::Arc;
 use ids::RepoQid;
 use thiserror::Error;
 
-use crate::{DiagList, LoadError, Package, PackageFinder, Value, evaluate_scle};
+use crate::{
+    AsgEvaluator, CompileError, CompositePackageFinder, DiagList, EvalCtx, GlobalKey, LoadError,
+    Package, PackageFinder, Value, compile, wrap_as_finder,
+};
 
 /// Conventional path of a manifest within a repo.
 pub const MANIFEST_FILENAME: &str = "Package.scle";
@@ -106,7 +109,10 @@ pub enum ManifestError {
     Load(#[from] LoadError),
 
     #[error(transparent)]
-    Scle(#[from] crate::ScleError),
+    Compile(#[from] CompileError),
+
+    #[error("evaluation error: {0}")]
+    Eval(#[from] crate::EvalError),
 }
 
 /// Try to load and parse a manifest from `package`'s root.
@@ -117,29 +123,52 @@ pub enum ManifestError {
 ///   no manifest.)
 /// - `Err(...)` for malformed manifests or I/O errors.
 pub async fn load_manifest(
-    package: &dyn Package,
+    package: Arc<dyn Package>,
     finder: Arc<dyn PackageFinder>,
 ) -> Result<Option<Manifest>, ManifestError> {
+    // If the package doesn't contain a `Package.scle`, there's no manifest.
     let path = Path::new(MANIFEST_FILENAME);
-    let bytes = match package.load(path).await {
-        Ok(b) => b.into_owned(),
-        Err(LoadError::NotFound(_)) => return Ok(None),
-        Err(e) => return Err(ManifestError::Load(e)),
-    };
+    match package.lookup(path).await? {
+        Some(_) => {}
+        None => return Ok(None),
+    }
 
-    let source = String::from_utf8(bytes).map_err(LoadError::Encoding)?;
+    // Compose a finder that serves the manifest's own package (so `Self/...`
+    // imports inside the manifest resolve) plus whatever the caller supplied
+    // (stdlib, cross-repo, etc.).
+    let pkg_id_segments: Vec<String> = package.id().as_slice().to_vec();
+    let combined: Arc<dyn PackageFinder> = Arc::new(CompositePackageFinder::new(vec![
+        wrap_as_finder(Arc::clone(&package)),
+        finder,
+    ]));
 
-    let result = evaluate_scle(finder, &source).await?;
+    // Run the standard compile pipeline. `Package.scle` is discovered
+    // automatically via the loader's `.scl` / `.scle` probing.
+    let entry: Vec<&str> = pkg_id_segments
+        .iter()
+        .map(String::as_str)
+        .chain(std::iter::once("Package"))
+        .collect();
+
     let mut diags = DiagList::new();
-    let value = result.unpack(&mut diags);
-
+    let asg = compile(combined, &entry).await?.unpack(&mut diags);
     if diags.has_errors() {
         return Err(ManifestError::Invalid {
             diags: diags.iter().map(|d| d.to_string()).collect(),
         });
     }
 
-    let value = value.ok_or_else(|| ManifestError::Shape("manifest produced no value".into()))?;
+    // Evaluate.
+    let (effects_tx, _effects_rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(effects_tx, "manifest", crate::placeholder_deployment_qid());
+    let (_results, env) = AsgEvaluator::new(&asg, ctx).eval()?;
+
+    let raw_id: Vec<String> = entry.iter().map(|s| s.to_string()).collect();
+    let value = env
+        .get(&GlobalKey::ModuleValue(raw_id))
+        .cloned()
+        .ok_or_else(|| ManifestError::Shape("manifest produced no value".into()))?;
+
     parse_manifest_value(value.value)
 }
 
@@ -234,7 +263,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn load_returns_none_when_no_manifest() {
         let pkg = InMemoryPackage::empty(PackageId::from(["NoManifest"]));
-        let result = load_manifest(&pkg, finder()).await.unwrap();
+        let result = load_manifest(Arc::new(pkg), finder()).await.unwrap();
         assert!(result.is_none());
     }
 
@@ -260,7 +289,7 @@ Package.Manifest
         );
         let pkg = InMemoryPackage::new(PackageId::from(["WithManifest"]), files);
 
-        let manifest = load_manifest(&pkg, finder())
+        let manifest = load_manifest(Arc::new(pkg), finder())
             .await
             .expect("load failed")
             .expect("manifest should be present");
@@ -291,7 +320,7 @@ Package.Manifest
         );
         let pkg = InMemoryPackage::new(PackageId::from(["BadManifest"]), files);
 
-        let err = load_manifest(&pkg, finder())
+        let err = load_manifest(Arc::new(pkg), finder())
             .await
             .expect_err("expected manifest load to fail");
         assert!(matches!(err, ManifestError::Invalid { .. }));
@@ -313,7 +342,7 @@ Package.Manifest
         );
         let pkg = InMemoryPackage::new(PackageId::from(["BadDep"]), files);
 
-        let err = load_manifest(&pkg, finder())
+        let err = load_manifest(Arc::new(pkg), finder())
             .await
             .expect_err("expected manifest load to fail");
         assert!(

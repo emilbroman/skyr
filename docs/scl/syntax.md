@@ -534,6 +534,8 @@ my-repo/
     └── Network.scl
 ```
 
+Modules may use either the `.scl` or `.scle` extension. A `.scle` (SCL Expression) file contains a single typed value: any imports it needs, followed by a type expression and a body expression — see [Cross-Repo Imports](../cross-repo-imports.md) for an example (`Package.scle`). When imported, the SCLE module *is* its body value; access fields with ordinary property access (`Cfg.field` if `Cfg.scle` evaluates to a record). A given module path may exist as `.scl` *or* `.scle`, but not both — defining both is reported as an ambiguous-module error at the import site (or a fatal error if it happens at the entrypoint).
+
 ```scl
 // Main.scl
 import Self/Config

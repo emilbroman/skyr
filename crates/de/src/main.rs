@@ -1086,7 +1086,7 @@ impl Worker {
         // For manifest parsing only, a (user + std) finder is sufficient —
         // `Package.scle` is expected to import only `Std/...`.
         let manifest_finder = sclc::build_default_finder(Arc::clone(&user_pkg));
-        let manifest = match sclc::load_manifest(&*user_pkg, manifest_finder).await {
+        let manifest = match sclc::load_manifest(Arc::clone(&user_pkg), manifest_finder).await {
             Ok(Some(m)) => m,
             Ok(None) => return Ok(None),
             Err(e) => {

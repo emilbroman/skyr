@@ -33,9 +33,15 @@ pub struct AsgChecker<'a> {
 
 impl<'a> AsgChecker<'a> {
     pub fn new(asg: &'a Asg) -> Self {
+        let mut global_type_env = GlobalTypeEnv::new(build_import_maps(asg));
+        for mn in asg.modules() {
+            if mn.body.is_scle() {
+                global_type_env.mark_scle_module(mn.raw_id.clone());
+            }
+        }
         Self {
             asg,
-            global_type_env: GlobalTypeEnv::new(build_import_maps(asg)),
+            global_type_env,
         }
     }
 
@@ -51,7 +57,11 @@ impl<'a> AsgChecker<'a> {
         let modules: HashMap<crate::ModuleId, ast::FileMod> = self
             .asg
             .modules()
-            .map(|mn| (mn.module_id.clone(), mn.file_mod.clone()))
+            .filter_map(|mn| {
+                mn.body
+                    .as_file_mod()
+                    .map(|fm| (mn.module_id.clone(), fm.clone()))
+            })
             .collect();
         let package_names: Vec<crate::PackageId> = self.asg.packages().keys().cloned().collect();
         let checker = TypeChecker::from_modules(&modules, package_names);
@@ -78,7 +88,7 @@ impl<'a> AsgChecker<'a> {
             let env = TypeEnv::new(&self.global_type_env)
                 .with_module_id(&mn.module_id)
                 .with_raw_module_id(&mn.raw_id);
-            for stmt in &mn.file_mod.statements {
+            for stmt in mn.body.statements() {
                 if matches!(stmt, ast::ModStmt::Import(_)) {
                     checker.check_stmt(&env, stmt)?.unpack(&mut diags);
                 }
@@ -145,7 +155,7 @@ impl<'a> AsgChecker<'a> {
             let NodeId::Module(raw_id) = node else {
                 continue;
             };
-            self.assemble_module(checker, raw_id);
+            self.assemble_module(checker, raw_id, diags)?;
         }
 
         Ok(())
@@ -255,7 +265,7 @@ impl<'a> AsgChecker<'a> {
         };
         let has_self_edge = self.asg.has_self_edge(node);
         let mn = self.asg.module(raw_id).unwrap();
-        let lb = find_let_bind(&mn.file_mod, name).unwrap();
+        let lb = find_let_bind(&mn.body, name).unwrap();
 
         if has_self_edge && !matches!(lb.expr.as_ref().as_ref(), ast::Expr::Fn(_)) {
             diags.push(CyclicDependency {
@@ -301,7 +311,7 @@ impl<'a> AsgChecker<'a> {
             if let NodeId::Global(raw_id, name) = n {
                 self.asg
                     .module(raw_id)
-                    .and_then(|mn| find_let_bind(&mn.file_mod, name))
+                    .and_then(|mn| find_let_bind(&mn.body, name))
                     .map(|lb| matches!(lb.expr.as_ref().as_ref(), ast::Expr::Fn(_)))
                     .unwrap_or(false)
             } else {
@@ -367,7 +377,7 @@ impl<'a> AsgChecker<'a> {
                 continue;
             };
             let mn = self.asg.module(raw_id).unwrap();
-            let lb = find_let_bind(&mn.file_mod, name).unwrap();
+            let lb = find_let_bind(&mn.body, name).unwrap();
             diags.push(CyclicDependency {
                 module_id: mn.module_id.clone(),
                 names: names_str.clone(),
@@ -426,7 +436,7 @@ impl<'a> AsgChecker<'a> {
             .filter_map(|n| {
                 if let NodeId::Global(raw_id, name) = n {
                     let mn = self.asg.module(raw_id)?;
-                    let lb = find_let_bind(&mn.file_mod, name)?;
+                    let lb = find_let_bind(&mn.body, name)?;
                     Some((name.as_str(), lb))
                 } else {
                     None
@@ -443,7 +453,7 @@ impl<'a> AsgChecker<'a> {
                 continue;
             };
             if let Some(mn) = self.asg.module(raw_id)
-                && let Some(lb) = find_let_bind(&mn.file_mod, name)
+                && let Some(lb) = find_let_bind(&mn.body, name)
             {
                 let cache_key = lb.expr.as_ref() as *const crate::Loc<ast::Expr>;
                 if let Some(ty) = checker.global_cache.borrow().get(&cache_key) {
@@ -475,7 +485,7 @@ impl<'a> AsgChecker<'a> {
             };
             let has_self_edge = self.asg.has_self_edge(node);
             let mn = self.asg.module(raw_id).unwrap();
-            let lb = find_let_bind(&mn.file_mod, name).unwrap();
+            let lb = find_let_bind(&mn.body, name).unwrap();
 
             if has_self_edge && !matches!(lb.expr.as_ref().as_ref(), ast::Expr::Fn(_)) {
                 diags.push(CyclicDependency {
@@ -570,67 +580,104 @@ impl<'a> AsgChecker<'a> {
 
     // ─── Module assembly ────────────────────────────────────────────────────────
 
-    fn assemble_module(&mut self, checker: &TypeChecker<'_>, raw_id: &RawModuleId) {
+    fn assemble_module(
+        &mut self,
+        checker: &TypeChecker<'_>,
+        raw_id: &RawModuleId,
+        diags: &mut DiagList,
+    ) -> Result<(), TypeCheckError> {
         let Some(mn) = self.asg.module(raw_id) else {
-            return;
+            return Ok(());
         };
 
-        // Value-level export record.
-        let mut exports = RecordType::default();
-        for stmt in &mn.file_mod.statements {
-            if let ast::ModStmt::Export(lb) = stmt {
-                let key = GlobalKey::Global(raw_id.clone(), lb.var.name.clone());
-                if let Some(ty) = self.global_type_env.get(&key) {
-                    let ty = Type::IsoRec(crate::checker::next_type_id(), Box::new(ty.clone()));
-                    exports.insert_with_doc(lb.var.name.clone(), ty, lb.doc_comment.clone());
+        match &mn.body {
+            crate::ModuleBody::Scle(scle) => {
+                // Resolve the declared type expression and check the body
+                // against it. The resulting type IS the module's value-level
+                // type; no `Record` wrapping, no iso-recursion.
+                let env = TypeEnv::new(&self.global_type_env)
+                    .with_module_id(&mn.module_id)
+                    .with_raw_module_id(&mn.raw_id);
+                let expected_ty = checker
+                    .resolve_type_expr(&env, &scle.type_expr)
+                    .unpack(diags);
+                checker
+                    .check_expr(&env, &scle.body, Some(&expected_ty))?
+                    .unpack(diags);
+
+                self.global_type_env
+                    .insert(GlobalKey::ModuleValue(raw_id.clone()), expected_ty);
+                // SCLE modules export no types.
+                self.global_type_env.insert(
+                    GlobalKey::ModuleTypeLevel(raw_id.clone()),
+                    Type::Record(RecordType::default()),
+                );
+            }
+            crate::ModuleBody::File(file_mod) => {
+                // Value-level export record.
+                let mut exports = RecordType::default();
+                for stmt in &file_mod.statements {
+                    if let ast::ModStmt::Export(lb) = stmt {
+                        let key = GlobalKey::Global(raw_id.clone(), lb.var.name.clone());
+                        if let Some(ty) = self.global_type_env.get(&key) {
+                            let ty =
+                                Type::IsoRec(crate::checker::next_type_id(), Box::new(ty.clone()));
+                            exports.insert_with_doc(
+                                lb.var.name.clone(),
+                                ty,
+                                lb.doc_comment.clone(),
+                            );
+                        }
+                    }
+                }
+                let module_ty = Type::Record(exports);
+                self.global_type_env
+                    .insert(GlobalKey::ModuleValue(raw_id.clone()), module_ty.clone());
+
+                // Seed import_cache for expression-level resolution.
+                if let Some(unit_fm) = checker.modules.get(&mn.module_id) {
+                    let key = unit_fm as *const ast::FileMod;
+                    checker
+                        .import_cache
+                        .borrow_mut()
+                        .insert(key, module_ty.clone());
+                }
+                let asg_key = file_mod as *const ast::FileMod;
+                checker
+                    .import_cache
+                    .borrow_mut()
+                    .entry(asg_key)
+                    .or_insert_with(|| module_ty);
+
+                // Type-level export record.
+                let mut type_exports = RecordType::default();
+                for stmt in &file_mod.statements {
+                    if let ast::ModStmt::ExportTypeDef(td) = stmt {
+                        let key = GlobalKey::TypeDecl(raw_id.clone(), td.var.name.clone());
+                        if let Some(ty) = self.global_type_env.get(&key) {
+                            type_exports.insert_with_doc(
+                                td.var.name.clone(),
+                                ty.clone(),
+                                td.doc_comment.clone(),
+                            );
+                        }
+                    }
+                }
+                self.global_type_env.insert(
+                    GlobalKey::ModuleTypeLevel(raw_id.clone()),
+                    Type::Record(type_exports.clone()),
+                );
+
+                if let Some(unit_fm) = checker.modules.get(&mn.module_id) {
+                    let key = unit_fm as *const ast::FileMod;
+                    checker
+                        .type_level_cache
+                        .borrow_mut()
+                        .insert(key, type_exports);
                 }
             }
         }
-        let module_ty = Type::Record(exports);
-        self.global_type_env
-            .insert(GlobalKey::ModuleValue(raw_id.clone()), module_ty.clone());
-
-        // Seed import_cache for expression-level resolution.
-        if let Some(unit_fm) = checker.modules.get(&mn.module_id) {
-            let key = unit_fm as *const ast::FileMod;
-            checker
-                .import_cache
-                .borrow_mut()
-                .insert(key, module_ty.clone());
-        }
-        let asg_key = &mn.file_mod as *const ast::FileMod;
-        checker
-            .import_cache
-            .borrow_mut()
-            .entry(asg_key)
-            .or_insert_with(|| module_ty);
-
-        // Type-level export record.
-        let mut type_exports = RecordType::default();
-        for stmt in &mn.file_mod.statements {
-            if let ast::ModStmt::ExportTypeDef(td) = stmt {
-                let key = GlobalKey::TypeDecl(raw_id.clone(), td.var.name.clone());
-                if let Some(ty) = self.global_type_env.get(&key) {
-                    type_exports.insert_with_doc(
-                        td.var.name.clone(),
-                        ty.clone(),
-                        td.doc_comment.clone(),
-                    );
-                }
-            }
-        }
-        self.global_type_env.insert(
-            GlobalKey::ModuleTypeLevel(raw_id.clone()),
-            Type::Record(type_exports.clone()),
-        );
-
-        if let Some(unit_fm) = checker.modules.get(&mn.module_id) {
-            let key = unit_fm as *const ast::FileMod;
-            checker
-                .type_level_cache
-                .borrow_mut()
-                .insert(key, type_exports);
-        }
+        Ok(())
     }
 }
 
@@ -639,14 +686,12 @@ fn build_import_maps(asg: &Asg) -> HashMap<RawModuleId, HashMap<String, RawModul
     let mut maps = HashMap::new();
     for module_node in asg.modules() {
         let mut aliases = HashMap::new();
-        for stmt in &module_node.file_mod.statements {
-            if let ast::ModStmt::Import(import) = stmt {
-                let vars = &import.as_ref().vars;
-                if !vars.is_empty() {
-                    let alias = vars.last().unwrap().name.clone();
-                    let import_raw_id = resolve_import_path(vars, &module_node.package_id);
-                    aliases.insert(alias, import_raw_id);
-                }
+        for import in module_node.body.imports() {
+            let vars = &import.as_ref().vars;
+            if !vars.is_empty() {
+                let alias = vars.last().unwrap().name.clone();
+                let import_raw_id = resolve_import_path(vars, &module_node.package_id);
+                aliases.insert(alias, import_raw_id);
             }
         }
         maps.insert(module_node.raw_id.clone(), aliases);
@@ -665,7 +710,8 @@ fn resolve_import_path(vars: &[crate::Loc<ast::Var>], pkg_id: &crate::PackageId)
     }
 }
 
-fn find_let_bind<'m>(file_mod: &'m ast::FileMod, name: &str) -> Option<&'m ast::LetBind> {
+fn find_let_bind<'m>(body: &'m crate::ModuleBody, name: &str) -> Option<&'m ast::LetBind> {
+    let file_mod = body.as_file_mod()?;
     file_mod.statements.iter().find_map(|stmt| match stmt {
         ast::ModStmt::Let(lb) | ast::ModStmt::Export(lb) if lb.var.name == name => Some(lb),
         _ => None,

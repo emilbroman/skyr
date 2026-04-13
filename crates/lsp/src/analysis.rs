@@ -223,17 +223,29 @@ pub async fn analyze(
 /// Parse, load and type-check a standalone `.scle` file, returning
 /// diagnostics.
 ///
-/// `.scle` files are not part of the module graph, but they can `import` from
-/// packages the finder can resolve. We run the full SCLE pipeline up to
-/// type-checking (no evaluation) so the editor surfaces the same semantic
+/// `.scle` files can `import` from packages the finder can resolve. We wrap
+/// the source as `Main.scle` in a synthetic package and run the standard
+/// compile pipeline (no evaluation) so the editor surfaces the same semantic
 /// diagnostics as `.scl` files.
 pub async fn analyze_scle(
     finder: Arc<dyn sclc::PackageFinder>,
     source: &str,
     _path: &Path,
 ) -> Vec<lsp::Diagnostic> {
+    const SCLE_PKG: &str = "__ScleBuffer__";
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("Main.scle"), source.as_bytes().to_vec());
+    let scle_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::InMemoryPackage::new(
+        sclc::PackageId::from([SCLE_PKG]),
+        files,
+    ));
+    let combined: Arc<dyn sclc::PackageFinder> = Arc::new(sclc::CompositePackageFinder::new(vec![
+        sclc::wrap_as_finder(scle_pkg),
+        finder,
+    ]));
+
     let mut diagnostics = Vec::new();
-    match sclc::check_scle(finder, source).await {
+    match sclc::compile(combined, &[SCLE_PKG, "Main"]).await {
         Ok(diagnosed) => {
             for diag in diagnosed.diags().iter() {
                 let (_module_id, mut lsp_diag) = convert::to_lsp_diagnostic(diag);
