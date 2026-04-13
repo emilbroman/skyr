@@ -23,13 +23,18 @@ impl PropertyAccessExpr {
         use crate::GlobalKey;
         use crate::{DiagList, Diagnosed, RecordType, Type, TypeKind};
 
-        // When the LHS is a variable that resolves to an import alias, look up
-        // the property directly as a global in the target module.  This handles
-        // cross-module recursive groups where the full module-value record has
-        // not been assembled yet.
+        // When the LHS is a variable that resolves to an import alias and the
+        // target is a `.scl` module, look up the property directly as a global
+        // in the target module.  This handles cross-module recursive groups
+        // where the full module-value record has not been assembled yet.
+        //
+        // For SCLE targets the alias resolves to the module's body value
+        // (which has no named globals), so we fall through to ordinary record
+        // member access below.
         if let Expr::Var(var) = self.expr.as_ref().as_ref()
             && let Some(raw_id) = env.raw_module_id()
             && let Some(target_raw_id) = env.global_env.resolve_import_alias(&var.name, raw_id)
+            && !env.global_env.is_scle_module(target_raw_id)
         {
             let prop_name = self.property.name.as_str();
             let global_key = GlobalKey::Global(target_raw_id.clone(), prop_name.to_string());
@@ -179,11 +184,14 @@ impl PropertyAccessExpr {
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::{GlobalKey, Value};
 
-        // When the LHS is an import alias, resolve the property directly as a
-        // global in the target module (mirrors the type-checking bypass).
+        // When the LHS is an import alias targeting a `.scl` module, resolve
+        // the property directly as a global in the target module (mirrors the
+        // type-checking bypass). For SCLE targets, fall through to ordinary
+        // property access on the module's body value.
         if let Expr::Var(var) = self.expr.as_ref().as_ref()
             && let Some(raw_id) = env.raw_module_id()
             && let Some(target_raw_id) = env.global_env.resolve_import_alias(&var.name, raw_id)
+            && !env.global_env.is_scle_module(target_raw_id)
         {
             let global_key =
                 GlobalKey::Global(target_raw_id.clone(), self.property.name.to_string());

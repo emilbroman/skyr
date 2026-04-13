@@ -62,6 +62,11 @@ impl<'a> AsgEvaluator<'a> {
         } else {
             GlobalEvalEnv::new(build_import_maps(self.asg))
         };
+        for mn in self.asg.modules() {
+            if mn.body.is_scle() {
+                global_env.mark_scle_module(mn.raw_id.clone());
+            }
+        }
 
         let sccs = self.asg.compute_sccs();
         for scc in &sccs {
@@ -135,7 +140,7 @@ fn process_scc(
             .get(&GlobalKey::ModuleValue(raw_id.clone()))
             .is_none()
         {
-            assemble_module(asg, raw_id, global_env);
+            assemble_module(asg, evaluator, raw_id, global_env)?;
         }
     }
 
@@ -159,7 +164,7 @@ fn eval_singleton_global(
     }
 
     let mn = asg.module(raw_id).unwrap();
-    let lb = find_let_bind(&mn.file_mod, name).unwrap();
+    let lb = find_let_bind(&mn.body, name).unwrap();
 
     let env = EvalEnv::new(global_env)
         .with_module_id(&mn.module_id)
@@ -260,7 +265,7 @@ fn eval_recursive_group(
             continue;
         };
         let mn = asg.module(raw_id).unwrap();
-        let lb = find_let_bind(&mn.file_mod, name).unwrap();
+        let lb = find_let_bind(&mn.body, name).unwrap();
         let ast::Expr::Fn(fn_expr) = lb.expr.as_ref().as_ref() else {
             global_env.insert(
                 GlobalKey::Global(raw_id.clone(), name.clone()),
@@ -346,7 +351,7 @@ fn eval_mixed_scc(
     let all_fns = global_nodes.iter().all(|n| {
         if let NodeId::Global(raw_id, name) = n {
             let mn = asg.module(raw_id).unwrap();
-            find_let_bind(&mn.file_mod, name)
+            find_let_bind(&mn.body, name)
                 .map(|lb| matches!(lb.expr.as_ref().as_ref(), ast::Expr::Fn(_)))
                 .unwrap_or(false)
         } else {
@@ -370,7 +375,7 @@ fn eval_mixed_scc(
         let NodeId::Module(raw_id) = node else {
             continue;
         };
-        assemble_module(asg, raw_id, global_env);
+        assemble_module(asg, evaluator, raw_id, global_env)?;
     }
 
     Ok(())
@@ -378,28 +383,50 @@ fn eval_mixed_scc(
 
 // ─── Module assembly ─────────────────────────────────────────────────────────
 
-fn assemble_module(asg: &Asg, raw_id: &RawModuleId, global_env: &mut GlobalEvalEnv) {
+fn assemble_module(
+    asg: &Asg,
+    evaluator: &Eval<'_>,
+    raw_id: &RawModuleId,
+    global_env: &mut GlobalEvalEnv,
+) -> Result<(), EvalError> {
     let Some(mn) = asg.module(raw_id) else {
-        return;
+        return Ok(());
     };
 
-    let mut exports = Record::default();
-    let mut dependencies = BTreeSet::new();
+    match &mn.body {
+        crate::ModuleBody::Scle(scle) => {
+            // SCLE: evaluate the body expression; the result IS the module's
+            // value. No export record, no recursive wrapper.
+            let env = EvalEnv::new(global_env)
+                .with_module_id(&mn.module_id)
+                .with_raw_module_id(&mn.raw_id);
+            let owner = evaluator.ctx.owner_for_package(&mn.package_id);
+            let value = evaluator
+                .ctx
+                .with_owner(owner, || evaluator.eval_expr(&env, &scle.body))?;
+            global_env.insert(GlobalKey::ModuleValue(raw_id.clone()), value);
+        }
+        crate::ModuleBody::File(file_mod) => {
+            let mut exports = Record::default();
+            let mut dependencies = BTreeSet::new();
 
-    for stmt in &mn.file_mod.statements {
-        if let ast::ModStmt::Export(lb) = stmt {
-            let key = GlobalKey::Global(raw_id.clone(), lb.var.name.clone());
-            if let Some(value) = global_env.get(&key) {
-                dependencies.extend(value.dependencies.clone());
-                exports.insert(lb.var.name.clone(), value.value.clone());
+            for stmt in &file_mod.statements {
+                if let ast::ModStmt::Export(lb) = stmt {
+                    let key = GlobalKey::Global(raw_id.clone(), lb.var.name.clone());
+                    if let Some(value) = global_env.get(&key) {
+                        dependencies.extend(value.dependencies.clone());
+                        exports.insert(lb.var.name.clone(), value.value.clone());
+                    }
+                }
             }
+
+            global_env.insert(
+                GlobalKey::ModuleValue(raw_id.clone()),
+                with_dependencies(Value::Record(exports), dependencies),
+            );
         }
     }
-
-    global_env.insert(
-        GlobalKey::ModuleValue(raw_id.clone()),
-        with_dependencies(Value::Record(exports), dependencies),
-    );
+    Ok(())
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -409,14 +436,12 @@ fn build_import_maps(asg: &Asg) -> HashMap<RawModuleId, HashMap<String, RawModul
     let mut maps = HashMap::new();
     for module_node in asg.modules() {
         let mut aliases = HashMap::new();
-        for stmt in &module_node.file_mod.statements {
-            if let ast::ModStmt::Import(import) = stmt {
-                let vars = &import.as_ref().vars;
-                if !vars.is_empty() {
-                    let alias = vars.last().unwrap().name.clone();
-                    let import_raw_id = resolve_import_path(vars, &module_node.package_id);
-                    aliases.insert(alias, import_raw_id);
-                }
+        for import in module_node.body.imports() {
+            let vars = &import.as_ref().vars;
+            if !vars.is_empty() {
+                let alias = vars.last().unwrap().name.clone();
+                let import_raw_id = resolve_import_path(vars, &module_node.package_id);
+                aliases.insert(alias, import_raw_id);
             }
         }
         maps.insert(module_node.raw_id.clone(), aliases);
@@ -435,7 +460,8 @@ fn resolve_import_path(vars: &[Loc<ast::Var>], pkg_id: &PackageId) -> RawModuleI
     }
 }
 
-fn find_let_bind<'m>(file_mod: &'m ast::FileMod, name: &str) -> Option<&'m ast::LetBind> {
+fn find_let_bind<'m>(body: &'m crate::ModuleBody, name: &str) -> Option<&'m ast::LetBind> {
+    let file_mod = body.as_file_mod()?;
     file_mod.statements.iter().find_map(|stmt| match stmt {
         ast::ModStmt::Let(lb) | ast::ModStmt::Export(lb) if lb.var.name == name => Some(lb),
         _ => None,

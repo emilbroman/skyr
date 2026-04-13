@@ -97,7 +97,7 @@ async fn read_manifest() -> anyhow::Result<Option<sclc::Manifest>> {
         std::iter::once((PathBuf::from(MANIFEST_FILENAME), source.into_bytes())).collect(),
     ));
     let finder = sclc::build_default_finder(Arc::clone(&pkg));
-    let manifest = sclc::load_manifest(&*pkg, finder)
+    let manifest = sclc::load_manifest(pkg, finder)
         .await
         .context("failed to load Package.scle")?;
     Ok(manifest)
@@ -172,7 +172,7 @@ mod tests {
             std::iter::once((PathBuf::from(MANIFEST_FILENAME), source.into_bytes())).collect(),
         ));
         let finder = sclc::build_default_finder(Arc::clone(&pkg));
-        let parsed = sclc::load_manifest(&*pkg, finder)
+        let parsed = sclc::load_manifest(pkg, finder)
             .await
             .expect("manifest should load")
             .expect("manifest should be present");

@@ -1,24 +1,48 @@
 //! Tests for the SCLE (SCL Expression) format.
+//!
+//! SCLE is now a first-class module format: `.scle` files are discovered by
+//! the loader alongside `.scl` files and processed through the standard
+//! compile pipeline. These tests exercise SCLE modules in-package.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::{InMemoryPackage, PackageId, Value, build_default_finder, evaluate_scle};
+use crate::{
+    AsgEvaluator, DiagList, EvalCtx, GlobalKey, InMemoryPackage, PackageId, Value,
+    build_default_finder, compile,
+};
 
-/// Build a finder over an empty user package + the standard library. SCLE
-/// adds its synthetic `__Scle__` package on top.
-fn finder() -> Arc<dyn crate::PackageFinder> {
-    let user_pkg = Arc::new(InMemoryPackage::new(
-        PackageId::from(["__ScleTestUser"]),
-        HashMap::new(),
-    ));
-    build_default_finder(user_pkg)
-}
-
-fn assert_no_diags(diags: &crate::DiagList) {
+fn assert_no_diags(diags: &DiagList) {
     let msgs: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
     assert!(msgs.is_empty(), "unexpected diagnostics: {msgs:#?}");
+}
+
+/// Compile and evaluate a single-file SCLE module at `<pkg>/Main.scle`.
+/// Returns the module value and accumulated diagnostics.
+async fn evaluate_scle_main(source: &str) -> (Option<crate::TrackedValue>, DiagList) {
+    let pkg_name = "__ScleTestUser";
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("Main.scle"), source.as_bytes().to_vec());
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg_name]), files));
+    let finder = build_default_finder(user_pkg);
+
+    let mut diags = DiagList::new();
+    let asg = match compile(finder, &[pkg_name, "Main"]).await {
+        Ok(d) => d.unpack(&mut diags),
+        Err(e) => panic!("compile failed: {e}"),
+    };
+    if diags.has_errors() {
+        return (None, diags);
+    }
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(tx, "scle-test", crate::placeholder_deployment_qid());
+    let (_results, env) = AsgEvaluator::new(&asg, ctx)
+        .eval()
+        .expect("eval should succeed");
+    let raw_id = vec![pkg_name.to_string(), "Main".to_string()];
+    let value = env.get(&GlobalKey::ModuleValue(raw_id)).cloned();
+    (value, diags)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -28,11 +52,9 @@ async fn evaluates_basic_record() {
 
 { hello: "world", n: 42 }
 "#;
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let value = result.unpack(&mut diags).expect("expected a value");
+    let (value, diags) = evaluate_scle_main(source).await;
     assert_no_diags(&diags);
-
+    let value = value.expect("expected a value");
     let Value::Record(rec) = &value.value else {
         panic!("expected record, got {:?}", value.value);
     };
@@ -42,7 +64,6 @@ async fn evaluates_basic_record() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn evaluates_with_imports() {
-    // Use a stdlib import to exercise the import-resolution path.
     let source = r#"
 import Std/Option
 
@@ -50,11 +71,9 @@ import Std/Option
 
 { result: Option.default(42, 0) }
 "#;
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let value = result.unpack(&mut diags).expect("expected a value");
+    let (value, diags) = evaluate_scle_main(source).await;
     assert_no_diags(&diags);
-
+    let value = value.expect("expected a value");
     let Value::Record(rec) = &value.value else {
         panic!("expected record, got {:?}", value.value);
     };
@@ -68,9 +87,7 @@ async fn type_mismatch_is_diagnosed() {
 
 { hello: 42 }
 "#;
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let _ = result.unpack(&mut diags);
+    let (_value, diags) = evaluate_scle_main(source).await;
     assert!(
         diags.has_errors(),
         "expected at least one error diagnostic, got {:?}",
@@ -81,16 +98,12 @@ async fn type_mismatch_is_diagnosed() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn syntax_error_is_diagnosed() {
     let source = "{ this is not valid";
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let value = result.unpack(&mut diags);
-    assert!(value.is_none(), "expected no value on syntax error");
+    let (_value, diags) = evaluate_scle_main(source).await;
     assert!(!diags.is_empty(), "expected diagnostics on syntax error");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn references_std_package_manifest_type() {
-    // Std/Package.Manifest should typecheck against a literal record value.
     let source = r#"
 import Std/Package
 
@@ -103,11 +116,9 @@ Package.Manifest
     },
 }
 "#;
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let value = result.unpack(&mut diags).expect("expected a value");
+    let (value, diags) = evaluate_scle_main(source).await;
     assert_no_diags(&diags);
-
+    let value = value.expect("expected a value");
     let Value::Record(rec) = &value.value else {
         panic!("expected record, got {:?}", value.value);
     };
@@ -128,18 +139,156 @@ async fn evaluates_with_let_in_body() {
 let n = 21;
 { doubled: n + n }
 "#;
-    let result = evaluate_scle(finder(), source).await.unwrap();
-    let mut diags = crate::DiagList::new();
-    let value = result.unpack(&mut diags).expect("expected a value");
+    let (value, diags) = evaluate_scle_main(source).await;
     assert_no_diags(&diags);
-
+    let value = value.expect("expected a value");
     let Value::Record(rec) = &value.value else {
         panic!("expected record");
     };
     assert_eq!(rec.get("doubled"), &Value::Int(42));
 }
 
-// Suppress dead-code warnings on imports we may want to use as the test
-// surface grows.
-#[allow(dead_code)]
-fn _touch(_p: PathBuf) {}
+/// `.scl` module importing an `.scle` module: `Y` resolves to the body
+/// value of `Y.scle` and `Main.y` takes that value directly.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn scl_imports_scle_as_value() {
+    let pkg = "__ScleUserA";
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("Main.scl"),
+        b"import Self/Y\nexport let y = Y".to_vec(),
+    );
+    files.insert(PathBuf::from("Y.scle"), b"Str\n\"hello\"".to_vec());
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg]), files));
+    let finder = build_default_finder(user_pkg);
+
+    let mut diags = DiagList::new();
+    let asg = compile(finder, &[pkg, "Main"])
+        .await
+        .expect("compile should succeed")
+        .unpack(&mut diags);
+    assert_no_diags(&diags);
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+
+    let y = env
+        .get(&GlobalKey::Global(
+            vec![pkg.to_string(), "Main".to_string()],
+            "y".to_string(),
+        ))
+        .expect("Main.y should be evaluated");
+    assert_eq!(y.value, Value::Str("hello".to_string()));
+}
+
+/// Member access on an SCLE import resolves via ordinary property access on
+/// the SCLE module's body value (no global-shortcut).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn scl_accesses_scle_member() {
+    let pkg = "__ScleUserB";
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("Main.scl"),
+        b"import Self/Cfg\nexport let g = Cfg.greeting".to_vec(),
+    );
+    files.insert(
+        PathBuf::from("Cfg.scle"),
+        b"{ greeting: Str }\n\n{ greeting: \"hi\" }".to_vec(),
+    );
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg]), files));
+    let finder = build_default_finder(user_pkg);
+
+    let mut diags = DiagList::new();
+    let asg = compile(finder, &[pkg, "Main"])
+        .await
+        .expect("compile should succeed")
+        .unpack(&mut diags);
+    assert_no_diags(&diags);
+
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+    let g = env
+        .get(&GlobalKey::Global(
+            vec![pkg.to_string(), "Main".to_string()],
+            "g".to_string(),
+        ))
+        .expect("Main.g should be evaluated");
+    assert_eq!(g.value, Value::Str("hi".to_string()));
+}
+
+/// A module existing as both `.scl` and `.scle` in the same package is
+/// ambiguous; the loader emits a diagnostic attributed to the import site.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn scl_and_scle_conflict_emits_diagnostic() {
+    let pkg = "__ScleUserC";
+    let mut files = HashMap::new();
+    files.insert(
+        PathBuf::from("Main.scl"),
+        b"import Self/Foo\nexport let v = Foo".to_vec(),
+    );
+    files.insert(PathBuf::from("Foo.scl"), b"export let x = 1".to_vec());
+    files.insert(PathBuf::from("Foo.scle"), b"Int\n1".to_vec());
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg]), files));
+    let finder = build_default_finder(user_pkg);
+
+    let mut diags = DiagList::new();
+    let _ = compile(finder, &[pkg, "Main"])
+        .await
+        .expect("compile should not hard-error")
+        .unpack(&mut diags);
+    let msgs: Vec<String> = diags.iter().map(|d| d.to_string()).collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("ambiguous module")),
+        "expected an ambiguous-module diagnostic, got {msgs:?}"
+    );
+}
+
+/// When both `Main.scl` and `Main.scle` exist, the loader returns a fatal
+/// error (no import site to attribute the diagnostic to).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn scl_and_scle_conflict_at_entrypoint_is_fatal() {
+    let pkg = "__ScleUserD";
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("Main.scl"), b"export let x = 1".to_vec());
+    files.insert(PathBuf::from("Main.scle"), b"Int\n1".to_vec());
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg]), files));
+    let finder = build_default_finder(user_pkg);
+    let err = compile(finder, &[pkg, "Main"])
+        .await
+        .expect_err("expected a compile error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("ambiguous"),
+        "expected ambiguous-module error, got {msg}"
+    );
+}
+
+/// SCLE as the entrypoint: `compile(pkg/Main)` discovers `Main.scle` and
+/// assembles the body value into `ModuleValue`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn scle_as_entrypoint() {
+    let pkg = "__ScleUserE";
+    let mut files = HashMap::new();
+    files.insert(PathBuf::from("Main.scle"), b"Int\n7".to_vec());
+    let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from([pkg]), files));
+    let finder = build_default_finder(user_pkg);
+
+    let mut diags = DiagList::new();
+    let asg = compile(finder, &[pkg, "Main"])
+        .await
+        .expect("compile should succeed")
+        .unpack(&mut diags);
+    assert_no_diags(&diags);
+    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
+    let val = env
+        .get(&GlobalKey::ModuleValue(vec![
+            pkg.to_string(),
+            "Main".to_string(),
+        ]))
+        .expect("Main module value should exist");
+    assert_eq!(val.value, Value::Int(7));
+}
