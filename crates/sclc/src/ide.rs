@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    CompletionCandidate, Cursor, CursorInfo, GlobalTypeEnv, ModuleId, PackageId, Position,
+    AsgChecker, CompletionCandidate, Cursor, CursorInfo, ModuleId, PackageId, Position,
     TypeChecker, TypeEnv, ast, parse_file_mod_with_cursor,
 };
 
@@ -40,7 +40,14 @@ pub fn cursor_info(
     let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
     let checker = TypeChecker::from_modules(&modules, package_names);
 
-    let ge = GlobalTypeEnv::default();
+    // Run the ASG-driven checker first so the GlobalTypeEnv is populated
+    // with import maps, global types, and module export records. Without
+    // this, references to symbols imported from other modules cannot be
+    // resolved and hover/completion would have no type info for them.
+    let mut asg_checker = AsgChecker::new(asg);
+    let _ = asg_checker.check();
+    let ge = asg_checker.into_global_type_env();
+
     let type_env = TypeEnv::new(&ge)
         .with_module_id(module_id)
         .with_cursor(cursor);
@@ -88,6 +95,36 @@ mod tests {
         assert!(
             locked.ty.is_some(),
             "expected a type for the variable at cursor"
+        );
+    }
+
+    #[tokio::test]
+    async fn cursor_info_resolves_imported_variable_type() {
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Lib.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Lib\nlet x = Lib.answer".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `answer` in `Lib.answer` (line 2, col 14)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "import Test/Lib\nlet x = Lib.answer",
+            Position::new(2, 14),
+        );
+        let locked = info.lock().unwrap();
+        assert!(
+            locked.ty.is_some(),
+            "expected a type for the imported variable at cursor"
         );
     }
 
