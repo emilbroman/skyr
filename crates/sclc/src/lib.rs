@@ -6,6 +6,8 @@ mod check;
 mod checker;
 mod compile;
 mod composite_finder;
+#[cfg(feature = "cdb")]
+mod cross_repo;
 mod cursor;
 mod dep_graph;
 mod diag;
@@ -39,6 +41,8 @@ pub use check::*;
 pub use checker::*;
 pub use compile::*;
 pub use composite_finder::*;
+#[cfg(feature = "cdb")]
+pub use cross_repo::*;
 pub use cursor::*;
 pub use diag::*;
 pub use eval::*;
