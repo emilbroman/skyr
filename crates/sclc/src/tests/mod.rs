@@ -539,3 +539,5 @@ test_case!(RecursiveTypeDecl);
 
 mod effect_owner;
 mod scle;
+
+mod cross_repo_eval;
