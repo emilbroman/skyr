@@ -198,6 +198,7 @@ async fn process(
                     deployment.deployment.clone(),
                 ),
                 cdb_client: client.clone(),
+                rdb_client: rdb_client.clone(),
                 environment_qid: env_qid.clone(),
                 namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
@@ -222,6 +223,7 @@ async fn process(
 struct Worker {
     client: DeploymentClient,
     cdb_client: cdb::Client,
+    rdb_client: rdb::Client,
     environment_qid: ids::EnvironmentQid,
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
@@ -243,6 +245,11 @@ struct EvalOutcome {
     /// resource function returned concrete outputs and all code paths
     /// were fully evaluated.
     fully_explored: bool,
+    /// Whether the deployment's manifest declares any volatile (branch or
+    /// tag) cross-repo pins. Such deployments stay in `Desired` and keep
+    /// reconciling so the foreign upstream's changes propagate. See
+    /// `CROSS_REPO_IMPORTS.md` §6a.
+    has_volatile_cross_repo_pins: bool,
 }
 
 /// Enqueue an RTQ message, logging errors to both tracing and the deployment
@@ -362,7 +369,14 @@ impl Worker {
                         }
                         drop(resources);
 
-                        if !has_volatile {
+                        if has_volatile {
+                            // Has at least one intrinsically-volatile resource —
+                            // stay in Desired so reconciliation keeps probing.
+                        } else if outcome.has_volatile_cross_repo_pins {
+                            tracing::info!(
+                                "{sid} has volatile cross-repo pins; staying in Desired"
+                            );
+                        } else {
                             tracing::info!("{sid} all resources non-volatile; transitioning to UP");
                             self.client.set(DeploymentState::Up).await?;
                             self.log_publisher
@@ -642,12 +656,21 @@ impl Worker {
 
     async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
         let user_pkg: Arc<dyn sclc::Package> = Arc::new(self.client.clone());
-        let finder = sclc::build_cdb_finder(
-            user_pkg,
+        let repo_qid = self.client.repo_qid().clone();
+
+        // Resolve cross-repo dependencies, if any. Manifest parsing itself
+        // only needs the local package + the standard library.
+        let cross_repo_finder = self
+            .build_cross_repo_finder(Arc::clone(&user_pkg), &repo_qid)
+            .await?;
+
+        let finder = build_full_finder(
+            Arc::clone(&user_pkg),
             self.cdb_client.clone(),
             self.environment_qid.environment.clone(),
+            cross_repo_finder.clone(),
         );
-        let repo_qid = self.client.repo_qid();
+
         let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
 
         let diagnosed = sclc::compile(finder, &entry).await?;
@@ -659,6 +682,9 @@ impl Worker {
                 completeness: EvalCompleteness::Partial,
                 touched_resource_ids: HashSet::new(),
                 fully_explored: false,
+                has_volatile_cross_repo_pins: cross_repo_finder
+                    .as_ref()
+                    .is_some_and(|f| f.has_volatile_pins()),
             });
         }
 
@@ -683,6 +709,47 @@ impl Worker {
             environment_qid_str,
             local_deployment_qid.clone(),
         );
+
+        // Register foreign-package owners so the evaluator stamps the right
+        // owner on effects produced by foreign global expressions, and
+        // pre-load each foreign deployment's resources so remote-state
+        // reads can return concrete outputs.
+        if let Some(finder) = &cross_repo_finder {
+            for (foreign_repo, foreign_owner) in finder.resolved_owners().await {
+                let pkg_id = sclc::package_id_for_repo(&foreign_repo);
+                eval_ctx.set_package_owner(pkg_id, foreign_owner.clone());
+
+                let foreign_env_qid = foreign_owner.environment_qid().to_string();
+                let foreign_owner_qid_str = foreign_owner.to_string();
+                let foreign_namespace = self.rdb_client.namespace(foreign_env_qid);
+                let mut foreign_resources = match foreign_namespace
+                    .list_resources_by_owner(&foreign_owner_qid_str)
+                    .await
+                {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        tracing::warn!(
+                            owner = %foreign_owner,
+                            "failed to load foreign resources: {e}",
+                        );
+                        continue;
+                    }
+                };
+                while let Some(result) = foreign_resources.try_next().await? {
+                    let id = resource_id_from(&result);
+                    eval_ctx.add_foreign_resource(
+                        foreign_owner.clone(),
+                        id,
+                        sclc::Resource {
+                            inputs: result.inputs.unwrap_or_default(),
+                            outputs: result.outputs.unwrap_or_default(),
+                            dependencies: result.dependencies,
+                            markers: result.markers,
+                        },
+                    );
+                }
+            }
+        }
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
         let mut resources = self.namespace.list_resources().await?;
@@ -713,6 +780,9 @@ impl Worker {
         let env_qid = self.environment_qid.clone();
         let rtq_publisher = self.rtq_publisher.clone();
         let local_deployment_qid_for_drain = local_deployment_qid.clone();
+        let has_volatile_cross_repo_pins = cross_repo_finder
+            .as_ref()
+            .is_some_and(|f| f.has_volatile_pins());
         let effects_task = task::spawn(
             {
                 async move {
@@ -986,6 +1056,7 @@ impl Worker {
                         },
                         touched_resource_ids,
                         fully_explored: !had_mutation,
+                        has_volatile_cross_repo_pins,
                     }
                 }
             }
@@ -998,4 +1069,96 @@ impl Worker {
         let outcome = effects_task.await?;
         Ok(outcome)
     }
+
+    /// Load the local repo's `Package.scle` (if any) and build a
+    /// [`sclc::CrossRepoPackageFinder`] from its declared dependencies.
+    /// Returns `Ok(None)` when the manifest is absent or has no deps.
+    async fn build_cross_repo_finder(
+        &self,
+        user_pkg: Arc<dyn sclc::Package>,
+        local_repo: &ids::RepoQid,
+    ) -> anyhow::Result<Option<Arc<sclc::CrossRepoPackageFinder>>> {
+        // For manifest parsing only, a (user + std) finder is sufficient —
+        // `Package.scle` is expected to import only `Std/...`.
+        let manifest_finder = sclc::build_default_finder(Arc::clone(&user_pkg));
+        let manifest = match sclc::load_manifest(&*user_pkg, manifest_finder).await {
+            Ok(Some(m)) => m,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                // Surface the error as a deployment failure so the operator
+                // can see why the deployment didn't proceed.
+                self.log_publisher
+                    .error(format!("failed to load Package.scle: {e}"))
+                    .await;
+                return Err(anyhow::anyhow!("invalid Package.scle: {e}"));
+            }
+        };
+
+        if manifest.dependencies.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(Arc::new(sclc::CrossRepoPackageFinder::new(
+            self.cdb_client.clone(),
+            local_repo.org.clone(),
+            manifest.dependencies,
+        ))))
+    }
+}
+
+/// Compose the finder chain used during compile: local user package →
+/// cross-repo finder (if any) → CDB-backed cross-repo fallback for the
+/// local environment → standard library. The CDB fallback preserves the
+/// pre-cross-repo behaviour: a deployment can still resolve `Org/Repo`
+/// imports against active deployments in its own environment without
+/// declaring them in the manifest. (The cross-repo finder takes
+/// precedence when the manifest declares a specifier.)
+fn build_full_finder(
+    user_pkg: Arc<dyn sclc::Package>,
+    cdb_client: cdb::Client,
+    environment: ids::EnvironmentId,
+    cross_repo_finder: Option<Arc<sclc::CrossRepoPackageFinder>>,
+) -> Arc<dyn sclc::PackageFinder> {
+    use sclc::CompositePackageFinder;
+
+    let std_pkg: Arc<dyn sclc::Package> = Arc::new(sclc::StdPackage::new());
+    let cdb_finder: Arc<dyn sclc::PackageFinder> =
+        Arc::new(sclc::CdbPackageFinder::new(cdb_client, environment));
+
+    let mut finders: Vec<Arc<dyn sclc::PackageFinder>> = Vec::new();
+    finders.push(wrap_pkg(user_pkg));
+    if let Some(cr) = cross_repo_finder {
+        finders.push(cr);
+    }
+    finders.push(cdb_finder);
+    finders.push(wrap_pkg(std_pkg));
+
+    Arc::new(CompositePackageFinder::new(finders))
+}
+
+fn wrap_pkg(pkg: Arc<dyn sclc::Package>) -> Arc<dyn sclc::PackageFinder> {
+    struct PkgFinder(Arc<dyn sclc::Package>);
+
+    #[async_trait::async_trait]
+    impl sclc::PackageFinder for PkgFinder {
+        async fn find(
+            &self,
+            raw_id: &[&str],
+        ) -> Result<Option<Arc<dyn sclc::Package>>, sclc::LoadError> {
+            let pkg_id = self.0.id();
+            let segments = pkg_id.as_slice();
+            if raw_id.len() >= segments.len()
+                && raw_id[..segments.len()]
+                    .iter()
+                    .zip(segments.iter())
+                    .all(|(a, b)| *a == b.as_str())
+            {
+                Ok(Some(Arc::clone(&self.0)))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+
+    Arc::new(PkgFinder(pkg))
 }
