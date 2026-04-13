@@ -312,27 +312,12 @@ export function setupDiagnostics(
         const snapshot = JSON.stringify(files);
         lastFilesSnapshot = snapshot;
 
-        // Separate .scl and .scle files for different analysis pipelines
-        const sclFiles: Record<string, string> = {};
-        const scleFiles: Record<string, string> = {};
-        for (const [name, content] of Object.entries(files)) {
-            if (name.endsWith(".scle")) {
-                scleFiles[name] = content;
-            } else {
-                sclFiles[name] = content;
-            }
-        }
-
-        // Run both analysis pipelines in parallel
-        const [sclDiags, ...scleDiagArrays] = await Promise.all([
-            Object.keys(sclFiles).length > 0 ? worker.analyze(sclFiles) : Promise.resolve([]),
-            ...Object.entries(scleFiles).map(async ([name, content]) => {
-                const diags = await worker.analyzeScle(content);
-                // Tag each diagnostic with its file name
-                return diags.map((d) => ({ ...d, file: name }));
-            }),
-        ]);
-        const diags: DiagnosticInfo[] = [...sclDiags, ...scleDiagArrays.flat()];
+        // Single analysis pipeline covering both `.scl` and `.scle` files.
+        // The WASM `analyze` walks every file in the package as an entry
+        // point, so `.scle` files (which can't export and are therefore
+        // never imported) still get analyzed alongside their `.scl` siblings.
+        const diags: DiagnosticInfo[] =
+            Object.keys(files).length > 0 ? await worker.analyze(files) : [];
 
         // Only update if files haven't changed while we were analyzing
         if (JSON.stringify(getFiles()) !== snapshot) return;
