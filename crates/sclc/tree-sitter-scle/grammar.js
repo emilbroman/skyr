@@ -7,8 +7,14 @@ module.exports = grammar(require("../tree-sitter-scl/grammar"), {
         source_file: ($) =>
             seq(
                 repeat($.import_statement),
-                field("type", $._type_expression),
-                field("body", $._expression),
+                choice(
+                    seq(
+                        field("type", $._type_expression),
+                        field("body", $._expression),
+                    ),
+                    field("type", $._type_expression),
+                    field("body", $._expression),
+                ),
             ),
     },
 });
