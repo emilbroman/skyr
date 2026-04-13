@@ -84,6 +84,7 @@ std_modules! {
     list => "List.scl",
     num => "Num.scl",
     option => "Option.scl",
+    package => "Package.scl",
     random => "Random.scl",
     time => "Time.scl",
 }
