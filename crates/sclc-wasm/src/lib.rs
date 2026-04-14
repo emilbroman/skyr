@@ -289,9 +289,13 @@ pub async fn goto_definition(files_json: &str, file: &str, line: u32, col: u32) 
     let cursor_info = sclc::cursor_info(&asg, &module_id, source, position);
 
     let info = cursor_info.lock().unwrap();
-    info.declaration.map(|span| {
+    info.declaration.as_ref().map(|(decl_raw_id, span)| {
+        // Resolve the target module to a file path.
+        let decl_file = asg
+            .module(decl_raw_id)
+            .and_then(|mn| file_for_module_id(&mn.module_id, &file_map));
         serde_json::to_string(&LocationInfo {
-            file: None,
+            file: decl_file,
             line: span.start().line().saturating_sub(1),
             character: span.start().character().saturating_sub(1),
             end_line: span.end().line().saturating_sub(1),
