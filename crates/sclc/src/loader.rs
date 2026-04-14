@@ -558,7 +558,8 @@ fn analyze_module(
                     is_export,
                 });
             }
-            ModStmt::Expr(_) => {
+            ModStmt::Expr(expr) => {
+                collect_expr_refs(&ctx, expr.as_ref(), false, &mut Vec::new(), cd);
                 analysis.global_exprs.push(stmt.clone());
             }
             ModStmt::Import(import) => {

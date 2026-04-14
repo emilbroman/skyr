@@ -540,7 +540,7 @@ mod tests {
         files.insert(PathBuf::from("Other.scl"), b"export let abc = 123".to_vec());
         files.insert(
             PathBuf::from("Main.scl"),
-            b"import Test/Other\nlet f = fn()\n  let Other = {abc: 123}\n  Other.abc".to_vec(),
+            b"import Test/Other\nlet f = fn()\n  let Other = {abc: 123};\n  Other.abc".to_vec(),
         );
 
         let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
@@ -553,7 +553,7 @@ mod tests {
         let info = super::cursor_info(
             &asg,
             &module_id,
-            "import Test/Other\nlet f = fn()\n  let Other = {abc: 123}\n  Other.abc",
+            "import Test/Other\nlet f = fn()\n  let Other = {abc: 123};\n  Other.abc",
             Position::new(4, 3),
         );
         let locked = info.lock().unwrap();
