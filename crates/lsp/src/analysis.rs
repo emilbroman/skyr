@@ -178,6 +178,10 @@ impl sclc::Package for OverlayPackage {
         }
         self.inner.load(path).await
     }
+
+    fn root_path(&self) -> Option<&Path> {
+        Some(&self.root)
+    }
 }
 
 /// Returns `true` if the path has a `.scle` extension.
@@ -233,6 +237,12 @@ async fn workspace_entry_paths(root: &Path, extra_paths: &[PathBuf]) -> Vec<Path
     let existing: HashSet<PathBuf> = paths.iter().cloned().collect();
     for p in extra_paths {
         if existing.contains(p) {
+            continue;
+        }
+        // Only include files that live under the workspace root. Files from
+        // other packages (e.g. stdlib or cached dependencies opened via
+        // goto-definition) should not be treated as workspace entry points.
+        if !p.starts_with(root) {
             continue;
         }
         if p.extension()
@@ -539,6 +549,40 @@ fn module_id_to_path(root: &Path, module_id: &sclc::ModuleId, ext: &str) -> Path
         }
     }
     path
+}
+
+/// Resolve a `RawModuleId` to an LSP URI using the ASG to determine the
+/// module's file extension (`.scl` vs `.scle`) and the correct package root
+/// for path construction.
+///
+/// Resolution order for the package root directory:
+/// 1. Explicit `package_roots` map (populated by the CLI from cache paths)
+/// 2. The `Package::root_path()` from the ASG's stored package
+/// 3. The workspace `root` as a fallback for the local package
+pub fn raw_module_id_to_uri(
+    asg: &sclc::Asg,
+    raw_id: &[String],
+    root: Option<&Path>,
+    package_roots: &HashMap<sclc::PackageId, PathBuf>,
+) -> Option<lsp::Uri> {
+    let module_node = asg.module(raw_id)?;
+    let ext = if module_node.body.is_scle() {
+        "scle"
+    } else {
+        "scl"
+    };
+
+    let pkg_root = package_roots
+        .get(&module_node.package_id)
+        .map(PathBuf::as_path)
+        .or_else(|| {
+            asg.package(&module_node.package_id)
+                .and_then(|pkg| pkg.root_path())
+        })
+        .or(root)?;
+
+    let path = module_id_to_path(pkg_root, &module_node.module_id, ext);
+    Some(parse_uri(&path_to_uri_string(&path)))
 }
 
 fn path_to_uri_string(path: &Path) -> String {

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -145,6 +145,9 @@ pub struct LanguageServer {
     cached_dep_finders: Vec<Arc<dyn sclc::PackageFinder>>,
     /// Whether we've attempted to resolve cached deps.
     deps_resolved: bool,
+    /// Per-package root directories for file URI resolution. Populated by the
+    /// CLI from resolved dependency cache paths (including Std).
+    package_roots: HashMap<sclc::PackageId, PathBuf>,
 }
 
 impl Default for LanguageServer {
@@ -164,6 +167,7 @@ impl LanguageServer {
             published_uris: HashSet::new(),
             cached_dep_finders: Vec::new(),
             deps_resolved: false,
+            package_roots: HashMap::new(),
         }
     }
 
@@ -175,6 +179,15 @@ impl LanguageServer {
     pub fn set_cached_dep_finders(&mut self, finders: Vec<Arc<dyn sclc::PackageFinder>>) {
         self.cached_dep_finders = finders;
         self.deps_resolved = true;
+    }
+
+    /// Set per-package root directories for file URI resolution.
+    ///
+    /// The CLI populates this from resolved dependency cache paths so that
+    /// cross-package navigation (go-to-definition, find-references) can
+    /// construct file URIs pointing to the correct location on disk.
+    pub fn set_package_roots(&mut self, roots: HashMap<sclc::PackageId, PathBuf>) {
+        self.package_roots = roots;
     }
 
     /// Returns the workspace root path, if known.
@@ -279,6 +292,7 @@ impl LanguageServer {
                     program.as_ref(),
                     self.root.as_deref(),
                     &self.package_id,
+                    &self.package_roots,
                 )
             }
             "textDocument/references" => {
@@ -290,6 +304,7 @@ impl LanguageServer {
                     program.as_ref(),
                     self.root.as_deref(),
                     &self.package_id,
+                    &self.package_roots,
                 )
             }
             "textDocument/documentSymbol" => handlers::navigation::document_symbol(
