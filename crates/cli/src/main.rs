@@ -31,7 +31,11 @@ struct Program {
 
 #[derive(clap::Subcommand)]
 enum Command {
-    Lsp,
+    Lsp {
+        /// SSH git server address for fetching dependencies (host:port)
+        #[arg(long, default_value = "skyr.cloud:22")]
+        git_server: String,
+    },
     Repl {
         #[arg(long, default_value = ".")]
         root: PathBuf,
@@ -74,8 +78,8 @@ async fn main() -> anyhow::Result<()> {
     let program = Program::parse();
 
     match program.command {
-        Command::Lsp => {
-            lsp::run_lsp().await?;
+        Command::Lsp { git_server } => {
+            lsp::run_lsp(git_server).await?;
         }
         Command::Repl {
             root,
