@@ -44,7 +44,8 @@ type Resolved =
     | { kind: "number"; display: string; label?: undefined }
     | { kind: "boolean"; display: string; label?: undefined }
     | { kind: "null"; display: string; label?: undefined }
-    | { kind: "special"; display: string; label: string };
+    | { kind: "special"; display: string; label: string }
+    | { kind: "path"; path: string; hash: string };
 
 function resolve(raw: unknown): Resolved {
     if (raw == null) return { kind: "null", display: "nil" };
@@ -139,6 +140,22 @@ function resolve(raw: unknown): Resolved {
                     }
                 }
                 return { kind: "special", display: "<dict>", label: "Dict" };
+            }
+            case "Path": {
+                if (
+                    inner &&
+                    typeof inner === "object" &&
+                    "path" in (inner as Record<string, unknown>) &&
+                    "hash" in (inner as Record<string, unknown>)
+                ) {
+                    const p = inner as Record<string, unknown>;
+                    return {
+                        kind: "path",
+                        path: String(p.path),
+                        hash: String(p.hash),
+                    };
+                }
+                return { kind: "special", display: "<path>", label: "Path" };
             }
             case "Pending":
                 return { kind: "special", display: "<pending>", label: "Pending" };
@@ -276,6 +293,8 @@ let resolved = $derived(resolve(value));
       <span class="text-yellow-600">{resolved.display}</span>
     {:else if resolved.kind === "null"}
       <span class="text-gray-400 italic">{resolved.display}</span>
+    {:else if resolved.kind === "path"}
+      <span class="text-green-700">{resolved.path}</span>{" "}<span class="text-gray-400">{resolved.hash}</span>
     {:else if resolved.kind === "special"}
       <span class="text-orange-600 italic">{resolved.display}</span>
     {/if}
