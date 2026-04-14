@@ -75,6 +75,13 @@ impl ExternRegistry for ExternCollector {
     }
 }
 
+/// Returns the bundled standard library files as (filename, content) pairs.
+///
+/// Useful for extracting the stdlib to disk (e.g. for a local package cache).
+pub fn bundled_stdlib_files() -> &'static [(&'static str, &'static [u8])] {
+    &BUNDLED_FILES
+}
+
 std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",

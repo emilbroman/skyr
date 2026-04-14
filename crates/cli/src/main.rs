@@ -2,15 +2,18 @@ use clap::Parser;
 use std::path::PathBuf;
 
 mod auth;
+mod cache;
 mod deployment;
 mod deps;
 mod fmt;
+mod git_client;
 mod lsp;
 mod org;
 mod output;
 mod port_forward;
 mod repl;
 mod repo;
+mod resolver;
 mod resource;
 mod run;
 mod signin;
@@ -34,12 +37,18 @@ enum Command {
         root: PathBuf,
         #[arg(long, default_value = "Local")]
         package: String,
+        /// SSH git server address for fetching dependencies (host:port)
+        #[arg(long, default_value = "skyr.cloud:22")]
+        git_server: String,
     },
     Run {
         #[arg(long, default_value = ".")]
         root: PathBuf,
         #[arg(long, default_value = "Local")]
         package: String,
+        /// SSH git server address for fetching dependencies (host:port)
+        #[arg(long, default_value = "skyr.cloud:22")]
+        git_server: String,
     },
     Signin(signin::SigninArgs),
     Signup(signup::SignupArgs),
@@ -68,11 +77,19 @@ async fn main() -> anyhow::Result<()> {
         Command::Lsp => {
             lsp::run_lsp().await?;
         }
-        Command::Repl { root, package } => {
-            repl::run_repl(root, package).await?;
+        Command::Repl {
+            root,
+            package,
+            git_server,
+        } => {
+            repl::run_repl(root, package, git_server).await?;
         }
-        Command::Run { root, package } => {
-            run::run_program(root, package).await?;
+        Command::Run {
+            root,
+            package,
+            git_server,
+        } => {
+            run::run_program(root, package, git_server).await?;
         }
         Command::Signin(args) => {
             signin::run_signin(args, program.format).await?;

@@ -66,6 +66,9 @@ pub use std_package::*;
 pub use ty::*;
 pub use value::*;
 
+/// The sclc crate version, used as the stdlib cache key.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// A placeholder [`ids::DeploymentQid`] suitable for tests and other contexts
 /// that need to construct an [`EvalCtx`] without a real deployment behind it
 /// (e.g. the REPL, the wasm playground, or in-memory unit tests).
