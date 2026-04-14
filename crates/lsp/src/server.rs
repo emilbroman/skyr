@@ -141,6 +141,10 @@ pub struct LanguageServer {
     exit_code: Option<i32>,
     /// URI strings that had diagnostics published (for clearing stale diagnostics).
     published_uris: HashSet<String>,
+    /// Extra package finders for cached cross-repo dependencies.
+    cached_dep_finders: Vec<Arc<dyn sclc::PackageFinder>>,
+    /// Whether we've attempted to resolve cached deps.
+    deps_resolved: bool,
 }
 
 impl Default for LanguageServer {
@@ -158,6 +162,8 @@ impl LanguageServer {
             shutdown_requested: false,
             exit_code: None,
             published_uris: HashSet::new(),
+            cached_dep_finders: Vec::new(),
+            deps_resolved: false,
         }
     }
 
@@ -185,7 +191,17 @@ impl LanguageServer {
         let root = self.root.as_ref()?;
         let fs_pkg = sclc::FsPackage::new(root.clone(), self.package_id.clone());
         let overlay = OverlayPackage::new(fs_pkg, self.documents.clone(), root.clone());
-        Some(sclc::build_default_finder(Arc::new(overlay)))
+
+        if self.cached_dep_finders.is_empty() {
+            Some(sclc::build_default_finder(Arc::new(overlay)))
+        } else {
+            let std_pkg = Arc::new(sclc::StdPackage::new());
+            let mut finders: Vec<Arc<dyn sclc::PackageFinder>> = Vec::new();
+            finders.push(sclc::wrap_as_finder(Arc::new(overlay)));
+            finders.extend(self.cached_dep_finders.iter().cloned());
+            finders.push(sclc::wrap_as_finder(std_pkg));
+            Some(Arc::new(sclc::CompositePackageFinder::new(finders)))
+        }
     }
 
     async fn load_program(&self) -> Option<LspProgram> {
@@ -374,6 +390,55 @@ impl LanguageServer {
         self.publish_diagnostics().await
     }
 
+    /// Try to discover cached cross-repo dependencies from disk.
+    ///
+    /// Reads the workspace's `Package.scle` manifest and looks for
+    /// already-cached package versions under `~/.cache/skyr-packages/`.
+    /// If any are found, they are added as extra finders so cross-repo
+    /// imports resolve. This does not fetch anything from the network;
+    /// the cache must have been populated by a prior `skyr run` or
+    /// `skyr repl` invocation.
+    async fn try_resolve_cached_deps(&mut self) {
+        let Some(root) = &self.root else { return };
+        let root = root.clone();
+
+        let fs_pkg: Arc<dyn sclc::Package> =
+            Arc::new(sclc::FsPackage::new(root, self.package_id.clone()));
+        let finder = sclc::build_default_finder(Arc::clone(&fs_pkg));
+
+        let manifest = match sclc::load_manifest(fs_pkg, finder).await {
+            Ok(Some(m)) => m,
+            _ => return,
+        };
+
+        let home = match std::env::var("HOME") {
+            Ok(h) => PathBuf::from(h),
+            Err(_) => return,
+        };
+        let cache_root = home.join(".cache").join("skyr-packages");
+
+        for repo_qid in manifest.dependencies.keys() {
+            let pkg_id =
+                sclc::PackageId::from([repo_qid.org.to_string(), repo_qid.repo.to_string()]);
+            let pkg_dir_name = pkg_id.to_string().replace('/', "-");
+            let pkg_cache_dir = cache_root.join(&pkg_dir_name);
+
+            // Use the first cached version found (most recently cached by
+            // a prior CLI run).
+            let Ok(mut entries) = tokio::fs::read_dir(&pkg_cache_dir).await else {
+                continue;
+            };
+            if let Ok(Some(entry)) = entries.next_entry().await {
+                let version_dir = entry.path();
+                if version_dir.is_dir() {
+                    let dep_pkg = sclc::FsPackage::new(version_dir, pkg_id);
+                    self.cached_dep_finders
+                        .push(sclc::wrap_as_finder(Arc::new(dep_pkg)));
+                }
+            }
+        }
+    }
+
     fn init_root_from_uri(&mut self, uri: &lsp::Uri) {
         if self.root.is_some() {
             return;
@@ -394,6 +459,12 @@ impl LanguageServer {
             Some(r) => r.clone(),
             None => return vec![],
         };
+
+        // Lazily resolve cached dependencies on first diagnostics pass.
+        if !self.deps_resolved {
+            self.deps_resolved = true;
+            self.try_resolve_cached_deps().await;
+        }
 
         let finder = match self.build_finder() {
             Some(f) => f,

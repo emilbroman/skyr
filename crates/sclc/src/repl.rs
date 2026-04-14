@@ -97,6 +97,18 @@ impl Repl {
         self.finder = build_default_finder(user_package);
     }
 
+    /// Replace the finder with a custom one. This is useful when the finder
+    /// includes cached cross-repo dependencies that should survive user
+    /// package refreshes.
+    pub fn replace_finder(
+        &mut self,
+        user_package: Arc<dyn crate::Package>,
+        finder: Arc<dyn PackageFinder>,
+    ) {
+        self.package_id = user_package.id();
+        self.finder = finder;
+    }
+
     pub fn package_id(&self) -> &PackageId {
         &self.package_id
     }

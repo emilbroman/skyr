@@ -406,13 +406,23 @@ fn report_repl_error(err: &sclc::ReplError) {
     }
 }
 
-async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow::Result<()> {
+async fn process_line(
+    state: &mut sclc::Repl,
+    root: &Path,
+    resolved: &[crate::cache::ResolvedPackage],
+    line: &str,
+) -> anyhow::Result<()> {
     // Refresh the user package from the filesystem before each line.
-    let fs_pkg = std::sync::Arc::new(sclc::FsPackage::new(
+    let fs_pkg: std::sync::Arc<dyn sclc::Package> = std::sync::Arc::new(sclc::FsPackage::new(
         root.to_path_buf(),
         state.package_id().clone(),
     ));
-    state.replace_user_package(fs_pkg);
+    if resolved.is_empty() {
+        state.replace_user_package(fs_pkg);
+    } else {
+        let finder = crate::cache::build_cached_finder(std::sync::Arc::clone(&fs_pkg), resolved);
+        state.replace_finder(fs_pkg, finder);
+    }
 
     match state.process(line.to_owned()).await {
         Ok(Some(sclc::ReplOutcome::Binding { name, ty })) => {
@@ -432,7 +442,7 @@ async fn process_line(state: &mut sclc::Repl, root: &Path, line: &str) -> anyhow
     Ok(())
 }
 
-pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
+pub async fn run_repl(root: PathBuf, package: String, git_server: String) -> anyhow::Result<()> {
     let package_id = package
         .split('/')
         .filter(|segment| !segment.is_empty())
@@ -441,9 +451,17 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     let (effects_tx, effects_rx) = tokio::sync::mpsc::unbounded_channel();
     let effects_task = spawn_effect_printer(effects_rx);
 
-    // Create a PackageFinder for the REPL session.
-    let fs_pkg = std::sync::Arc::new(sclc::FsPackage::new(root.clone(), package_id.clone()));
-    let finder = sclc::build_default_finder(fs_pkg);
+    // Create a PackageFinder for the REPL session, resolving deps if present.
+    let fs_pkg: std::sync::Arc<dyn sclc::Package> =
+        std::sync::Arc::new(sclc::FsPackage::new(root.clone(), package_id.clone()));
+    let default_finder = sclc::build_default_finder(std::sync::Arc::clone(&fs_pkg));
+
+    let resolved = resolve_repl_deps(&fs_pkg, &default_finder, &git_server).await?;
+    let finder: std::sync::Arc<dyn sclc::PackageFinder> = if resolved.is_empty() {
+        default_finder
+    } else {
+        crate::cache::build_cached_finder(std::sync::Arc::clone(&fs_pkg), &resolved)
+    };
 
     let mut state = sclc::Repl::new(
         finder,
@@ -467,7 +485,7 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
             Ok(line) => {
                 editor.add_history_entry(&line)?;
 
-                if let Err(e) = process_line(&mut state, &root, &line).await {
+                if let Err(e) = process_line(&mut state, &root, &resolved, &line).await {
                     println!("{e}");
                 }
             }
@@ -484,4 +502,28 @@ pub async fn run_repl(root: PathBuf, package: String) -> anyhow::Result<()> {
     effects_task.await?;
 
     Ok(())
+}
+
+/// Try to resolve dependencies for the REPL session. If no manifest
+/// exists or no SSH credentials are configured, returns an empty vec.
+async fn resolve_repl_deps(
+    user_package: &std::sync::Arc<dyn sclc::Package>,
+    finder: &std::sync::Arc<sclc::CompositePackageFinder>,
+    git_server: &str,
+) -> anyhow::Result<Vec<crate::cache::ResolvedPackage>> {
+    let manifest = sclc::load_manifest(std::sync::Arc::clone(user_package), finder.clone()).await?;
+    let Some(manifest) = manifest else {
+        return Ok(Vec::new());
+    };
+    if manifest.dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let git_client = crate::git_client::GitClient::from_config(git_server.to_string()).await?;
+    crate::resolver::resolve_all(
+        std::sync::Arc::clone(user_package),
+        finder.clone(),
+        &git_client,
+    )
+    .await
 }

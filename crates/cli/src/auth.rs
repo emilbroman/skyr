@@ -34,9 +34,9 @@ struct AuthChallenge;
 struct Signin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct UserConfig {
-    username: String,
-    key: String,
+pub(crate) struct UserConfig {
+    pub(crate) username: String,
+    pub(crate) key: String,
 }
 
 pub(crate) async fn acquire_token(
@@ -278,7 +278,7 @@ async fn write_token(token: &str) -> anyhow::Result<()> {
     write_file_restricted(&token_path, token.as_bytes()).await
 }
 
-async fn read_user_config() -> anyhow::Result<UserConfig> {
+pub(crate) async fn read_user_config() -> anyhow::Result<UserConfig> {
     let user_config_path = user_config_path()?;
     let contents = tokio::fs::read_to_string(&user_config_path)
         .await
@@ -331,7 +331,7 @@ fn user_config_path() -> anyhow::Result<PathBuf> {
     Ok(home_dir()?.join(".config").join("skyr").join("user.json"))
 }
 
-fn home_dir() -> anyhow::Result<PathBuf> {
+pub(crate) fn home_dir() -> anyhow::Result<PathBuf> {
     std::env::var("HOME")
         .map(PathBuf::from)
         .context("HOME is not set")
