@@ -78,6 +78,10 @@ impl Package for FsPackage {
     }
 
     fn register_externs(&self, _externs: &mut HashMap<String, Value>) {}
+
+    fn root_path(&self) -> Option<&Path> {
+        Some(&self.root)
+    }
 }
 
 #[cfg(test)]

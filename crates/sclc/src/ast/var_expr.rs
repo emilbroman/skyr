@@ -22,25 +22,17 @@ pub(crate) fn synth_var(
             }
         }
     }
-    let set_cursor = |decl: crate::Span, ty: &Type| {
+    let set_cursor = |ty: &Type| {
         if let Some((cursor, _)) = &var.cursor {
-            cursor.set_declaration(decl);
             cursor.set_type(ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
         }
     };
-    let track_ref = |decl: crate::Span| {
-        if let Some(cursor) = &env.cursor {
-            cursor.track_reference(decl, expr.span());
-        }
-    };
 
     // Local variable
-    if let Some((decl, local_ty)) = env.lookup_local(var.name.as_str()) {
-        let decl = *decl;
+    if let Some((_decl, local_ty)) = env.lookup_local(var.name.as_str()) {
         let local_ty = local_ty.clone();
-        track_ref(decl);
-        set_cursor(decl, &local_ty);
+        set_cursor(&local_ty);
         return Ok(Diagnosed::new(local_ty, DiagList::new()));
     }
 
@@ -98,25 +90,19 @@ pub(crate) fn synth_var(
 pub(crate) fn synth_global(
     checker: &TypeChecker<'_>,
     env: &TypeEnv<'_>,
-    expr: &crate::Loc<super::Expr>,
+    _expr: &crate::Loc<super::Expr>,
     var: &crate::Loc<super::Var>,
     decl: crate::Span,
     global_expr: &crate::Loc<super::Expr>,
     doc_comment: Option<&str>,
 ) -> Result<Diagnosed<Type>, TypeCheckError> {
-    let set_cursor = |decl: crate::Span, ty: &Type| {
+    let set_cursor = |ty: &Type| {
         if let Some((cursor, _)) = &var.cursor {
-            cursor.set_declaration(decl);
             cursor.set_type(ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
             if let Some(doc) = doc_comment {
                 cursor.set_description(doc.to_owned());
             }
-        }
-    };
-    let track_ref = |decl: crate::Span| {
-        if let Some(cursor) = &env.cursor {
-            cursor.track_reference(decl, expr.span());
         }
     };
 
@@ -146,7 +132,6 @@ pub(crate) fn synth_global(
     };
     let type_id = next_type_id();
     let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
-    track_ref(decl);
-    set_cursor(decl, &ty);
+    set_cursor(&ty);
     Ok(Diagnosed::new(ty, diags))
 }

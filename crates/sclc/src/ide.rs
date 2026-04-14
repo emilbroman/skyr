@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use crate::asg::ModuleBody;
 use crate::{
     AsgChecker, CompletionCandidate, Cursor, CursorInfo, ModuleId, PackageId, Position,
     TypeChecker, TypeEnv, ast, parse_file_mod_with_cursor, parse_scle_with_cursor,
+    resolve_cursor_refs,
 };
 
 use super::Asg;
@@ -13,13 +15,13 @@ use super::Asg;
 ///
 /// The `source` should be the current editor content for the file (which may
 /// differ from the version the ASG was built from). This function re-parses
-/// the source with a cursor, then type-checks against the ASG's context to
-/// populate `CursorInfo`.
+/// the source with a cursor, then resolves declaration/reference edges via
+/// the loader's AST walk, and finally type-checks for type info and
+/// completions.
 ///
 /// If the module is registered as `.scle` in the ASG, the source is parsed
 /// as a SCLE module and only its imports / type expression / body expression
-/// are checked (SCLE modules have no statement-level constructs beyond
-/// imports).
+/// are checked.
 pub fn cursor_info(
     asg: &Asg,
     module_id: &ModuleId,
@@ -43,37 +45,39 @@ pub fn cursor_info(
         .map(|mn| mn.body.is_scle())
         .unwrap_or(false);
 
-    // Build module map and checker directly from the ASG.
-    let modules: HashMap<ModuleId, ast::FileMod> = asg
-        .modules()
-        .filter_map(|mn| {
-            mn.body
-                .as_file_mod()
-                .map(|fm| (mn.module_id.clone(), fm.clone()))
-        })
-        .collect();
-    let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
-    let checker = TypeChecker::from_modules(&modules, package_names);
+    let pkg_id = asg
+        .module(&raw_id)
+        .map(|mn| mn.package_id.clone())
+        .unwrap_or_default();
 
-    // Run the ASG-driven checker first so the GlobalTypeEnv is populated
-    // with import maps, global types, and module export records. Without
-    // this, references to symbols imported from other modules cannot be
-    // resolved and hover/completion would have no type info for them.
-    let mut asg_checker = AsgChecker::new(asg);
-    let _ = asg_checker.check();
-    let ge = asg_checker.into_global_type_env();
-
-    let type_env = TypeEnv::new(&ge)
-        .with_module_id(module_id)
-        .with_raw_module_id(&raw_id)
-        .with_cursor(cursor.clone());
-
+    // Parse with cursor and resolve declaration/reference edges.
     if is_scle {
-        let diagnosed = parse_scle_with_cursor(source, module_id, Some(cursor));
+        let diagnosed = parse_scle_with_cursor(source, module_id, Some(cursor.clone()));
         if let Some(scle_mod) = diagnosed.into_inner() {
-            // Mirror `AsgChecker::assemble_module`'s SCLE branch so cursor
-            // queries see the same type-checking shape as the rest of the
-            // pipeline.
+            // Resolve cursor refs via the loader's scope-aware AST walk.
+            resolve_cursor_refs(asg, &raw_id, &pkg_id, &ModuleBody::Scle(scle_mod.clone()));
+
+            // Type-check for type info and completions.
+            let modules: HashMap<ModuleId, ast::FileMod> = asg
+                .modules()
+                .filter_map(|mn| {
+                    mn.body
+                        .as_file_mod()
+                        .map(|fm| (mn.module_id.clone(), fm.clone()))
+                })
+                .collect();
+            let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
+            let checker = TypeChecker::from_modules(&modules, package_names);
+
+            let mut asg_checker = AsgChecker::new(asg);
+            let _ = asg_checker.check();
+            let ge = asg_checker.into_global_type_env();
+
+            let type_env = TypeEnv::new(&ge)
+                .with_module_id(module_id)
+                .with_raw_module_id(&raw_id)
+                .with_cursor(cursor);
+
             for import in &scle_mod.imports {
                 let stmt = ast::ModStmt::Import(import.clone());
                 let _ = checker.check_stmt(&type_env, &stmt);
@@ -93,8 +97,33 @@ pub fn cursor_info(
             }
         }
     } else {
-        let diagnosed = parse_file_mod_with_cursor(source, module_id, Some(cursor));
+        let diagnosed = parse_file_mod_with_cursor(source, module_id, Some(cursor.clone()));
         let file_mod = diagnosed.into_inner();
+
+        // Resolve cursor refs via the loader's scope-aware AST walk.
+        resolve_cursor_refs(asg, &raw_id, &pkg_id, &ModuleBody::File(file_mod.clone()));
+
+        // Type-check for type info and completions.
+        let modules: HashMap<ModuleId, ast::FileMod> = asg
+            .modules()
+            .filter_map(|mn| {
+                mn.body
+                    .as_file_mod()
+                    .map(|fm| (mn.module_id.clone(), fm.clone()))
+            })
+            .collect();
+        let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
+        let checker = TypeChecker::from_modules(&modules, package_names);
+
+        let mut asg_checker = AsgChecker::new(asg);
+        let _ = asg_checker.check();
+        let ge = asg_checker.into_global_type_env();
+
+        let type_env = TypeEnv::new(&ge)
+            .with_module_id(module_id)
+            .with_raw_module_id(&raw_id)
+            .with_cursor(cursor);
+
         let _ = checker.check_file_mod(&type_env, &file_mod);
     }
 
@@ -310,5 +339,234 @@ mod tests {
             names.contains(&"foo"),
             "expected 'foo' in completions, got: {names:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn goto_definition_cross_module_property() {
+        // Cursor on `answer` in `Lib.answer` should declare into Lib.scl.
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Lib.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Lib\nlet x = Lib.answer".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `answer` in `Lib.answer` (line 2, col 14)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "import Test/Lib\nlet x = Lib.answer",
+            Position::new(2, 14),
+        );
+        let locked = info.lock().unwrap();
+        let (decl_module, decl_span) = locked
+            .declaration
+            .as_ref()
+            .expect("expected a declaration for the imported property");
+        // Declaration should be in the Lib module.
+        assert_eq!(
+            decl_module,
+            &vec!["Test".to_string(), "Lib".to_string()],
+            "expected declaration in Test/Lib"
+        );
+        // Declaration span should be the `answer` identifier in `export let answer = 42`
+        // which is at line 1, col 12–17.
+        assert_eq!(decl_span.start().line(), 1);
+        assert_eq!(decl_span.start().character(), 12);
+    }
+
+    #[tokio::test]
+    async fn goto_definition_import_alias() {
+        // Cursor on `Lib` in `import Test/Lib` should point to top of Lib.scl.
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Lib.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Lib\nlet x = Lib.answer".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `Lib` in `import Test/Lib` (line 1, col 13)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "import Test/Lib\nlet x = Lib.answer",
+            Position::new(1, 13),
+        );
+        let locked = info.lock().unwrap();
+        let (decl_module, decl_span) = locked
+            .declaration
+            .as_ref()
+            .expect("expected a declaration for the import alias");
+        assert_eq!(
+            decl_module,
+            &vec!["Test".to_string(), "Lib".to_string()],
+            "expected declaration in Test/Lib"
+        );
+        // Import alias should point to 1:1–1:1 (top of file).
+        assert_eq!(decl_span.start().line(), 1);
+        assert_eq!(decl_span.start().character(), 1);
+        assert_eq!(decl_span.end().line(), 1);
+        assert_eq!(decl_span.end().character(), 1);
+    }
+
+    #[tokio::test]
+    async fn goto_definition_import_alias_in_expr() {
+        // Cursor on `Lib` in `Lib.answer` (the expression, not the import statement).
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Lib.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Lib\nlet x = Lib.answer".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `Lib` in `Lib.answer` (line 2, col 9)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "import Test/Lib\nlet x = Lib.answer",
+            Position::new(2, 9),
+        );
+        let locked = info.lock().unwrap();
+        let (decl_module, _decl_span) = locked
+            .declaration
+            .as_ref()
+            .expect("expected a declaration for the import alias in expression");
+        assert_eq!(
+            decl_module,
+            &vec!["Test".to_string(), "Lib".to_string()],
+            "expected declaration in Test/Lib"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_references_cross_module() {
+        // Cursor on `answer` declaration in Lib.scl should find reference from Main.scl.
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Lib.scl"), b"export let answer = 42".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Lib\nlet x = Lib.answer".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Lib".to_string()]);
+        // Cursor on `answer` in `export let answer = 42` (line 1, col 12)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "export let answer = 42",
+            Position::new(1, 12),
+        );
+        let locked = info.lock().unwrap();
+        assert!(
+            !locked.references.is_empty(),
+            "expected at least one reference to 'answer'"
+        );
+        // Should have a reference from Main.scl.
+        let has_cross_module_ref = locked
+            .references
+            .iter()
+            .any(|(module, _)| module == &vec!["Test".to_string(), "Main".to_string()]);
+        assert!(
+            has_cross_module_ref,
+            "expected a cross-module reference from Test/Main, got: {:?}",
+            locked.references
+        );
+    }
+
+    #[tokio::test]
+    async fn same_module_global_declaration() {
+        // Cursor on a reference to a same-module global should point to its declaration.
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let foo = 42\nlet bar = foo".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `foo` in `let bar = foo` (line 2, col 11)
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "let foo = 42\nlet bar = foo",
+            Position::new(2, 11),
+        );
+        let locked = info.lock().unwrap();
+        let (decl_module, decl_span) = locked
+            .declaration
+            .as_ref()
+            .expect("expected a declaration for same-module global reference");
+        assert_eq!(
+            decl_module,
+            &vec!["Test".to_string(), "Main".to_string()],
+            "expected declaration in same module"
+        );
+        // `foo` declaration is at line 1, col 5.
+        assert_eq!(decl_span.start().line(), 1);
+        assert_eq!(decl_span.start().character(), 5);
+    }
+
+    #[tokio::test]
+    async fn local_shadowing_prevents_cross_module_ref() {
+        // A local `let Other = ...` should shadow the import.
+        let mut files = HashMap::new();
+        files.insert(PathBuf::from("Other.scl"), b"export let abc = 123".to_vec());
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/Other\nlet f = fn()\n  let Other = {abc: 123}\n  Other.abc".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `Other` in `Other.abc` (line 4, col 3) — should be the local, not the import.
+        let info = super::cursor_info(
+            &asg,
+            &module_id,
+            "import Test/Other\nlet f = fn()\n  let Other = {abc: 123}\n  Other.abc",
+            Position::new(4, 3),
+        );
+        let locked = info.lock().unwrap();
+        if let Some((decl_module, decl_span)) = &locked.declaration {
+            // If there's a declaration, it should be in Main (the local let), not Other.
+            assert_eq!(
+                decl_module,
+                &vec!["Test".to_string(), "Main".to_string()],
+                "local shadow should resolve to same module, not import"
+            );
+            // The local `let Other` is on line 3, col 7.
+            assert_eq!(decl_span.start().line(), 3);
+            assert_eq!(decl_span.start().character(), 7);
+        }
     }
 }

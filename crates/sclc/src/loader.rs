@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
 use crate::ast::{self, Expr, ListItem, ModStmt, TypeExpr};
-use crate::{DiagList, Diagnosed, Loc, ModuleId, PackageId, Span};
+use crate::{
+    Cursor, CursorIdentifier, DiagList, Diagnosed, Loc, ModuleId, PackageId, Position, Span,
+};
 
 use super::asg::{
     Asg, Edge, GlobalNode, ModuleBody, ModuleNode, NodeId, RawModuleId, TypeDeclNode,
@@ -15,6 +17,7 @@ pub struct Loader {
     finder: Arc<dyn PackageFinder>,
     asg: Asg,
     diags: DiagList,
+    cursor_data: CursorData,
 }
 
 impl Loader {
@@ -23,6 +26,12 @@ impl Loader {
             finder,
             asg: Asg::new(),
             diags: DiagList::new(),
+            cursor_data: CursorData {
+                cursor: None,
+                pending_declarations: Vec::new(),
+                pending_references: Vec::new(),
+                resolved_references: Vec::new(),
+            },
         }
     }
 
@@ -175,12 +184,20 @@ impl Loader {
 
         // Analyze the module: collect globals, type decls, imports, and build edges.
         let analysis = match &body {
-            ModuleBody::File(file_mod) => {
-                analyze_module(&raw_module_id, &pkg_id, &module_id, file_mod)
-            }
-            ModuleBody::Scle(scle_mod) => {
-                analyze_scle_module(&raw_module_id, &pkg_id, &module_id, scle_mod)
-            }
+            ModuleBody::File(file_mod) => analyze_module(
+                &raw_module_id,
+                &pkg_id,
+                &module_id,
+                file_mod,
+                &mut self.cursor_data,
+            ),
+            ModuleBody::Scle(scle_mod) => analyze_scle_module(
+                &raw_module_id,
+                &pkg_id,
+                &module_id,
+                scle_mod,
+                &mut self.cursor_data,
+            ),
         };
 
         // Add module node.
@@ -274,6 +291,7 @@ impl Loader {
     /// Finalize the Loader, returning the ASG with accumulated diagnostics.
     pub fn finish(mut self) -> Diagnosed<Asg> {
         self.asg.rewrite_dangling_global_edges();
+        resolve_pending_cursor_data(&self.asg, &self.cursor_data);
         Diagnosed::new(self.asg, self.diags)
     }
 
@@ -286,6 +304,7 @@ impl Loader {
     pub fn finish_with_validation(mut self) -> Diagnosed<Asg> {
         self.asg.rewrite_dangling_global_edges();
         self.validate_scc_laziness();
+        resolve_pending_cursor_data(&self.asg, &self.cursor_data);
         Diagnosed::new(self.asg, self.diags)
     }
 
@@ -340,6 +359,7 @@ fn analyze_module(
     pkg_id: &PackageId,
     module_id: &ModuleId,
     file_mod: &ast::FileMod,
+    cd: &mut CursorData,
 ) -> ModuleAnalysis {
     // Collect sets of names for classification.
     let mut global_names: HashSet<String> = HashSet::new();
@@ -437,13 +457,20 @@ fn analyze_module(
                     span: None,
                 });
 
+                // Track cursor on the global binding declaration.
+                if let Some((cursor, _)) = &bind.var.cursor {
+                    cd.cursor = Some(cursor.clone());
+                    cursor.set_declaration(raw_id.clone(), bind.var.span());
+                    cursor.set_identifier(CursorIdentifier::Let(bind.var.name.clone()));
+                }
+
                 // Traverse the expression body for references.
                 let mut refs = Vec::new();
-                collect_expr_refs(&ctx, bind.expr.as_ref().as_ref(), false, &mut refs);
+                collect_expr_refs(&ctx, bind.expr.as_ref().as_ref(), false, &mut refs, cd);
 
                 // Also traverse the type annotation, if any.
                 if let Some(ty) = &bind.ty {
-                    collect_type_refs(&ctx, ty.as_ref(), &mut refs);
+                    collect_type_refs(&ctx, ty.as_ref(), &mut refs, cd);
                 }
 
                 for r in refs {
@@ -476,9 +503,16 @@ fn analyze_module(
                     span: None,
                 });
 
+                // Track cursor on the type declaration.
+                if let Some((cursor, _)) = &td.var.cursor {
+                    cd.cursor = Some(cursor.clone());
+                    cursor.set_declaration(raw_id.clone(), td.var.span());
+                    cursor.set_identifier(CursorIdentifier::Type(td.var.name.clone()));
+                }
+
                 // Traverse the type body for type references.
                 let mut refs = Vec::new();
-                collect_type_refs(&ctx, td.ty.as_ref(), &mut refs);
+                collect_type_refs(&ctx, td.ty.as_ref(), &mut refs, cd);
 
                 // Subtract own type params.
                 let own_params: HashSet<&str> = td
@@ -505,7 +539,7 @@ fn analyze_module(
                 for tp in &td.type_params {
                     if let Some(bound) = &tp.bound {
                         let mut bound_refs = Vec::new();
-                        collect_type_refs(&ctx, bound.as_ref(), &mut bound_refs);
+                        collect_type_refs(&ctx, bound.as_ref(), &mut bound_refs, cd);
                         for r in bound_refs {
                             analysis.edges.push(Edge {
                                 from: from.clone(),
@@ -527,8 +561,23 @@ fn analyze_module(
             ModStmt::Expr(_) => {
                 analysis.global_exprs.push(stmt.clone());
             }
-            ModStmt::Import(_) => {
-                // Already handled above.
+            ModStmt::Import(import) => {
+                // Edge handling already done above. Track cursor on the
+                // import alias (last path segment).
+                let vars = &import.as_ref().vars;
+                if !vars.is_empty() {
+                    let alias_var = vars.last().unwrap();
+                    let import_raw_id = resolve_import_path(vars, pkg_id);
+                    if let Some((cursor, _)) = &alias_var.cursor {
+                        cd.cursor = Some(cursor.clone());
+                        cd.pending_declarations.push(PendingCursorDeclaration {
+                            cursor: cursor.clone(),
+                            target: PendingTarget::ImportAlias {
+                                module: import_raw_id,
+                            },
+                        });
+                    }
+                }
             }
         }
     }
@@ -544,6 +593,7 @@ fn analyze_scle_module(
     pkg_id: &PackageId,
     module_id: &ModuleId,
     scle_mod: &ast::ScleMod,
+    cd: &mut CursorData,
 ) -> ModuleAnalysis {
     let mut global_names: HashSet<String> = HashSet::new();
     let type_names: HashSet<String> = HashSet::new();
@@ -613,10 +663,10 @@ fn analyze_scle_module(
     // (either may be absent — SCLE parts are optional).
     let mut refs = Vec::new();
     if let Some(type_expr) = &scle_mod.type_expr {
-        collect_type_refs(&ctx, type_expr.as_ref(), &mut refs);
+        collect_type_refs(&ctx, type_expr.as_ref(), &mut refs, cd);
     }
     if let Some(body) = &scle_mod.body {
-        collect_expr_refs(&ctx, body.as_ref(), false, &mut refs);
+        collect_expr_refs(&ctx, body.as_ref(), false, &mut refs, cd);
     }
 
     let from = NodeId::Module(raw_id.clone());
@@ -664,24 +714,219 @@ struct Ref {
     span: Span,
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// Cursor tracking
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The target of a pending cursor declaration or reference, resolved at
+/// finalization when all modules have been loaded.
+#[derive(Clone, Debug)]
+enum PendingTarget {
+    /// A global value binding — resolves to `GlobalNode.span`.
+    Global { module: RawModuleId, name: String },
+    /// A type declaration — resolves to `TypeDeclNode.type_def.var.span()`.
+    TypeDecl { module: RawModuleId, name: String },
+    /// An import alias — resolves to `1:1–1:1` in the target module.
+    ImportAlias { module: RawModuleId },
+}
+
+/// A cursor found on a Var node whose declaration target must be resolved
+/// after all modules are loaded.
+struct PendingCursorDeclaration {
+    cursor: Cursor,
+    target: PendingTarget,
+}
+
+/// A reference to a declaration, for "find all references". The target is
+/// resolved to a span at finalization.
+struct PendingReference {
+    target: PendingTarget,
+    reference_module: RawModuleId,
+    reference_span: Span,
+}
+
+/// A local variable reference whose declaration span is already known.
+struct ResolvedReference {
+    declaration: (RawModuleId, Span),
+    reference: (RawModuleId, Span),
+}
+
+/// All cursor-related data collected during a module analysis walk.
+struct CursorData {
+    cursor: Option<Cursor>,
+    pending_declarations: Vec<PendingCursorDeclaration>,
+    pending_references: Vec<PendingReference>,
+    resolved_references: Vec<ResolvedReference>,
+}
+
+/// Resolve a [`PendingTarget`] to a `(RawModuleId, Span)` declaration location
+/// using the ASG.
+fn resolve_target(asg: &Asg, target: &PendingTarget) -> Option<(RawModuleId, Span)> {
+    match target {
+        PendingTarget::Global { module, name } => {
+            let global = asg.global(module, name)?;
+            Some((module.clone(), global.span))
+        }
+        PendingTarget::TypeDecl { module, name } => {
+            let td = asg.type_decl(module, name)?;
+            Some((module.clone(), td.type_def.var.span()))
+        }
+        PendingTarget::ImportAlias { module } => {
+            let module_top = Span::new(Position::new(1, 1), Position::new(1, 1));
+            Some((module.clone(), module_top))
+        }
+    }
+}
+
+/// Resolve all pending cursor declarations and references against a fully
+/// loaded ASG.
+fn resolve_pending_cursor_data(asg: &Asg, cd: &CursorData) {
+    let Some(cursor) = &cd.cursor else {
+        return;
+    };
+
+    // Resolve deferred declarations (cursor on a reference → set declaration).
+    for pending in &cd.pending_declarations {
+        if let Some((module, span)) = resolve_target(asg, &pending.target) {
+            pending.cursor.set_declaration(module, span);
+        }
+    }
+
+    // Resolve deferred references (for "find all references").
+    for pending in &cd.pending_references {
+        if let Some(decl) = resolve_target(asg, &pending.target) {
+            cursor.track_reference(
+                decl,
+                (pending.reference_module.clone(), pending.reference_span),
+            );
+        }
+    }
+
+    // Apply already-resolved local references.
+    for resolved in &cd.resolved_references {
+        cursor.track_reference(resolved.declaration.clone(), resolved.reference.clone());
+    }
+}
+
+/// Resolve cursor declarations and references for a module against an
+/// already-built ASG. Used by the IDE/LSP path where the ASG is built first
+/// and a module is then re-parsed with a cursor.
+///
+/// This walks the re-parsed module (which contains the cursor) to discover
+/// the cursor and its declaration target. It also walks all *other* modules
+/// in the ASG to collect references for "find all references" support.
+pub fn resolve_cursor_refs(asg: &Asg, raw_id: &RawModuleId, pkg_id: &PackageId, body: &ModuleBody) {
+    let mut cd = CursorData {
+        cursor: None,
+        pending_declarations: Vec::new(),
+        pending_references: Vec::new(),
+        resolved_references: Vec::new(),
+    };
+
+    let module_node = asg.module(raw_id);
+    let module_id = match module_node {
+        Some(mn) => &mn.module_id,
+        None => return,
+    };
+
+    // Walk the re-parsed cursor module (this discovers the cursor).
+    match body {
+        ModuleBody::File(file_mod) => {
+            analyze_module(raw_id, pkg_id, module_id, file_mod, &mut cd);
+        }
+        ModuleBody::Scle(scle_mod) => {
+            analyze_scle_module(raw_id, pkg_id, module_id, scle_mod, &mut cd);
+        }
+    }
+
+    // Walk all other modules in the ASG to collect their references (for
+    // "find all references" on a declaration in the cursor's module).
+    for mn in asg.modules() {
+        if mn.raw_id == *raw_id {
+            continue;
+        }
+        match &mn.body {
+            ModuleBody::File(file_mod) => {
+                analyze_module(&mn.raw_id, &mn.package_id, &mn.module_id, file_mod, &mut cd);
+            }
+            ModuleBody::Scle(scle_mod) => {
+                analyze_scle_module(&mn.raw_id, &mn.package_id, &mn.module_id, scle_mod, &mut cd);
+            }
+        }
+    }
+
+    resolve_pending_cursor_data(asg, &cd);
+}
+
 /// Collect value/module references from an expression.
 ///
 /// `in_fn` tracks whether we're inside a function body (for laziness).
-fn collect_expr_refs(ctx: &RefContext, expr: &Expr, in_fn: bool, out: &mut Vec<Ref>) {
-    collect_expr_refs_with_scope(ctx, expr, in_fn, &mut HashSet::new(), out);
+fn collect_expr_refs(
+    ctx: &RefContext,
+    expr: &Expr,
+    in_fn: bool,
+    out: &mut Vec<Ref>,
+    cd: &mut CursorData,
+) {
+    collect_expr_refs_with_scope(ctx, expr, in_fn, &mut HashMap::new(), out, cd);
+}
+
+fn track_var_cursor(
+    ctx: &RefContext,
+    var: &Loc<ast::Var>,
+    target: PendingTarget,
+    cd: &mut CursorData,
+) {
+    // If this Var carries the cursor, record it for declaration resolution.
+    if let Some((cursor, _)) = &var.cursor {
+        cd.cursor = Some(cursor.clone());
+        cd.pending_declarations.push(PendingCursorDeclaration {
+            cursor: cursor.clone(),
+            target: target.clone(),
+        });
+    }
+    // Always record as a reference for "find all references".
+    cd.pending_references.push(PendingReference {
+        target,
+        reference_module: ctx.raw_id.clone(),
+        reference_span: var.span(),
+    });
+}
+
+fn track_local_var_cursor(
+    ctx: &RefContext,
+    var: &Loc<ast::Var>,
+    decl_span: Span,
+    cd: &mut CursorData,
+) {
+    let decl = (ctx.raw_id.clone(), decl_span);
+    let reference = (ctx.raw_id.clone(), var.span());
+    // If this Var carries the cursor, set declaration immediately.
+    if let Some((cursor, _)) = &var.cursor {
+        cd.cursor = Some(cursor.clone());
+        cursor.set_declaration(ctx.raw_id.clone(), decl_span);
+        cursor.set_identifier(CursorIdentifier::Let(var.name.clone()));
+    }
+    // Always record the reference for "find all references".
+    cd.resolved_references.push(ResolvedReference {
+        declaration: decl,
+        reference,
+    });
 }
 
 fn collect_expr_refs_with_scope(
     ctx: &RefContext,
     expr: &Expr,
     in_fn: bool,
-    locals: &mut HashSet<String>,
+    locals: &mut HashMap<String, Span>,
     out: &mut Vec<Ref>,
+    cd: &mut CursorData,
 ) {
     match expr {
         Expr::Var(var) => {
             let name = &var.name;
-            if locals.contains(name.as_str()) {
+            if let Some(&decl_span) = locals.get(name.as_str()) {
+                track_local_var_cursor(ctx, var, decl_span, cd);
                 return;
             }
             if ctx.global_names.contains(name.as_str()) {
@@ -690,13 +935,29 @@ fn collect_expr_refs_with_scope(
                     lazy: in_fn,
                     span: var.span(),
                 });
-            } else if ctx.import_aliases.contains_key(name.as_str()) {
-                let import_id = &ctx.import_aliases[name.as_str()];
+                track_var_cursor(
+                    ctx,
+                    var,
+                    PendingTarget::Global {
+                        module: ctx.raw_id.clone(),
+                        name: name.clone(),
+                    },
+                    cd,
+                );
+            } else if let Some(import_id) = ctx.import_aliases.get(name.as_str()) {
                 out.push(Ref {
                     target: NodeId::Module(import_id.clone()),
                     lazy: in_fn,
                     span: var.span(),
                 });
+                track_var_cursor(
+                    ctx,
+                    var,
+                    PendingTarget::ImportAlias {
+                        module: import_id.clone(),
+                    },
+                    cd,
+                );
             }
         }
 
@@ -704,34 +965,53 @@ fn collect_expr_refs_with_scope(
             // Check for qualified reference: Import.member
             if let Expr::Var(var) = pa.expr.as_ref().as_ref() {
                 let name = &var.name;
-                if !locals.contains(name.as_str())
+                if !locals.contains_key(name.as_str())
                     && let Some(import_id) = ctx.import_aliases.get(name.as_str())
                 {
                     // This is Import.member — add edge to the specific global.
-                    // For `.scl` targets the checker/evaluator take a shortcut
-                    // straight to that global (so this fine-grained edge gives
-                    // the right SCC ordering). For `.scle` targets the global
-                    // doesn't exist; the loader's `finish()` rewrites such
-                    // dangling edges to point at the target Module node so
-                    // ordering remains correct.
                     out.push(Ref {
                         target: NodeId::Global(import_id.clone(), pa.property.name.clone()),
                         lazy: in_fn,
                         span: pa.property.span(),
                     });
+                    // Track cursor on the import alias var.
+                    track_var_cursor(
+                        ctx,
+                        var,
+                        PendingTarget::ImportAlias {
+                            module: import_id.clone(),
+                        },
+                        cd,
+                    );
+                    // Track cursor on the property.
+                    track_var_cursor(
+                        ctx,
+                        &pa.property,
+                        PendingTarget::Global {
+                            module: import_id.clone(),
+                            name: pa.property.name.clone(),
+                        },
+                        cd,
+                    );
                     // Don't recurse into the Var — we've handled it.
                     return;
                 }
             }
             // Not a qualified reference — recurse normally.
-            collect_expr_refs_with_scope(ctx, pa.expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, pa.expr.as_ref().as_ref(), in_fn, locals, out, cd);
         }
 
         Expr::Fn(fn_expr) => {
             // Function body references are lazy.
             let mut inner_locals = locals.clone();
             for param in &fn_expr.params {
-                inner_locals.insert(param.var.name.clone());
+                inner_locals.insert(param.var.name.clone(), param.var.span());
+                // Track cursor on parameter declaration.
+                if let Some((cursor, _)) = &param.var.cursor {
+                    cd.cursor = Some(cursor.clone());
+                    cursor.set_declaration(ctx.raw_id.clone(), param.var.span());
+                    cursor.set_identifier(CursorIdentifier::Let(param.var.name.clone()));
+                }
             }
             if let Some(body) = &fn_expr.body {
                 collect_expr_refs_with_scope(
@@ -740,18 +1020,19 @@ fn collect_expr_refs_with_scope(
                     true,
                     &mut inner_locals,
                     out,
+                    cd,
                 );
             }
             // Type annotations on params are NOT lazy.
             for param in &fn_expr.params {
                 if let Some(ty) = &param.ty {
-                    collect_type_refs(ctx, ty.as_ref(), out);
+                    collect_type_refs(ctx, ty.as_ref(), out, cd);
                 }
             }
             // Type param bounds.
             for tp in &fn_expr.type_params {
                 if let Some(bound) = &tp.bound {
-                    collect_type_refs(ctx, bound.as_ref(), out);
+                    collect_type_refs(ctx, bound.as_ref(), out, cd);
                 }
             }
         }
@@ -764,21 +1045,29 @@ fn collect_expr_refs_with_scope(
                 in_fn,
                 locals,
                 out,
+                cd,
             );
             // Type annotation on the let bind.
             if let Some(ty) = &let_expr.bind.ty {
-                collect_type_refs(ctx, ty.as_ref(), out);
+                collect_type_refs(ctx, ty.as_ref(), out, cd);
+            }
+            // Track cursor on the let binding declaration itself.
+            if let Some((cursor, _)) = &let_expr.bind.var.cursor {
+                cd.cursor = Some(cursor.clone());
+                cursor.set_declaration(ctx.raw_id.clone(), let_expr.bind.var.span());
+                cursor.set_identifier(CursorIdentifier::Let(let_expr.bind.var.name.clone()));
             }
             // The body gets the new local binding.
             if let Some(body) = &let_expr.expr {
                 let mut inner_locals = locals.clone();
-                inner_locals.insert(let_expr.bind.var.name.clone());
+                inner_locals.insert(let_expr.bind.var.name.clone(), let_expr.bind.var.span());
                 collect_expr_refs_with_scope(
                     ctx,
                     body.as_ref().as_ref(),
                     in_fn,
                     &mut inner_locals,
                     out,
+                    cd,
                 );
             }
         }
@@ -790,6 +1079,7 @@ fn collect_expr_refs_with_scope(
                 in_fn,
                 locals,
                 out,
+                cd,
             );
             collect_expr_refs_with_scope(
                 ctx,
@@ -797,79 +1087,98 @@ fn collect_expr_refs_with_scope(
                 in_fn,
                 locals,
                 out,
+                cd,
             );
             if let Some(else_expr) = &if_expr.else_expr {
-                collect_expr_refs_with_scope(ctx, else_expr.as_ref().as_ref(), in_fn, locals, out);
+                collect_expr_refs_with_scope(
+                    ctx,
+                    else_expr.as_ref().as_ref(),
+                    in_fn,
+                    locals,
+                    out,
+                    cd,
+                );
             }
         }
 
         Expr::Call(call) => {
-            collect_expr_refs_with_scope(ctx, call.callee.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                call.callee.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+                cd,
+            );
             for arg in &call.args {
-                collect_expr_refs_with_scope(ctx, arg.as_ref(), in_fn, locals, out);
+                collect_expr_refs_with_scope(ctx, arg.as_ref(), in_fn, locals, out, cd);
             }
             for ty_arg in &call.type_args {
-                collect_type_refs(ctx, ty_arg.as_ref(), out);
+                collect_type_refs(ctx, ty_arg.as_ref(), out, cd);
             }
         }
 
         Expr::Binary(bin) => {
-            collect_expr_refs_with_scope(ctx, bin.lhs.as_ref().as_ref(), in_fn, locals, out);
-            collect_expr_refs_with_scope(ctx, bin.rhs.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, bin.lhs.as_ref().as_ref(), in_fn, locals, out, cd);
+            collect_expr_refs_with_scope(ctx, bin.rhs.as_ref().as_ref(), in_fn, locals, out, cd);
         }
 
         Expr::Unary(un) => {
-            collect_expr_refs_with_scope(ctx, un.expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, un.expr.as_ref().as_ref(), in_fn, locals, out, cd);
         }
 
         Expr::Record(rec) => {
             for field in &rec.fields {
-                collect_expr_refs_with_scope(ctx, &field.expr, in_fn, locals, out);
+                collect_expr_refs_with_scope(ctx, &field.expr, in_fn, locals, out, cd);
             }
         }
 
         Expr::Dict(dict) => {
             for entry in &dict.entries {
-                collect_expr_refs_with_scope(ctx, &entry.key, in_fn, locals, out);
-                collect_expr_refs_with_scope(ctx, &entry.value, in_fn, locals, out);
+                collect_expr_refs_with_scope(ctx, &entry.key, in_fn, locals, out, cd);
+                collect_expr_refs_with_scope(ctx, &entry.value, in_fn, locals, out, cd);
             }
         }
 
         Expr::List(list) => {
             for item in &list.items {
-                collect_list_item_refs(ctx, item, in_fn, locals, out);
+                collect_list_item_refs(ctx, item, in_fn, locals, out, cd);
             }
         }
 
         Expr::IndexedAccess(ia) => {
-            collect_expr_refs_with_scope(ctx, ia.expr.as_ref().as_ref(), in_fn, locals, out);
-            collect_expr_refs_with_scope(ctx, ia.index.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, ia.expr.as_ref().as_ref(), in_fn, locals, out, cd);
+            collect_expr_refs_with_scope(ctx, ia.index.as_ref().as_ref(), in_fn, locals, out, cd);
         }
 
         Expr::TypeCast(tc) => {
-            collect_expr_refs_with_scope(ctx, tc.expr.as_ref().as_ref(), in_fn, locals, out);
-            collect_type_refs(ctx, tc.ty.as_ref(), out);
+            collect_expr_refs_with_scope(ctx, tc.expr.as_ref().as_ref(), in_fn, locals, out, cd);
+            collect_type_refs(ctx, tc.ty.as_ref(), out, cd);
         }
 
         Expr::Interp(interp) => {
             for part in &interp.parts {
-                collect_expr_refs_with_scope(ctx, part.as_ref(), in_fn, locals, out);
+                collect_expr_refs_with_scope(ctx, part.as_ref(), in_fn, locals, out, cd);
             }
         }
 
         Expr::Raise(raise) => {
-            collect_expr_refs_with_scope(ctx, raise.expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, raise.expr.as_ref().as_ref(), in_fn, locals, out, cd);
         }
 
         Expr::Try(try_expr) => {
-            collect_expr_refs_with_scope(ctx, try_expr.expr.as_ref().as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(
+                ctx,
+                try_expr.expr.as_ref().as_ref(),
+                in_fn,
+                locals,
+                out,
+                cd,
+            );
             for catch in &try_expr.catches {
                 // exception_var is a reference to an exception name (global-ish).
-                // But per free_vars() logic, exception_var is _inserted_ into the
-                // free vars set (it's the exception being caught, not a local binding).
-                // For the dependency graph, we treat it as a reference.
                 let exc_name = &catch.exception_var.name;
-                if !locals.contains(exc_name.as_str())
+                if !locals.contains_key(exc_name.as_str())
                     && ctx.global_names.contains(exc_name.as_str())
                 {
                     out.push(Ref {
@@ -877,23 +1186,38 @@ fn collect_expr_refs_with_scope(
                         lazy: in_fn,
                         span: catch.exception_var.span(),
                     });
+                    track_var_cursor(
+                        ctx,
+                        &catch.exception_var,
+                        PendingTarget::Global {
+                            module: ctx.raw_id.clone(),
+                            name: exc_name.clone(),
+                        },
+                        cd,
+                    );
                 }
 
                 let mut catch_locals = locals.clone();
                 if let Some(arg) = &catch.catch_arg {
-                    catch_locals.insert(arg.name.clone());
+                    catch_locals.insert(arg.name.clone(), arg.span());
+                    // Track cursor on catch arg declaration.
+                    if let Some((cursor, _)) = &arg.cursor {
+                        cd.cursor = Some(cursor.clone());
+                        cursor.set_declaration(ctx.raw_id.clone(), arg.span());
+                        cursor.set_identifier(CursorIdentifier::Let(arg.name.clone()));
+                    }
                 }
-                collect_expr_refs_with_scope(ctx, &catch.body, in_fn, &mut catch_locals, out);
+                collect_expr_refs_with_scope(ctx, &catch.body, in_fn, &mut catch_locals, out, cd);
             }
         }
 
         Expr::Extern(ext) => {
-            collect_type_refs(ctx, ext.ty.as_ref(), out);
+            collect_type_refs(ctx, ext.ty.as_ref(), out, cd);
         }
 
         Expr::Exception(exc) => {
             if let Some(ty) = &exc.ty {
-                collect_type_refs(ctx, ty.as_ref(), out);
+                collect_type_refs(ctx, ty.as_ref(), out, cd);
             }
         }
 
@@ -911,12 +1235,13 @@ fn collect_list_item_refs(
     ctx: &RefContext,
     item: &ListItem,
     in_fn: bool,
-    locals: &mut HashSet<String>,
+    locals: &mut HashMap<String, Span>,
     out: &mut Vec<Ref>,
+    cd: &mut CursorData,
 ) {
     match item {
         ListItem::Expr(expr) => {
-            collect_expr_refs_with_scope(ctx, expr.as_ref(), in_fn, locals, out);
+            collect_expr_refs_with_scope(ctx, expr.as_ref(), in_fn, locals, out, cd);
         }
         ListItem::If(if_item) => {
             collect_expr_refs_with_scope(
@@ -925,8 +1250,9 @@ fn collect_list_item_refs(
                 in_fn,
                 locals,
                 out,
+                cd,
             );
-            collect_list_item_refs(ctx, &if_item.then_item, in_fn, locals, out);
+            collect_list_item_refs(ctx, &if_item.then_item, in_fn, locals, out, cd);
         }
         ListItem::For(for_item) => {
             collect_expr_refs_with_scope(
@@ -935,16 +1261,23 @@ fn collect_list_item_refs(
                 in_fn,
                 locals,
                 out,
+                cd,
             );
             let mut inner_locals = locals.clone();
-            inner_locals.insert(for_item.var.name.clone());
-            collect_list_item_refs(ctx, &for_item.emit_item, in_fn, &mut inner_locals, out);
+            inner_locals.insert(for_item.var.name.clone(), for_item.var.span());
+            // Track cursor on for-loop variable declaration.
+            if let Some((cursor, _)) = &for_item.var.cursor {
+                cd.cursor = Some(cursor.clone());
+                cursor.set_declaration(ctx.raw_id.clone(), for_item.var.span());
+                cursor.set_identifier(CursorIdentifier::Let(for_item.var.name.clone()));
+            }
+            collect_list_item_refs(ctx, &for_item.emit_item, in_fn, &mut inner_locals, out, cd);
         }
     }
 }
 
 /// Collect type references from a type expression.
-fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>) {
+fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>, cd: &mut CursorData) {
     match ty {
         TypeExpr::Var(var) => {
             let name = &var.name;
@@ -955,6 +1288,15 @@ fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>) {
                     lazy: false,
                     span: var.span(),
                 });
+                track_var_cursor(
+                    ctx,
+                    var,
+                    PendingTarget::TypeDecl {
+                        module: ctx.raw_id.clone(),
+                        name: name.clone(),
+                    },
+                    cd,
+                );
             }
         }
         TypeExpr::PropertyAccess(pa) => {
@@ -967,12 +1309,31 @@ fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>) {
                     lazy: false,
                     span: pa.property.span(),
                 });
+                // Track cursor on the import alias.
+                track_var_cursor(
+                    ctx,
+                    var,
+                    PendingTarget::ImportAlias {
+                        module: import_id.clone(),
+                    },
+                    cd,
+                );
+                // Track cursor on the type property.
+                track_var_cursor(
+                    ctx,
+                    &pa.property,
+                    PendingTarget::TypeDecl {
+                        module: import_id.clone(),
+                        name: pa.property.name.clone(),
+                    },
+                    cd,
+                );
                 return;
             }
-            collect_type_refs(ctx, pa.expr.as_ref().as_ref(), out);
+            collect_type_refs(ctx, pa.expr.as_ref().as_ref(), out, cd);
         }
-        TypeExpr::Optional(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out),
-        TypeExpr::List(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out),
+        TypeExpr::Optional(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out, cd),
+        TypeExpr::List(inner) => collect_type_refs(ctx, inner.as_ref().as_ref(), out, cd),
         TypeExpr::Fn(f) => {
             let own_params: HashSet<&str> = f
                 .type_params
@@ -980,28 +1341,28 @@ fn collect_type_refs(ctx: &RefContext, ty: &TypeExpr, out: &mut Vec<Ref>) {
                 .map(|tp| tp.var.name.as_str())
                 .collect();
             for param in &f.params {
-                collect_type_refs_excluding(ctx, param.as_ref(), &own_params, out);
+                collect_type_refs_excluding(ctx, param.as_ref(), &own_params, out, cd);
             }
-            collect_type_refs_excluding(ctx, f.ret.as_ref().as_ref(), &own_params, out);
+            collect_type_refs_excluding(ctx, f.ret.as_ref().as_ref(), &own_params, out, cd);
             for tp in &f.type_params {
                 if let Some(bound) = &tp.bound {
-                    collect_type_refs(ctx, bound.as_ref(), out);
+                    collect_type_refs(ctx, bound.as_ref(), out, cd);
                 }
             }
         }
         TypeExpr::Record(rec) => {
             for field in &rec.fields {
-                collect_type_refs(ctx, field.ty.as_ref(), out);
+                collect_type_refs(ctx, field.ty.as_ref(), out, cd);
             }
         }
         TypeExpr::Dict(dict) => {
-            collect_type_refs(ctx, dict.key.as_ref().as_ref(), out);
-            collect_type_refs(ctx, dict.value.as_ref().as_ref(), out);
+            collect_type_refs(ctx, dict.key.as_ref().as_ref(), out, cd);
+            collect_type_refs(ctx, dict.value.as_ref().as_ref(), out, cd);
         }
         TypeExpr::Application(app) => {
-            collect_type_refs(ctx, app.base.as_ref().as_ref(), out);
+            collect_type_refs(ctx, app.base.as_ref().as_ref(), out, cd);
             for arg in &app.args {
-                collect_type_refs(ctx, arg.as_ref(), out);
+                collect_type_refs(ctx, arg.as_ref(), out, cd);
             }
         }
     }
@@ -1013,10 +1374,11 @@ fn collect_type_refs_excluding(
     ty: &TypeExpr,
     exclude: &HashSet<&str>,
     out: &mut Vec<Ref>,
+    cd: &mut CursorData,
 ) {
     match ty {
         TypeExpr::Var(var) if exclude.contains(var.name.as_str()) => {}
-        _ => collect_type_refs(ctx, ty, out),
+        _ => collect_type_refs(ctx, ty, out, cd),
     }
 }
 

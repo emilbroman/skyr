@@ -82,6 +82,15 @@ pub trait Package: Send + Sync {
     ///
     /// Most packages return nothing; `StdPackage` uses this to register stdlib externs.
     fn register_externs(&self, _externs: &mut HashMap<String, Value>) {}
+
+    /// Returns the filesystem root directory for this package, if it has one.
+    ///
+    /// Filesystem-backed packages return their root path so that the LSP can
+    /// construct file URIs for cross-module navigation. In-memory and bundled
+    /// packages (e.g. `StdPackage`) return `None`.
+    fn root_path(&self) -> Option<&Path> {
+        None
+    }
 }
 
 /// Finds the [`Package`] that owns a given raw module ID.

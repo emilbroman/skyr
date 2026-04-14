@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use crate::asg::RawModuleId;
 use crate::{Position, Span, Type};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,12 +36,13 @@ pub struct CursorInfo {
     pub ty: Option<Type>,
     pub identifier: Option<CursorIdentifier>,
     pub description: Option<String>,
-    pub declaration: Option<Span>,
-    pub references: Vec<Span>,
+    pub declaration: Option<(RawModuleId, Span)>,
+    pub references: Vec<(RawModuleId, Span)>,
     pub completion_candidates: Vec<CompletionCandidate>,
-    /// Buffers (declaration_span → reference_spans) collected before the cursor's
-    /// own declaration is known. Flushed into `references` by `set_declaration`.
-    ref_tracking: BTreeMap<Span, Vec<Span>>,
+    /// Buffers (declaration_key → reference_locations) collected before the
+    /// cursor's own declaration is known. Flushed into `references` by
+    /// `set_declaration`.
+    ref_tracking: BTreeMap<(RawModuleId, Span), Vec<(RawModuleId, Span)>>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,11 +88,12 @@ impl Cursor {
         self.inner.lock().unwrap().description = Some(description);
     }
 
-    pub fn set_declaration(&self, span: Span) {
+    pub fn set_declaration(&self, module: RawModuleId, span: Span) {
         let mut inner = self.inner.lock().unwrap();
-        inner.declaration = Some(span);
+        let key = (module.clone(), span);
+        inner.declaration = Some(key.clone());
         // Flush any buffered references for this declaration
-        if let Some(refs) = inner.ref_tracking.remove(&span) {
+        if let Some(refs) = inner.ref_tracking.remove(&key) {
             inner.references = refs;
         }
     }
@@ -98,9 +101,13 @@ impl Cursor {
     /// Record a reference to a declaration. If the cursor's declaration is already
     /// known and matches, the reference is added directly. Otherwise it is buffered
     /// until `set_declaration` identifies which declaration the cursor points to.
-    pub fn track_reference(&self, declaration: Span, reference: Span) {
+    pub fn track_reference(
+        &self,
+        declaration: (RawModuleId, Span),
+        reference: (RawModuleId, Span),
+    ) {
         let mut inner = self.inner.lock().unwrap();
-        if inner.declaration == Some(declaration) {
+        if inner.declaration.as_ref() == Some(&declaration) {
             inner.references.push(reference);
         } else {
             inner
