@@ -102,14 +102,14 @@ impl<'a> Lexer<'a> {
         grapheme
             .chars()
             .next()
-            .is_some_and(|character| character.is_alphabetic())
+            .is_some_and(|character| character.is_alphabetic() || character == '_')
     }
 
     fn is_letter_or_number_grapheme(grapheme: &str) -> bool {
         grapheme
             .chars()
             .next()
-            .is_some_and(|character| character.is_alphanumeric())
+            .is_some_and(|character| character.is_alphanumeric() || character == '_')
     }
 
     fn is_whitespace_grapheme(grapheme: &str) -> bool {
