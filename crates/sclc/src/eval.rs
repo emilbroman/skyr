@@ -943,9 +943,6 @@ impl<'p> Eval<'p> {
             return null();
         };
         let rel = resolved_path.strip_prefix('/').unwrap_or(resolved_path);
-        if rel.is_empty() {
-            return null();
-        }
         #[cfg(not(feature = "runtime"))]
         return null();
 
