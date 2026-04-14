@@ -5,7 +5,8 @@ use lsp_types as lsp;
 // TODO: Add hover support for .scle files. The synthesised __Scle__/Main ASG
 // produced by evaluate_scle could support hover, but cursor positions in the
 // original SCLE source need to map correctly into the synthesised module.
-use crate::analysis::{self, module_id_from_path, uri_to_path};
+use super::{lock_cursor_info, resolve_document};
+use crate::analysis;
 use crate::convert;
 use crate::document::DocumentCache;
 use crate::server::{LspProgram, OutgoingMessage, RequestId};
@@ -23,24 +24,23 @@ pub fn hover(
         Err(_) => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let path = match uri_to_path(&params.text_document_position_params.text_document.uri) {
-        Some(p) => p,
+    let ctx = match resolve_document(
+        &params.text_document_position_params.text_document.uri,
+        documents,
+        root,
+        package_id,
+    ) {
+        Some(ctx) => ctx,
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let source = match documents.get(&path) {
-        Some(s) => s,
-        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
-    };
-
-    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position_params.position);
     let cursor_info = match program {
-        Some(program) => analysis::query_cursor(program, &source, &module_id, position),
+        Some(program) => analysis::query_cursor(program, &ctx.source, &ctx.module_id, position),
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let info = cursor_info.lock().unwrap();
+    let info = lock_cursor_info(&cursor_info);
     let mut parts = Vec::new();
     let type_value = match (&info.identifier, &info.ty) {
         (Some(sclc::CursorIdentifier::Let(name)), Some(ty)) => Some(format!("let {name}: {ty}")),

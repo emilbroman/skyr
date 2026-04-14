@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::analysis::{is_scle_path, module_id_from_path, uri_to_path};
+use crate::analysis::is_scle_path;
 use crate::document::DocumentCache;
 use crate::server::{OutgoingMessage, RequestId};
 
@@ -14,23 +14,22 @@ pub fn formatting(
         Err(_) => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let path = match uri_to_path(&params.text_document.uri) {
-        Some(p) => p,
+    // Formatting only needs path + source, not a full module ID for the
+    // workspace package, so we use a lightweight resolve here.
+    let ctx = match super::resolve_document(
+        &params.text_document.uri,
+        documents,
+        None,
+        &sclc::PackageId::from(["Local"]),
+    ) {
+        Some(ctx) => ctx,
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let source = match documents.get(&path) {
-        Some(s) => s,
-        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
-    };
-
-    let formatted = if is_scle_path(&path) {
-        format_scle(&source)
+    let formatted = if is_scle_path(&ctx.path) {
+        format_scle(&ctx.source)
     } else {
-        // Module ID is only used as a parse-diagnostic label here, so the
-        // package details don't need to match the workspace.
-        let module_id = module_id_from_path(&path, None, &sclc::PackageId::from(["Local"]));
-        format_scl(&source, &module_id)
+        format_scl(&ctx.source, &ctx.module_id)
     };
 
     let formatted = match formatted {
@@ -39,7 +38,7 @@ pub fn formatting(
     };
 
     // If the formatted output is the same, return an empty edit list
-    if formatted == source {
+    if formatted == ctx.source {
         let empty_edits = serde_json::to_value(Vec::<lsp::TextEdit>::new()).unwrap_or_else(|err| {
             eprintln!("lsp: failed to serialize empty edits: {err}");
             serde_json::Value::Null
@@ -48,8 +47,13 @@ pub fn formatting(
     }
 
     // Replace the entire document with the formatted text
-    let line_count = source.lines().count().max(1) as u32;
-    let last_line_len = source.lines().last().map(|l| l.len() as u32).unwrap_or(0);
+    let line_count = ctx.source.lines().count().max(1) as u32;
+    let last_line_len = ctx
+        .source
+        .lines()
+        .last()
+        .map(|l| l.len() as u32)
+        .unwrap_or(0);
 
     let edit = lsp::TextEdit {
         range: lsp::Range {

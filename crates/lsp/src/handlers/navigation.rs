@@ -4,7 +4,8 @@ use std::path::Path;
 
 use lsp_types as lsp;
 
-use crate::analysis::{self, module_id_from_path, uri_to_path};
+use super::{lock_cursor_info, resolve_document};
+use crate::analysis;
 use crate::convert;
 use crate::document::DocumentCache;
 use crate::server::{LspProgram, OutgoingMessage, RequestId};
@@ -22,29 +23,27 @@ pub fn goto_definition(
         Err(_) => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let uri = &params.text_document_position_params.text_document.uri;
-    let path = match uri_to_path(uri) {
-        Some(p) => p,
+    let uri = params
+        .text_document_position_params
+        .text_document
+        .uri
+        .clone();
+    let ctx = match resolve_document(&uri, documents, root, package_id) {
+        Some(ctx) => ctx,
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let source = match documents.get(&path) {
-        Some(s) => s,
-        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
-    };
-
-    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position_params.position);
     let cursor_info = match program {
-        Some(program) => analysis::query_cursor(program, &source, &module_id, position),
+        Some(program) => analysis::query_cursor(program, &ctx.source, &ctx.module_id, position),
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let info = cursor_info.lock().unwrap();
+    let info = lock_cursor_info(&cursor_info);
     let result = match info.declaration {
         Some(decl_span) => {
             let location = lsp::Location {
-                uri: uri.clone(),
+                uri,
                 range: convert::to_lsp_range(decl_span),
             };
             serde_json::to_value(location).unwrap_or_else(|err| {
@@ -71,25 +70,19 @@ pub fn references(
         Err(_) => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let uri = &params.text_document_position.text_document.uri;
-    let path = match uri_to_path(uri) {
-        Some(p) => p,
+    let uri = params.text_document_position.text_document.uri.clone();
+    let ctx = match resolve_document(&uri, documents, root, package_id) {
+        Some(ctx) => ctx,
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let source = match documents.get(&path) {
-        Some(s) => s,
-        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
-    };
-
-    let module_id = module_id_from_path(&path, root, package_id);
     let position = convert::to_sclc_position(params.text_document_position.position);
     let cursor_info = match program {
-        Some(program) => analysis::query_cursor(program, &source, &module_id, position),
+        Some(program) => analysis::query_cursor(program, &ctx.source, &ctx.module_id, position),
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let info = cursor_info.lock().unwrap();
+    let info = lock_cursor_info(&cursor_info);
 
     let mut locations: Vec<lsp::Location> = info
         .references
@@ -137,18 +130,12 @@ pub fn document_symbol(
         Err(_) => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let path = match uri_to_path(&params.text_document.uri) {
-        Some(p) => p,
+    let ctx = match resolve_document(&params.text_document.uri, documents, root, package_id) {
+        Some(ctx) => ctx,
         None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
     };
 
-    let source = match documents.get(&path) {
-        Some(s) => s,
-        None => return vec![OutgoingMessage::response(id, serde_json::Value::Null)],
-    };
-
-    let module_id = module_id_from_path(&path, root, package_id);
-    let symbols = analysis::document_symbols(&source, &module_id);
+    let symbols = analysis::document_symbols(&ctx.source, &ctx.module_id);
 
     let result = serde_json::to_value(symbols).unwrap_or_else(|err| {
         eprintln!("lsp: failed to serialize document symbols: {err}");
