@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -78,14 +79,20 @@ async fn resolve_and_set_deps(
 ) -> bool {
     let package_id = server.package_id().clone();
     match resolve_deps(&root, &package_id, git_server).await {
-        Ok(finders) if !finders.is_empty() => {
+        Ok((finders, package_roots)) if !finders.is_empty() => {
             eprintln!(
                 "lsp: resolved {} package dependenc{}",
                 finders.len(),
                 if finders.len() == 1 { "y" } else { "ies" },
             );
             server.set_cached_dep_finders(finders);
+            server.set_package_roots(package_roots);
             true
+        }
+        Ok((_, package_roots)) if !package_roots.is_empty() => {
+            // No git deps, but Std was populated.
+            server.set_package_roots(package_roots);
+            false
         }
         Ok(_) => false,
         Err(err) => {
@@ -99,17 +106,30 @@ async fn resolve_deps(
     root: &std::path::Path,
     package_id: &sclc::PackageId,
     git_server: &str,
-) -> anyhow::Result<Vec<Arc<dyn sclc::PackageFinder>>> {
+) -> anyhow::Result<(
+    Vec<Arc<dyn sclc::PackageFinder>>,
+    HashMap<sclc::PackageId, PathBuf>,
+)> {
+    let mut package_roots = HashMap::new();
+
+    // Always populate Std cache so its files are navigable.
+    if let Ok(std_dir) = crate::cache::populate_stdlib().await {
+        package_roots.insert(sclc::PackageId::from(["Std"]), std_dir);
+    }
+
+    // Include the workspace root for the local package.
+    package_roots.insert(package_id.clone(), root.to_path_buf());
+
     let user_package: Arc<dyn sclc::Package> =
         Arc::new(sclc::FsPackage::new(root.to_path_buf(), package_id.clone()));
     let default_finder = sclc::build_default_finder(Arc::clone(&user_package));
 
     let manifest = sclc::load_manifest(Arc::clone(&user_package), default_finder.clone()).await?;
     let Some(manifest) = manifest else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), package_roots));
     };
     if manifest.dependencies.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), package_roots));
     }
 
     let git_client = crate::git_client::GitClient::from_config(git_server.to_string()).await?;
@@ -121,10 +141,11 @@ async fn resolve_deps(
     let finders: Vec<Arc<dyn sclc::PackageFinder>> = resolved
         .into_iter()
         .map(|rp| {
+            package_roots.insert(rp.package_id.clone(), rp.cache_dir.clone());
             let dep_pkg = sclc::FsPackage::new(rp.cache_dir, rp.package_id);
             sclc::wrap_as_finder(Arc::new(dep_pkg))
         })
         .collect();
 
-    Ok(finders)
+    Ok((finders, package_roots))
 }
