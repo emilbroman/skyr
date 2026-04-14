@@ -1,6 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
@@ -87,6 +87,20 @@ pub struct MissingBody {
 }
 
 impl Diag for MissingBody {
+    fn locate(&self) -> (ModuleId, Span) {
+        (self.module_id.clone(), self.span)
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("duplicate name: {name}")]
+pub struct DuplicateName {
+    pub module_id: ModuleId,
+    pub name: String,
+    pub span: Span,
+}
+
+impl Diag for DuplicateName {
     fn locate(&self) -> (ModuleId, Span) {
         (self.module_id.clone(), self.span)
     }
@@ -1456,6 +1470,26 @@ peg::parser! {
     }
 }
 
+/// Emit a [`DuplicateName`] diagnostic for every occurrence of a name that
+/// appears more than once in `names`.
+fn report_duplicate_names(names: &[(&str, Span)], module_id: &ModuleId, diags: &mut DiagList) {
+    let mut occurrences: HashMap<&str, Vec<Span>> = HashMap::new();
+    for &(name, span) in names {
+        occurrences.entry(name).or_default().push(span);
+    }
+    for (name, spans) in &occurrences {
+        if spans.len() > 1 {
+            for &span in spans {
+                diags.push(DuplicateName {
+                    module_id: module_id.clone(),
+                    name: (*name).to_owned(),
+                    span,
+                });
+            }
+        }
+    }
+}
+
 pub fn parse_file_mod(source: &str, module_id: &ModuleId) -> Diagnosed<FileMod> {
     parse_file_mod_with_cursor(source, module_id, None)
 }
@@ -1494,6 +1528,26 @@ pub fn parse_file_mod_with_cursor(
     ) {
         Ok(file_mod) => {
             diags.dedup();
+            let mut value_names: Vec<(&str, Span)> = Vec::new();
+            let mut type_names: Vec<(&str, Span)> = Vec::new();
+            for stmt in &file_mod.statements {
+                match stmt {
+                    ModStmt::Let(bind) | ModStmt::Export(bind) => {
+                        value_names.push((bind.var.name.as_str(), bind.var.span()));
+                    }
+                    ModStmt::TypeDef(td) | ModStmt::ExportTypeDef(td) => {
+                        type_names.push((td.var.name.as_str(), td.var.span()));
+                    }
+                    ModStmt::Import(import) => {
+                        if let Some(last) = import.as_ref().vars.last() {
+                            value_names.push((last.name.as_str(), last.span()));
+                        }
+                    }
+                    ModStmt::Expr(_) => {}
+                }
+            }
+            report_duplicate_names(&value_names, module_id, &mut diags);
+            report_duplicate_names(&type_names, module_id, &mut diags);
             Diagnosed::new(file_mod, diags)
         }
         Err(error) => {
@@ -1598,6 +1652,13 @@ pub fn parse_scle_with_cursor(
     ) {
         Ok(scle_mod) => {
             diags.dedup();
+            let mut names: Vec<(&str, Span)> = Vec::new();
+            for import in &scle_mod.imports {
+                if let Some(last) = import.as_ref().vars.last() {
+                    names.push((last.name.as_str(), last.span()));
+                }
+            }
+            report_duplicate_names(&names, module_id, &mut diags);
             Diagnosed::new(Some(scle_mod), diags)
         }
         Err(error) => {
@@ -2547,6 +2608,113 @@ import Std/Option
         assert!(
             !diagnosed.diags().is_empty(),
             "expected diagnostics for invalid SCLE"
+        );
+    }
+
+    #[test]
+    fn duplicate_let_bindings_emit_diagnostics() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("let a = 1\nlet a = 2", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert_eq!(dup_diags.len(), 2, "both occurrences should be reported");
+        for d in &dup_diags {
+            assert!(d.to_string().contains("a"));
+        }
+    }
+
+    #[test]
+    fn duplicate_let_and_import_emit_diagnostics() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("import Foo/Bar\nlet Bar = 1", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert_eq!(
+            dup_diags.len(),
+            2,
+            "import alias and let binding should both be reported"
+        );
+    }
+
+    #[test]
+    fn type_def_and_let_same_name_no_duplicate() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("type Foo {}\nlet Foo = 1", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert!(
+            dup_diags.is_empty(),
+            "type and value namespaces are separate"
+        );
+    }
+
+    #[test]
+    fn duplicate_type_defs_emit_diagnostics() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("type Foo {}\ntype Foo {}", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert_eq!(
+            dup_diags.len(),
+            2,
+            "both type def occurrences should be reported"
+        );
+    }
+
+    #[test]
+    fn triple_duplicate_emits_three_diagnostics() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("import Foo/x\nlet x = 1\nlet x = 2", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert_eq!(
+            dup_diags.len(),
+            3,
+            "all three occurrences should be reported"
+        );
+    }
+
+    #[test]
+    fn no_duplicate_when_names_differ() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_file_mod("let a = 1\nlet b = 2", &module_id);
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert!(dup_diags.is_empty(), "no duplicates should be reported");
+    }
+
+    #[test]
+    fn scle_duplicate_imports_emit_diagnostics() {
+        let module_id = ModuleId::new(PackageId::from(["Org", "Pkg"]), vec!["Main".to_owned()]);
+        let diagnosed = parse_scle("import Foo/Bar\nimport Baz/Bar\n1", &module_id);
+        assert!(diagnosed.as_ref().is_some(), "scle should parse");
+        let dup_diags: Vec<_> = diagnosed
+            .diags()
+            .iter()
+            .filter(|d| d.to_string().contains("duplicate name"))
+            .collect();
+        assert_eq!(
+            dup_diags.len(),
+            2,
+            "both duplicate import aliases should be reported"
         );
     }
 }
