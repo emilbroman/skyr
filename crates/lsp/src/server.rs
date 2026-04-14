@@ -167,6 +167,34 @@ impl LanguageServer {
         }
     }
 
+    /// Set pre-resolved dependency finders (e.g. from a prior network
+    /// fetch) so that cross-repo imports resolve immediately.
+    ///
+    /// When finders are set this way, the lazy disk-based discovery in
+    /// [`publish_diagnostics`] is skipped.
+    pub fn set_cached_dep_finders(&mut self, finders: Vec<Arc<dyn sclc::PackageFinder>>) {
+        self.cached_dep_finders = finders;
+        self.deps_resolved = true;
+    }
+
+    /// Returns the workspace root path, if known.
+    pub fn root(&self) -> Option<&PathBuf> {
+        self.root.as_ref()
+    }
+
+    /// Returns the package ID for the workspace.
+    pub fn package_id(&self) -> &sclc::PackageId {
+        &self.package_id
+    }
+
+    /// Re-publish diagnostics for all open documents.
+    ///
+    /// Useful after changing the dependency finders so that cross-repo
+    /// import errors are resolved immediately.
+    pub async fn refresh_diagnostics(&mut self) -> Vec<OutgoingMessage> {
+        self.publish_diagnostics().await
+    }
+
     /// Returns the exit code if the server received an "exit" notification.
     ///
     /// The caller should check this after each `handle()` call and terminate
@@ -397,7 +425,8 @@ impl LanguageServer {
     /// If any are found, they are added as extra finders so cross-repo
     /// imports resolve. This does not fetch anything from the network;
     /// the cache must have been populated by a prior `skyr run` or
-    /// `skyr repl` invocation.
+    /// `skyr repl` invocation, or by the CLI `lsp` subcommand at
+    /// startup.
     async fn try_resolve_cached_deps(&mut self) {
         let Some(root) = &self.root else { return };
         let root = root.clone();
