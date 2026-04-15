@@ -3,12 +3,23 @@ use crate::{Loc, Span};
 use super::{
     BinaryExpr, CallExpr, CatchClause, DictExpr, Expr, FileMod, FnExpr, IfExpr, IndexedAccessExpr,
     InterpExpr, LetBind, LetExpr, ListExpr, ListForItem, ListIfItem, ListItem, ModStmt, PathExpr,
-    PropertyAccessExpr, RaiseExpr, RecordExpr, TryExpr, TypeCastExpr, UnaryExpr,
+    PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField, ScleMod, TryExpr, TypeCastExpr,
+    UnaryExpr,
 };
 
 /// Trait for visiting AST nodes.
 pub trait Visitor {
     fn visit_path(&mut self, path: &PathExpr, span: Span);
+    /// Called for each `RecordField` encountered. The default implementation
+    /// does nothing.
+    fn visit_record_field(&mut self, _field: &RecordField) {}
+}
+
+/// Walk a `ScleMod`, dispatching to the visitor for each visited node.
+pub fn visit_scle_mod(visitor: &mut dyn Visitor, scle_mod: &ScleMod) {
+    if let Some(body) = &scle_mod.body {
+        visit_expr(visitor, body);
+    }
 }
 
 /// Walk a `FileMod`, dispatching to the visitor for each `PathExpr`.
@@ -145,6 +156,7 @@ fn visit_raise(visitor: &mut dyn Visitor, e: &RaiseExpr) {
 
 fn visit_record(visitor: &mut dyn Visitor, e: &RecordExpr) {
     for field in &e.fields {
+        visitor.visit_record_field(field);
         visit_expr(visitor, &field.expr);
     }
 }
