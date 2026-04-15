@@ -143,7 +143,7 @@ Application services:
 | api | 8080 | GraphQL API |
 | web | 5173 | Web dashboard (dev server) |
 | scs | 2222 | SSH Git server |
-| de | — | Deployment engine |
+| de-{0,1} | — | Deployment engine workers |
 | rte-{0,1,2} | — | Resource transition engine workers |
 | plugin-std-random | 50051 | Random plugin |
 | plugin-std-time | 50056 | Time plugin |

@@ -90,7 +90,31 @@ enum Program {
 
         #[clap(long = "ldb-hostname", default_value = "localhost")]
         ldb_hostname: String,
+
+        #[clap(long = "worker-index", default_value_t = 0)]
+        worker_index: u16,
+
+        #[clap(long = "worker-count", default_value_t = 1)]
+        worker_count: u16,
     },
+}
+
+/// Determines whether the given deployment is owned by this worker.
+///
+/// Interprets the first 16 hex characters of the deployment (commit hash) ID
+/// as a big-endian u64 and assigns it to a worker via modulo division.
+/// When `worker_count` is 1 every deployment is owned.
+fn deployment_owned_by_worker(
+    deployment_id: &ids::DeploymentId,
+    worker_index: u16,
+    worker_count: u16,
+) -> bool {
+    if worker_count <= 1 {
+        return true;
+    }
+    let hex_prefix = &deployment_id.as_str()[..16];
+    let hash = u64::from_str_radix(hex_prefix, 16).unwrap_or(0);
+    (hash % worker_count as u64) == worker_index as u64
 }
 
 #[tokio::main]
@@ -108,8 +132,21 @@ async fn main() -> anyhow::Result<()> {
             rdb_hostname,
             rtq_hostname,
             ldb_hostname,
+            worker_index,
+            worker_count,
         } => {
-            tracing::info!("starting deployment engine daemon");
+            if worker_count == 0 {
+                anyhow::bail!("--worker-count must be at least 1");
+            }
+            if worker_index >= worker_count {
+                anyhow::bail!("--worker-index must be less than --worker-count");
+            }
+
+            tracing::info!(
+                worker_index,
+                worker_count,
+                "starting deployment engine daemon",
+            );
 
             let cdb_client = cdb::ClientBuilder::new()
                 .known_node(&cdb_hostname)
@@ -141,6 +178,8 @@ async fn main() -> anyhow::Result<()> {
                     rtq_publisher.clone(),
                     ldb_publisher.clone(),
                     &mut workers,
+                    worker_index,
+                    worker_count,
                 )
                 .await
                 {
@@ -163,10 +202,25 @@ async fn process(
     rtq_publisher: rtq::Publisher,
     ldb_publisher: ldb::Publisher,
     workers: &mut BTreeMap<String, oneshot::Sender<()>>,
+    worker_index: u16,
+    worker_count: u16,
 ) -> anyhow::Result<()> {
-    let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
+    let all_deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
 
-    tracing::debug!("found {} deployments", deployments.len());
+    let deployments: Vec<_> = all_deployments
+        .into_iter()
+        .filter(|d| match d {
+            Ok(d) => deployment_owned_by_worker(&d.deployment, worker_index, worker_count),
+            Err(_) => true, // propagate errors
+        })
+        .collect();
+
+    tracing::debug!(
+        "found {} deployments for this worker (index={}, count={})",
+        deployments.len(),
+        worker_index,
+        worker_count,
+    );
 
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
