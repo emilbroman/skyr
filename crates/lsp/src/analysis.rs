@@ -449,6 +449,10 @@ pub async fn load_workspace_asg(
 }
 
 /// Query cursor information at a specific position in a file.
+///
+/// This is the cheap path — suitable for hover, goto-definition, and
+/// completion. It only type-checks the cursor's own module, so
+/// cross-module references (e.g. for record fields) are not collected.
 pub fn query_cursor(
     asg: &sclc::Asg,
     source: &str,
@@ -456,6 +460,19 @@ pub fn query_cursor(
     position: sclc::Position,
 ) -> Arc<Mutex<sclc::CursorInfo>> {
     sclc::cursor_info(asg, module_id, source, position)
+}
+
+/// Like [`query_cursor`], but also collects references to the cursor's
+/// declaration from every module in the workspace. Use for
+/// `textDocument/references`, `textDocument/prepareRename`, and
+/// `textDocument/rename` — anywhere the full reference set is needed.
+pub fn query_cursor_with_references(
+    asg: &sclc::Asg,
+    source: &str,
+    module_id: &sclc::ModuleId,
+    position: sclc::Position,
+) -> Arc<Mutex<sclc::CursorInfo>> {
+    sclc::cursor_info_with_references(asg, module_id, source, position)
 }
 
 /// Extract document symbols from a parsed file.

@@ -89,7 +89,8 @@ pub fn references(
     };
 
     let position = convert::to_sclc_position(params.text_document_position.position);
-    let cursor_info = analysis::query_cursor(asg, &ctx.source, &ctx.module_id, position);
+    let cursor_info =
+        analysis::query_cursor_with_references(asg, &ctx.source, &ctx.module_id, position);
 
     let info = lock_cursor_info(&cursor_info);
 
@@ -230,7 +231,8 @@ pub fn prepare_rename(
     };
 
     let position = convert::to_sclc_position(params.position);
-    let cursor_info = analysis::query_cursor(asg, &ctx.source, &ctx.module_id, position);
+    let cursor_info =
+        analysis::query_cursor_with_references(asg, &ctx.source, &ctx.module_id, position);
     let info = lock_cursor_info(&cursor_info);
 
     let Some((decl_module_id, _)) = &info.declaration else {
@@ -379,7 +381,8 @@ pub fn rename(
     };
 
     let position = convert::to_sclc_position(params.text_document_position.position);
-    let cursor_info = analysis::query_cursor(asg, &ctx.source, &ctx.module_id, position);
+    let cursor_info =
+        analysis::query_cursor_with_references(asg, &ctx.source, &ctx.module_id, position);
     let info = lock_cursor_info(&cursor_info);
 
     let Some((decl_module_id, decl_span)) = &info.declaration else {
