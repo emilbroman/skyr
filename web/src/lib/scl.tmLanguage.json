@@ -161,7 +161,7 @@
         "operator": {
             "patterns": [
                 {
-                    "match": "&&|\\|\\|",
+                    "match": "!(?!=)|&&|\\|\\|",
                     "name": "keyword.operator.logical.scl"
                 },
                 {
