@@ -36,6 +36,10 @@ pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessa
             ..Default::default()
         }),
         document_formatting_provider: Some(lsp::OneOf::Left(true)),
+        rename_provider: Some(lsp::OneOf::Right(lsp::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: lsp::WorkDoneProgressOptions::default(),
+        })),
         ..Default::default()
     };
 

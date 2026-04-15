@@ -307,6 +307,29 @@ impl LanguageServer {
                     &self.package_roots,
                 )
             }
+            "textDocument/prepareRename" => {
+                let program = self.load_program().await;
+                handlers::navigation::prepare_rename(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                )
+            }
+            "textDocument/rename" => {
+                let program = self.load_program().await;
+                handlers::navigation::rename(
+                    id,
+                    params,
+                    &self.documents,
+                    program.as_ref(),
+                    self.root.as_deref(),
+                    &self.package_id,
+                    &self.package_roots,
+                )
+            }
             "textDocument/documentSymbol" => handlers::navigation::document_symbol(
                 id,
                 params,
