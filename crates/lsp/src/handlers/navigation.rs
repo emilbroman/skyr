@@ -287,10 +287,42 @@ fn collect_shorthand_spans(body: &sclc::ModuleBody, name: &str) -> HashSet<sclc:
         name,
         spans: HashSet::new(),
     };
+    walk_module_body(body, &mut collector);
+    collector.spans
+}
+
+fn walk_module_body(body: &sclc::ModuleBody, visitor: &mut dyn sclc::Visitor) {
     match body {
-        sclc::ModuleBody::File(file_mod) => sclc::visit_file_mod(&mut collector, file_mod),
-        sclc::ModuleBody::Scle(scle_mod) => sclc::visit_scle_mod(&mut collector, scle_mod),
+        sclc::ModuleBody::File(file_mod) => sclc::visit_file_mod(visitor, file_mod),
+        sclc::ModuleBody::Scle(scle_mod) => sclc::visit_scle_mod(visitor, scle_mod),
     }
+}
+
+/// Collects spans of every record-field declaration in a module — both
+/// `RecordTypeFieldExpr.var.span()` (in type expressions) and
+/// `RecordField.var.span()` (in record literals). Used by the rename handler
+/// to determine whether a declaration site is a field declaration vs. a
+/// regular variable binding.
+#[derive(Default)]
+struct FieldDeclSpansCollector {
+    spans: HashSet<sclc::Span>,
+}
+
+impl sclc::Visitor for FieldDeclSpansCollector {
+    fn visit_path(&mut self, _path: &sclc::PathExpr, _span: sclc::Span) {}
+
+    fn visit_record_field(&mut self, field: &sclc::RecordField) {
+        self.spans.insert(field.var.span());
+    }
+
+    fn visit_record_type_field(&mut self, field: &sclc::RecordTypeFieldExpr) {
+        self.spans.insert(field.var.span());
+    }
+}
+
+fn collect_field_decl_spans(body: &sclc::ModuleBody) -> HashSet<sclc::Span> {
+    let mut collector = FieldDeclSpansCollector::default();
+    walk_module_body(body, &mut collector);
     collector.spans
 }
 
@@ -362,6 +394,14 @@ pub fn rename(
         )];
     }
 
+    // Determine whether we're renaming a record-field declaration (vs. a
+    // regular variable / type binding). The shorthand-expansion rule
+    // depends on which side of `field: var` is changing.
+    let is_field_rename = asg
+        .module(decl_module_id)
+        .map(|m| collect_field_decl_spans(&m.body).contains(decl_span))
+        .unwrap_or(false);
+
     // Group edits by URI string first to avoid clippy::mutable_key_type
     // (lsp::Uri has interior mutability).
     let mut edits_by_uri: HashMap<String, (lsp::Uri, Vec<lsp::TextEdit>)> = HashMap::new();
@@ -405,13 +445,17 @@ pub fn rename(
                 .get(ref_module_id)
                 .is_some_and(|s| s.contains(ref_span));
             let new_text = if is_shorthand {
-                // Expand shorthand: `{ x }` → `{ x: y }`. We know
-                // `original_name` is `Some` because `is_shorthand` was set.
-                format!(
-                    "{}: {}",
-                    original_name.unwrap_or(&params.new_name),
-                    params.new_name,
-                )
+                // Expand shorthand so the field-name and value-var halves
+                // stay independent. We know `original_name` is `Some`
+                // because `is_shorthand` was set.
+                let original = original_name.unwrap_or(&params.new_name);
+                if is_field_rename {
+                    // Renaming the field: `{ x }` → `{ y: x }`.
+                    format!("{}: {}", params.new_name, original)
+                } else {
+                    // Renaming the variable: `{ x }` → `{ x: y }`.
+                    format!("{}: {}", original, params.new_name)
+                }
             } else {
                 params.new_name.clone()
             };
@@ -557,6 +601,35 @@ mod tests {
     fn shorthand_collector_handles_nested_records() {
         let body = parse_body("let x = 1\n{ outer: { x } }\n");
         let spans = collect_shorthand_spans(&body, "x");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn field_decl_collector_finds_record_literal_fields() {
+        let body = parse_body("let r = { x: 1, y: 2 }\n");
+        let spans = collect_field_decl_spans(&body);
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn field_decl_collector_finds_record_type_fields() {
+        let body = parse_body("let r: { x: Int, y: Str } = { x: 1, y: \"hi\" }\n");
+        let spans = collect_field_decl_spans(&body);
+        // Two type fields + two literal fields.
+        assert_eq!(spans.len(), 4);
+    }
+
+    #[test]
+    fn field_decl_collector_finds_type_def_fields() {
+        let body = parse_body("type R = { x: Int, y: Str }\n");
+        let spans = collect_field_decl_spans(&body);
+        assert_eq!(spans.len(), 2);
+    }
+
+    #[test]
+    fn field_decl_collector_finds_fn_param_record_fields() {
+        let body = parse_body("let f = fn (r: { x: Int }) -> r.x\n");
+        let spans = collect_field_decl_spans(&body);
         assert_eq!(spans.len(), 1);
     }
 
