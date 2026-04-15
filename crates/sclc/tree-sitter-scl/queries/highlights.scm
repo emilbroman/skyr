@@ -38,7 +38,7 @@
 (binary_expression
   operator: _ @operator)
 (unary_expression
-  "-" @operator)
+  operator: _ @operator)
 
 ; Functions
 (call_expression

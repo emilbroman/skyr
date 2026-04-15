@@ -1,0 +1,4 @@
+export let a = !true
+export let b = !false
+export let c = !(1 == 2)
+export let d = !!true

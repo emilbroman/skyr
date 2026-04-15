@@ -97,6 +97,28 @@ let x = -42
       operand: (integer))))
 
 ================
+Unary logical not
+================
+
+let x = !true
+let y = !(a == b)
+
+---
+
+(source_file
+  (let_binding
+    name: (identifier)
+    value: (unary_expression
+      operand: (boolean)))
+  (let_binding
+    name: (identifier)
+    value: (unary_expression
+      operand: (parenthesized_expression
+        (binary_expression
+          left: (identifier)
+          right: (identifier))))))
+
+================
 Operator precedence
 ================
 

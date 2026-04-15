@@ -22,6 +22,7 @@ pub enum Token<'a> {
     Plus,
     Minus,
     Star,
+    Bang,
     BangEq,
     Less,
     LessColon,
@@ -511,7 +512,7 @@ impl<'a> Iterator for Lexer<'a> {
                         self.next_grapheme().expect("peek returned Some");
                         Token::BangEq
                     } else {
-                        Token::Unknown(grapheme)
+                        Token::Bang
                     }
                 }
                 "&" => {
@@ -697,6 +698,30 @@ mod tests {
         assert!(matches!(tokens[3].as_ref(), Token::LessEq));
         assert!(matches!(tokens[4].as_ref(), Token::Greater));
         assert!(matches!(tokens[5].as_ref(), Token::GreaterEq));
+    }
+
+    #[test]
+    fn lexes_bang_token() {
+        let tokens = Lexer::new("!").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::Bang));
+    }
+
+    #[test]
+    fn bang_before_non_equals_lexes_as_bang() {
+        let tokens = Lexer::new("!x")
+            .filter(|token| !matches!(token.as_ref(), Token::Whitepace(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 2);
+        assert!(matches!(tokens[0].as_ref(), Token::Bang));
+        assert!(matches!(tokens[1].as_ref(), Token::Symbol("x")));
+    }
+
+    #[test]
+    fn bang_eq_still_lexes_as_single_token() {
+        let tokens = Lexer::new("!=").collect::<Vec<_>>();
+        assert_eq!(tokens.len(), 1);
+        assert!(matches!(tokens[0].as_ref(), Token::BangEq));
     }
 
     #[test]

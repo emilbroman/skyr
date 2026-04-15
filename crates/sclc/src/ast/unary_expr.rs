@@ -6,12 +6,14 @@ use crate::Loc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnaryOp {
     Negate,
+    Not,
 }
 
 impl std::fmt::Display for UnaryOp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             UnaryOp::Negate => write!(f, "-"),
+            UnaryOp::Not => write!(f, "!"),
         }
     }
 }
@@ -64,6 +66,18 @@ impl UnaryExpr {
                         Type::Never
                     }
                 },
+                UnaryOp::Not => match &operand_ty.kind {
+                    TypeKind::Bool => Type::Bool,
+                    _ => {
+                        diags.push(InvalidUnaryOperand {
+                            module_id: env.module_id()?,
+                            op: self.op,
+                            operand: operand_ty.clone(),
+                            span: expr.span(),
+                        });
+                        Type::Never
+                    }
+                },
             }
         };
 
@@ -104,6 +118,13 @@ impl UnaryExpr {
                 other => Err(env.throw(
                     EvalErrorKind::UnexpectedValue(other),
                     Some((unary_module_id.clone(), unary_span, "-".to_string())),
+                )),
+            }),
+            UnaryOp::Not => value.try_map(|value| match value {
+                Value::Bool(b) => Ok(Value::Bool(!b)),
+                other => Err(env.throw(
+                    EvalErrorKind::UnexpectedValue(other),
+                    Some((unary_module_id.clone(), unary_span, "!".to_string())),
                 )),
             }),
         }

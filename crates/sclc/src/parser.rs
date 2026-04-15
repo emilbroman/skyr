@@ -440,6 +440,16 @@ peg::parser! {
                     span,
                 )
             }
+            / bang_span:bang() expr:unary_expr() {
+                let span = Span::new(bang_span.start(), expr.span().end());
+                Loc::new(
+                    Expr::Unary(UnaryExpr {
+                        op: UnaryOp::Not,
+                        expr: Box::new(expr),
+                    }),
+                    span,
+                )
+            }
             / property_expr()
 
         rule if_expr() -> Loc<Expr>
@@ -1151,6 +1161,11 @@ peg::parser! {
                 [token if matches!(token.as_ref(), Token::BangEq)] { token.span() }
             }
             / expected!("!=")
+        rule bang() -> Span
+            = quiet!{
+                [token if matches!(token.as_ref(), Token::Bang)] { token.span() }
+            }
+            / expected!("!")
         rule less() -> Span
             = quiet!{
                 [token if matches!(token.as_ref(), Token::Less)] { token.span() }
@@ -1890,6 +1905,40 @@ mod tests {
         assert!(matches!(unary.op, crate::UnaryOp::Negate));
         assert!(matches!(unary.expr.as_ref().as_ref(), crate::Expr::Int(_)));
         assert!(matches!(add.rhs.as_ref().as_ref(), crate::Expr::Int(_)));
+    }
+
+    #[test]
+    fn parses_unary_not() {
+        let line = parse_repl_line("!true", &ModuleId::default())
+            .into_inner()
+            .expect("unary not should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Unary(unary) = expr.into_inner() else {
+            panic!("expected unary expression");
+        };
+        assert!(matches!(unary.op, crate::UnaryOp::Not));
+        assert!(matches!(unary.expr.as_ref().as_ref(), crate::Expr::Bool(_)));
+    }
+
+    #[test]
+    fn parses_unary_not_and_neq_together() {
+        // Ensure `!=` binary and `!` unary coexist without conflict.
+        let line = parse_repl_line("!a != b", &ModuleId::default())
+            .into_inner()
+            .expect("combined !/!= should parse");
+        let crate::ModStmt::Expr(expr) = line.statement.expect("expected statement") else {
+            panic!("expected expression statement");
+        };
+        let crate::Expr::Binary(neq) = expr.into_inner() else {
+            panic!("expected binary expression");
+        };
+        assert!(matches!(neq.op, crate::BinaryOp::Neq));
+        let crate::Expr::Unary(unary) = neq.lhs.into_inner() else {
+            panic!("expected unary expression on lhs");
+        };
+        assert!(matches!(unary.op, crate::UnaryOp::Not));
     }
 
     #[test]

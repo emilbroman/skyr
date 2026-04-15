@@ -102,7 +102,7 @@ module.exports = grammar({
       ),
 
     unary_expression: ($) =>
-      prec(PREC.UNARY, seq("-", field("operand", $._expression))),
+      prec(PREC.UNARY, seq(field("operator", choice("-", "!")), field("operand", $._expression))),
 
     type_cast: ($) =>
       prec.left(PREC.POSTFIX, seq(

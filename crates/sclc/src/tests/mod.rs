@@ -394,6 +394,8 @@ macro_rules! test_case {
 }
 
 test_case!(BasicExport);
+test_case!(UnaryNot);
+test_case!(DiagUnaryNotInvalid);
 test_case!(MultiExport);
 test_case!(EmptyModule);
 test_case!(ImportModule);
