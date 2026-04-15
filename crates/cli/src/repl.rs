@@ -355,6 +355,7 @@ impl highlight::Highlighter for ReplHelper {
                 Token::Plus => emit!("+"),
                 Token::Minus => emit!("-"),
                 Token::Star => emit!("*"),
+                Token::Bang => emit!("!"),
                 Token::BangEq => emit!("!="),
                 Token::Less => emit!("<"),
                 Token::LessColon => emit!("<:"),
