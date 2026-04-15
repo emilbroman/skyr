@@ -2038,7 +2038,9 @@ impl<'p> TypeChecker<'p> {
                         .unwrap_or_else(|| {
                             crate::ModuleId::new(crate::PackageId::default(), raw_segments.clone())
                         });
-                    let import_env = TypeEnv::new(env.global_env).with_module_id(&target_module_id);
+                    let import_env = TypeEnv::new(env.global_env)
+                        .with_module_id(&target_module_id)
+                        .with_raw_module_id(&raw_segments);
                     let type_exports = self
                         .type_level_exports(&import_env, import_file_mod)
                         .unpack(diags);

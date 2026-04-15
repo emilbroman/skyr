@@ -28,6 +28,34 @@ pub fn cursor_info(
     source: &str,
     position: Position,
 ) -> Arc<Mutex<CursorInfo>> {
+    cursor_info_impl(asg, module_id, source, position, false)
+}
+
+/// Like [`cursor_info`], but also type-checks every other module in the
+/// workspace with the cursor attached so that `track_reference` calls from
+/// type-driven sites (record field property accesses, record literal fields
+/// checked against an expected record) fire across modules.
+///
+/// Use this for LSP requests that need complete reference data —
+/// `textDocument/references`, `textDocument/prepareRename`,
+/// `textDocument/rename`. For hover / goto-definition / completion the
+/// cheaper [`cursor_info`] is sufficient.
+pub fn cursor_info_with_references(
+    asg: &Asg,
+    module_id: &ModuleId,
+    source: &str,
+    position: Position,
+) -> Arc<Mutex<CursorInfo>> {
+    cursor_info_impl(asg, module_id, source, position, true)
+}
+
+fn cursor_info_impl(
+    asg: &Asg,
+    module_id: &ModuleId,
+    source: &str,
+    position: Position,
+    include_cross_module_refs: bool,
+) -> Arc<Mutex<CursorInfo>> {
     let cursor = Cursor::new(position);
     let cursor_info = cursor.info();
 
@@ -50,6 +78,21 @@ pub fn cursor_info(
         .map(|mn| mn.package_id.clone())
         .unwrap_or_default();
 
+    let modules: HashMap<ModuleId, ast::FileMod> = asg
+        .modules()
+        .filter_map(|mn| {
+            mn.body
+                .as_file_mod()
+                .map(|fm| (mn.module_id.clone(), fm.clone()))
+        })
+        .collect();
+    let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
+    let checker = TypeChecker::from_modules(&modules, package_names);
+
+    let mut asg_checker = AsgChecker::new(asg);
+    let _ = asg_checker.check();
+    let ge = asg_checker.into_global_type_env();
+
     // Parse with cursor and resolve declaration/reference edges.
     if is_scle {
         let diagnosed = parse_scle_with_cursor(source, module_id, Some(cursor.clone()));
@@ -57,26 +100,10 @@ pub fn cursor_info(
             // Resolve cursor refs via the loader's scope-aware AST walk.
             resolve_cursor_refs(asg, &raw_id, &pkg_id, &ModuleBody::Scle(scle_mod.clone()));
 
-            // Type-check for type info and completions.
-            let modules: HashMap<ModuleId, ast::FileMod> = asg
-                .modules()
-                .filter_map(|mn| {
-                    mn.body
-                        .as_file_mod()
-                        .map(|fm| (mn.module_id.clone(), fm.clone()))
-                })
-                .collect();
-            let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
-            let checker = TypeChecker::from_modules(&modules, package_names);
-
-            let mut asg_checker = AsgChecker::new(asg);
-            let _ = asg_checker.check();
-            let ge = asg_checker.into_global_type_env();
-
             let type_env = TypeEnv::new(&ge)
                 .with_module_id(module_id)
                 .with_raw_module_id(&raw_id)
-                .with_cursor(cursor);
+                .with_cursor(cursor.clone());
 
             for import in &scle_mod.imports {
                 let stmt = ast::ModStmt::Import(import.clone());
@@ -103,28 +130,54 @@ pub fn cursor_info(
         // Resolve cursor refs via the loader's scope-aware AST walk.
         resolve_cursor_refs(asg, &raw_id, &pkg_id, &ModuleBody::File(file_mod.clone()));
 
-        // Type-check for type info and completions.
-        let modules: HashMap<ModuleId, ast::FileMod> = asg
-            .modules()
-            .filter_map(|mn| {
-                mn.body
-                    .as_file_mod()
-                    .map(|fm| (mn.module_id.clone(), fm.clone()))
-            })
-            .collect();
-        let package_names: Vec<PackageId> = asg.packages().keys().cloned().collect();
-        let checker = TypeChecker::from_modules(&modules, package_names);
-
-        let mut asg_checker = AsgChecker::new(asg);
-        let _ = asg_checker.check();
-        let ge = asg_checker.into_global_type_env();
-
         let type_env = TypeEnv::new(&ge)
             .with_module_id(module_id)
             .with_raw_module_id(&raw_id)
-            .with_cursor(cursor);
+            .with_cursor(cursor.clone());
 
         let _ = checker.check_file_mod(&type_env, &file_mod);
+    }
+
+    // For cross-module reference collection (find-references, rename):
+    // re-type-check every other module with the cursor attached so that
+    // type-driven `track_reference` calls (record field property accesses,
+    // record literal field names) fire in those modules too.
+    if include_cross_module_refs {
+        for mn in asg.modules() {
+            if mn.raw_id == raw_id {
+                continue;
+            }
+            let other_env = TypeEnv::new(&ge)
+                .with_module_id(&mn.module_id)
+                .with_raw_module_id(&mn.raw_id)
+                .with_cursor(cursor.clone());
+            match &mn.body {
+                ModuleBody::File(fm) => {
+                    let _ = checker.check_file_mod(&other_env, fm);
+                }
+                ModuleBody::Scle(sm) => {
+                    for import in &sm.imports {
+                        let stmt = ast::ModStmt::Import(import.clone());
+                        let _ = checker.check_stmt(&other_env, &stmt);
+                    }
+                    match (&sm.type_expr, &sm.body) {
+                        (Some(type_expr), Some(body)) => {
+                            let expected = checker
+                                .resolve_type_expr(&other_env, type_expr)
+                                .into_inner();
+                            let _ = checker.check_expr(&other_env, body, Some(&expected));
+                        }
+                        (Some(type_expr), None) => {
+                            let _ = checker.resolve_type_expr(&other_env, type_expr);
+                        }
+                        (None, Some(body)) => {
+                            let _ = checker.check_expr(&other_env, body, None);
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+        }
     }
 
     cursor_info
@@ -565,6 +618,55 @@ mod tests {
         // Field `name` in `{name: Str}` is at line 1, col 9.
         assert_eq!(decl_span.start().line(), 1);
         assert_eq!(decl_span.start().character(), 9);
+    }
+
+    #[tokio::test]
+    async fn find_references_record_field_cross_module() {
+        // Cursor on a record field declaration in A.scl should find literal
+        // field references from B.scl and C.scl when the full
+        // cross-module walk is requested.
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("A.scl"),
+            b"export type X {\n  field: Int\n}\n".to_vec(),
+        );
+        files.insert(
+            PathBuf::from("B.scl"),
+            b"import Test/A\nlet x: A.X = {field: 1}\n".to_vec(),
+        );
+        files.insert(
+            PathBuf::from("C.scl"),
+            b"import Test/A\nlet y: A.X = {field: 2}\n".to_vec(),
+        );
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"import Test/A\nimport Test/B\nimport Test/C\n".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["A".to_string()]);
+        // Cursor on `field` in `{field: Int}` inside A.scl (line 2, col 3).
+        let info = super::cursor_info_with_references(
+            &asg,
+            &module_id,
+            "export type X {\n  field: Int\n}\n",
+            Position::new(2, 3),
+        );
+        let locked = info.lock().unwrap();
+
+        let b_raw = vec!["Test".to_string(), "B".to_string()];
+        let c_raw = vec!["Test".to_string(), "C".to_string()];
+        let has_b = locked.references.iter().any(|(m, _)| m == &b_raw);
+        let has_c = locked.references.iter().any(|(m, _)| m == &c_raw);
+        assert!(
+            has_b && has_c,
+            "expected references from both B.scl and C.scl, got: {:?}",
+            locked.references
+        );
     }
 
     #[tokio::test]

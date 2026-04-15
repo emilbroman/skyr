@@ -63,7 +63,12 @@ impl RecordExpr {
         expr: &Loc<Expr>,
         expected: &crate::Type,
     ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
-        if let crate::TypeKind::Record(expected_record) = &expected.kind {
+        // Unfold IsoRec wrappers so that record literals checked against a
+        // type alias (e.g. `A.X` referring to `type X = {field: Int}`) still
+        // go through `check_record_against` and pick up the expected record's
+        // field origins for cursor/reference tracking.
+        let unfolded = expected.unfold();
+        if let crate::TypeKind::Record(expected_record) = &unfolded.kind {
             return self.check_record_against(checker, env, expr, expected_record);
         }
         checker.synth_then_subsume(env, expr, expected)
