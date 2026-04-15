@@ -118,6 +118,14 @@ variable "dns_zone" {
   default     = "skyr.local"
 }
 
+# --- DE Scaling ---
+
+variable "de_worker_count" {
+  type        = number
+  description = "Number of DE worker pods. Each gets a distinct worker index for deployment sharding."
+  default     = 1
+}
+
 # --- RTE Scaling ---
 
 variable "rte_worker_count" {

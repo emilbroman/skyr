@@ -90,7 +90,30 @@ enum Program {
 
         #[clap(long = "ldb-hostname", default_value = "localhost")]
         ldb_hostname: String,
+
+        #[clap(long = "worker-index", default_value_t = 0)]
+        worker_index: u16,
+
+        #[clap(long = "worker-count", default_value_t = 1)]
+        worker_count: u16,
     },
+}
+
+/// Returns true if this replica owns the given deployment based on sharding.
+///
+/// The first 8 bytes of the deployment ID (a SHA-1 commit hash) are interpreted
+/// as a big-endian u64. The deployment is assigned to the replica whose index
+/// equals `hash_prefix % worker_count`.
+fn owns_deployment(
+    deployment_id: &ids::DeploymentId,
+    worker_index: u16,
+    worker_count: u16,
+) -> bool {
+    let bytes = deployment_id.to_bytes();
+    let prefix = u64::from_be_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]);
+    (prefix % worker_count as u64) as u16 == worker_index
 }
 
 #[tokio::main]
@@ -108,8 +131,20 @@ async fn main() -> anyhow::Result<()> {
             rdb_hostname,
             rtq_hostname,
             ldb_hostname,
+            worker_index,
+            worker_count,
         } => {
-            tracing::info!("starting deployment engine daemon");
+            if worker_count == 0 {
+                anyhow::bail!("--worker-count must be at least 1");
+            }
+            if worker_index >= worker_count {
+                anyhow::bail!("--worker-index must be less than --worker-count");
+            }
+
+            tracing::info!(
+                worker = %format!("{}/{}", worker_index, worker_count),
+                "starting deployment engine daemon",
+            );
 
             let cdb_client = cdb::ClientBuilder::new()
                 .known_node(&cdb_hostname)
@@ -141,6 +176,8 @@ async fn main() -> anyhow::Result<()> {
                     rtq_publisher.clone(),
                     ldb_publisher.clone(),
                     &mut workers,
+                    worker_index,
+                    worker_count,
                 )
                 .await
                 {
@@ -163,6 +200,8 @@ async fn process(
     rtq_publisher: rtq::Publisher,
     ldb_publisher: ldb::Publisher,
     workers: &mut BTreeMap<String, oneshot::Sender<()>>,
+    worker_index: u16,
+    worker_count: u16,
 ) -> anyhow::Result<()> {
     let deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
 
@@ -171,6 +210,9 @@ async fn process(
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
         let deployment = deployment?;
+        if !owns_deployment(&deployment.deployment, worker_index, worker_count) {
+            continue;
+        }
         let deployment_qid = deployment.deployment_qid().to_string();
         if !untouched.remove(&deployment_qid) {
             tracing::debug!(dep = %deployment_qid, "new deployment to process");

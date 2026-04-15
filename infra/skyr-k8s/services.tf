@@ -268,22 +268,24 @@ resource "kubernetes_service" "scs" {
 # =============================================================================
 
 resource "kubernetes_deployment" "de" {
+  count = var.de_worker_count
+
   metadata {
-    name      = "de"
+    name      = "de-${count.index}"
     namespace = local.namespace
-    labels    = merge(local.labels, { "app.kubernetes.io/name" = "de" })
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "de", "skyr/worker-index" = tostring(count.index) })
   }
 
   spec {
     replicas = 1
 
     selector {
-      match_labels = { "app.kubernetes.io/name" = "de" }
+      match_labels = { "app.kubernetes.io/name" = "de", "skyr/worker-index" = tostring(count.index) }
     }
 
     template {
       metadata {
-        labels = merge(local.labels, { "app.kubernetes.io/name" = "de" })
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "de", "skyr/worker-index" = tostring(count.index) })
       }
 
       spec {
@@ -299,6 +301,8 @@ resource "kubernetes_deployment" "de" {
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
             "--ldb-hostname", local.redpanda_hostname,
+            "--worker-index", tostring(count.index),
+            "--worker-count", tostring(var.de_worker_count),
           ]
         }
       }

@@ -13,11 +13,28 @@ CDB → DE → SCLC (compile)
            DE → LDB (deployment logs)
 ```
 
+## Horizontal Scaling
+
+DE supports horizontal scaling via deployment sharding. When running multiple replicas, each instance processes a disjoint subset of active deployments based on the commit hash (deployment ID).
+
+The first 8 bytes of each deployment's commit hash are interpreted as a big-endian `u64`. A deployment is owned by the replica where `hash_prefix % worker_count == worker_index`.
+
+```sh
+# Single instance (default, processes all deployments):
+de daemon
+
+# Three replicas, each processing ~1/3 of deployments:
+de daemon --worker-index 0 --worker-count 3
+de daemon --worker-index 1 --worker-count 3
+de daemon --worker-index 2 --worker-count 3
+```
+
 ## How It Works
 
 1. **Polling**: The daemon polls for active deployments every 20 seconds.
-2. **Workers**: A dedicated worker is spawned for each active deployment, running a loop every 5 seconds.
-3. **State handling**: Each worker handles the deployment based on its current state:
+2. **Sharding**: Each deployment is assigned to a replica based on its commit hash prefix. Only owned deployments are processed.
+3. **Workers**: A dedicated worker is spawned for each owned active deployment, running a loop every 5 seconds.
+4. **State handling**: Each worker handles the deployment based on its current state:
 
 | State | Behavior |
 |-------|----------|
