@@ -224,10 +224,13 @@ Arithmetic on mixed `Int` and `Float` produces `Float`:
 |----------|-------------|
 | `&&` | Logical AND |
 | `\|\|` | Logical OR |
+| `!` | Logical NOT (unary prefix) |
 
 ```scl
 true && false   // false
 true || false   // true
+!true           // false
+!(1 == 2)       // true
 ```
 
 ### Nil Coalescing Operator
@@ -265,7 +268,7 @@ The `as` operator has the highest precedence, binding tighter than any binary op
 From highest to lowest:
 
 1. Postfix: `.property`, `?.property`, `(args)`, `as Type`
-2. Unary: `-x`
+2. Unary: `-x`, `!x`
 3. Multiplicative: `*`, `/`
 4. Additive: `+`, `-`
 5. Comparison: `<`, `<=`, `>`, `>=`
