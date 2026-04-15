@@ -353,6 +353,59 @@ struct ModuleAnalysis {
     discovered_imports: Vec<(RawModuleId, ImportSource)>,
 }
 
+/// Collect import aliases and resolve discovered imports into edges.
+///
+/// Shared between `analyze_module` and `analyze_scle_module` to avoid
+/// duplicating the alias-collection, span-tracking, and edge-building logic.
+fn process_imports(
+    imports: &[Loc<ast::ImportStmt>],
+    raw_id: &RawModuleId,
+    pkg_id: &PackageId,
+    module_id: &ModuleId,
+    analysis: &mut ModuleAnalysis,
+) -> HashMap<String, RawModuleId> {
+    let mut import_aliases: HashMap<String, RawModuleId> = HashMap::new();
+    let mut import_spans: HashMap<RawModuleId, Span> = HashMap::new();
+
+    for import in imports {
+        let vars = &import.as_ref().vars;
+        if !vars.is_empty() {
+            let alias = vars.last().unwrap().name.clone();
+            let import_raw_id = resolve_import_path(vars, pkg_id);
+            let path_span = Span::new(
+                vars.first().unwrap().span().start(),
+                vars.last().unwrap().span().end(),
+            );
+            import_spans
+                .entry(import_raw_id.clone())
+                .or_insert(path_span);
+            import_aliases.insert(alias, import_raw_id);
+        }
+    }
+
+    let mut seen: HashSet<RawModuleId> = HashSet::new();
+    for import_raw_id in import_aliases.values() {
+        if seen.insert(import_raw_id.clone()) {
+            let span = import_spans.get(import_raw_id).copied().unwrap_or_default();
+            analysis.discovered_imports.push((
+                import_raw_id.clone(),
+                ImportSource {
+                    source_module_id: module_id.clone(),
+                    path_span: span,
+                },
+            ));
+            analysis.edges.push(Edge {
+                from: NodeId::Module(raw_id.clone()),
+                to: NodeId::Module(import_raw_id.clone()),
+                lazy: false,
+                span: None,
+            });
+        }
+    }
+
+    import_aliases
+}
+
 /// Analyze a parsed module, extracting nodes, edges, and import references.
 fn analyze_module(
     raw_id: &RawModuleId,
@@ -364,8 +417,6 @@ fn analyze_module(
     // Collect sets of names for classification.
     let mut global_names: HashSet<String> = HashSet::new();
     let mut type_names: HashSet<String> = HashSet::new();
-    // Maps import alias (last segment) → raw module ID of the import target.
-    let mut import_aliases: HashMap<String, RawModuleId> = HashMap::new();
 
     // First pass: collect names.
     for stmt in &file_mod.statements {
@@ -376,15 +427,7 @@ fn analyze_module(
             ModStmt::TypeDef(td) | ModStmt::ExportTypeDef(td) => {
                 type_names.insert(td.var.name.clone());
             }
-            ModStmt::Import(import) => {
-                let vars = &import.as_ref().vars;
-                if !vars.is_empty() {
-                    let alias = vars.last().unwrap().name.clone();
-                    let import_raw_id = resolve_import_path(vars, pkg_id);
-                    import_aliases.insert(alias, import_raw_id);
-                }
-            }
-            ModStmt::Expr(_) => {}
+            _ => {}
         }
     }
 
@@ -396,43 +439,16 @@ fn analyze_module(
         discovered_imports: Vec::new(),
     };
 
-    // Collect discovered imports (deduplicated).
-    let mut seen_imports: HashSet<RawModuleId> = HashSet::new();
-    // Also collect import spans for diagnostics.
-    let mut import_spans: HashMap<RawModuleId, Span> = HashMap::new();
-    for stmt in &file_mod.statements {
-        if let ModStmt::Import(import) = stmt {
-            let vars = &import.as_ref().vars;
-            if !vars.is_empty() {
-                let import_raw_id = resolve_import_path(vars, pkg_id);
-                let path_span = Span::new(
-                    vars.first().unwrap().span().start(),
-                    vars.last().unwrap().span().end(),
-                );
-                import_spans.entry(import_raw_id).or_insert(path_span);
-            }
-        }
-    }
-
-    for import_raw_id in import_aliases.values() {
-        if seen_imports.insert(import_raw_id.clone()) {
-            let span = import_spans.get(import_raw_id).copied().unwrap_or_default();
-            analysis.discovered_imports.push((
-                import_raw_id.clone(),
-                ImportSource {
-                    source_module_id: module_id.clone(),
-                    path_span: span,
-                },
-            ));
-            // Module → Import module edge.
-            analysis.edges.push(Edge {
-                from: NodeId::Module(raw_id.clone()),
-                to: NodeId::Module(import_raw_id.clone()),
-                lazy: false,
-                span: None,
-            });
-        }
-    }
+    // Collect and resolve imports.
+    let imports: Vec<_> = file_mod
+        .statements
+        .iter()
+        .filter_map(|stmt| match stmt {
+            ModStmt::Import(import) => Some(import.clone()),
+            _ => None,
+        })
+        .collect();
+    let import_aliases = process_imports(&imports, raw_id, pkg_id, module_id, &mut analysis);
 
     let ctx = RefContext {
         raw_id,
@@ -596,21 +612,9 @@ fn analyze_scle_module(
     scle_mod: &ast::ScleMod,
     cd: &mut CursorData,
 ) -> ModuleAnalysis {
-    let mut global_names: HashSet<String> = HashSet::new();
+    // SCLE has no same-module globals or type names.
+    let global_names: HashSet<String> = HashSet::new();
     let type_names: HashSet<String> = HashSet::new();
-    let mut import_aliases: HashMap<String, RawModuleId> = HashMap::new();
-
-    for import in &scle_mod.imports {
-        let vars = &import.as_ref().vars;
-        if !vars.is_empty() {
-            let alias = vars.last().unwrap().name.clone();
-            let import_raw_id = resolve_import_path(vars, pkg_id);
-            import_aliases.insert(alias, import_raw_id);
-        }
-    }
-    // SCLE has no same-module globals; `global_names` stays empty. (Kept as a
-    // variable so RefContext can hold a reference.)
-    let _ = &mut global_names;
 
     let mut analysis = ModuleAnalysis {
         globals: Vec::new(),
@@ -620,38 +624,8 @@ fn analyze_scle_module(
         discovered_imports: Vec::new(),
     };
 
-    let mut seen_imports: HashSet<RawModuleId> = HashSet::new();
-    let mut import_spans: HashMap<RawModuleId, Span> = HashMap::new();
-    for import in &scle_mod.imports {
-        let vars = &import.as_ref().vars;
-        if !vars.is_empty() {
-            let import_raw_id = resolve_import_path(vars, pkg_id);
-            let path_span = Span::new(
-                vars.first().unwrap().span().start(),
-                vars.last().unwrap().span().end(),
-            );
-            import_spans.entry(import_raw_id).or_insert(path_span);
-        }
-    }
-
-    for import_raw_id in import_aliases.values() {
-        if seen_imports.insert(import_raw_id.clone()) {
-            let span = import_spans.get(import_raw_id).copied().unwrap_or_default();
-            analysis.discovered_imports.push((
-                import_raw_id.clone(),
-                ImportSource {
-                    source_module_id: module_id.clone(),
-                    path_span: span,
-                },
-            ));
-            analysis.edges.push(Edge {
-                from: NodeId::Module(raw_id.clone()),
-                to: NodeId::Module(import_raw_id.clone()),
-                lazy: false,
-                span: None,
-            });
-        }
-    }
+    let import_aliases =
+        process_imports(&scle_mod.imports, raw_id, pkg_id, module_id, &mut analysis);
 
     let ctx = RefContext {
         raw_id,
