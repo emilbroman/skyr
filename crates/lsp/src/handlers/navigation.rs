@@ -1,6 +1,6 @@
 // TODO: Add goto-definition/references/document-symbol support for .scle files
 // (see hover.rs TODO).
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use lsp_types as lsp;
@@ -255,6 +255,54 @@ pub fn prepare_rename(
     vec![OutgoingMessage::response(id, result)]
 }
 
+/// Collect the spans of record-shorthand fields (`{ x }` rather than
+/// `{ x: x }`) whose name matches `name` within the given module body.
+///
+/// A field is shorthand iff its `var.span()` and the inner `Var` expression's
+/// span are identical — the parser produces this exact shape for the
+/// shorthand sugar.
+struct ShorthandCollector<'a> {
+    name: &'a str,
+    spans: HashSet<sclc::Span>,
+}
+
+impl sclc::Visitor for ShorthandCollector<'_> {
+    fn visit_path(&mut self, _path: &sclc::PathExpr, _span: sclc::Span) {}
+
+    fn visit_record_field(&mut self, field: &sclc::RecordField) {
+        if field.var.name != self.name {
+            return;
+        }
+        if let sclc::Expr::Var(inner) = field.expr.as_ref()
+            && inner.name == self.name
+            && field.expr.span() == field.var.span()
+        {
+            self.spans.insert(field.var.span());
+        }
+    }
+}
+
+fn collect_shorthand_spans(body: &sclc::ModuleBody, name: &str) -> HashSet<sclc::Span> {
+    let mut collector = ShorthandCollector {
+        name,
+        spans: HashSet::new(),
+    };
+    match body {
+        sclc::ModuleBody::File(file_mod) => sclc::visit_file_mod(&mut collector, file_mod),
+        sclc::ModuleBody::Scle(scle_mod) => sclc::visit_scle_mod(&mut collector, scle_mod),
+    }
+    collector.spans
+}
+
+/// Returns the original identifier name that the cursor is on, if any.
+fn cursor_identifier_name(info: &sclc::CursorInfo) -> Option<&str> {
+    match info.identifier.as_ref()? {
+        sclc::CursorIdentifier::Let(name) | sclc::CursorIdentifier::Type(name) => {
+            Some(name.as_str())
+        }
+    }
+}
+
 // `lsp::Uri` has interior mutability, so it triggers `clippy::mutable_key_type`
 // when used as a `HashMap` key. We need it as a key for the `WorkspaceEdit`
 // `changes` map which is what the LSP protocol requires.
@@ -329,15 +377,51 @@ pub fn rename(
             });
     }
 
+    // For each module that contains references, collect the spans of any
+    // record-shorthand fields that match the renamed identifier so we can
+    // expand `{ x }` into `{ x: y }` instead of producing `{ y }` (which
+    // would silently rename the field too).
+    let original_name = cursor_identifier_name(&info);
+    let mut shorthand_spans_by_module: HashMap<sclc::RawModuleId, HashSet<sclc::Span>> =
+        HashMap::new();
+    if let Some(name) = original_name {
+        let mut modules: HashSet<&sclc::RawModuleId> = HashSet::new();
+        for (ref_module_id, _) in &info.references {
+            modules.insert(ref_module_id);
+        }
+        for raw_id in modules {
+            if let Some(module) = asg.module(raw_id) {
+                let spans = collect_shorthand_spans(&module.body, name);
+                if !spans.is_empty() {
+                    shorthand_spans_by_module.insert(raw_id.clone(), spans);
+                }
+            }
+        }
+    }
+
     for (ref_module_id, ref_span) in &info.references {
         if let Some(ref_uri) = raw_module_id_to_uri(asg, ref_module_id, root, package_roots) {
+            let is_shorthand = shorthand_spans_by_module
+                .get(ref_module_id)
+                .is_some_and(|s| s.contains(ref_span));
+            let new_text = if is_shorthand {
+                // Expand shorthand: `{ x }` → `{ x: y }`. We know
+                // `original_name` is `Some` because `is_shorthand` was set.
+                format!(
+                    "{}: {}",
+                    original_name.unwrap_or(&params.new_name),
+                    params.new_name,
+                )
+            } else {
+                params.new_name.clone()
+            };
             edits_by_uri
                 .entry(ref_uri.as_str().to_owned())
                 .or_insert_with(|| (ref_uri.clone(), Vec::new()))
                 .1
                 .push(lsp::TextEdit {
                     range: convert::to_lsp_range(*ref_span),
-                    new_text: params.new_name.clone(),
+                    new_text,
                 });
         }
     }
@@ -437,6 +521,43 @@ mod tests {
             sclc::Position::new(line_start, col_start),
             sclc::Position::new(line_end, col_end),
         )
+    }
+
+    fn parse_body(source: &str) -> sclc::ModuleBody {
+        let module_id = sclc::ModuleId::default();
+        let file_mod = sclc::parse_file_mod(source, &module_id).into_inner();
+        sclc::ModuleBody::File(file_mod)
+    }
+
+    #[test]
+    fn shorthand_collector_finds_shorthand_field() {
+        // `let x = 1\n{ x }` — `x` appears once as shorthand.
+        let body = parse_body("let x = 1\n{ x }\n");
+        let spans = collect_shorthand_spans(&body, "x");
+        assert_eq!(spans.len(), 1);
+    }
+
+    #[test]
+    fn shorthand_collector_skips_explicit_field() {
+        // `{ x: x }` is not shorthand — the field name and the value have
+        // different spans.
+        let body = parse_body("let x = 1\n{ x: x }\n");
+        let spans = collect_shorthand_spans(&body, "x");
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn shorthand_collector_ignores_other_names() {
+        let body = parse_body("let x = 1\nlet y = 2\n{ y }\n");
+        let spans = collect_shorthand_spans(&body, "x");
+        assert!(spans.is_empty());
+    }
+
+    #[test]
+    fn shorthand_collector_handles_nested_records() {
+        let body = parse_body("let x = 1\n{ outer: { x } }\n");
+        let spans = collect_shorthand_spans(&body, "x");
+        assert_eq!(spans.len(), 1);
     }
 
     #[test]
