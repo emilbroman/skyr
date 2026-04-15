@@ -101,6 +101,12 @@ impl Cursor {
     /// Record a reference to a declaration. If the cursor's declaration is already
     /// known and matches, the reference is added directly. Otherwise it is buffered
     /// until `set_declaration` identifies which declaration the cursor points to.
+    ///
+    /// Duplicate `(declaration, reference)` pairs are silently dropped — the
+    /// type checker can legitimately visit the same AST node more than once
+    /// (e.g. generic function calls synth their args once for type-arg
+    /// inference and then check them again), and we don't want to emit
+    /// overlapping edits for a single source location.
     pub fn track_reference(
         &self,
         declaration: (RawModuleId, Span),
@@ -108,13 +114,14 @@ impl Cursor {
     ) {
         let mut inner = self.inner.lock().unwrap();
         if inner.declaration.as_ref() == Some(&declaration) {
-            inner.references.push(reference);
+            if !inner.references.contains(&reference) {
+                inner.references.push(reference);
+            }
         } else {
-            inner
-                .ref_tracking
-                .entry(declaration)
-                .or_default()
-                .push(reference);
+            let buf = inner.ref_tracking.entry(declaration).or_default();
+            if !buf.contains(&reference) {
+                buf.push(reference);
+            }
         }
     }
 

@@ -707,6 +707,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn find_references_record_field_in_generic_call_arg_not_duplicated() {
+        // Regression test: when a record-field property access is an argument
+        // to a generic function, the type checker synths args once to infer
+        // type parameters, then checks them again against the solved
+        // parameter types. Both passes used to call `track_reference` with
+        // the same span, producing duplicate references and overlapping
+        // rename edits (e.g. `field` → `abcabcdefgh`).
+        let mut files = HashMap::new();
+        let src = "let id = fn<A>(v: A) v\nlet rec = {field: 123}\nid(rec.field)";
+        files.insert(PathBuf::from("Main.scl"), src.as_bytes().to_vec());
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        // Cursor on `field` in `{field: 123}` (line 2, col 12).
+        let info = super::cursor_info_with_references(&asg, &module_id, src, Position::new(2, 12));
+        let locked = info.lock().unwrap();
+
+        // Only one reference span should be recorded for the `rec.field`
+        // property access on line 3.
+        let line3_refs: Vec<_> = locked
+            .references
+            .iter()
+            .filter(|(_, span)| span.start().line() == 3)
+            .collect();
+        assert_eq!(
+            line3_refs.len(),
+            1,
+            "expected exactly one reference on line 3 (rec.field), got: {:?}",
+            locked.references
+        );
+    }
+
+    #[tokio::test]
     async fn local_shadowing_prevents_cross_module_ref() {
         // A local `let Other = ...` should shadow the import.
         let mut files = HashMap::new();
