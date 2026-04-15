@@ -1,18 +1,22 @@
 use crate::{Loc, Span};
 
 use super::{
-    BinaryExpr, CallExpr, CatchClause, DictExpr, Expr, FileMod, FnExpr, IfExpr, IndexedAccessExpr,
-    InterpExpr, LetBind, LetExpr, ListExpr, ListForItem, ListIfItem, ListItem, ModStmt, PathExpr,
-    PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField, ScleMod, TryExpr, TypeCastExpr,
-    UnaryExpr,
+    BinaryExpr, CallExpr, CatchClause, DictExpr, DictTypeExpr, Expr, FileMod, FnExpr, FnTypeExpr,
+    IfExpr, IndexedAccessExpr, InterpExpr, LetBind, LetExpr, ListExpr, ListForItem, ListIfItem,
+    ListItem, ModStmt, PathExpr, PropertyAccessExpr, RaiseExpr, RecordExpr, RecordField,
+    RecordTypeExpr, RecordTypeFieldExpr, ScleMod, TryExpr, TypeApplicationExpr, TypeCastExpr,
+    TypeDef, TypeExpr, TypeParam, TypePropertyAccessExpr, UnaryExpr,
 };
 
 /// Trait for visiting AST nodes.
 pub trait Visitor {
     fn visit_path(&mut self, path: &PathExpr, span: Span);
-    /// Called for each `RecordField` encountered. The default implementation
-    /// does nothing.
+    /// Called for each `RecordField` encountered in a record literal. The
+    /// default implementation does nothing.
     fn visit_record_field(&mut self, _field: &RecordField) {}
+    /// Called for each `RecordTypeFieldExpr` encountered in a record type
+    /// expression. The default implementation does nothing.
+    fn visit_record_type_field(&mut self, _field: &RecordTypeFieldExpr) {}
 }
 
 /// Walk a `ScleMod`, dispatching to the visitor for each visited node.
@@ -33,12 +37,76 @@ fn visit_mod_stmt(visitor: &mut dyn Visitor, stmt: &ModStmt) {
     match stmt {
         ModStmt::Let(bind) | ModStmt::Export(bind) => visit_let_bind(visitor, bind),
         ModStmt::Expr(expr) => visit_expr(visitor, expr),
-        ModStmt::Import(_) | ModStmt::TypeDef(_) | ModStmt::ExportTypeDef(_) => {}
+        ModStmt::TypeDef(td) | ModStmt::ExportTypeDef(td) => visit_type_def(visitor, td),
+        ModStmt::Import(_) => {}
     }
 }
 
 fn visit_let_bind(visitor: &mut dyn Visitor, bind: &LetBind) {
+    if let Some(ty) = &bind.ty {
+        visit_type_expr(visitor, ty);
+    }
     visit_expr(visitor, &bind.expr);
+}
+
+fn visit_type_def(visitor: &mut dyn Visitor, td: &TypeDef) {
+    for param in &td.type_params {
+        visit_type_param(visitor, param);
+    }
+    visit_type_expr(visitor, &td.ty);
+}
+
+fn visit_type_param(visitor: &mut dyn Visitor, param: &TypeParam) {
+    if let Some(bound) = &param.bound {
+        visit_type_expr(visitor, bound);
+    }
+}
+
+/// Walk a type expression, dispatching to record-type-field hooks and
+/// recursing into any nested type expressions.
+pub fn visit_type_expr(visitor: &mut dyn Visitor, ty: &Loc<TypeExpr>) {
+    match ty.as_ref() {
+        TypeExpr::Var(_) => {}
+        TypeExpr::Optional(inner) | TypeExpr::List(inner) => visit_type_expr(visitor, inner),
+        TypeExpr::Fn(fn_ty) => visit_fn_type(visitor, fn_ty),
+        TypeExpr::Record(rec) => visit_record_type(visitor, rec),
+        TypeExpr::Dict(dict) => visit_dict_type(visitor, dict),
+        TypeExpr::PropertyAccess(prop) => visit_type_property_access(visitor, prop),
+        TypeExpr::Application(app) => visit_type_application(visitor, app),
+    }
+}
+
+fn visit_fn_type(visitor: &mut dyn Visitor, e: &FnTypeExpr) {
+    for tp in &e.type_params {
+        visit_type_param(visitor, tp);
+    }
+    for p in &e.params {
+        visit_type_expr(visitor, p);
+    }
+    visit_type_expr(visitor, &e.ret);
+}
+
+fn visit_record_type(visitor: &mut dyn Visitor, e: &RecordTypeExpr) {
+    for field in &e.fields {
+        visitor.visit_record_type_field(field);
+        visit_type_expr(visitor, &field.ty);
+    }
+}
+
+fn visit_dict_type(visitor: &mut dyn Visitor, e: &DictTypeExpr) {
+    visit_type_expr(visitor, &e.key);
+    visit_type_expr(visitor, &e.value);
+}
+
+fn visit_type_property_access(visitor: &mut dyn Visitor, e: &TypePropertyAccessExpr) {
+    visit_type_expr(visitor, &e.expr);
+}
+
+fn visit_type_application(visitor: &mut dyn Visitor, e: &TypeApplicationExpr) {
+    visit_type_expr(visitor, &e.base);
+    for arg in &e.args {
+        visit_type_expr(visitor, arg);
+    }
 }
 
 fn visit_expr(visitor: &mut dyn Visitor, expr: &Loc<Expr>) {
@@ -91,6 +159,14 @@ fn visit_dict(visitor: &mut dyn Visitor, e: &DictExpr) {
 }
 
 fn visit_fn(visitor: &mut dyn Visitor, e: &FnExpr) {
+    for tp in &e.type_params {
+        visit_type_param(visitor, tp);
+    }
+    for param in &e.params {
+        if let Some(ty) = &param.ty {
+            visit_type_expr(visitor, ty);
+        }
+    }
     if let Some(body) = &e.body {
         visit_expr(visitor, body);
     }
@@ -174,6 +250,7 @@ fn visit_catch(visitor: &mut dyn Visitor, catch: &CatchClause) {
 
 fn visit_type_cast(visitor: &mut dyn Visitor, e: &TypeCastExpr) {
     visit_expr(visitor, &e.expr);
+    visit_type_expr(visitor, &e.ty);
 }
 
 fn visit_unary(visitor: &mut dyn Visitor, e: &UnaryExpr) {
