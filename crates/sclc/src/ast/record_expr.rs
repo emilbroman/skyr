@@ -34,14 +34,23 @@ impl RecordExpr {
         let mut record_ty = crate::RecordType::default();
         for field in &self.fields {
             let field_ty = checker.synth_expr(env, &field.expr)?.unpack(&mut diags);
+            let origin = env.raw_module_id().map(|m| (m.clone(), field.var.span()));
             if let Some((cursor, _)) = &field.var.cursor {
                 cursor.set_identifier(crate::CursorIdentifier::Let(field.var.name.clone()));
                 cursor.set_type(field_ty.clone());
                 if let Some(doc) = &field.doc_comment {
                     cursor.set_description(doc.clone());
                 }
+                if let Some((module, span)) = &origin {
+                    cursor.set_declaration(module.clone(), *span);
+                }
             }
-            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field.doc_comment.clone());
+            record_ty.insert_with_meta(
+                field.var.name.clone(),
+                field_ty,
+                field.doc_comment.clone(),
+                origin,
+            );
         }
         Ok(crate::Diagnosed::new(crate::Type::Record(record_ty), diags))
     }
@@ -95,6 +104,27 @@ impl RecordExpr {
                 .or_else(|| expected_record.get_doc(field.var.name.as_str()))
                 .map(String::from);
 
+            // Prefer the expected record's field origin (so goto-definition
+            // navigates to the declared type), falling back to the literal's
+            // own field span when the expected type has no origin.
+            let expected_origin = expected_record.get_origin(field.var.name.as_str()).cloned();
+            let field_origin = expected_origin
+                .clone()
+                .or_else(|| env.raw_module_id().map(|m| (m.clone(), field.var.span())));
+
+            // When the expected record supplies an origin elsewhere, this
+            // field-name token in the literal is a reference to that
+            // declaration.
+            if let Some(env_cursor) = &env.cursor
+                && let Some((origin_module, origin_span)) = &expected_origin
+                && let Some(ref_module) = env.raw_module_id()
+            {
+                env_cursor.track_reference(
+                    (origin_module.clone(), *origin_span),
+                    (ref_module.clone(), field.var.span()),
+                );
+            }
+
             let field_ty = checker
                 .check_expr(env, &field.expr, expected_field_ty)?
                 .unpack(&mut diags);
@@ -104,8 +134,16 @@ impl RecordExpr {
                 if let Some(doc) = &field_description {
                     cursor.set_description(doc.clone());
                 }
+                if let Some((module, span)) = &field_origin {
+                    cursor.set_declaration(module.clone(), *span);
+                }
             }
-            record_ty.insert_with_doc(field.var.name.clone(), field_ty, field_description);
+            record_ty.insert_with_meta(
+                field.var.name.clone(),
+                field_ty,
+                field_description,
+                field_origin,
+            );
         }
 
         let ty = crate::Type::Record(record_ty);

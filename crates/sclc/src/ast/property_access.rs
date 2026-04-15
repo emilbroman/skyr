@@ -159,11 +159,28 @@ impl PropertyAccessExpr {
             if let Some((cursor, _)) = &self.property.cursor {
                 cursor.set_type(member_ty.clone());
                 cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
-                if let TypeKind::Record(record_ty) = &lhs_ty.kind
-                    && let Some(doc) = record_ty.get_doc(prop_name)
-                {
-                    cursor.set_description(doc.to_owned());
+                if let TypeKind::Record(record_ty) = &lhs_ty.kind {
+                    if let Some(doc) = record_ty.get_doc(prop_name) {
+                        cursor.set_description(doc.to_owned());
+                    }
+                    if let Some((module, span)) = record_ty.get_origin(prop_name) {
+                        cursor.set_declaration(module.clone(), *span);
+                    }
                 }
+            }
+            // Track this property access as a reference to the field's
+            // declaration (for find-all-references). The cursor buffers by
+            // declaration key and flushes into `references` when its own
+            // declaration is set to a matching location.
+            if let Some(env_cursor) = &env.cursor
+                && let TypeKind::Record(record_ty) = &lhs_ty.kind
+                && let Some((origin_module, origin_span)) = record_ty.get_origin(prop_name)
+                && let Some(ref_module) = env.raw_module_id()
+            {
+                env_cursor.track_reference(
+                    (origin_module.clone(), *origin_span),
+                    (ref_module.clone(), self.property.span()),
+                );
             }
             return Ok(Diagnosed::new(member_ty, diags));
         }

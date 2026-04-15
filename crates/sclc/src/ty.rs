@@ -1,6 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use crate::asg::RawModuleId;
+use crate::loc::Span;
+
 thread_local! {
     /// Stack of type parameter IDs currently being displayed. When a generic
     /// function type is formatted, its type-parameter IDs are pushed here so
@@ -165,6 +168,15 @@ pub struct FnType {
 pub struct RecordType {
     fields: BTreeMap<String, Type>,
     doc_comments: BTreeMap<String, String>,
+    /// Source location where each field was declared, when known.
+    /// Populated when the record type is derived from a `RecordTypeExpr`
+    /// or a record literal expression. Used by the LSP for goto-definition
+    /// and find-references on field references.
+    ///
+    /// Skipped during serialization: origins are in-memory metadata for the
+    /// current compilation session only.
+    #[serde(skip)]
+    origins: BTreeMap<String, (RawModuleId, Span)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -186,11 +198,24 @@ impl RecordType {
         self.fields.insert(name, ty);
     }
 
-    pub fn insert_with_doc(&mut self, name: String, ty: Type, doc: Option<String>) {
+    pub fn insert_with_meta(
+        &mut self,
+        name: String,
+        ty: Type,
+        doc: Option<String>,
+        origin: Option<(RawModuleId, Span)>,
+    ) {
         self.fields.insert(name.clone(), ty);
         if let Some(doc) = doc {
-            self.doc_comments.insert(name, doc);
+            self.doc_comments.insert(name.clone(), doc);
         }
+        if let Some(origin) = origin {
+            self.origins.insert(name, origin);
+        }
+    }
+
+    pub fn insert_with_doc(&mut self, name: String, ty: Type, doc: Option<String>) {
+        self.insert_with_meta(name, ty, doc, None);
     }
 
     pub fn get(&self, name: &str) -> Option<&Type> {
@@ -199,6 +224,10 @@ impl RecordType {
 
     pub fn get_doc(&self, name: &str) -> Option<&str> {
         self.doc_comments.get(name).map(|s| s.as_str())
+    }
+
+    pub fn get_origin(&self, name: &str) -> Option<&(RawModuleId, Span)> {
+        self.origins.get(name)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &Type)> {
@@ -214,6 +243,7 @@ impl RecordType {
         Self {
             fields,
             doc_comments: self.doc_comments.clone(),
+            origins: self.origins.clone(),
         }
     }
 }

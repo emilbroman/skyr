@@ -534,6 +534,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn goto_definition_record_field_from_property_access() {
+        // Cursor on a property access to a typed record field should point to
+        // the field's declaration site in the type expression.
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let r: {name: Str} = {name: \"hi\"}\nlet n = r.name".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        let src = "let r: {name: Str} = {name: \"hi\"}\nlet n = r.name";
+        // Cursor on `name` in `r.name` (line 2, col 11).
+        let info = super::cursor_info(&asg, &module_id, src, Position::new(2, 11));
+        let locked = info.lock().unwrap();
+        let (decl_module, decl_span) = locked
+            .declaration
+            .as_ref()
+            .expect("expected a declaration for the record field property access");
+        assert_eq!(
+            decl_module,
+            &vec!["Test".to_string(), "Main".to_string()],
+            "expected declaration in same module"
+        );
+        // Field `name` in `{name: Str}` is at line 1, col 9.
+        assert_eq!(decl_span.start().line(), 1);
+        assert_eq!(decl_span.start().character(), 9);
+    }
+
+    #[tokio::test]
+    async fn find_references_record_field() {
+        // Cursor on a record field declaration should find the property-access
+        // reference to it.
+        let mut files = HashMap::new();
+        files.insert(
+            PathBuf::from("Main.scl"),
+            b"let r: {name: Str} = {name: \"hi\"}\nlet n = r.name".to_vec(),
+        );
+
+        let user_pkg = Arc::new(InMemoryPackage::new(PackageId::from(["Test"]), files));
+        let finder = build_default_finder(user_pkg);
+        let result = compile(finder, &["Test", "Main"]).await.unwrap();
+        let asg = result.into_inner();
+
+        let module_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
+        let src = "let r: {name: Str} = {name: \"hi\"}\nlet n = r.name";
+        // Cursor on `name` in the type expression `{name: Str}` (line 1, col 9).
+        let info = super::cursor_info(&asg, &module_id, src, Position::new(1, 9));
+        let locked = info.lock().unwrap();
+        assert!(
+            !locked.references.is_empty(),
+            "expected at least one reference to the record field, got: {:?}",
+            locked.references
+        );
+        // A reference on line 2 (the `r.name` property access) should be present.
+        let has_property_ref = locked
+            .references
+            .iter()
+            .any(|(_, span)| span.start().line() == 2);
+        assert!(
+            has_property_ref,
+            "expected a reference on line 2 (r.name), got: {:?}",
+            locked.references
+        );
+    }
+
+    #[tokio::test]
     async fn local_shadowing_prevents_cross_module_ref() {
         // A local `let Other = ...` should shadow the import.
         let mut files = HashMap::new();

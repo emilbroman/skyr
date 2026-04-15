@@ -1445,17 +1445,22 @@ impl<'p> TypeChecker<'p> {
                 let mut resolved = RecordType::default();
                 for field in &record_ty.fields {
                     let field_ty = self.resolve_type_expr(env, &field.ty).unpack(&mut diags);
+                    let origin = env.raw_module_id().map(|m| (m.clone(), field.var.span()));
                     if let Some((cursor, _)) = &field.var.cursor {
                         cursor.set_type(field_ty.clone());
                         cursor.set_identifier(CursorIdentifier::Let(field.var.name.clone()));
                         if let Some(doc) = &field.doc_comment {
                             cursor.set_description(doc.clone());
                         }
+                        if let Some((module, span)) = &origin {
+                            cursor.set_declaration(module.clone(), *span);
+                        }
                     }
-                    resolved.insert_with_doc(
+                    resolved.insert_with_meta(
                         field.var.name.clone(),
                         field_ty,
                         field.doc_comment.clone(),
+                        origin,
                     );
                 }
                 Type::Record(resolved)
