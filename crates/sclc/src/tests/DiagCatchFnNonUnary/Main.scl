@@ -1,0 +1,8 @@
+let E = exception
+
+let handler = fn(a: Str, b: Str) E
+
+let x = try
+	"hello"
+catch handler(y):
+	y

@@ -542,6 +542,10 @@ test_case!(RecursiveTypeDecl);
 // If expression without else branch
 test_case!(IfNoElseOptionalBody);
 
+// Catch-target static typing (spec §7 T-Catch-Payload / T-Catch-NoPayload)
+test_case!(DiagCatchFnNoBinder);
+test_case!(DiagCatchFnNonUnary);
+
 // Propositional type refinement
 test_case!(NilRefinementBasic);
 test_case!(NilRefinementEqNil);

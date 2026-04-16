@@ -1,0 +1,6 @@
+let E = exception(Str)
+
+let x = try
+	"hello"
+catch E:
+	"ok"
