@@ -21,7 +21,7 @@ impl IndexedAccessExpr {
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expr: &crate::Loc<Expr>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         use crate::{DiagList, Diagnosed, Type, TypeKind};
 
         let mut diags = DiagList::new();
@@ -31,7 +31,7 @@ impl IndexedAccessExpr {
             .unfold();
         let container_ty = env.resolve_var_bound(&container_ty).unfold();
         if matches!(container_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never(), diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
         }
         let result_ty = match &container_ty.kind {
             TypeKind::Dict(dict_ty) => {
@@ -55,7 +55,7 @@ impl IndexedAccessExpr {
                 Type::Never()
             }
         };
-        Ok(Diagnosed::new(result_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(result_ty, diags)))
     }
 
     pub fn eval(

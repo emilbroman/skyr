@@ -29,7 +29,7 @@ impl RecordExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let mut record_ty = crate::RecordType::default();
         for field in &self.fields {
@@ -52,7 +52,10 @@ impl RecordExpr {
                 origin,
             );
         }
-        Ok(crate::Diagnosed::new(crate::Type::Record(record_ty), diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
+            crate::Type::Record(record_ty),
+            diags,
+        )))
     }
 
     #[inline(never)]
@@ -62,7 +65,7 @@ impl RecordExpr {
         env: &crate::checker::TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &crate::Type,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         // Unfold IsoRec wrappers so that record literals checked against a
         // type alias (e.g. `A.X` referring to `type X = {field: Int}`) still
         // go through `check_record_against` and pick up the expected record's
@@ -81,7 +84,7 @@ impl RecordExpr {
         env: &crate::checker::TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected_record: &crate::RecordType,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let mut record_ty = crate::RecordType::default();
 
@@ -180,7 +183,7 @@ impl RecordExpr {
             }
         }
 
-        Ok(crate::Diagnosed::new(ty, diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(ty, diags)))
     }
 
     pub(crate) fn eval(

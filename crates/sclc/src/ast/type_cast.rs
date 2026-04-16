@@ -18,13 +18,15 @@ impl TypeCastExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let target_ty = checker.resolve_type_expr(env, &self.ty).unpack(&mut diags);
         checker
             .check_expr(env, &self.expr, Some(&target_ty))?
             .unpack(&mut diags);
-        Ok(crate::Diagnosed::new(target_ty, diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
+            target_ty, diags,
+        )))
     }
 
     pub fn type_check(
@@ -33,14 +35,16 @@ impl TypeCastExpr {
         env: &crate::checker::TypeEnv<'_>,
         expr: &crate::Loc<Expr>,
         expected: &crate::Type,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let target_ty = checker.resolve_type_expr(env, &self.ty).unpack(&mut diags);
         checker
             .check_expr(env, &self.expr, Some(&target_ty))?
             .unpack(&mut diags);
         checker.subsumption_check(env, expr.span(), target_ty.clone(), expected, &mut diags)?;
-        Ok(crate::Diagnosed::new(target_ty, diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
+            target_ty, diags,
+        )))
     }
 
     pub fn eval(

@@ -21,12 +21,15 @@ impl InterpExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         for part in &self.parts {
             checker.synth_expr(env, part)?.unpack(&mut diags);
         }
-        Ok(crate::Diagnosed::new(crate::Type::Str(), diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
+            crate::Type::Str(),
+            diags,
+        )))
     }
 
     pub fn eval(

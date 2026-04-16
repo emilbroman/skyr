@@ -19,7 +19,7 @@ impl RaiseExpr {
         &self,
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let inner_ty = checker
             .synth_expr(env, self.expr.as_ref())?
@@ -32,7 +32,7 @@ impl RaiseExpr {
                 span: self.expr.span(),
             });
         }
-        Ok(Diagnosed::new(Type::Never(), diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
     }
 
     pub(crate) fn eval(

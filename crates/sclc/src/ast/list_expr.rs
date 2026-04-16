@@ -62,7 +62,7 @@ impl ListExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let list_ty = if let Some((first, rest)) = self.items.split_first() {
             let first_ty = checker
@@ -78,7 +78,7 @@ impl ListExpr {
         } else {
             crate::Type::List(Box::new(crate::Type::Never()))
         };
-        Ok(crate::Diagnosed::new(list_ty, diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(list_ty, diags)))
     }
 
     #[inline(never)]
@@ -88,7 +88,7 @@ impl ListExpr {
         env: &crate::checker::TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &crate::Type,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         if let crate::TypeKind::List(expected_item_ty) = &expected.kind {
             return self.check_list_against(checker, env, expected_item_ty);
         }
@@ -101,7 +101,7 @@ impl ListExpr {
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expected_item_ty: &crate::Type,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let expected_item_ty = expected_item_ty.clone().unfold();
         for item in &self.items {
@@ -109,10 +109,10 @@ impl ListExpr {
                 .check_list_item(env, item, Some(&expected_item_ty))?
                 .unpack(&mut diags);
         }
-        Ok(crate::Diagnosed::new(
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
             crate::Type::List(Box::new(expected_item_ty)),
             diags,
-        ))
+        )))
     }
 
     pub(crate) fn eval(

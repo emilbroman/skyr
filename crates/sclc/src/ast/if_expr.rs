@@ -19,7 +19,7 @@ impl IfExpr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         _expr: &crate::Loc<super::Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         checker
             .check_expr(env, self.condition.as_ref(), Some(&Type::Bool()))?
@@ -34,10 +34,13 @@ impl IfExpr {
             checker
                 .check_expr(env, else_expr.as_ref(), Some(&then_ty))?
                 .unpack(&mut diags);
-            return Ok(Diagnosed::new(then_ty, diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(then_ty, diags)));
         }
 
-        Ok(Diagnosed::new(Type::Optional(Box::new(then_ty)), diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(
+            Type::Optional(Box::new(then_ty)),
+            diags,
+        )))
     }
 
     pub(crate) fn type_check(
@@ -46,7 +49,7 @@ impl IfExpr {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         checker
             .check_expr(env, self.condition.as_ref(), Some(&Type::Bool()))?
@@ -62,12 +65,12 @@ impl IfExpr {
                 .check_expr(env, else_expr.as_ref(), Some(&then_ty))?
                 .unpack(&mut diags);
             checker.subsumption_check(env, expr.span(), then_ty.clone(), expected, &mut diags)?;
-            return Ok(Diagnosed::new(then_ty, diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(then_ty, diags)));
         }
 
         let result_ty = Type::Optional(Box::new(then_ty));
         checker.subsumption_check(env, expr.span(), result_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(result_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(result_ty, diags)))
     }
 
     pub(crate) fn eval(

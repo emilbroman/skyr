@@ -28,7 +28,7 @@ impl FnExpr {
         &self,
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let mut fn_env = env.inner();
 
@@ -79,14 +79,14 @@ impl FnExpr {
         } else {
             Type::Never()
         };
-        Ok(Diagnosed::new(
+        Ok(crate::TypeSynth::new(Diagnosed::new(
             Type::Fn(FnType {
                 type_params: type_param_entries,
                 params,
                 ret: Box::new(ret),
             }),
             diags,
-        ))
+        )))
     }
 
     pub(crate) fn type_check(
@@ -95,7 +95,7 @@ impl FnExpr {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         // If no untyped params, fall back to synth-then-subsume.
         let has_untyped = self.params.iter().any(|p| p.ty.is_none());
         if !has_untyped {
@@ -174,7 +174,7 @@ impl FnExpr {
         });
 
         let ty = checker.subsumption_check(env, expr.span(), actual, expected, &mut diags)?;
-        Ok(Diagnosed::new(ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(ty, diags)))
     }
 
     pub(crate) fn eval(

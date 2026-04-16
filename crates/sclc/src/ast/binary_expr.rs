@@ -69,7 +69,7 @@ impl BinaryExpr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let lhs_ty = checker
             .synth_expr(env, self.lhs.as_ref())?
@@ -79,20 +79,23 @@ impl BinaryExpr {
         // NilCoalesce is handled separately: check RHS against the inner type.
         if self.op == BinaryOp::NilCoalesce {
             if matches!(lhs_ty.kind, TypeKind::Never) {
-                return Ok(Diagnosed::new(Type::Never(), diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
             }
             if let TypeKind::Optional(inner) = &lhs_ty.kind {
                 checker
                     .check_expr(env, self.rhs.as_ref(), Some(inner))?
                     .unpack(&mut diags);
-                return Ok(Diagnosed::new(inner.as_ref().clone(), diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(
+                    inner.as_ref().clone(),
+                    diags,
+                )));
             } else {
                 diags.push(crate::checker::NilCoalesceOnNonOptional {
                     module_id: env.module_id()?,
                     ty: lhs_ty.clone(),
                     span: expr.span(),
                 });
-                return Ok(Diagnosed::new(Type::Never(), diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
             }
         }
 
@@ -166,7 +169,7 @@ impl BinaryExpr {
                 }
             };
 
-        Ok(Diagnosed::new(result_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(result_ty, diags)))
     }
 }
 

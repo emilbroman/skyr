@@ -29,7 +29,7 @@ impl DictExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let dict_ty = if let Some((first, rest)) = self.entries.split_first() {
             let key_ty = checker
@@ -58,7 +58,7 @@ impl DictExpr {
                 value: Box::new(crate::Type::Never()),
             })
         };
-        Ok(crate::Diagnosed::new(dict_ty, diags))
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(dict_ty, diags)))
     }
 
     #[inline(never)]
@@ -68,7 +68,7 @@ impl DictExpr {
         env: &crate::checker::TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &crate::Type,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         if let crate::TypeKind::Dict(expected_dict) = &expected.kind {
             return self.check_dict_against(checker, env, expected_dict);
         }
@@ -81,7 +81,7 @@ impl DictExpr {
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
         expected_dict: &crate::DictType,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
         let expected_key = expected_dict.key.as_ref().clone().unfold();
         let expected_value = expected_dict.value.as_ref().clone().unfold();
@@ -93,13 +93,13 @@ impl DictExpr {
                 .check_expr(env, &entry.value, Some(&expected_value))?
                 .unpack(&mut diags);
         }
-        Ok(crate::Diagnosed::new(
+        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
             crate::Type::Dict(crate::DictType {
                 key: Box::new(expected_key),
                 value: Box::new(expected_value),
             }),
             diags,
-        ))
+        )))
     }
 
     pub(crate) fn eval(
