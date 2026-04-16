@@ -738,6 +738,9 @@ pub enum EvalErrorKind {
     #[error("division by zero")]
     DivisionByZero,
 
+    #[error("integer overflow in `{op}`")]
+    IntegerOverflow { op: String },
+
     #[error("invalid comparison for {op}: {lhs} and {rhs}")]
     InvalidComparison {
         op: crate::ast::BinaryOp,
@@ -1042,13 +1045,15 @@ impl<'p> Eval<'p> {
                     lhs.push_str(&rhs);
                     Ok(Value::Str(lhs))
                 }
-                (lhs, rhs) => eval_numeric_arithmetic(lhs, rhs, "+", |a, b| a + b, |a, b| a + b),
+                (lhs, rhs) => {
+                    eval_numeric_arithmetic(lhs, rhs, "+", i64::checked_add, |a, b| a + b)
+                }
             },
             ast::BinaryOp::Sub => {
-                eval_numeric_arithmetic(lhs, rhs, "-", |a, b| a - b, |a, b| a - b)
+                eval_numeric_arithmetic(lhs, rhs, "-", i64::checked_sub, |a, b| a - b)
             }
             ast::BinaryOp::Mul => {
-                eval_numeric_arithmetic(lhs, rhs, "*", |a, b| a * b, |a, b| a * b)
+                eval_numeric_arithmetic(lhs, rhs, "*", i64::checked_mul, |a, b| a * b)
             }
             ast::BinaryOp::Div => eval_numeric_division(lhs, rhs),
             ast::BinaryOp::Eq => Ok(Value::Bool(lhs == rhs)),
@@ -1242,11 +1247,15 @@ fn eval_numeric_arithmetic(
     lhs: Value,
     rhs: Value,
     op_name: &str,
-    int_op: fn(i64, i64) -> i64,
+    int_op: fn(i64, i64) -> Option<i64>,
     float_op: fn(f64, f64) -> f64,
 ) -> Result<Value, EvalErrorKind> {
     match (lhs, rhs) {
-        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(a, b))),
+        (Value::Int(a), Value::Int(b)) => Ok(Value::Int(int_op(a, b).ok_or_else(|| {
+            EvalErrorKind::IntegerOverflow {
+                op: op_name.to_string(),
+            }
+        })?)),
         (Value::Float(a), Value::Float(b)) => Ok(Value::Float(not_nan(
             float_op(a.into_inner(), b.into_inner()),
             op_name,
@@ -1605,5 +1614,80 @@ mod tests {
             Ok(other) => panic!("expected touch effect, got {other:?}"),
             Err(error) => panic!("expected queued effect, got {error}"),
         }
+    }
+
+    #[test]
+    fn integer_add_overflow_is_trapped() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("x", TrackedValue::new(Value::Int(i64::MAX)))
+            .with_local("y", TrackedValue::new(Value::Int(1)));
+        let expr = parse_expr("x + y", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("overflow should trap");
+        assert!(
+            matches!(err.kind, super::EvalErrorKind::IntegerOverflow { ref op } if op == "+"),
+            "expected IntegerOverflow(+), got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn integer_sub_overflow_is_trapped() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("x", TrackedValue::new(Value::Int(i64::MIN)))
+            .with_local("y", TrackedValue::new(Value::Int(1)));
+        let expr = parse_expr("x - y", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("overflow should trap");
+        assert!(
+            matches!(err.kind, super::EvalErrorKind::IntegerOverflow { ref op } if op == "-"),
+            "expected IntegerOverflow(-), got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn integer_mul_overflow_is_trapped() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("x", TrackedValue::new(Value::Int(i64::MAX)))
+            .with_local("y", TrackedValue::new(Value::Int(2)));
+        let expr = parse_expr("x * y", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("overflow should trap");
+        assert!(
+            matches!(err.kind, super::EvalErrorKind::IntegerOverflow { ref op } if op == "*"),
+            "expected IntegerOverflow(*), got {:?}",
+            err.kind
+        );
     }
 }
