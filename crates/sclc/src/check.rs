@@ -277,10 +277,10 @@ impl<'a> AsgChecker<'a> {
             checker
                 .global_cache
                 .borrow_mut()
-                .insert(cache_key, Type::Never);
+                .insert(cache_key, Type::Never());
             self.global_type_env.insert(
                 GlobalKey::Global(raw_id.clone(), name.to_string()),
-                Type::Never,
+                Type::Never(),
             );
             return Ok(());
         }
@@ -387,9 +387,11 @@ impl<'a> AsgChecker<'a> {
             checker
                 .global_cache
                 .borrow_mut()
-                .insert(cache_key, Type::Never);
-            self.global_type_env
-                .insert(GlobalKey::Global(raw_id.clone(), name.clone()), Type::Never);
+                .insert(cache_key, Type::Never());
+            self.global_type_env.insert(
+                GlobalKey::Global(raw_id.clone(), name.clone()),
+                Type::Never(),
+            );
         }
         Ok(())
     }
@@ -497,10 +499,10 @@ impl<'a> AsgChecker<'a> {
                 checker
                     .global_cache
                     .borrow_mut()
-                    .insert(cache_key, Type::Never);
+                    .insert(cache_key, Type::Never());
                 self.global_type_env.insert(
                     GlobalKey::Global(raw_id.clone(), name.to_string()),
-                    Type::Never,
+                    Type::Never(),
                 );
                 continue;
             }
@@ -611,7 +613,7 @@ impl<'a> AsgChecker<'a> {
                         checker.resolve_type_expr(&env, type_expr).unpack(diags)
                     }
                     (None, Some(body)) => checker.check_expr(&env, body, None)?.unpack(diags),
-                    (None, None) => Type::Any,
+                    (None, None) => Type::Any(),
                 };
 
                 self.global_type_env

@@ -26,7 +26,7 @@ impl InterpExpr {
         for part in &self.parts {
             checker.synth_expr(env, part)?.unpack(&mut diags);
         }
-        Ok(crate::Diagnosed::new(crate::Type::Str, diags))
+        Ok(crate::Diagnosed::new(crate::Type::Str(), diags))
     }
 
     pub fn eval(

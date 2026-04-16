@@ -41,7 +41,7 @@ impl FnExpr {
                     .resolve_type_expr(&fn_env, bound_expr)
                     .unpack(&mut diags)
             } else {
-                Type::Any
+                Type::Any()
             };
             fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
             type_param_entries.push((type_id, upper_bound));
@@ -62,7 +62,7 @@ impl FnExpr {
                 // Never in body suppresses cascading errors from operations on
                 // the unknown param; Any in the signature avoids false positives
                 // at call sites.
-                (Type::Never, Type::Any)
+                (Type::Never(), Type::Any())
             };
             if let Some((cursor, _)) = &param.var.cursor {
                 cursor.set_type(body_ty.clone());
@@ -77,7 +77,7 @@ impl FnExpr {
                 .synth_expr(&fn_env, body.as_ref())?
                 .unpack(&mut diags)
         } else {
-            Type::Never
+            Type::Never()
         };
         Ok(Diagnosed::new(
             Type::Fn(FnType {
@@ -121,7 +121,7 @@ impl FnExpr {
                     .resolve_type_expr(&fn_env, bound_expr)
                     .unpack(&mut diags)
             } else {
-                Type::Any
+                Type::Any()
             };
             fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
             type_param_entries.push((type_id, upper_bound));
@@ -141,14 +141,14 @@ impl FnExpr {
                         module_id: env.module_id()?,
                         span: param.var.span(),
                     });
-                    Type::Any
+                    Type::Any()
                 }
             } else {
                 diags.push(MissingParameterType {
                     module_id: env.module_id()?,
                     span: param.var.span(),
                 });
-                Type::Any
+                Type::Any()
             };
             if let Some((cursor, _)) = &param.var.cursor {
                 cursor.set_type(param_ty.clone());
@@ -164,7 +164,7 @@ impl FnExpr {
                 .check_expr(&fn_env, body.as_ref(), expected_ret)?
                 .unpack(&mut diags)
         } else {
-            Type::Never
+            Type::Never()
         };
 
         let actual = Type::Fn(FnType {

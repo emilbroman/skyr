@@ -79,7 +79,7 @@ impl BinaryExpr {
         // NilCoalesce is handled separately: check RHS against the inner type.
         if self.op == BinaryOp::NilCoalesce {
             if matches!(lhs_ty.kind, TypeKind::Never) {
-                return Ok(Diagnosed::new(Type::Never, diags));
+                return Ok(Diagnosed::new(Type::Never(), diags));
             }
             if let TypeKind::Optional(inner) = &lhs_ty.kind {
                 checker
@@ -92,7 +92,7 @@ impl BinaryExpr {
                     ty: lhs_ty.clone(),
                     span: expr.span(),
                 });
-                return Ok(Diagnosed::new(Type::Never, diags));
+                return Ok(Diagnosed::new(Type::Never(), diags));
             }
         }
 
@@ -103,7 +103,7 @@ impl BinaryExpr {
 
         let result_ty =
             if matches!(lhs_ty.kind, TypeKind::Never) || matches!(rhs_ty.kind, TypeKind::Never) {
-                Type::Never
+                Type::Never()
             } else {
                 match self.op {
                     BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
@@ -117,7 +117,7 @@ impl BinaryExpr {
                                     rhs: rhs_ty.clone(),
                                     span: expr.span(),
                                 });
-                                Type::Never
+                                Type::Never()
                             }
                         }
                     }
@@ -130,7 +130,7 @@ impl BinaryExpr {
                                 span: expr.span(),
                             });
                         }
-                        Type::Bool
+                        Type::Bool()
                     }
                     BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {
                         match TypeChecker::comparison_result(&lhs_ty.kind, &rhs_ty.kind) {
@@ -143,7 +143,7 @@ impl BinaryExpr {
                                     rhs: rhs_ty.clone(),
                                     span: expr.span(),
                                 });
-                                Type::Never
+                                Type::Never()
                             }
                         }
                     }
@@ -158,7 +158,7 @@ impl BinaryExpr {
                                     rhs: rhs_ty.clone(),
                                     span: expr.span(),
                                 });
-                                Type::Never
+                                Type::Never()
                             }
                         }
                     }

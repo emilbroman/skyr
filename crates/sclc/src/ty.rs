@@ -35,6 +35,11 @@ fn typevar_name(index: usize) -> String {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Type {
     pub kind: TypeKind,
+    /// Unique identifier tracking the *origin* of a value for propositional
+    /// type refinement. Does NOT participate in equality or hashing.
+    /// Fresh by default; reuse is explicit via `.with_id()`.
+    #[serde(skip, default = "crate::checker::next_type_id")]
+    id: usize,
     /// Optional display name from a source-level type alias.
     /// Does NOT participate in equality or hashing.
     name: Option<String>,
@@ -50,14 +55,30 @@ impl Eq for Type {}
 
 impl Type {
     pub fn new(kind: TypeKind) -> Self {
-        Self { kind, name: None }
+        Self {
+            kind,
+            id: crate::checker::next_type_id(),
+            name: None,
+        }
     }
 
     pub fn named(kind: TypeKind, name: impl Into<String>) -> Self {
         Self {
             kind,
+            id: crate::checker::next_type_id(),
             name: Some(name.into()),
         }
+    }
+
+    /// Returns the unique TypeId for propositional refinement tracking.
+    pub fn id(&self) -> usize {
+        self.id
+    }
+
+    /// Reuse the TypeId from another type (explicit origin propagation).
+    pub fn with_id(mut self, id: usize) -> Self {
+        self.id = id;
+        self
     }
 
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
@@ -80,36 +101,29 @@ impl Type {
 }
 
 // Convenience constructors matching the old enum variants.
-#[allow(non_upper_case_globals, non_snake_case)]
+#[allow(non_snake_case)]
 impl Type {
-    pub const Any: Self = Self {
-        kind: TypeKind::Any,
-        name: None,
-    };
-    pub const Int: Self = Self {
-        kind: TypeKind::Int,
-        name: None,
-    };
-    pub const Float: Self = Self {
-        kind: TypeKind::Float,
-        name: None,
-    };
-    pub const Bool: Self = Self {
-        kind: TypeKind::Bool,
-        name: None,
-    };
-    pub const Str: Self = Self {
-        kind: TypeKind::Str,
-        name: None,
-    };
-    pub const Path: Self = Self {
-        kind: TypeKind::Path,
-        name: None,
-    };
-    pub const Never: Self = Self {
-        kind: TypeKind::Never,
-        name: None,
-    };
+    pub fn Any() -> Self {
+        Self::new(TypeKind::Any)
+    }
+    pub fn Int() -> Self {
+        Self::new(TypeKind::Int)
+    }
+    pub fn Float() -> Self {
+        Self::new(TypeKind::Float)
+    }
+    pub fn Bool() -> Self {
+        Self::new(TypeKind::Bool)
+    }
+    pub fn Str() -> Self {
+        Self::new(TypeKind::Str)
+    }
+    pub fn Path() -> Self {
+        Self::new(TypeKind::Path)
+    }
+    pub fn Never() -> Self {
+        Self::new(TypeKind::Never)
+    }
 
     pub fn Optional(inner: Box<Type>) -> Self {
         Self::new(TypeKind::Optional(inner))
@@ -158,7 +172,7 @@ pub enum TypeKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FnType {
-    /// Type parameter IDs paired with their upper bounds (defaults to Type::Any).
+    /// Type parameter IDs paired with their upper bounds (defaults to `Type::Any()`).
     pub type_params: Vec<(usize, Type)>,
     pub params: Vec<Type>,
     pub ret: Box<Type>,
@@ -304,7 +318,8 @@ impl Type {
                 Type::IsoRec(*id, Box::new(body.substitute(replacements)))
             }
         };
-        // Preserve the display name from the original type.
+        // Preserve the id and display name from the original type.
+        let result = result.with_id(self.id);
         if let Some(name) = &self.name {
             result.with_name(name.clone())
         } else {
@@ -640,7 +655,7 @@ fn unify_generic_fn(
     let mut assertions: HashMap<usize, (Type, Type)> = rhs_fn
         .type_params
         .iter()
-        .map(|(id, upper_bound)| (*id, (Type::Never, upper_bound.clone())))
+        .map(|(id, upper_bound)| (*id, (Type::Never(), upper_bound.clone())))
         .collect();
 
     for (lhs_param, rhs_param) in lhs_fn.params.iter().zip(rhs_fn.params.iter()) {
@@ -690,7 +705,7 @@ pub fn infer_type_args(
     let mut assertions: HashMap<usize, (Type, Type)> = fn_ty
         .type_params
         .iter()
-        .map(|(id, upper_bound)| (*id, (Type::Never, upper_bound.clone())))
+        .map(|(id, upper_bound)| (*id, (Type::Never(), upper_bound.clone())))
         .collect();
 
     for (arg_ty, param_ty) in arg_types.iter().zip(fn_ty.params.iter()) {
@@ -825,7 +840,7 @@ fn tighten_lower(current: &mut Type, new_bound: &Type) -> Result<(), TypeError> 
         // current is already tighter
     } else {
         // Incompatible lower bounds — their join is Any.
-        *current = Type::Any;
+        *current = Type::Any();
     }
     Ok(())
 }
@@ -926,7 +941,7 @@ impl std::fmt::Display for FnType {
                             .unwrap_or_else(|| format!("T{id}"))
                     });
                     write!(f, "{name}")?;
-                    if *bound != Type::Any {
+                    if *bound != Type::Any() {
                         write!(f, " <: {bound}")?;
                     }
                 }
@@ -1005,7 +1020,7 @@ mod tests {
     fn display_generic_fn_single_param() {
         // fn<A>(A) A
         let ty = Type::Fn(FnType {
-            type_params: vec![(10, Type::Any)],
+            type_params: vec![(10, Type::Any())],
             params: vec![Type::Var(10)],
             ret: Box::new(Type::Var(10)),
         });
@@ -1016,7 +1031,7 @@ mod tests {
     fn display_generic_fn_two_params() {
         // fn<A, B>(A, B) A
         let ty = Type::Fn(FnType {
-            type_params: vec![(5, Type::Any), (6, Type::Any)],
+            type_params: vec![(5, Type::Any()), (6, Type::Any())],
             params: vec![Type::Var(5), Type::Var(6)],
             ret: Box::new(Type::Var(5)),
         });
@@ -1027,8 +1042,8 @@ mod tests {
     fn display_non_generic_fn() {
         let ty = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int, Type::Str],
-            ret: Box::new(Type::Bool),
+            params: vec![Type::Int(), Type::Str()],
+            ret: Box::new(Type::Bool()),
         });
         assert_eq!(ty.to_string(), "fn(Int, Str) Bool");
     }
@@ -1037,7 +1052,7 @@ mod tests {
     fn display_generic_fn_with_complex_types() {
         // fn<A>(A, [A]) A?
         let ty = Type::Fn(FnType {
-            type_params: vec![(42, Type::Any)],
+            type_params: vec![(42, Type::Any())],
             params: vec![Type::Var(42), Type::List(Box::new(Type::Var(42)))],
             ret: Box::new(Type::Optional(Box::new(Type::Var(42)))),
         });
@@ -1048,7 +1063,7 @@ mod tests {
     fn display_generic_fn_with_bound() {
         // fn<A <: Int>(A) A
         let ty = Type::Fn(FnType {
-            type_params: vec![(10, Type::Int)],
+            type_params: vec![(10, Type::Int())],
             params: vec![Type::Var(10)],
             ret: Box::new(Type::Var(10)),
         });
@@ -1061,12 +1076,12 @@ mod tests {
         // When outer formats: stack = [1], so Var(1) = A.
         // When inner formats: stack = [1, 2], so Var(2) = B, Var(1) = A.
         let inner = Type::Fn(FnType {
-            type_params: vec![(2, Type::Any)],
+            type_params: vec![(2, Type::Any())],
             params: vec![Type::Var(2)],
             ret: Box::new(Type::Var(1)),
         });
         let outer = Type::Fn(FnType {
-            type_params: vec![(1, Type::Any)],
+            type_params: vec![(1, Type::Any())],
             params: vec![Type::Var(1)],
             ret: Box::new(inner),
         });
@@ -1083,7 +1098,7 @@ mod tests {
     #[test]
     fn display_isorec_non_recursive() {
         // IsoRec where the var is NOT used — should simplify to just the body
-        let ty = Type::IsoRec(1, Box::new(Type::List(Box::new(Type::Int))));
+        let ty = Type::IsoRec(1, Box::new(Type::List(Box::new(Type::Int()))));
         assert_eq!(ty.to_string(), "[Int]");
     }
 
@@ -1091,7 +1106,7 @@ mod tests {
     fn contains_var_basic() {
         assert!(Type::Var(5).contains_var(5));
         assert!(!Type::Var(5).contains_var(6));
-        assert!(!Type::Int.contains_var(0));
+        assert!(!Type::Int().contains_var(0));
         assert!(Type::List(Box::new(Type::Var(3))).contains_var(3));
         assert!(!Type::List(Box::new(Type::Var(3))).contains_var(4));
     }
@@ -1107,7 +1122,7 @@ mod tests {
     fn display_stack_cleaned_up_after_formatting() {
         // Format a generic fn, then check that a bare Var falls back.
         let generic = Type::Fn(FnType {
-            type_params: vec![(7, Type::Any)],
+            type_params: vec![(7, Type::Any())],
             params: vec![Type::Var(7)],
             ret: Box::new(Type::Var(7)),
         });
@@ -1132,7 +1147,7 @@ mod tests {
     #[test]
     fn named_type_equals_unnamed() {
         let named = Type::named(TypeKind::Int, "UserId");
-        let unnamed = Type::Int;
+        let unnamed = Type::Int();
         assert_eq!(named, unnamed);
     }
 

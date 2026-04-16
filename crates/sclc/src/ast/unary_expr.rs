@@ -50,12 +50,12 @@ impl UnaryExpr {
             .unfold();
 
         let result_ty = if matches!(operand_ty.kind, TypeKind::Never) {
-            Type::Never
+            Type::Never()
         } else {
             match self.op {
                 UnaryOp::Negate => match &operand_ty.kind {
-                    TypeKind::Int => Type::Int,
-                    TypeKind::Float => Type::Float,
+                    TypeKind::Int => Type::Int(),
+                    TypeKind::Float => Type::Float(),
                     _ => {
                         diags.push(InvalidUnaryOperand {
                             module_id: env.module_id()?,
@@ -63,11 +63,11 @@ impl UnaryExpr {
                             operand: operand_ty.clone(),
                             span: expr.span(),
                         });
-                        Type::Never
+                        Type::Never()
                     }
                 },
                 UnaryOp::Not => match &operand_ty.kind {
-                    TypeKind::Bool => Type::Bool,
+                    TypeKind::Bool => Type::Bool(),
                     _ => {
                         diags.push(InvalidUnaryOperand {
                             module_id: env.module_id()?,
@@ -75,7 +75,7 @@ impl UnaryExpr {
                             operand: operand_ty.clone(),
                             span: expr.span(),
                         });
-                        Type::Never
+                        Type::Never()
                     }
                 },
             }

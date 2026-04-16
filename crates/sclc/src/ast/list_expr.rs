@@ -76,7 +76,7 @@ impl ListExpr {
             }
             crate::Type::List(Box::new(first_ty))
         } else {
-            crate::Type::List(Box::new(crate::Type::Never))
+            crate::Type::List(Box::new(crate::Type::Never()))
         };
         Ok(crate::Diagnosed::new(list_ty, diags))
     }

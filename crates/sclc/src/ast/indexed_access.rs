@@ -31,7 +31,7 @@ impl IndexedAccessExpr {
             .unfold();
         let container_ty = env.resolve_var_bound(&container_ty).unfold();
         if matches!(container_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
+            return Ok(Diagnosed::new(Type::Never(), diags));
         }
         let result_ty = match &container_ty.kind {
             TypeKind::Dict(dict_ty) => {
@@ -42,7 +42,7 @@ impl IndexedAccessExpr {
             }
             TypeKind::List(inner_ty) => {
                 checker
-                    .check_expr(env, self.index.as_ref(), Some(&Type::Int))?
+                    .check_expr(env, self.index.as_ref(), Some(&Type::Int()))?
                     .unpack(&mut diags);
                 Type::Optional(inner_ty.clone())
             }
@@ -52,7 +52,7 @@ impl IndexedAccessExpr {
                     ty: container_ty,
                     span: expr.span(),
                 });
-                Type::Never
+                Type::Never()
             }
         };
         Ok(Diagnosed::new(result_ty, diags))

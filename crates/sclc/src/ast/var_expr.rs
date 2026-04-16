@@ -56,7 +56,7 @@ pub(crate) fn synth_var(
     // Legacy import (on-demand module checking, used by REPL/IDE)
     if let Some((target_module_id, maybe_import_file_mod)) = env.lookup_import(var.name.as_str()) {
         let Some(import_file_mod) = maybe_import_file_mod else {
-            return Ok(Diagnosed::new(Type::Never, DiagList::new()));
+            return Ok(Diagnosed::new(Type::Never(), DiagList::new()));
         };
         let cache_key = import_file_mod as *const super::FileMod;
         let imported_ty = if let Some(cached_ty) = checker.import_cache.borrow().get(&cache_key) {
@@ -84,7 +84,7 @@ pub(crate) fn synth_var(
         name: var.name.clone(),
         var: var.clone(),
     });
-    Ok(Diagnosed::new(Type::Never, diags))
+    Ok(Diagnosed::new(Type::Never(), diags))
 }
 
 pub(crate) fn synth_global(

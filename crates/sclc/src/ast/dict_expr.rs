@@ -54,8 +54,8 @@ impl DictExpr {
             })
         } else {
             crate::Type::Dict(crate::DictType {
-                key: Box::new(crate::Type::Never),
-                value: Box::new(crate::Type::Never),
+                key: Box::new(crate::Type::Never()),
+                value: Box::new(crate::Type::Never()),
             })
         };
         Ok(crate::Diagnosed::new(dict_ty, diags))
