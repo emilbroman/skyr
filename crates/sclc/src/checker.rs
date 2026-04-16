@@ -527,6 +527,9 @@ pub(crate) struct TypeEnvMaps<'a> {
     /// Type-level bindings from `type` declarations and imports (separate namespace from values).
     /// Each entry stores the type and an optional doc comment.
     type_level: HashMap<String, (Type, Option<String>)>,
+    /// Proven propositions and derived refinements for the current scope.
+    #[allow(dead_code)]
+    pub(crate) proven: crate::ProvenSet,
 }
 
 type GlobalsMap<'a> = HashMap<&'a str, (crate::Span, &'a crate::Loc<ast::Expr>, Option<&'a str>)>;
@@ -666,6 +669,7 @@ impl<'a> TypeEnv<'a> {
                 type_vars: HashMap::new(),
                 type_var_bounds: HashMap::new(),
                 type_level: HashMap::new(),
+                proven: crate::ProvenSet::new(),
             }),
             cursor: None,
             free_vars: None,
@@ -747,6 +751,15 @@ impl<'a> TypeEnv<'a> {
     pub fn with_cursor(&self, cursor: crate::Cursor) -> Self {
         let mut env = self.inner();
         env.cursor = Some(cursor);
+        env
+    }
+
+    /// Create a derived environment with additional propositions proven.
+    /// Eagerly derives all consequences via forward-chaining.
+    #[allow(dead_code)]
+    pub(crate) fn with_propositions(&self, props: &[crate::Prop]) -> Self {
+        let mut env = self.inner();
+        env.maps.proven = env.maps.proven.with_propositions(props);
         env
     }
 
