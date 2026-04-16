@@ -1,6 +1,51 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
-use crate::{PackageId, RecordType, Type};
+use crate::{PackageId, RecordType, Record, TrackedValue, Value, Type};
+
+/// Result of extracting the first argument from an extern function call.
+///
+/// If the argument is pending, `Pending` is returned with the accumulated
+/// dependencies so the caller can short-circuit.  Otherwise `Ready` provides
+/// the parsed config record and its dependencies.
+pub(crate) enum ExtractedConfig {
+    Pending(TrackedValue),
+    Ready {
+        config: Record,
+        dependencies: BTreeSet<ids::ResourceId>,
+    },
+}
+
+/// Extract the first argument of an extern function, returning its config
+/// record and dependency set.
+///
+/// Handles the boilerplate shared by every resource extern:
+/// 1. Pop the first arg (defaulting to `Nil`).
+/// 2. Clone its dependency set.
+/// 3. If the value contains pending sub-values, return early.
+/// 4. Assert the value is a record.
+pub(crate) fn extract_config(
+    args: Vec<TrackedValue>,
+) -> Result<ExtractedConfig, crate::EvalError> {
+    use crate::ValueAssertions;
+
+    let mut args = args.into_iter();
+    let config_arg = args
+        .next()
+        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
+    let dependencies = config_arg.dependencies.clone();
+
+    if config_arg.value.has_pending() {
+        return Ok(ExtractedConfig::Pending(
+            TrackedValue::pending().with_dependencies(dependencies),
+        ));
+    }
+
+    let config = config_arg.value.assert_record()?;
+    Ok(ExtractedConfig::Ready {
+        config,
+        dependencies,
+    })
+}
 
 macro_rules! std_modules {
     (@unit $module:ident => $scl:literal) => {

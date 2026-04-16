@@ -41,17 +41,13 @@ fn image_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config(args)? {
+        super::ExtractedConfig::Pending(pending) => return Ok(pending),
+        super::ExtractedConfig::Ready {
+            config,
+            dependencies,
+        } => (config, dependencies),
+    };
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -154,17 +150,13 @@ fn pod_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config(args)? {
+        super::ExtractedConfig::Pending(pending) => return Ok(pending),
+        super::ExtractedConfig::Ready {
+            config,
+            dependencies,
+        } => (config, dependencies),
+    };
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -275,20 +267,19 @@ fn create_port_fn(
     pod_resource_id: ResourceId,
 ) -> ExternFnValue {
     ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-        let mut argument_dependencies = config_arg.dependencies.clone();
+        let (config, mut argument_dependencies) = match super::extract_config(args)? {
+            super::ExtractedConfig::Pending(mut pending) => {
+                pending.dependencies.insert(pod_resource_id.clone());
+                return Ok(pending);
+            }
+            super::ExtractedConfig::Ready {
+                config,
+                dependencies,
+            } => (config, dependencies),
+        };
 
         // The port depends on the pod
         argument_dependencies.insert(pod_resource_id.clone());
-
-        if config_arg.value.has_pending() {
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
 
         // Extract port-specific inputs
         let port = *config.get("port").assert_int_ref()?;
@@ -345,25 +336,24 @@ fn create_attachment_fn(
     pod_resource_id: ResourceId,
 ) -> ExternFnValue {
     ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
-        let mut args = args.into_iter();
-        let port_arg = args
-            .next()
-            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-        let mut argument_dependencies = port_arg.dependencies.clone();
+        let (config, mut argument_dependencies) = match super::extract_config(args)? {
+            super::ExtractedConfig::Pending(mut pending) => {
+                pending.dependencies.insert(pod_resource_id.clone());
+                return Ok(pending);
+            }
+            super::ExtractedConfig::Ready {
+                config,
+                dependencies,
+            } => (config, dependencies),
+        };
 
         // The attachment depends on the pod
         argument_dependencies.insert(pod_resource_id.clone());
 
-        if port_arg.value.has_pending() {
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let port_record = port_arg.value.assert_record()?;
-
         // Extract destination port details
-        let dest_address = port_record.get("address").assert_str_ref()?.to_owned();
-        let port = *port_record.get("port").assert_int_ref()?;
-        let protocol = port_record.get("protocol").assert_str_ref()?.to_owned();
+        let dest_address = config.get("address").assert_str_ref()?.to_owned();
+        let port = *config.get("port").assert_int_ref()?;
+        let protocol = config.get("protocol").assert_str_ref()?.to_owned();
 
         // Build the resource ID: "{resource_name}@{dest_address}:{port}/{protocol}"
         let resource_id_str = format!("{}@{}:{}/{}", resource_name, dest_address, port, protocol);
@@ -414,17 +404,13 @@ fn host_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config(args)? {
+        super::ExtractedConfig::Pending(pending) => return Ok(pending),
+        super::ExtractedConfig::Ready {
+            config,
+            dependencies,
+        } => (config, dependencies),
+    };
 
     // Extract the name from input
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -490,20 +476,19 @@ fn create_host_port_fn(
     host_resource_id: ResourceId,
 ) -> ExternFnValue {
     ExternFnValue::new(Box::new(move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-        let mut argument_dependencies = config_arg.dependencies.clone();
+        let (config, mut argument_dependencies) = match super::extract_config(args)? {
+            super::ExtractedConfig::Pending(mut pending) => {
+                pending.dependencies.insert(host_resource_id.clone());
+                return Ok(pending);
+            }
+            super::ExtractedConfig::Ready {
+                config,
+                dependencies,
+            } => (config, dependencies),
+        };
 
         // The host port depends on the host
         argument_dependencies.insert(host_resource_id.clone());
-
-        if config_arg.value.has_pending() {
-            return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
 
         // Extract port-specific inputs
         let port = *config.get("port").assert_int_ref()?;
@@ -589,20 +574,19 @@ fn create_host_internet_address_fn(
 ) -> ExternFnValue {
     ExternFnValue::new(Box::new(
         move |args: Vec<TrackedValue>, eval_ctx: &EvalCtx| {
-            let mut args = args.into_iter();
-            let config_arg = args
-                .next()
-                .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-            let mut argument_dependencies = config_arg.dependencies.clone();
+            let (config, mut argument_dependencies) = match super::extract_config(args)? {
+                super::ExtractedConfig::Pending(mut pending) => {
+                    pending.dependencies.insert(host_resource_id.clone());
+                    return Ok(pending);
+                }
+                super::ExtractedConfig::Ready {
+                    config,
+                    dependencies,
+                } => (config, dependencies),
+            };
 
             // The internet address depends on the host
             argument_dependencies.insert(host_resource_id.clone());
-
-            if config_arg.value.has_pending() {
-                return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-            }
-
-            let config = config_arg.value.assert_record()?;
 
             // Extract input
             let name = config.get("name").assert_str_ref()?.to_owned();

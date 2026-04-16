@@ -88,17 +88,13 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     });
 
     eval.add_extern_fn(SCHEDULE_RESOURCE_TYPE, |args, eval_ctx| {
-        let mut args = args.into_iter();
-        let duration_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-        let argument_dependencies = duration_arg.dependencies.clone();
-
-        if duration_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let duration = duration_arg.value.assert_record()?;
+        let (duration, argument_dependencies) = match super::extract_config(args)? {
+            super::ExtractedConfig::Pending(pending) => return Ok(pending),
+            super::ExtractedConfig::Ready {
+                config,
+                dependencies,
+            } => (config, dependencies),
+        };
 
         let months = match duration.get("months") {
             Value::Nil => 0,
