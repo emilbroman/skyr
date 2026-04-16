@@ -2958,7 +2958,12 @@ mod tests {
     }
 
     #[test]
-    fn assign_type_both_generic_tighter_bound_succeeds() {
+    fn assign_type_both_generic_source_tighter_bound_fails() {
+        // Under F<:, `∀α<:A. T <: ∀β<:B. U` requires `B <: A` — i.e.
+        // the target's bound must be a subtype of the source's. Here
+        // the source's bound (`Int`) is strictly tighter than the
+        // target's (`Int?`), so a caller of the target can supply
+        // values the source could not accept.
         let id_a = next_type_id();
         let id_b = next_type_id();
 
@@ -2973,11 +2978,15 @@ mod tests {
             ret: Box::new(Type::Var(id_b)),
         });
 
-        assert!(lhs.is_assignable_from(&rhs).is_ok());
+        assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
-    fn assign_type_both_generic_looser_bound_fails() {
+    fn assign_type_both_generic_source_looser_bound_succeeds() {
+        // Dual of the previous test: the source's bound (`Int?`) is
+        // looser than the target's (`Int`). Every value the target
+        // can supply (an `Int`) is one the source already handles,
+        // so assignment is admissible.
         let id_a = next_type_id();
         let id_b = next_type_id();
 
@@ -2992,7 +3001,7 @@ mod tests {
             ret: Box::new(Type::Var(id_b)),
         });
 
-        assert!(lhs.is_assignable_from(&rhs).is_err());
+        assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
