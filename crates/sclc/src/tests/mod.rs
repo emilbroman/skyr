@@ -539,6 +539,9 @@ test_case!(NilCoalesceReExportedOptional);
 // Recursive type declarations
 test_case!(RecursiveTypeDecl);
 
+// If expression without else branch
+test_case!(IfNoElseOptionalBody);
+
 // Propositional type refinement
 test_case!(NilRefinementBasic);
 test_case!(NilRefinementEqNil);

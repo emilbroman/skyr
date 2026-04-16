@@ -1,0 +1,4 @@
+let x: Int? = 42
+let y: Int? = 10
+export let result = if (true) x
+export let result2 = if (true) y

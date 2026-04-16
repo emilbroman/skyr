@@ -82,8 +82,13 @@ impl IfExpr {
             ));
         }
 
+        let result_ty = if matches!(then_ty.kind, crate::TypeKind::Optional(_)) {
+            then_ty
+        } else {
+            Type::Optional(Box::new(then_ty))
+        };
         Ok(crate::TypeSynth::with_props(
-            Diagnosed::new(Type::Optional(Box::new(then_ty)), diags),
+            Diagnosed::new(result_ty, diags),
             cond_props,
         ))
     }
@@ -136,7 +141,11 @@ impl IfExpr {
             ));
         }
 
-        let result_ty = Type::Optional(Box::new(then_ty));
+        let result_ty = if matches!(then_ty.kind, crate::TypeKind::Optional(_)) {
+            then_ty
+        } else {
+            Type::Optional(Box::new(then_ty))
+        };
         checker.subsumption_check(env, expr.span(), result_ty.clone(), expected, &mut diags)?;
         Ok(crate::TypeSynth::with_props(
             Diagnosed::new(result_ty, diags),
