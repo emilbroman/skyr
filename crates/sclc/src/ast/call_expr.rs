@@ -348,7 +348,14 @@ impl CallExpr {
                 evaluator.ctx.source_trace.lock().unwrap().clear();
                 result
             }
-            _ => Ok(crate::eval::tracked(Value::Nil).with_dependencies(callee_dependencies)),
+            other => Err(env.throw(
+                crate::eval::EvalErrorKind::UnexpectedValue(other),
+                Some((
+                    env.module_id.cloned().unwrap_or_default(),
+                    self.callee.span(),
+                    frame_name,
+                )),
+            )),
         }
     }
 }

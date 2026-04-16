@@ -247,7 +247,9 @@ impl PropertyAccessExpr {
         &self,
         evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
+        expr: &crate::Loc<Expr>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
+        use crate::eval::EvalErrorKind;
         use crate::{GlobalKey, Value};
 
         // When the LHS is an import alias targeting a `.scl` module, resolve
@@ -277,7 +279,14 @@ impl PropertyAccessExpr {
                 record.get(self.property.name.as_str()).clone(),
                 value.dependencies,
             )),
-            _ => Ok(crate::eval::tracked(Value::Nil)),
+            other => Err(env.throw(
+                EvalErrorKind::UnexpectedValue(other),
+                Some((
+                    env.module_id.cloned().unwrap_or_default(),
+                    expr.span(),
+                    "property access".to_string(),
+                )),
+            )),
         }
     }
 }

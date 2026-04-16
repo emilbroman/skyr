@@ -62,8 +62,10 @@ impl IndexedAccessExpr {
         &self,
         evaluator: &crate::eval::Eval<'_>,
         env: &crate::eval::EvalEnv<'_>,
+        expr: &crate::Loc<Expr>,
     ) -> Result<crate::TrackedValue, crate::eval::EvalError> {
         use crate::Value;
+        use crate::eval::EvalErrorKind;
 
         let container = evaluator.eval_expr(env, self.expr.as_ref())?;
         match container.value {
@@ -94,10 +96,24 @@ impl IndexedAccessExpr {
                         };
                         Ok(crate::eval::with_dependencies(result, deps))
                     }
-                    _ => Ok(crate::eval::with_dependencies(Value::Nil, deps)),
+                    other => Err(env.throw(
+                        EvalErrorKind::UnexpectedValue(other),
+                        Some((
+                            env.module_id.cloned().unwrap_or_default(),
+                            self.index.span(),
+                            "index".to_string(),
+                        )),
+                    )),
                 }
             }
-            _ => Ok(crate::eval::tracked(Value::Nil)),
+            other => Err(env.throw(
+                EvalErrorKind::UnexpectedValue(other),
+                Some((
+                    env.module_id.cloned().unwrap_or_default(),
+                    expr.span(),
+                    "indexed access".to_string(),
+                )),
+            )),
         }
     }
 }
