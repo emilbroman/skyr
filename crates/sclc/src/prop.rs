@@ -259,6 +259,14 @@ impl ProvenSet {
     }
 
     fn prove(&mut self, prop: Prop) {
+        // If the proven proposition is itself an implication, route through
+        // add_proposition so it gets indexed for future forward-chaining
+        // (or fires immediately if the antecedent is already proven).
+        if matches!(prop, Prop::Implies(_, _)) {
+            self.add_proposition(prop);
+            return;
+        }
+
         if self.is_proven(&prop) {
             return;
         }
