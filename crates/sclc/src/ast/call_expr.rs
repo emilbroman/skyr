@@ -286,12 +286,16 @@ impl CallExpr {
         env: &EvalEnv<'_>,
         expr: &Loc<Expr>,
     ) -> Result<TrackedValue, EvalError> {
+        // Spec §8 rule E-Call: the callee is evaluated first, then the
+        // arguments in left-to-right order. Evaluating the callee up front
+        // means any exception or side effect attached to `f` in `f(x)` is
+        // observed before `x` is evaluated.
+        let callee = evaluator.eval_expr(env, self.callee.as_ref())?;
         let args = self
             .args
             .iter()
             .map(|arg| evaluator.eval_expr(env, arg))
             .collect::<Result<Vec<_>, _>>()?;
-        let callee = evaluator.eval_expr(env, self.callee.as_ref())?;
         let callee_dependencies = callee.dependencies.clone();
         if matches!(&callee.value, Value::Pending(_)) {
             return Ok(TrackedValue::pending().with_dependencies(callee_dependencies));
