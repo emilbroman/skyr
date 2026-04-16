@@ -9,7 +9,7 @@ use super::{lock_cursor_info, resolve_document};
 use crate::analysis;
 use crate::convert;
 use crate::document::DocumentCache;
-use crate::server::{LspProgram, OutgoingMessage, RequestId};
+use crate::server::{LspProgram, OutgoingMessage, RequestId, to_json_value};
 
 pub fn hover(
     id: RequestId,
@@ -64,10 +64,7 @@ pub fn hover(
             contents: lsp::HoverContents::Array(parts),
             range: None,
         };
-        serde_json::to_value(hover).unwrap_or_else(|err| {
-            eprintln!("lsp: failed to serialize hover result: {err}");
-            serde_json::Value::Null
-        })
+        to_json_value(&hover)
     };
 
     vec![OutgoingMessage::response(id, result)]

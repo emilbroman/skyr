@@ -7,7 +7,7 @@ use super::{lock_cursor_info, resolve_document};
 use crate::analysis;
 use crate::convert;
 use crate::document::DocumentCache;
-use crate::server::{LspProgram, OutgoingMessage, RequestId};
+use crate::server::{LspProgram, OutgoingMessage, RequestId, to_json_value};
 
 pub fn completion(
     id: RequestId,
@@ -89,9 +89,6 @@ pub fn completion(
         })
         .collect();
 
-    let result = serde_json::to_value(items).unwrap_or_else(|err| {
-        eprintln!("lsp: failed to serialize completion items: {err}");
-        serde_json::Value::Null
-    });
+    let result = to_json_value(&items);
     vec![OutgoingMessage::response(id, result)]
 }

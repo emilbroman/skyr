@@ -9,7 +9,7 @@ use super::{lock_cursor_info, resolve_document};
 use crate::analysis::{self, raw_module_id_to_uri};
 use crate::convert;
 use crate::document::DocumentCache;
-use crate::server::{LspProgram, OutgoingMessage, RequestId};
+use crate::server::{LspProgram, OutgoingMessage, RequestId, to_json_value};
 
 pub fn goto_definition(
     id: RequestId,
@@ -52,10 +52,7 @@ pub fn goto_definition(
                 uri: decl_uri,
                 range: convert::to_lsp_range(*decl_span),
             };
-            serde_json::to_value(location).unwrap_or_else(|err| {
-                eprintln!("lsp: failed to serialize definition result: {err}");
-                serde_json::Value::Null
-            })
+            to_json_value(&location)
         }
         None => serde_json::Value::Null,
     };
@@ -124,10 +121,7 @@ pub fn references(
     let result = if locations.is_empty() {
         serde_json::Value::Null
     } else {
-        serde_json::to_value(locations).unwrap_or_else(|err| {
-            eprintln!("lsp: failed to serialize references result: {err}");
-            serde_json::Value::Null
-        })
+        to_json_value(&locations)
     };
 
     vec![OutgoingMessage::response(id, result)]
@@ -247,10 +241,7 @@ pub fn prepare_rename(
     let result = match span_at_cursor(&info, &cursor_module, position) {
         Some(span) => {
             let response = lsp::PrepareRenameResponse::Range(convert::to_lsp_range(span));
-            serde_json::to_value(response).unwrap_or_else(|err| {
-                eprintln!("lsp: failed to serialize prepare_rename: {err}");
-                serde_json::Value::Null
-            })
+            to_json_value(&response)
         }
         None => serde_json::Value::Null,
     };
@@ -480,10 +471,7 @@ pub fn rename(
         document_changes: None,
         change_annotations: None,
     };
-    let result = serde_json::to_value(edit).unwrap_or_else(|err| {
-        eprintln!("lsp: failed to serialize rename result: {err}");
-        serde_json::Value::Null
-    });
+    let result = to_json_value(&edit);
     vec![OutgoingMessage::response(id, result)]
 }
 
@@ -506,10 +494,7 @@ pub fn document_symbol(
 
     let symbols = analysis::document_symbols(&ctx.source, &ctx.module_id);
 
-    let result = serde_json::to_value(symbols).unwrap_or_else(|err| {
-        eprintln!("lsp: failed to serialize document symbols: {err}");
-        serde_json::Value::Null
-    });
+    let result = to_json_value(&symbols);
     vec![OutgoingMessage::response(id, result)]
 }
 

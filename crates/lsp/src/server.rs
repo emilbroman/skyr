@@ -116,7 +116,7 @@ impl OutgoingMessage {
 }
 
 /// Serialize a value to JSON, logging and returning Null on failure.
-fn to_json_value(value: &impl Serialize) -> serde_json::Value {
+pub(crate) fn to_json_value(value: &impl Serialize) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or_else(|err| {
         eprintln!("lsp: failed to serialize value: {err}");
         serde_json::Value::Null
