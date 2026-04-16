@@ -1,0 +1,7 @@
+export let result =
+  fn()
+    let x: Int? = 123;
+    let y: Str? = "hello";
+    if (x != nil && y != nil)
+      let z: Str = y;
+      x + 3

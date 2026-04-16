@@ -548,6 +548,7 @@ test_case!(NilRefinementEqNil);
 test_case!(NilRefinementNot);
 test_case!(NilRefinementLetProp);
 test_case!(NilRefinementRecordProp);
+test_case!(NilRefinementAndMultiple);
 
 mod effect_owner;
 mod scle;
