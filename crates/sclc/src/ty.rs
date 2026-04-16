@@ -607,10 +607,15 @@ fn assign_fn_type(
                 )));
             }
 
+            // Quantifier bounds are contravariant (standard F<:): for
+            // `∀α<:A. T <: ∀β<:B. U`, we require `B <: A`. Here `rhs`
+            // is the source (A-side) and `lhs` the target (B-side), so
+            // we check that the target bound is assignable into the
+            // source bound.
             for ((_, lhs_bound), (_, rhs_bound)) in
                 lhs_fn.type_params.iter().zip(rhs_fn.type_params.iter())
             {
-                assign_type_with_bounds(lhs_bound, rhs_bound, bounds)?;
+                assign_type_with_bounds(rhs_bound, lhs_bound, bounds)?;
             }
 
             let alpha_rename: Vec<(usize, Type)> = lhs_fn
