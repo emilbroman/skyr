@@ -1946,19 +1946,28 @@ impl<'p> TypeChecker<'p> {
             ast::ListItem::Expr(expr) => self.check_expr(env, expr, expected_type),
             ast::ListItem::If(if_item) => {
                 let mut diags = DiagList::new();
-                self.check_expr(env, if_item.condition.as_ref(), Some(&Type::Bool()))?
-                    .unpack(&mut diags);
-                let item_ty = self
+                let mut props = Vec::new();
+                let (_, cond_props) = self
+                    .check_expr(env, if_item.condition.as_ref(), Some(&Type::Bool()))?
+                    .unpack_with_props(&mut diags);
+                props.extend(cond_props);
+                let (item_ty, item_props) = self
                     .check_list_item(env, if_item.then_item.as_ref(), expected_type)?
-                    .unpack(&mut diags);
-                Ok(crate::TypeSynth::new(Diagnosed::new(item_ty, diags)))
+                    .unpack_with_props(&mut diags);
+                props.extend(item_props);
+                Ok(crate::TypeSynth::with_props(
+                    Diagnosed::new(item_ty, diags),
+                    props,
+                ))
             }
             ast::ListItem::For(for_item) => {
                 let mut diags = DiagList::new();
-                let iterable_ty = self
+                let mut props = Vec::new();
+                let (iterable_ty, iterable_props) = self
                     .synth_expr(env, for_item.iterable.as_ref())?
-                    .unpack(&mut diags)
-                    .unfold();
+                    .unpack_with_props(&mut diags);
+                let iterable_ty = iterable_ty.unfold();
+                props.extend(iterable_props);
                 let element_ty = match iterable_ty.kind {
                     TypeKind::List(element_ty) => *element_ty,
                     _ => {
@@ -1975,10 +1984,14 @@ impl<'p> TypeChecker<'p> {
                 };
                 let inner_env =
                     env.with_local(for_item.var.name.as_str(), for_item.var.span(), element_ty);
-                let item_ty = self
+                let (item_ty, item_props) = self
                     .check_list_item(&inner_env, for_item.emit_item.as_ref(), expected_type)?
-                    .unpack(&mut diags);
-                Ok(crate::TypeSynth::new(Diagnosed::new(item_ty, diags)))
+                    .unpack_with_props(&mut diags);
+                props.extend(item_props);
+                Ok(crate::TypeSynth::with_props(
+                    Diagnosed::new(item_ty, diags),
+                    props,
+                ))
             }
         }
     }
