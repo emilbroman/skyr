@@ -16,16 +16,23 @@ of responsibilities between _pure_ and _resource_ externs.
 == Extern functions
 
 An _extern function_ is a value whose implementation is supplied by
-the host evaluator rather than by an SCL expression. Syntactically, a
-binding is declared extern by the #kw("extern") expression:
+the host evaluator rather than by an SCL expression. Syntactically, an
+extern expression has the form
+
+$ #kw("extern") s colon T $
+
+binding a host-supplied implementation named by the string literal
+$s$ to a declared type $T$:
 
 #align(center)[
-    #raw("export let f: (Int) -> Int = extern \"math/square\"")
+    #raw("export let square = extern \"math/square\": fn(Int) Int")
 ]
 
 The string argument to #kw("extern") is a _dispatch key_ that names
-the host implementation. Extern values are ordinary first-class values
-and may be passed around, stored in records, and invoked indirectly.
+the host implementation, and the trailing type annotation is
+_mandatory_ — there is no inference of the host's signature. Extern
+values are ordinary first-class values and may be passed around,
+stored in records, and invoked indirectly.
 
 At evaluation time, an extern invocation consults a fixed partial
 function

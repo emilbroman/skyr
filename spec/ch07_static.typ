@@ -500,6 +500,30 @@ bypassing any inference that would have produced a different result. It
 is therefore the primary interface between statically well-typed code
 and values of type #raw("Any").
 
+== Extern references
+
+An extern reference introduces a host-supplied value at a declared
+type:
+
+#figure(
+    prooftree(
+        rule(
+            name: [T-Extern],
+            $Gamma ts #kw("extern") s colon T synth A$,
+            $A = "interp"(T)$,
+        )
+    ),
+    caption: [Extern reference.],
+)
+
+where $"interp"(T)$ denotes the interpretation of the surface type
+expression $T$ as an internal type, in the sense of Chapter 4. No
+typing obligation is imposed on the dispatch key $s$; the static
+system treats the declared type as authoritative and relies on the
+host to provide a value of that type at run time. Mis-declaration of
+an extern's type is undetectable statically and yields an evaluation
+error on first invocation.
+
 == Exceptions
 
 An #kw("exception") expression generates a fresh exception identifier
