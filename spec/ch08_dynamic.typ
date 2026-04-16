@@ -122,11 +122,18 @@ in order:
     caption: [Interpolated string.],
 )
 
-The coercion $"toStr"$ is the identity on strings, the decimal
-representation on #raw("Int") and #raw("Float"), the literal
-`true`/`false` on #raw("Bool"), the path string on #raw("Path"), and
-the literal `nil` on #kw("nil"); for compound values it is undefined
-and a run-time error is raised.
+The coercion $"toStr"$ is defined at every concrete value: it is the
+identity on strings, the decimal representation on #raw("Int") and
+#raw("Float"), the literal `true`/`false` on #raw("Bool"), the path
+string on #raw("Path"), and the literal `nil` on #kw("nil"). On
+compound values — lists, records, dicts, closures, and exception
+values — it produces the _canonical display form_ of the value,
+which is the same form used by the REPL and by error messages. The
+canonical display form is defined for each compound shape as the
+bracketed sequence of the recursive display forms of its components
+(e.g. `[1, 2, 3]` for a list, `{x: 1, y: 2}` for a record), with
+string atoms quoted. Two values have the same canonical display form
+iff they are structurally equal.
 
 A path literal evaluates by resolving its segments against the
 repository root (absolute paths) or the directory of the enclosing
@@ -700,12 +707,16 @@ access, string coercion, `??`) has a _pending congruence_ rule:
     caption: [Elimination forms propagate pending values.],
 )
 
-with the analogous rule for every other elimination form. Equality
-with `==` against `nil` is the only elimination form that does _not_
-propagate: comparing a pending value to `nil` yields `false` at the
-static semantics' discretion, which is what enables the type-system's
-nil-comparison refinement (§ 6.5.1) to narrow pending optionals
-correctly.
+with the analogous rule for every other elimination form, including
+the equality operators `==` and `!=`. A comparison whose operand is
+pending is itself pending; the static semantics' nil-comparison
+refinement (§ 6.5.1) is sound because pending values inhabit optional
+types alongside #kw("nil"), and a pending equality therefore neither
+confirms nor refutes a nil-narrowing proposition — it simply defers
+the refinement to the moment the planner reconciles the pending
+value. Downstream code that branches on such a comparison is itself
+scheduled behind the resource that produced the pending value, and
+is re-evaluated once the concrete value is known.
 
 == Module evaluation
 
