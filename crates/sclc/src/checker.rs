@@ -269,7 +269,9 @@ define_diag! {
 
 define_diag! {
     #[derive(Error, Debug)]
-    #[error("catch variable must be an exception or function returning an exception, got {ty}")]
+    #[error(
+        "catch target must be an exception (for `catch x:`) or a unary function returning an exception (for `catch x(y):`), got {ty}"
+    )]
     pub struct InvalidCatchTarget {
         pub ty: Type,
         pub span: crate::Span,

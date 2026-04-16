@@ -77,41 +77,59 @@ impl TryExpr {
                 .unpack(diags)
                 .unfold();
 
-            match &catch_var_ty.kind {
-                TypeKind::Exception(_) => {
-                    if let Some(catch_arg) = &catch.catch_arg {
-                        diags.push(UnexpectedCatchArg {
-                            module_id: env.module_id()?,
-                            span: catch_arg.span(),
-                        });
-                    }
+            // Spec §7 `T-Catch-NoPayload` / `T-Catch-Payload`:
+            //   - `catch x: ...`    requires `x : E` (an exception directly).
+            //   - `catch x(y): ...` requires `x : (B) -> E` (a *unary* function
+            //     returning an exception).
+            // All other shapes — zero- or multi-parameter functions, non-Exception
+            // return types, non-Exception/non-Fn values — are static errors.
+            match (&catch_var_ty.kind, &catch.catch_arg) {
+                (TypeKind::Exception(_), None) => {
                     checker
                         .check_expr(env, &catch.body, Some(try_ty))?
                         .unpack(diags);
                 }
-                TypeKind::Fn(fn_ty) => {
+                (TypeKind::Exception(_), Some(catch_arg)) => {
+                    diags.push(UnexpectedCatchArg {
+                        module_id: env.module_id()?,
+                        span: catch_arg.span(),
+                    });
+                    checker
+                        .check_expr(env, &catch.body, Some(try_ty))?
+                        .unpack(diags);
+                }
+                (TypeKind::Fn(fn_ty), Some(catch_arg)) => {
                     let ret_ty = fn_ty.ret.as_ref().clone().unfold();
-                    if !matches!(ret_ty.kind, TypeKind::Exception(_)) {
+                    let ret_is_exception = matches!(ret_ty.kind, TypeKind::Exception(_));
+                    let arity_ok = fn_ty.params.len() == 1;
+                    if !ret_is_exception || !arity_ok {
                         diags.push(InvalidCatchTarget {
                             module_id: env.module_id()?,
                             ty: catch_var_ty.clone(),
                             span: catch.exception_var.span(),
                         });
                     }
-                    if let Some(catch_arg) = &catch.catch_arg {
-                        let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never());
-                        let inner_env =
-                            env.with_local(catch_arg.name.as_str(), catch_arg.span(), param_ty);
-                        checker
-                            .check_expr(&inner_env, &catch.body, Some(try_ty))?
-                            .unpack(diags);
-                    } else {
-                        checker
-                            .check_expr(env, &catch.body, Some(try_ty))?
-                            .unpack(diags);
-                    }
+                    let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never());
+                    let inner_env =
+                        env.with_local(catch_arg.name.as_str(), catch_arg.span(), param_ty);
+                    checker
+                        .check_expr(&inner_env, &catch.body, Some(try_ty))?
+                        .unpack(diags);
                 }
-                TypeKind::Never => {
+                (TypeKind::Fn(_), None) => {
+                    // Spec requires `catch x: ...` to name a bare exception, not a
+                    // function. Rejecting this keeps the catch grammar aligned with
+                    // the static rules `T-Catch-NoPayload` vs `T-Catch-Payload`.
+                    diags.push(InvalidCatchTarget {
+                        module_id: env.module_id()?,
+                        ty: catch_var_ty.clone(),
+                        span: catch.exception_var.span(),
+                    });
+                    checker
+                        .check_expr(env, &catch.body, Some(try_ty))?
+                        .unpack(diags);
+                }
+                (TypeKind::Never, _) => {
                     checker
                         .check_expr(env, &catch.body, Some(try_ty))?
                         .unpack(diags);

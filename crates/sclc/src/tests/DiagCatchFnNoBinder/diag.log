@@ -1,0 +1,1 @@
+DiagCatchFnNoBinder/Main 5:7,5:8: catch target must be an exception (for `catch x:`) or a unary function returning an exception (for `catch x(y):`), got fn(Str) Exception#2
