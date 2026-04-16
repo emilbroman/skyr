@@ -543,6 +543,8 @@ test_case!(RecursiveTypeDecl);
 test_case!(NilRefinementBasic);
 test_case!(NilRefinementEqNil);
 test_case!(NilRefinementNot);
+test_case!(NilRefinementLetProp);
+test_case!(NilRefinementRecordProp);
 
 mod effect_owner;
 mod scle;

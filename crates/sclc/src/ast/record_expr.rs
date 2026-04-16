@@ -31,9 +31,13 @@ impl RecordExpr {
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let mut record_ty = crate::RecordType::default();
         for field in &self.fields {
-            let field_ty = checker.synth_expr(env, &field.expr)?.unpack(&mut diags);
+            let (field_ty, field_props) = checker
+                .synth_expr(env, &field.expr)?
+                .unpack_with_props(&mut diags);
+            props.extend(field_props);
             let origin = env.raw_module_id().map(|m| (m.clone(), field.var.span()));
             if let Some((cursor, _)) = &field.var.cursor {
                 cursor.set_identifier(crate::CursorIdentifier::Let(field.var.name.clone()));
@@ -52,10 +56,10 @@ impl RecordExpr {
                 origin,
             );
         }
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
-            crate::Type::Record(record_ty),
-            diags,
-        )))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(crate::Type::Record(record_ty), diags),
+            props,
+        ))
     }
 
     #[inline(never)]
@@ -86,6 +90,7 @@ impl RecordExpr {
         expected_record: &crate::RecordType,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let mut record_ty = crate::RecordType::default();
 
         for field in &self.fields {
@@ -133,9 +138,10 @@ impl RecordExpr {
                 );
             }
 
-            let field_ty = checker
+            let (field_ty, field_props) = checker
                 .check_expr(env, &field.expr, expected_field_ty)?
-                .unpack(&mut diags);
+                .unpack_with_props(&mut diags);
+            props.extend(field_props);
             if let Some((cursor, _)) = &field.var.cursor {
                 cursor.set_identifier(crate::CursorIdentifier::Let(field.var.name.clone()));
                 cursor.set_type(field_ty.clone());
@@ -183,7 +189,10 @@ impl RecordExpr {
             }
         }
 
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(ty, diags)))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(ty, diags),
+            props,
+        ))
     }
 
     pub(crate) fn eval(
