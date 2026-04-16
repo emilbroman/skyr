@@ -248,7 +248,7 @@ impl RecordType {
         self.fields.iter()
     }
 
-    fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
+    pub(crate) fn map_types(&self, mut f: impl FnMut(&Type) -> Type) -> Self {
         let fields = self
             .fields
             .iter()
