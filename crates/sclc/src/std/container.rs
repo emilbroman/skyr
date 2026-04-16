@@ -41,17 +41,10 @@ fn image_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+        Ok(pair) => pair,
+        Err(pending) => return Ok(pending),
+    };
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -154,17 +147,10 @@ fn pod_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+        Ok(pair) => pair,
+        Err(pending) => return Ok(pending),
+    };
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -414,17 +400,10 @@ fn host_extern_fn(
     args: Vec<TrackedValue>,
     eval_ctx: &EvalCtx,
 ) -> Result<TrackedValue, crate::EvalError> {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| TrackedValue::new(Value::Nil));
-    let argument_dependencies = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(TrackedValue::pending().with_dependencies(argument_dependencies));
-    }
-
-    let config = config_arg.value.assert_record()?;
+    let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+        Ok(pair) => pair,
+        Err(pending) => return Ok(pending),
+    };
 
     // Extract the name from input
     let name = config.get("name").assert_str_ref()?.to_owned();
