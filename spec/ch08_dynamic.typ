@@ -177,9 +177,11 @@ Arithmetic and comparison operators are _strict_ in both operands:
 )
 
 Here, $v_1 plus.o v_2$ denotes the mathematical meaning of the
-operator, extended to strings by lexicographic comparison. Division by
-zero and integer overflow are _evaluation errors_: the dynamic
-semantics is undefined on those inputs. Equality of two compound
+operator. The ordered comparisons $<, <=, >, >=$ are defined only on
+numeric values (see § 7.6); strings support only equality and
+inequality. Division by zero and integer overflow are
+_evaluation errors_: the dynamic semantics is undefined on those
+inputs. Equality of two compound
 values is the structural equality induced on records, lists, and
 dicts; heterogeneous comparisons yield $bot$ at the type level and
 false at the value level (Section 7.6).
