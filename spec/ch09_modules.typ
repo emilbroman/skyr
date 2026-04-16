@@ -224,12 +224,15 @@ modifies (by construction there are no such modifications, since the
 module environment is immutable; the ordering is nonetheless
 well-defined).
 
-Circular imports are a hard error: the import graph must be acyclic.
-Value-level circular dependencies within a module (from an SCC of
-size $>= 2$) are permitted under the signature-inference discipline
-of § 9.6. A value-level SCC _across_ modules is not permitted; it
-would require signature inference to cross package boundaries, which
-the reference implementation does not support.
+Circular imports per se are permitted; only _eager value-level_
+dependencies across modules are restricted. Value-level circular
+dependencies within a module (from an SCC of size $>= 2$) are
+permitted under the signature-inference discipline of § 9.6. A
+value-level SCC _across_ modules is not permitted; it would require
+signature inference to cross package boundaries, which the reference
+implementation does not support. An import cycle whose associated
+value-level edges are all lazy (e.g. function bodies referring to
+each other across modules) is well-defined.
 
 == The `Std` package
 
