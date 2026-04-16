@@ -908,7 +908,11 @@ impl std::fmt::Display for TypeKind {
                 }
             }
             TypeKind::Never => write!(f, "Never"),
-            TypeKind::Exception(id) => write!(f, "Exception#{id}"),
+            // Render the 64-bit nominal id as a short hex tag.  The full id
+            // is still used for type equality; the short form keeps error
+            // messages readable while remaining distinctive enough to tell
+            // two nominally-different exceptions apart.
+            TypeKind::Exception(id) => write!(f, "Exception#{:08x}", *id as u32),
         }
     }
 }
