@@ -488,17 +488,22 @@ correspond to a present element.
         rule(
             name: [T-As],
             $Gamma ts e #kw("as") A synth A$,
-            $Gamma ts e synth B$,
+            $Gamma ts e check A$,
         )
     ),
-    caption: [Type cast: assert the target type unconditionally.],
+    caption: [Type cast: checked re-ascription to the target type.],
 )
 
-The cast performs no static check of compatibility: its purpose is to
-assert the programmer's knowledge that the value has the named type,
-bypassing any inference that would have produced a different result. It
-is therefore the primary interface between statically well-typed code
-and values of type #raw("Any").
+The form $e #kw("as") A$ is a compile-time re-ascription: $e$ is
+checked against the target type $A$, and the cast synthesizes $A$.
+Its purpose is to steer inference toward a specific type when the
+context would otherwise leave it underdetermined, and to tighten the
+static type of a value that is already compatible with $A$ (for
+example, ascribing a concrete type onto a broader join). The cast is
+_not_ a runtime coercion: evaluation preserves the value unchanged,
+and no dynamic check is performed. Consequently, $#kw("as")$ cannot
+narrow a value of type #raw("Any") to a sharper type — the check
+$Gamma ts e check A$ must already succeed statically.
 
 == Extern references
 
@@ -521,8 +526,11 @@ expression $T$ as an internal type, in the sense of Chapter 4. No
 typing obligation is imposed on the dispatch key $s$; the static
 system treats the declared type as authoritative and relies on the
 host to provide a value of that type at run time. Mis-declaration of
-an extern's type is undetectable statically and yields an evaluation
-error on first invocation.
+an extern's type is undetectable statically and undefined at run
+time: the host is not required to validate its return values against
+the declared type, and the dynamic semantics places no obligation on
+implementations to report a type mismatch as an evaluation error.
+Such a program's behaviour is unspecified.
 
 == Exceptions
 
