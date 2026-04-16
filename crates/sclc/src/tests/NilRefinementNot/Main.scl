@@ -1,0 +1,4 @@
+export let result =
+  let x: Int? = 42;
+  let isNil = x == nil;
+  if (!isNil) x + 1 else 0
