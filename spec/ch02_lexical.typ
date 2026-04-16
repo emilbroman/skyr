@@ -109,6 +109,7 @@ escape sequences in Table 1 are recognised; all other occurrences of
             [`\r`], [the carriage-return character `U+000D`],
             [`\t`], [the tab character `U+0009`],
             [`\\`], [a single backslash `\`],
+            [`\"`], [a literal double quote, not closing the literal],
             [`\{`], [a literal open brace, suppressing interpolation],
         )
     ],
