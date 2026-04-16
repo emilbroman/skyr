@@ -146,7 +146,7 @@ optional type $A?$ with origin $id$ emits:
         columns: 2,
         stroke: 0.4pt,
         inset: (x: 6pt, y: 4pt),
-        [$e == #kw("nil")$], [$not "IsTrue"("id"("result"))$ $implies$ $"RefinesTo"(id, A?)$, $ "IsTrue"("id"("result")) implies "RefinesTo"(id, #raw("Never")?)$],
+        [$e == #kw("nil")$], [$not "IsTrue"("id"("result"))$ $implies$ $"RefinesTo"(id, A)$, $ "IsTrue"("id"("result")) implies "RefinesTo"(id, #raw("Never")?)$],
         [$e != #kw("nil")$], [$"IsTrue"("id"("result")) implies "RefinesTo"(id, A)$, $not "IsTrue"("id"("result")) implies "RefinesTo"(id, #raw("Never")?)$],
     )
 ]
