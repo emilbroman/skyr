@@ -1,0 +1,6 @@
+export let result =
+  fn()
+    let x: Int? = 123;
+    let xIsNotNil = x != nil;
+    if (xIsNotNil)
+      x + 3
