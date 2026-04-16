@@ -24,23 +24,21 @@ impl LetExpr {
             .ty
             .as_ref()
             .map(|te| checker.resolve_type_expr(env, te).unpack(&mut diags));
-        let bind_ty = checker
+        let (bind_ty, bind_props) = checker
             .check_expr(env, self.bind.expr.as_ref(), annotation_ty.as_ref())?
-            .unpack(&mut diags);
+            .unpack_with_props(&mut diags);
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
         if let Some((cursor, _)) = &self.bind.var.cursor {
             cursor.set_type(bind_ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
-        let body_ty = if let Some(body) = &self.expr {
-            checker
-                .synth_expr(&inner_env, body.as_ref())?
-                .unpack(&mut diags)
+        let inner_env = inner_env.with_propositions(&bind_props);
+        if let Some(body) = &self.expr {
+            checker.synth_expr(&inner_env, body.as_ref())
         } else {
-            Type::Never()
-        };
-        Ok(crate::TypeSynth::new(Diagnosed::new(body_ty, diags)))
+            Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
+        }
     }
 
     pub(crate) fn type_check(
@@ -55,23 +53,21 @@ impl LetExpr {
             .ty
             .as_ref()
             .map(|te| checker.resolve_type_expr(env, te).unpack(&mut diags));
-        let bind_ty = checker
+        let (bind_ty, bind_props) = checker
             .check_expr(env, self.bind.expr.as_ref(), annotation_ty.as_ref())?
-            .unpack(&mut diags);
+            .unpack_with_props(&mut diags);
         let bind_ty = annotation_ty.unwrap_or(bind_ty);
         if let Some((cursor, _)) = &self.bind.var.cursor {
             cursor.set_type(bind_ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(self.bind.var.name.clone()));
         }
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
-        let body_ty = if let Some(body) = &self.expr {
-            checker
-                .check_expr(&inner_env, body.as_ref(), Some(expected))?
-                .unpack(&mut diags)
+        let inner_env = inner_env.with_propositions(&bind_props);
+        if let Some(body) = &self.expr {
+            checker.check_expr(&inner_env, body.as_ref(), Some(expected))
         } else {
-            Type::Never()
-        };
-        Ok(crate::TypeSynth::new(Diagnosed::new(body_ty, diags)))
+            Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
+        }
     }
 
     pub(crate) fn eval(
