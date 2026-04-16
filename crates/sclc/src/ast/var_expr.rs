@@ -31,7 +31,8 @@ pub(crate) fn synth_var(
 
     // Local variable
     if let Some((_decl, local_ty)) = env.lookup_local(var.name.as_str()) {
-        let local_ty = local_ty.clone();
+        // Apply propositional type refinement at variable resolution time.
+        let local_ty = env.refine_type(local_ty);
         set_cursor(&local_ty);
         return Ok(crate::TypeSynth::new(Diagnosed::new(
             local_ty,

@@ -756,11 +756,19 @@ impl<'a> TypeEnv<'a> {
 
     /// Create a derived environment with additional propositions proven.
     /// Eagerly derives all consequences via forward-chaining.
-    #[allow(dead_code)] // Used in later phases of propositional refinement.
     pub(crate) fn with_propositions(&self, props: &[crate::Prop]) -> Self {
+        if props.is_empty() {
+            return self.inner();
+        }
         let mut env = self.inner();
         env.maps.proven = env.maps.proven.with_propositions(props);
         env
+    }
+
+    /// Apply propositional type refinement to a type, recursively replacing
+    /// any TypeId that has a proven RefinesTo.
+    pub(crate) fn refine_type(&self, ty: &Type) -> Type {
+        self.maps.proven.refine_type(ty)
     }
 
     pub fn with_local(&self, name: &'a str, span: crate::Span, ty: Type) -> Self {
