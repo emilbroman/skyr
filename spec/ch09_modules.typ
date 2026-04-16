@@ -159,22 +159,48 @@ delayed).
 
 == Visibility
 
-Only #kw("export")-prefixed bindings are visible to other modules.
-Non-exported bindings are completely inaccessible outside the
-declaring module: not even by reflection or by escape through their
-types. This is enforced by the export set's restriction to the
-declared exports and by an elaboration step that _erases_ all
-non-exported types from the types of exported bindings — a
-non-exported type escaping into an exported binding's signature is a
-type error.
+The #kw("export") prefix controls which bindings populate a module's
+_export set_ $"exp"(m)$ — the map consulted when a foreign module
+reconstructs $m$'s public surface, and the map the formal semantics
+treats as $m$'s only externally observable content.
+
+Visibility at the level of _name resolution_ is, however, more
+permissive than $"exp"(m)$ alone would suggest. The reference
+implementation stores every module-level binding — exported or not —
+in a common keyspace indexed by module identity, and resolves
+qualified accesses $"Alias" . x$ against that common keyspace rather
+than against $"exp"(m)$. Consequently, non-exported bindings of an
+imported module are _reachable_ through a property access on an
+import alias, even though they are not recorded in $"exp"(m)$ and are
+not intended by the declaring module to be part of its public API.
+
+Formally, we say that a binding $x$ of module $m$ is _exported_ iff
+$x in "exp"(m)$, and _reachable_ iff it is present in $m$'s global
+keyspace. Every exported binding is reachable; the converse does not
+hold. The type system and the evaluator both consult the reachable
+set through property access on an import alias.
 
 #remark[
-    This erasure rule is why the reference implementation demands
-    that any type mentioned in the signature of an exported binding
-    also be #kw("export") or primitive. It is a _closure_ condition:
-    a consumer of a module cannot be asked to depend on a type it
-    cannot name.
+    This divergence between reachability and export is a known
+    laxity of the current reference implementation. A conforming
+    alternative implementation may either preserve the laxity or
+    tighten property access on import aliases to consult $"exp"(m)$
+    exclusively; both choices are valid specifications of SCL under
+    the present document. Programs that exploit non-exported bindings
+    across module boundaries are advised not to do so: they are not
+    guaranteed to continue compiling under future revisions of the
+    reference compiler.
 ]
+
+The analogous laxity applies to _types_. A type declared by a
+non-exported #kw("type") statement may appear in the signature of an
+exported binding, and such a signature is considered well-formed.
+Consumers of the exported binding receive the structural content of
+the type (record fields, list/dict constructors, function arities)
+regardless of whether its declaring alias is itself exported. The
+identifier of a non-exported type alias is preserved verbatim in
+displayed types — it survives, as a string, into error messages and
+REPL output — but is not a binder that consumers may name in source.
 
 == Cross-module type equality
 
