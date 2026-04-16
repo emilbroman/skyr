@@ -17,7 +17,7 @@ impl LetExpr {
         &self,
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let annotation_ty = self
             .bind
@@ -40,7 +40,7 @@ impl LetExpr {
         } else {
             Type::Never()
         };
-        Ok(Diagnosed::new(body_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(body_ty, diags)))
     }
 
     pub(crate) fn type_check(
@@ -48,7 +48,7 @@ impl LetExpr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let annotation_ty = self
             .bind
@@ -71,7 +71,7 @@ impl LetExpr {
         } else {
             Type::Never()
         };
-        Ok(Diagnosed::new(body_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(body_ty, diags)))
     }
 
     pub(crate) fn eval(

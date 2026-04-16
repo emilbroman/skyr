@@ -19,7 +19,7 @@ impl PropertyAccessExpr {
         &self,
         checker: &crate::checker::TypeChecker<'_>,
         env: &crate::checker::TypeEnv<'_>,
-    ) -> Result<crate::Diagnosed<crate::Type>, crate::checker::TypeCheckError> {
+    ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         use crate::GlobalKey;
         use crate::{DiagList, Diagnosed, RecordType, Type, TypeKind};
 
@@ -44,7 +44,7 @@ impl PropertyAccessExpr {
                     cursor.set_type(ty.clone());
                     cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
                 }
-                return Ok(Diagnosed::new(ty, DiagList::new()));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(ty, DiagList::new())));
             }
         }
 
@@ -55,7 +55,7 @@ impl PropertyAccessExpr {
             .unfold();
         let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
         if matches!(lhs_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never(), diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
         }
 
         if self.optional {
@@ -93,7 +93,10 @@ impl PropertyAccessExpr {
                         cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
                     }
                     // Wrap in Optional since LHS could be nil
-                    return Ok(Diagnosed::new(Type::Optional(Box::new(member_ty)), diags));
+                    return Ok(crate::TypeSynth::new(Diagnosed::new(
+                        Type::Optional(Box::new(member_ty)),
+                        diags,
+                    )));
                 }
 
                 diags.push(crate::checker::UndefinedMember {
@@ -102,7 +105,7 @@ impl PropertyAccessExpr {
                     ty: inner_ty,
                     property: self.property.clone(),
                 });
-                return Ok(Diagnosed::new(Type::Never(), diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
             } else {
                 // Optional chaining on non-optional type
                 diags.push(crate::checker::OptionalChainOnNonOptional {
@@ -110,7 +113,7 @@ impl PropertyAccessExpr {
                     ty: lhs_ty.clone(),
                     span: self.property.span(),
                 });
-                return Ok(Diagnosed::new(Type::Never(), diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
             }
         }
 
@@ -129,7 +132,7 @@ impl PropertyAccessExpr {
             if let Some((cursor, _)) = &self.property.cursor {
                 cursor.set_type(member_var.clone());
             }
-            return Ok(Diagnosed::new(member_var, diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(member_var, diags)));
         }
 
         // Completion candidates for property access
@@ -182,7 +185,7 @@ impl PropertyAccessExpr {
                     (ref_module.clone(), self.property.span()),
                 );
             }
-            return Ok(Diagnosed::new(member_ty, diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(member_ty, diags)));
         }
 
         diags.push(crate::checker::UndefinedMember {
@@ -191,7 +194,7 @@ impl PropertyAccessExpr {
             ty: lhs_ty,
             property: self.property.clone(),
         });
-        Ok(Diagnosed::new(Type::Never(), diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
     }
 
     pub fn eval(

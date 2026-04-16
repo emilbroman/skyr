@@ -42,7 +42,7 @@ impl UnaryExpr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let operand_ty = checker
             .synth_expr(env, self.expr.as_ref())?
@@ -81,7 +81,7 @@ impl UnaryExpr {
             }
         };
 
-        Ok(Diagnosed::new(result_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(result_ty, diags)))
     }
 }
 

@@ -65,6 +65,74 @@ impl Hash for Prop {
     }
 }
 
+/// The result of type synthesis: a type, diagnostics, and emitted propositions.
+///
+/// Wraps `Diagnosed<Type>` with a `Vec<Prop>` for propositional type refinement.
+/// This keeps `Diagnosed` generic and unaware of propositions.
+pub struct TypeSynth {
+    pub diagnosed: crate::Diagnosed<Type>,
+    pub props: Vec<Prop>,
+}
+
+impl TypeSynth {
+    /// Create a new TypeSynth with no propositions.
+    pub fn new(diagnosed: crate::Diagnosed<Type>) -> Self {
+        Self {
+            diagnosed,
+            props: Vec::new(),
+        }
+    }
+
+    /// Create a new TypeSynth with propositions.
+    pub fn with_props(diagnosed: crate::Diagnosed<Type>, props: Vec<Prop>) -> Self {
+        Self { diagnosed, props }
+    }
+
+    /// Unpack the type and collect diagnostics, discarding propositions.
+    pub fn unpack(self, into: &mut crate::DiagList) -> Type {
+        self.diagnosed.unpack(into)
+    }
+
+    /// Unpack the type, diagnostics, and propositions.
+    pub fn unpack_with_props(self, into: &mut crate::DiagList) -> (Type, Vec<Prop>) {
+        let ty = self.diagnosed.unpack(into);
+        (ty, self.props)
+    }
+
+    /// Access diagnostics.
+    pub fn diags(&self) -> &crate::DiagList {
+        self.diagnosed.diags()
+    }
+
+    /// Access diagnostics mutably.
+    pub fn diags_mut(&mut self) -> &mut crate::DiagList {
+        self.diagnosed.diags_mut()
+    }
+
+    /// Unwrap the inner type, discarding diagnostics and propositions.
+    pub fn into_inner(self) -> Type {
+        self.diagnosed.into_inner()
+    }
+
+    /// Add propositions.
+    pub fn extend_props(&mut self, new_props: Vec<Prop>) {
+        self.props.extend(new_props);
+    }
+}
+
+impl std::ops::Deref for TypeSynth {
+    type Target = Type;
+    fn deref(&self) -> &Type {
+        &self.diagnosed
+    }
+}
+
+impl AsRef<Type> for TypeSynth {
+    fn as_ref(&self) -> &Type {
+        &self.diagnosed
+    }
+}
+
 /// The result of running the derivation engine: a set of proven propositions
 /// and a map of proven type refinements.
 #[derive(Clone, Debug, Default)]

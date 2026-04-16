@@ -18,7 +18,7 @@ impl ExceptionExpr {
         &self,
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let exception_ty = Type::Exception(self.exception_id);
         if let Some(ty_expr) = &self.ty {
@@ -28,9 +28,9 @@ impl ExceptionExpr {
                 params: vec![param_ty],
                 ret: Box::new(exception_ty),
             });
-            Ok(Diagnosed::new(fn_ty, diags))
+            Ok(crate::TypeSynth::new(Diagnosed::new(fn_ty, diags)))
         } else {
-            Ok(Diagnosed::new(exception_ty, diags))
+            Ok(crate::TypeSynth::new(Diagnosed::new(exception_ty, diags)))
         }
     }
 

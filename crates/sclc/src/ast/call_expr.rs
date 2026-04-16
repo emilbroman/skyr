@@ -35,7 +35,7 @@ impl CallExpr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let raw_callee_ty = checker
             .synth_expr(env, self.callee.as_ref())?
@@ -43,7 +43,7 @@ impl CallExpr {
             .unfold();
         let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
         if matches!(callee_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never(), diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
         }
 
         // Free variable callee constraint handling
@@ -59,7 +59,7 @@ impl CallExpr {
                 ty: callee_ty,
                 span: self.callee.span(),
             });
-            return Ok(Diagnosed::new(Type::Never(), diags));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
         };
 
         let mut fn_ty = checker.instantiate_call_type_args(env, expr, self, fn_ty, &mut diags)?;
@@ -158,7 +158,7 @@ impl CallExpr {
                         .unwrap_or(partial);
 
                 let ret = fn_ty.ret.substitute(&final_replacements);
-                return Ok(Diagnosed::new(ret, diags));
+                return Ok(crate::TypeSynth::new(Diagnosed::new(ret, diags)));
             }
         }
 
@@ -173,7 +173,7 @@ impl CallExpr {
         env: &TypeEnv<'_>,
         fn_ty: &FnType,
         mut diags: DiagList,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         if self.args.len() < fn_ty.params.len() {
             diags.push(MissingArguments {
                 module_id: env.module_id()?,
@@ -198,7 +198,10 @@ impl CallExpr {
                 .unpack(&mut diags);
         }
 
-        Ok(Diagnosed::new(*fn_ty.ret.clone(), diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(
+            *fn_ty.ret.clone(),
+            diags,
+        )))
     }
 
     /// Produce a permissive fallback FnType when inference fails entirely:
@@ -232,7 +235,7 @@ impl CallExpr {
         env: &TypeEnv<'_>,
         callee_var_id: usize,
         diags: &mut DiagList,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut arg_types = Vec::new();
         for arg in &self.args {
             let arg_ty = checker.synth_expr(env, arg)?.unpack(diags);
@@ -249,7 +252,10 @@ impl CallExpr {
             });
             fv.borrow_mut().constrain(callee_var_id, fn_constraint);
         }
-        Ok(Diagnosed::new(ret_var, DiagList::new()))
+        Ok(crate::TypeSynth::new(Diagnosed::new(
+            ret_var,
+            DiagList::new(),
+        )))
     }
 
     #[inline(never)]
@@ -259,11 +265,11 @@ impl CallExpr {
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let actual_ty = self.type_synth(checker, env, expr)?.unpack(&mut diags);
         checker.subsumption_check(env, expr.span(), actual_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(actual_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(actual_ty, diags)))
     }
 }
 

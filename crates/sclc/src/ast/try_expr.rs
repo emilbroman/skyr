@@ -27,7 +27,7 @@ impl TryExpr {
         &self,
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let try_ty = checker
             .synth_expr(env, self.expr.as_ref())?
@@ -36,7 +36,7 @@ impl TryExpr {
 
         self.check_catch_clauses(checker, env, &try_ty, &mut diags)?;
 
-        Ok(Diagnosed::new(try_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(try_ty, diags)))
     }
 
     pub(crate) fn type_check(
@@ -45,7 +45,7 @@ impl TryExpr {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let try_ty = checker
             .check_expr(env, self.expr.as_ref(), Some(expected))?
@@ -55,7 +55,7 @@ impl TryExpr {
         self.check_catch_clauses(checker, env, &try_ty, &mut diags)?;
 
         checker.subsumption_check(env, expr.span(), try_ty.clone(), expected, &mut diags)?;
-        Ok(Diagnosed::new(try_ty, diags))
+        Ok(crate::TypeSynth::new(Diagnosed::new(try_ty, diags)))
     }
 
     fn check_catch_clauses(

@@ -528,7 +528,7 @@ pub(crate) struct TypeEnvMaps<'a> {
     /// Each entry stores the type and an optional doc comment.
     type_level: HashMap<String, (Type, Option<String>)>,
     /// Proven propositions and derived refinements for the current scope.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in later phases of propositional refinement.
     pub(crate) proven: crate::ProvenSet,
 }
 
@@ -756,7 +756,7 @@ impl<'a> TypeEnv<'a> {
 
     /// Create a derived environment with additional propositions proven.
     /// Eagerly derives all consequences via forward-chaining.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // Used in later phases of propositional refinement.
     pub(crate) fn with_propositions(&self, props: &[crate::Prop]) -> Self {
         let mut env = self.inner();
         env.maps.proven = env.maps.proven.with_propositions(props);
@@ -1675,7 +1675,7 @@ impl<'p> TypeChecker<'p> {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
         expected_type: Option<&Type>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         match expected_type {
             None => self.synth_expr(env, expr),
             Some(expected) => self.check_expr_against(env, expr, expected),
@@ -1688,7 +1688,7 @@ impl<'p> TypeChecker<'p> {
         &self,
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         expr.as_ref().type_synth(self, env, expr)
     }
 
@@ -1700,7 +1700,7 @@ impl<'p> TypeChecker<'p> {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         expr.as_ref().type_check(self, env, expr, expected)
     }
 
@@ -1711,11 +1711,14 @@ impl<'p> TypeChecker<'p> {
         env: &TypeEnv<'_>,
         expr: &crate::Loc<ast::Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
-        let actual_ty = self.synth_expr(env, expr)?.unpack(&mut diags);
+        let (actual_ty, props) = self.synth_expr(env, expr)?.unpack_with_props(&mut diags);
         let ty = self.subsumption_check(env, expr.span(), actual_ty, expected, &mut diags)?;
-        Ok(Diagnosed::new(ty, diags))
+        Ok(crate::TypeSynth::with_props(
+            Diagnosed::new(ty, diags),
+            props,
+        ))
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1971,7 +1974,7 @@ impl<'p> TypeChecker<'p> {
         env: &TypeEnv<'_>,
         item: &ast::ListItem,
         expected_type: Option<&Type>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         match item {
             ast::ListItem::Expr(expr) => self.check_expr(env, expr, expected_type),
             ast::ListItem::If(if_item) => {
@@ -1981,7 +1984,7 @@ impl<'p> TypeChecker<'p> {
                 let item_ty = self
                     .check_list_item(env, if_item.then_item.as_ref(), expected_type)?
                     .unpack(&mut diags);
-                Ok(Diagnosed::new(item_ty, diags))
+                Ok(crate::TypeSynth::new(Diagnosed::new(item_ty, diags)))
             }
             ast::ListItem::For(for_item) => {
                 let mut diags = DiagList::new();
@@ -2008,7 +2011,7 @@ impl<'p> TypeChecker<'p> {
                 let item_ty = self
                     .check_list_item(&inner_env, for_item.emit_item.as_ref(), expected_type)?
                     .unpack(&mut diags);
-                Ok(Diagnosed::new(item_ty, diags))
+                Ok(crate::TypeSynth::new(Diagnosed::new(item_ty, diags)))
             }
         }
     }

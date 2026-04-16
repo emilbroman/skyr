@@ -9,7 +9,7 @@ pub(crate) fn synth_var(
     env: &TypeEnv<'_>,
     expr: &crate::Loc<super::Expr>,
     var: &crate::Loc<super::Var>,
-) -> Result<Diagnosed<Type>, TypeCheckError> {
+) -> Result<crate::TypeSynth, TypeCheckError> {
     // Completion candidates
     if let Some((cursor, offset)) = &var.cursor {
         let prefix = &var.name[..*offset];
@@ -33,7 +33,10 @@ pub(crate) fn synth_var(
     if let Some((_decl, local_ty)) = env.lookup_local(var.name.as_str()) {
         let local_ty = local_ty.clone();
         set_cursor(&local_ty);
-        return Ok(Diagnosed::new(local_ty, DiagList::new()));
+        return Ok(crate::TypeSynth::new(Diagnosed::new(
+            local_ty,
+            DiagList::new(),
+        )));
     }
 
     // Global type env: resolve via accumulated global types.
@@ -45,7 +48,7 @@ pub(crate) fn synth_var(
             cursor.set_type(ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
         }
-        return Ok(Diagnosed::new(ty, DiagList::new()));
+        return Ok(crate::TypeSynth::new(Diagnosed::new(ty, DiagList::new())));
     }
 
     // Legacy global variable (on-demand type checking, used by REPL/IDE)
@@ -56,7 +59,10 @@ pub(crate) fn synth_var(
     // Legacy import (on-demand module checking, used by REPL/IDE)
     if let Some((target_module_id, maybe_import_file_mod)) = env.lookup_import(var.name.as_str()) {
         let Some(import_file_mod) = maybe_import_file_mod else {
-            return Ok(Diagnosed::new(Type::Never(), DiagList::new()));
+            return Ok(crate::TypeSynth::new(Diagnosed::new(
+                Type::Never(),
+                DiagList::new(),
+            )));
         };
         let cache_key = import_file_mod as *const super::FileMod;
         let imported_ty = if let Some(cached_ty) = checker.import_cache.borrow().get(&cache_key) {
@@ -74,7 +80,10 @@ pub(crate) fn synth_var(
         if let Some((cursor, _)) = &var.cursor {
             cursor.set_type(imported_ty.clone());
         }
-        return Ok(Diagnosed::new(imported_ty, DiagList::new()));
+        return Ok(crate::TypeSynth::new(Diagnosed::new(
+            imported_ty,
+            DiagList::new(),
+        )));
     }
 
     // Undefined
@@ -84,7 +93,7 @@ pub(crate) fn synth_var(
         name: var.name.clone(),
         var: var.clone(),
     });
-    Ok(Diagnosed::new(Type::Never(), diags))
+    Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
 }
 
 pub(crate) fn synth_global(
@@ -95,7 +104,7 @@ pub(crate) fn synth_global(
     decl: crate::Span,
     global_expr: &crate::Loc<super::Expr>,
     doc_comment: Option<&str>,
-) -> Result<Diagnosed<Type>, TypeCheckError> {
+) -> Result<crate::TypeSynth, TypeCheckError> {
     let set_cursor = |ty: &Type| {
         if let Some((cursor, _)) = &var.cursor {
             cursor.set_type(ty.clone());
@@ -133,5 +142,5 @@ pub(crate) fn synth_global(
     let type_id = next_type_id();
     let ty = Type::IsoRec(type_id, Box::new(resolved_ty));
     set_cursor(&ty);
-    Ok(Diagnosed::new(ty, diags))
+    Ok(crate::TypeSynth::new(Diagnosed::new(ty, diags)))
 }

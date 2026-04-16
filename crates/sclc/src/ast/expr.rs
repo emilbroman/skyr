@@ -174,21 +174,36 @@ impl Expr {
         checker: &TypeChecker<'_>,
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         match self {
-            Expr::Int(_) => Ok(Diagnosed::new(Type::Int(), DiagList::new())),
-            Expr::Float(_) => Ok(Diagnosed::new(Type::Float(), DiagList::new())),
-            Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool(), DiagList::new())),
-            Expr::Nil => Ok(Diagnosed::new(
+            Expr::Int(_) => Ok(crate::TypeSynth::new(Diagnosed::new(
+                Type::Int(),
+                DiagList::new(),
+            ))),
+            Expr::Float(_) => Ok(crate::TypeSynth::new(Diagnosed::new(
+                Type::Float(),
+                DiagList::new(),
+            ))),
+            Expr::Bool(_) => Ok(crate::TypeSynth::new(Diagnosed::new(
+                Type::Bool(),
+                DiagList::new(),
+            ))),
+            Expr::Nil => Ok(crate::TypeSynth::new(Diagnosed::new(
                 Type::Optional(Box::new(Type::Never())),
                 DiagList::new(),
-            )),
-            Expr::Str(_) => Ok(Diagnosed::new(Type::Str(), DiagList::new())),
+            ))),
+            Expr::Str(_) => Ok(crate::TypeSynth::new(Diagnosed::new(
+                Type::Str(),
+                DiagList::new(),
+            ))),
             Expr::Path(path_expr) => {
                 // Path validation is handled by the Loader; the TypeChecker
                 // no longer carries a children cache for validation.
                 checker.add_path_completions(env, path_expr);
-                Ok(Diagnosed::new(Type::Path(), DiagList::new()))
+                Ok(crate::TypeSynth::new(Diagnosed::new(
+                    Type::Path(),
+                    DiagList::new(),
+                )))
             }
             Expr::Extern(extern_expr) => extern_expr.type_synth(checker, env),
             Expr::If(if_expr) => if_expr.type_synth(checker, env, expr),
@@ -218,11 +233,11 @@ impl Expr {
         env: &TypeEnv<'_>,
         expr: &Loc<Expr>,
         expected: &Type,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         match self {
-            Expr::Nil if matches!(expected.kind, TypeKind::Optional(_)) => {
-                Ok(Diagnosed::new(expected.clone(), DiagList::new()))
-            }
+            Expr::Nil if matches!(expected.kind, TypeKind::Optional(_)) => Ok(
+                crate::TypeSynth::new(Diagnosed::new(expected.clone(), DiagList::new())),
+            ),
             Expr::Fn(fn_expr) => fn_expr.type_check(checker, env, expr, expected),
             Expr::Record(record_expr) => record_expr.type_check(checker, env, expr, expected),
             Expr::List(list_expr) => list_expr.type_check(checker, env, expr, expected),
