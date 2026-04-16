@@ -1,6 +1,6 @@
 use lsp_types as lsp;
 
-use crate::server::{OutgoingMessage, RequestId};
+use crate::server::{OutgoingMessage, RequestId, to_json_value};
 
 pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessage> {
     let _params: lsp::InitializeParams = match serde_json::from_value(params) {
@@ -51,10 +51,7 @@ pub fn initialize(id: RequestId, params: serde_json::Value) -> Vec<OutgoingMessa
         }),
     };
 
-    let value = serde_json::to_value(result).unwrap_or_else(|err| {
-        eprintln!("lsp: failed to serialize initialize result: {err}");
-        serde_json::Value::Null
-    });
+    let value = to_json_value(&result);
     vec![OutgoingMessage::response(id, value)]
 }
 

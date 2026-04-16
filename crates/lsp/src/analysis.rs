@@ -91,37 +91,13 @@ impl sclc::Package for OverlayPackage {
         // For directories, merge open documents from the editor.
         let result = self.inner.lookup(path).await?;
         if let Some(Cow::Owned(sclc::PackageEntity::Dir { hash, mut children })) = result {
-            // Merge entries from open documents in the editor
             let prefix = self.root.join(path);
-            let prefix_str = prefix.to_string_lossy().to_string();
             let existing_names: HashSet<String> = children.iter().map(|c| c.name.clone()).collect();
-            let null_hash_child = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
-
-            for doc_path in self.documents.paths() {
-                let doc_str = doc_path.to_string_lossy().to_string();
-                let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
-                    doc_str.strip_prefix(&prefix_str).map(|s| s.to_string())
-                } else {
-                    doc_str
-                        .strip_prefix(&prefix_str)
-                        .and_then(|r| r.strip_prefix('/'))
-                        .map(|s| s.to_string())
-                };
-                if let Some(relative) = relative {
-                    let (name, kind) = if let Some(slash_pos) = relative.find('/') {
-                        (relative[..slash_pos].to_owned(), sclc::DirChildKind::Dir)
-                    } else {
-                        (relative, sclc::DirChildKind::File)
-                    };
-                    if !existing_names.contains(&name) {
-                        children.push(sclc::DirChild {
-                            name,
-                            kind,
-                            hash: null_hash_child,
-                        });
-                    }
-                }
-            }
+            children.extend(dir_children_from_documents(
+                &self.documents,
+                &prefix,
+                &existing_names,
+            ));
 
             return Ok(Some(Cow::Owned(sclc::PackageEntity::Dir {
                 hash,
@@ -132,33 +108,8 @@ impl sclc::Package for OverlayPackage {
         // Check if an open document would make a missing directory appear
         if result.is_none() {
             let prefix = self.root.join(path);
-            let prefix_str = prefix.to_string_lossy().to_string();
             let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
-            let mut children = Vec::new();
-
-            for doc_path in self.documents.paths() {
-                let doc_str = doc_path.to_string_lossy().to_string();
-                let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
-                    doc_str.strip_prefix(&prefix_str).map(|s| s.to_string())
-                } else {
-                    doc_str
-                        .strip_prefix(&prefix_str)
-                        .and_then(|r| r.strip_prefix('/'))
-                        .map(|s| s.to_string())
-                };
-                if let Some(relative) = relative {
-                    let (name, kind) = if let Some(slash_pos) = relative.find('/') {
-                        (relative[..slash_pos].to_owned(), sclc::DirChildKind::Dir)
-                    } else {
-                        (relative, sclc::DirChildKind::File)
-                    };
-                    children.push(sclc::DirChild {
-                        name,
-                        kind,
-                        hash: null_hash,
-                    });
-                }
-            }
+            let children = dir_children_from_documents(&self.documents, &prefix, &HashSet::new());
 
             if !children.is_empty() {
                 return Ok(Some(Cow::Owned(sclc::PackageEntity::Dir {
@@ -277,13 +228,7 @@ pub async fn analyze_scle(
     package_id: &sclc::PackageId,
 ) -> Vec<lsp::Diagnostic> {
     let module_id = module_id_from_path(path, Some(root), package_id);
-    let entry: Vec<String> = module_id
-        .package
-        .as_slice()
-        .iter()
-        .cloned()
-        .chain(module_id.path.iter().cloned())
-        .collect();
+    let entry = module_id_to_raw_segments(&module_id);
     let entry_refs: Vec<&str> = entry.iter().map(String::as_str).collect();
 
     let mut diagnostics = Vec::new();
@@ -324,13 +269,7 @@ async fn build_workspace_asg(
     let mut load_errors: HashMap<PathBuf, sclc::LoadError> = HashMap::new();
     for path in &paths {
         let module_id = module_id_from_path(path, Some(root), package_id);
-        let segments: Vec<String> = module_id
-            .package
-            .as_slice()
-            .iter()
-            .cloned()
-            .chain(module_id.path.iter().cloned())
-            .collect();
+        let segments = module_id_to_raw_segments(&module_id);
         let refs: Vec<&str> = segments.iter().map(String::as_str).collect();
         if let Err(err) = loader.resolve(&refs).await {
             load_errors.insert(path.clone(), err);
@@ -386,44 +325,24 @@ pub async fn analyze_workspace(
     // don't get duplicated by the diag loop below.
     for (uri, items) in &file_diagnostics {
         for d in items {
-            let severity_str = match d.severity {
-                Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
-                Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
-                Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
-                Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
-                _ => "unknown",
-            };
             seen.entry(uri.clone()).or_default().insert((
                 d.range,
                 d.message.clone(),
-                severity_str.to_string(),
+                severity_label(d.severity).to_string(),
             ));
         }
     }
 
     for diag in diags.iter() {
         let (module_id, lsp_diag) = convert::to_lsp_diagnostic(diag);
-        let raw_id: sclc::RawModuleId = module_id
-            .package
-            .as_slice()
-            .iter()
-            .cloned()
-            .chain(module_id.path.iter().cloned())
-            .collect();
+        let raw_id: sclc::RawModuleId = module_id_to_raw_segments(&module_id);
         let ext = extensions.get(&raw_id).copied().unwrap_or("scl");
         let path = module_id_to_path(root, &module_id, ext);
         let uri = path_to_uri_string(&path);
-        let severity_str = match lsp_diag.severity {
-            Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
-            Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
-            Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
-            Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
-            _ => "unknown",
-        };
         let key = (
             lsp_diag.range,
             lsp_diag.message.clone(),
-            severity_str.to_string(),
+            severity_label(lsp_diag.severity).to_string(),
         );
         if seen.entry(uri.clone()).or_default().insert(key) {
             file_diagnostics.entry(uri).or_default().push(lsp_diag);
@@ -547,6 +466,70 @@ fn symbol_kind_for_expr(expr: &sclc::Loc<sclc::Expr>) -> lsp::SymbolKind {
         sclc::Expr::Record(_) => lsp::SymbolKind::STRUCT,
         _ => lsp::SymbolKind::VARIABLE,
     }
+}
+
+/// Flatten a `ModuleId` into the raw segment list used by the loader
+/// (package segments followed by module path segments).
+fn module_id_to_raw_segments(module_id: &sclc::ModuleId) -> Vec<String> {
+    module_id
+        .package
+        .as_slice()
+        .iter()
+        .cloned()
+        .chain(module_id.path.iter().cloned())
+        .collect()
+}
+
+/// Convert an LSP diagnostic severity to a short string label for
+/// deduplication keys.
+fn severity_label(severity: Option<lsp::DiagnosticSeverity>) -> &'static str {
+    match severity {
+        Some(s) if s == lsp::DiagnosticSeverity::ERROR => "error",
+        Some(s) if s == lsp::DiagnosticSeverity::WARNING => "warning",
+        Some(s) if s == lsp::DiagnosticSeverity::INFORMATION => "info",
+        Some(s) if s == lsp::DiagnosticSeverity::HINT => "hint",
+        _ => "unknown",
+    }
+}
+
+/// Collect directory children from open editor documents whose paths fall
+/// under `prefix`. Used by `OverlayPackage::lookup` to merge or synthesize
+/// directory listings from unsaved buffers.
+fn dir_children_from_documents(
+    documents: &DocumentCache,
+    prefix: &Path,
+    exclude: &HashSet<String>,
+) -> Vec<sclc::DirChild> {
+    let prefix_str = prefix.to_string_lossy().to_string();
+    let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+    let mut children = Vec::new();
+
+    for doc_path in documents.paths() {
+        let doc_str = doc_path.to_string_lossy().to_string();
+        let relative = if prefix_str.ends_with('/') || prefix_str.is_empty() {
+            doc_str.strip_prefix(&prefix_str).map(|s| s.to_string())
+        } else {
+            doc_str
+                .strip_prefix(&prefix_str)
+                .and_then(|r| r.strip_prefix('/'))
+                .map(|s| s.to_string())
+        };
+        if let Some(relative) = relative {
+            let (name, kind) = if let Some(slash_pos) = relative.find('/') {
+                (relative[..slash_pos].to_owned(), sclc::DirChildKind::Dir)
+            } else {
+                (relative, sclc::DirChildKind::File)
+            };
+            if !exclude.contains(&name) {
+                children.push(sclc::DirChild {
+                    name,
+                    kind,
+                    hash: null_hash,
+                });
+            }
+        }
+    }
+    children
 }
 
 fn module_id_to_path(root: &Path, module_id: &sclc::ModuleId, ext: &str) -> PathBuf {

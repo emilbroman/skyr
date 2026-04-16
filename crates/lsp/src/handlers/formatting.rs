@@ -2,7 +2,7 @@ use lsp_types as lsp;
 
 use crate::analysis::is_scle_path;
 use crate::document::DocumentCache;
-use crate::server::{OutgoingMessage, RequestId};
+use crate::server::{OutgoingMessage, RequestId, to_json_value};
 
 pub fn formatting(
     id: RequestId,
@@ -39,10 +39,7 @@ pub fn formatting(
 
     // If the formatted output is the same, return an empty edit list
     if formatted == ctx.source {
-        let empty_edits = serde_json::to_value(Vec::<lsp::TextEdit>::new()).unwrap_or_else(|err| {
-            eprintln!("lsp: failed to serialize empty edits: {err}");
-            serde_json::Value::Null
-        });
+        let empty_edits = to_json_value(&Vec::<lsp::TextEdit>::new());
         return vec![OutgoingMessage::response(id, empty_edits)];
     }
 
@@ -69,10 +66,7 @@ pub fn formatting(
         new_text: formatted,
     };
 
-    let result = serde_json::to_value(vec![edit]).unwrap_or_else(|err| {
-        eprintln!("lsp: failed to serialize formatting edits: {err}");
-        serde_json::Value::Null
-    });
+    let result = to_json_value(&vec![edit]);
     vec![OutgoingMessage::response(id, result)]
 }
 
