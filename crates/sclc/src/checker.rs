@@ -34,349 +34,308 @@ pub fn next_type_id() -> usize {
 // Diagnostic error types
 // ═══════════════════════════════════════════════════════════════════════════════
 
-#[derive(Error, Debug)]
-#[error("undefined variable: {name}")]
-pub struct UndefinedVariable {
-    pub module_id: crate::ModuleId,
-    pub name: String,
-    pub var: crate::Loc<ast::Var>,
+/// Declares a diagnostic struct with `module_id` and additional fields.
+///
+/// The default span field is `span`; override the locate expression with
+/// `span_of(field.method())`. Override the diagnostic level with `level = Warning`.
+macro_rules! define_diag {
+    // With custom span expression + custom level
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $( pub $field:ident : $ty:ty ),* $(,)?
+        }
+        span_of($span_field:ident . $span_method:ident ()),
+        level = $level:ident $(,)?
+    ) => {
+        define_diag!(@struct $(#[$meta])* $vis $name { $( $field : $ty ),* });
+        impl crate::Diag for $name {
+            fn locate(&self) -> (crate::ModuleId, crate::Span) {
+                (self.module_id.clone(), self.$span_field.$span_method())
+            }
+            fn level(&self) -> crate::DiagLevel { crate::DiagLevel::$level }
+        }
+    };
+    // With custom span expression only
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $( pub $field:ident : $ty:ty ),* $(,)?
+        }
+        span_of($span_field:ident . $span_method:ident ()) $(,)?
+    ) => {
+        define_diag!(@struct $(#[$meta])* $vis $name { $( $field : $ty ),* });
+        impl crate::Diag for $name {
+            fn locate(&self) -> (crate::ModuleId, crate::Span) {
+                (self.module_id.clone(), self.$span_field.$span_method())
+            }
+        }
+    };
+    // With custom level only (default span = self.span)
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $( pub $field:ident : $ty:ty ),* $(,)?
+        }
+        level = $level:ident $(,)?
+    ) => {
+        define_diag!(@struct $(#[$meta])* $vis $name { $( $field : $ty ),* });
+        impl crate::Diag for $name {
+            fn locate(&self) -> (crate::ModuleId, crate::Span) {
+                (self.module_id.clone(), self.span)
+            }
+            fn level(&self) -> crate::DiagLevel { crate::DiagLevel::$level }
+        }
+    };
+    // Default: span = self.span, level = Error
+    (
+        $(#[$meta:meta])*
+        $vis:vis struct $name:ident {
+            $( pub $field:ident : $ty:ty ),* $(,)?
+        }
+    ) => {
+        define_diag!(@struct $(#[$meta])* $vis $name { $( $field : $ty ),* });
+        impl crate::Diag for $name {
+            fn locate(&self) -> (crate::ModuleId, crate::Span) {
+                (self.module_id.clone(), self.span)
+            }
+        }
+    };
+    // Internal: generate the struct definition
+    (@struct
+        $(#[$meta:meta])*
+        $vis:vis $name:ident { $( $field:ident : $ty:ty ),* }
+    ) => {
+        $(#[$meta])*
+        $vis struct $name {
+            pub module_id: crate::ModuleId,
+            $( pub $field : $ty ),*
+        }
+    };
 }
 
-impl crate::Diag for UndefinedVariable {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.var.span())
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("undefined variable: {name}")]
+    pub struct UndefinedVariable {
+        pub name: String,
+        pub var: crate::Loc<ast::Var>,
+    }
+    span_of(var.span())
+}
+
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("undefined member: {name} in type {ty}")]
+    pub struct UndefinedMember {
+        pub name: String,
+        pub ty: Type,
+        pub property: crate::Loc<ast::Var>,
+    }
+    span_of(property.span())
+}
+
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("indexed access requires a Dict or List type, got {ty}")]
+    pub struct InvalidIndexTarget {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("undefined member: {name} in type {ty}")]
-pub struct UndefinedMember {
-    pub module_id: crate::ModuleId,
-    pub name: String,
-    pub ty: Type,
-    pub property: crate::Loc<ast::Var>,
-}
-
-impl crate::Diag for UndefinedMember {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.property.span())
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("not a function: {ty}")]
+    pub struct NotAFunction {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("indexed access requires a Dict or List type, got {ty}")]
-pub struct InvalidIndexTarget {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for InvalidIndexTarget {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("missing arguments: expected {expected}, got {got}")]
+    pub struct MissingArguments {
+        pub expected: usize,
+        pub got: usize,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("not a function: {ty}")]
-pub struct NotAFunction {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for NotAFunction {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("extraneous argument at index {index}")]
+    pub struct ExtraneousArgument {
+        pub index: usize,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("missing arguments: expected {expected}, got {got}")]
-pub struct MissingArguments {
-    pub module_id: crate::ModuleId,
-    pub expected: usize,
-    pub got: usize,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for MissingArguments {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("type mismatch: expected {expected}, got {actual}")]
+    pub struct TypeMismatch {
+        pub expected: Type,
+        pub actual: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("extraneous argument at index {index}")]
-pub struct ExtraneousArgument {
-    pub module_id: crate::ModuleId,
-    pub index: usize,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for ExtraneousArgument {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("invalid operands for {op}: {lhs} and {rhs}")]
+    pub struct InvalidBinaryOperands {
+        pub op: ast::BinaryOp,
+        pub lhs: Type,
+        pub rhs: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("type mismatch: expected {expected}, got {actual}")]
-pub struct TypeMismatch {
-    pub module_id: crate::ModuleId,
-    pub expected: Type,
-    pub actual: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for TypeMismatch {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("optional chaining (?.) on non-optional type {ty}")]
+    pub struct OptionalChainOnNonOptional {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("invalid operands for {op}: {lhs} and {rhs}")]
-pub struct InvalidBinaryOperands {
-    pub module_id: crate::ModuleId,
-    pub op: ast::BinaryOp,
-    pub lhs: Type,
-    pub rhs: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for InvalidBinaryOperands {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("nil coalescing (??) on non-optional type {ty}")]
+    pub struct NilCoalesceOnNonOptional {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("optional chaining (?.) on non-optional type {ty}")]
-pub struct OptionalChainOnNonOptional {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for OptionalChainOnNonOptional {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("invalid operand for {op}: {operand}")]
+    pub struct InvalidUnaryOperand {
+        pub op: ast::UnaryOp,
+        pub operand: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("nil coalescing (??) on non-optional type {ty}")]
-pub struct NilCoalesceOnNonOptional {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for NilCoalesceOnNonOptional {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("path not found: {resolved_path}")]
+    pub struct InvalidPath {
+        pub resolved_path: String,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("invalid operand for {op}: {operand}")]
-pub struct InvalidUnaryOperand {
-    pub module_id: crate::ModuleId,
-    pub op: ast::UnaryOp,
-    pub operand: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for InvalidUnaryOperand {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("type annotation required for parameter")]
+    pub struct MissingParameterType {
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("path not found: {resolved_path}")]
-pub struct InvalidPath {
-    pub module_id: crate::ModuleId,
-    pub resolved_path: String,
-    pub span: crate::Span,
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("comparison between disjoint types: {lhs} and {rhs}")]
+    pub struct DisjointEquality {
+        pub lhs: Type,
+        pub rhs: Type,
+        pub span: crate::Span,
+    }
+    level = Warning
 }
 
-impl crate::Diag for InvalidPath {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("invalid type: {error}")]
+    pub struct InvalidType {
+        pub error: TypeError,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("type annotation required for parameter")]
-pub struct MissingParameterType {
-    pub module_id: crate::ModuleId,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for MissingParameterType {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("raise requires an exception, got {ty}")]
+    pub struct NotAnException {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("comparison between disjoint types: {lhs} and {rhs}")]
-pub struct DisjointEquality {
-    pub module_id: crate::ModuleId,
-    pub lhs: Type,
-    pub rhs: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for DisjointEquality {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
-    }
-
-    fn level(&self) -> crate::DiagLevel {
-        crate::DiagLevel::Warning
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("catch variable must be an exception or function returning an exception, got {ty}")]
+    pub struct InvalidCatchTarget {
+        pub ty: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("invalid type: {error}")]
-pub struct InvalidType {
-    pub module_id: crate::ModuleId,
-    pub error: TypeError,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for InvalidType {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("catch argument provided but exception is not a function type")]
+    pub struct UnexpectedCatchArg {
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("raise requires an exception, got {ty}")]
-pub struct NotAnException {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for NotAnException {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("wrong number of type arguments: expected {expected}, got {got}")]
+    pub struct WrongTypeArgCount {
+        pub expected: usize,
+        pub got: usize,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("catch variable must be an exception or function returning an exception, got {ty}")]
-pub struct InvalidCatchTarget {
-    pub module_id: crate::ModuleId,
-    pub ty: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for InvalidCatchTarget {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("type arguments provided to non-generic function")]
+    pub struct UnexpectedTypeArgs {
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("catch argument provided but exception is not a function type")]
-pub struct UnexpectedCatchArg {
-    pub module_id: crate::ModuleId,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for UnexpectedCatchArg {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("type argument {actual} does not satisfy bound {bound}")]
+    pub struct TypeArgBoundViolation {
+        pub actual: Type,
+        pub bound: Type,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("wrong number of type arguments: expected {expected}, got {got}")]
-pub struct WrongTypeArgCount {
-    pub module_id: crate::ModuleId,
-    pub expected: usize,
-    pub got: usize,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for WrongTypeArgCount {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("unknown type: {name}")]
+    pub struct UnknownType {
+        pub name: String,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("type arguments provided to non-generic function")]
-pub struct UnexpectedTypeArgs {
-    pub module_id: crate::ModuleId,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for UnexpectedTypeArgs {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("unknown field \"{name}\" in record literal")]
+    pub struct UnknownField {
+        pub name: String,
+        pub span: crate::Span,
     }
 }
 
-#[derive(Error, Debug)]
-#[error("type argument {actual} does not satisfy bound {bound}")]
-pub struct TypeArgBoundViolation {
-    pub module_id: crate::ModuleId,
-    pub actual: Type,
-    pub bound: Type,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for TypeArgBoundViolation {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
-    }
-}
-
-#[derive(Error, Debug)]
-#[error("unknown type: {name}")]
-pub struct UnknownType {
-    pub module_id: crate::ModuleId,
-    pub name: String,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for UnknownType {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
-    }
-}
-
-#[derive(Error, Debug)]
-#[error("unknown field \"{name}\" in record literal")]
-pub struct UnknownField {
-    pub module_id: crate::ModuleId,
-    pub name: String,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for UnknownField {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
-    }
-}
-
-#[derive(Error, Debug)]
-#[error("cyclic dependency between {names} — recursive bindings must be functions")]
-pub struct CyclicDependency {
-    pub module_id: crate::ModuleId,
-    pub names: String,
-    pub span: crate::Span,
-}
-
-impl crate::Diag for CyclicDependency {
-    fn locate(&self) -> (crate::ModuleId, crate::Span) {
-        (self.module_id.clone(), self.span)
+define_diag! {
+    #[derive(Error, Debug)]
+    #[error("cyclic dependency between {names} — recursive bindings must be functions")]
+    pub struct CyclicDependency {
+        pub names: String,
+        pub span: crate::Span,
     }
 }
 

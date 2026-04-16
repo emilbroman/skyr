@@ -82,6 +82,33 @@ pub fn bundled_stdlib_files() -> &'static [(&'static str, &'static [u8])] {
     &BUNDLED_FILES
 }
 
+/// Extracts the first argument from an extern function call, handling the
+/// common pattern of defaulting to Nil and short-circuiting on pending values.
+///
+/// Returns `Ok(Ok((config_record, dependencies)))` on success,
+/// `Ok(Err(pending_result))` if the argument has pending values, or
+/// `Err(...)` if the value is not a record.
+pub(crate) fn extract_config_arg(
+    args: Vec<crate::TrackedValue>,
+) -> Result<
+    Result<(crate::Record, std::collections::BTreeSet<ids::ResourceId>), crate::TrackedValue>,
+    crate::EvalError,
+> {
+    let mut args = args.into_iter();
+    let config_arg = args
+        .next()
+        .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+    let deps = config_arg.dependencies.clone();
+
+    if config_arg.value.has_pending() {
+        return Ok(Err(crate::TrackedValue::pending().with_dependencies(deps)));
+    }
+
+    use crate::ValueAssertions;
+    let config = config_arg.value.assert_record()?;
+    Ok(Ok((config, deps)))
+}
+
 std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",

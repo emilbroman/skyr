@@ -25,17 +25,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn(ED25519_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let argument_dependencies = config_arg.dependencies.clone();
-
-        if config_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
+        let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
         let name = config.get("name").assert_str_ref()?;
 
         let resource_id = ids::ResourceId {
@@ -62,17 +55,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn(ECDSA_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let argument_dependencies = config_arg.dependencies.clone();
-
-        if config_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
+        let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
         let name = config.get("name").assert_str_ref()?;
 
         let curve = match config.get("curve") {
@@ -104,17 +90,11 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
 
     eval.add_extern_fn(CSR_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let argument_dependencies = config_arg.dependencies.clone();
 
-        if config_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
+        let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
         let private_key_pem = config.get("privateKeyPem").assert_str_ref()?;
         let subject = config.get("subject").assert_record_ref()?;
 
@@ -186,17 +166,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn(RSA_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
 
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let argument_dependencies = config_arg.dependencies.clone();
-
-        if config_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
+        let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
         let name = config.get("name").assert_str_ref()?;
 
         let size = match config.get("size") {
@@ -228,17 +201,11 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
 
     eval.add_extern_fn(CERT_SIG_RESOURCE_TYPE, |args, eval_ctx| {
         use crate::ValueAssertions;
-        let mut args = args.into_iter();
-        let config_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-        let argument_dependencies = config_arg.dependencies.clone();
 
-        if config_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let config = config_arg.value.assert_record()?;
+        let (config, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
 
         let mut inputs = crate::Record::default();
         inputs.insert(

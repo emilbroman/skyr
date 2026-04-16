@@ -57,29 +57,12 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     });
 
     eval.add_extern_fn("Std/Time.add", |args, _ctx| {
-        let mut args = args.into_iter();
-        let instant_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-        let duration_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        let deps = instant_arg
-            .dependencies
-            .union(&duration_arg.dependencies)
-            .cloned()
-            .collect();
-
-        if instant_arg.value.has_pending() || duration_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
-        }
-
-        let instant = instant_arg.value.assert_record()?;
-        let duration = duration_arg.value.assert_record()?;
+        let (instant, duration, deps) = match extract_two_args(args)? {
+            Ok(triple) => triple,
+            Err(pending) => return Ok(pending),
+        };
         let epoch_millis = *instant.get("epochMillis").assert_int_ref()?;
         let dt = parse_instant(epoch_millis)?;
-
         let dt = apply_duration(dt, &duration, 1)?;
 
         let mut result = Record::default();
@@ -88,17 +71,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     });
 
     eval.add_extern_fn(SCHEDULE_RESOURCE_TYPE, |args, eval_ctx| {
-        let mut args = args.into_iter();
-        let duration_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-        let argument_dependencies = duration_arg.dependencies.clone();
-
-        if duration_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(argument_dependencies));
-        }
-
-        let duration = duration_arg.value.assert_record()?;
+        let (duration, argument_dependencies) = match super::extract_config_arg(args)? {
+            Ok(pair) => pair,
+            Err(pending) => return Ok(pending),
+        };
 
         let months = match duration.get("months") {
             Value::Nil => 0,
@@ -136,35 +112,51 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     });
 
     eval.add_extern_fn("Std/Time.subtract", |args, _ctx| {
-        let mut args = args.into_iter();
-        let instant_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-        let duration_arg = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        let deps = instant_arg
-            .dependencies
-            .union(&duration_arg.dependencies)
-            .cloned()
-            .collect();
-
-        if instant_arg.value.has_pending() || duration_arg.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
-        }
-
-        let instant = instant_arg.value.assert_record()?;
-        let duration = duration_arg.value.assert_record()?;
+        let (instant, duration, deps) = match extract_two_args(args)? {
+            Ok(triple) => triple,
+            Err(pending) => return Ok(pending),
+        };
         let epoch_millis = *instant.get("epochMillis").assert_int_ref()?;
         let dt = parse_instant(epoch_millis)?;
-
         let dt = apply_duration(dt, &duration, -1)?;
 
         let mut result = Record::default();
         result.insert("epochMillis".into(), Value::Int(dt.timestamp_millis()));
         Ok(crate::TrackedValue::new(Value::Record(result)).with_dependencies(deps))
     });
+}
+
+type TwoArgResult = Result<
+    (Record, Record, std::collections::BTreeSet<ids::ResourceId>),
+    crate::TrackedValue,
+>;
+
+/// Extracts two record arguments and their merged dependencies, short-circuiting
+/// on pending values.
+fn extract_two_args(
+    args: Vec<crate::TrackedValue>,
+) -> Result<TwoArgResult, crate::EvalError> {
+    let mut args = args.into_iter();
+    let first = args
+        .next()
+        .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+    let second = args
+        .next()
+        .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
+
+    let deps = first
+        .dependencies
+        .union(&second.dependencies)
+        .cloned()
+        .collect();
+
+    if first.value.has_pending() || second.value.has_pending() {
+        return Ok(Err(crate::TrackedValue::pending().with_dependencies(deps)));
+    }
+
+    let first_record = first.value.assert_record()?;
+    let second_record = second.value.assert_record()?;
+    Ok(Ok((first_record, second_record, deps)))
 }
 
 fn parse_instant(epoch_millis: i64) -> Result<DateTime<chrono::Utc>, crate::EvalError> {
