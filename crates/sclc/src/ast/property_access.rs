@@ -49,13 +49,16 @@ impl PropertyAccessExpr {
         }
 
         let mut diags = DiagList::new();
-        let raw_lhs_ty = checker
+        let (raw_lhs_ty, mut props) = checker
             .synth_expr(env, self.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
+            .unpack_with_props(&mut diags);
+        let raw_lhs_ty = raw_lhs_ty.unfold();
         let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
         if matches!(lhs_ty.kind, TypeKind::Never) {
-            return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
+            return Ok(crate::TypeSynth::with_props(
+                Diagnosed::new(Type::Never(), diags),
+                props,
+            ));
         }
 
         if self.optional {
@@ -92,11 +95,42 @@ impl PropertyAccessExpr {
                         cursor.set_type(member_ty.clone());
                         cursor.set_identifier(crate::CursorIdentifier::Let(prop_name.into()));
                     }
-                    // Wrap in Optional since LHS could be nil
-                    return Ok(crate::TypeSynth::new(Diagnosed::new(
-                        Type::Optional(Box::new(member_ty)),
-                        diags,
-                    )));
+
+                    // Determine the inner type for the fresh Optional wrapper.
+                    // If the field is itself optional, flatten: reuse the field's
+                    // inner TypeId. Otherwise, the inner type IS the field type.
+                    let (result_inner, field_is_optional) =
+                        if let TypeKind::Optional(field_inner) = &member_ty.kind {
+                            (field_inner.as_ref().clone(), true)
+                        } else {
+                            (member_ty.clone(), false)
+                        };
+
+                    // Create fresh Optional wrapper reusing inner TypeId.
+                    let result_ty = Type::Optional(Box::new(result_inner.clone()));
+                    let result_id = result_ty.id();
+                    let source_id = lhs_ty.id();
+
+                    // Source unwrap: if result refines, source is non-nil.
+                    let refines_result = crate::Prop::RefinesTo(result_id, result_inner.clone());
+                    props.push(
+                        refines_result
+                            .clone()
+                            .implies(crate::Prop::RefinesTo(source_id, inner_ty.clone())),
+                    );
+
+                    // Field unwrap: if result refines and field is optional, field is also non-nil.
+                    if field_is_optional {
+                        let field_id = member_ty.id();
+                        props.push(
+                            refines_result.implies(crate::Prop::RefinesTo(field_id, result_inner)),
+                        );
+                    }
+
+                    return Ok(crate::TypeSynth::with_props(
+                        Diagnosed::new(result_ty, diags),
+                        props,
+                    ));
                 }
 
                 diags.push(crate::checker::UndefinedMember {
@@ -105,7 +139,10 @@ impl PropertyAccessExpr {
                     ty: inner_ty,
                     property: self.property.clone(),
                 });
-                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
+                return Ok(crate::TypeSynth::with_props(
+                    Diagnosed::new(Type::Never(), diags),
+                    props,
+                ));
             } else {
                 // Optional chaining on non-optional type
                 diags.push(crate::checker::OptionalChainOnNonOptional {
@@ -113,7 +150,10 @@ impl PropertyAccessExpr {
                     ty: lhs_ty.clone(),
                     span: self.property.span(),
                 });
-                return Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)));
+                return Ok(crate::TypeSynth::with_props(
+                    Diagnosed::new(Type::Never(), diags),
+                    props,
+                ));
             }
         }
 

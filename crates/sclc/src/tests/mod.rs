@@ -539,6 +539,11 @@ test_case!(NilCoalesceReExportedOptional);
 // Recursive type declarations
 test_case!(RecursiveTypeDecl);
 
+// Propositional type refinement
+test_case!(NilRefinementBasic);
+test_case!(NilRefinementEqNil);
+test_case!(NilRefinementNot);
+
 mod effect_owner;
 mod scle;
 

@@ -32,6 +32,7 @@ impl UnaryExpr {
 
 // ─── Type checking ───────────────────────────────────────────────────────────
 
+use crate::Prop;
 use crate::checker::{InvalidUnaryOperand, TypeCheckError, TypeChecker, TypeEnv};
 use crate::{DiagList, Diagnosed, Type, TypeKind};
 
@@ -44,10 +45,10 @@ impl UnaryExpr {
         expr: &Loc<Expr>,
     ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
-        let operand_ty = checker
+        let (operand_ty, mut props) = checker
             .synth_expr(env, self.expr.as_ref())?
-            .unpack(&mut diags)
-            .unfold();
+            .unpack_with_props(&mut diags);
+        let operand_ty = operand_ty.unfold();
 
         let result_ty = if matches!(operand_ty.kind, TypeKind::Never) {
             Type::Never()
@@ -67,7 +68,21 @@ impl UnaryExpr {
                     }
                 },
                 UnaryOp::Not => match &operand_ty.kind {
-                    TypeKind::Bool => Type::Bool(),
+                    TypeKind::Bool => {
+                        let result = Type::Bool();
+                        let operand_id = operand_ty.id();
+                        let result_id = result.id();
+                        // Biconditional: !x is true ↔ x is not true.
+                        props.push(
+                            Prop::IsTrue(result_id).implies(Prop::IsTrue(operand_id).negated()),
+                        );
+                        props.push(
+                            Prop::IsTrue(result_id)
+                                .negated()
+                                .implies(Prop::IsTrue(operand_id)),
+                        );
+                        result
+                    }
                     _ => {
                         diags.push(InvalidUnaryOperand {
                             module_id: env.module_id()?,
@@ -81,7 +96,10 @@ impl UnaryExpr {
             }
         };
 
-        Ok(crate::TypeSynth::new(Diagnosed::new(result_ty, diags)))
+        Ok(crate::TypeSynth::with_props(
+            Diagnosed::new(result_ty, diags),
+            props,
+        ))
     }
 }
 
