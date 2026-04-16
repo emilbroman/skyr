@@ -121,6 +121,109 @@ The `test_case!` macro generates a `#[tokio::test]` function per fixture. The ha
 3. If there are no errors, evaluates `Main.scl` and checks exported values against `exports.txt`.
 4. Collects emitted effects and checks them against `effects.log`.
 
+## Propositional Type Refinement
+
+The type checker implements flow-sensitive type narrowing via propositional logic. Expressions produce propositions about their operands, and control flow constructs (currently `if`) introduce assumptions that trigger refinements through forward-chaining derivation.
+
+### Core Concepts
+
+**TypeId.** Every `Type` carries a `TypeId` (`usize`) that tracks the *origin of a value*, not the binding name. IDs are freshly minted at construction sites (literals, operator results, type annotations). Variable references and assignments propagate the TypeId from their source — they do not mint new IDs. This means aliased bindings (`let y = x`) share a TypeId, so refining one refines both.
+
+TypeId is distinct from `TypeKind::Var(usize)` — the latter participates in unification and assignability, while TypeId is purely for propositional reasoning. Fresh-by-default biases toward correctness: a missed refinement opportunity is better than an incorrect one.
+
+**Propositions.** The `Prop` enum encodes logical facts:
+
+```rust
+enum Prop {
+    IsTrue(TypeId),
+    RefinesTo(TypeId, Type),
+    Not(Box<Prop>),
+    Implies(Box<Prop>, Box<Prop>),
+}
+```
+
+`RefinesTo(id, ty)` means "the type with the given ID can be replaced with `ty`". This decouples the proposition system from any specific type pattern — the operator that emits the proposition computes the refined type, and the derivation engine performs the substitution.
+
+`Prop` implements `Eq + Hash` for use as a `HashMap` key. `RefinesTo` equality compares `(TypeId, Type::id)` pairs — it does not use structural type equality.
+
+### Proposition Flow
+
+Expression synthesis returns propositions alongside the type. The default behavior is to **forward all propositions** from sub-expressions upward. Callers decide whether and how to add them to child environments.
+
+**Let bindings.** `let x = a; b` adds propositions from `a` to the child environment used to check `b`, so propositions accumulate naturally through sequential bindings.
+
+**Type annotations.** An explicit annotation creates a fresh TypeId, forming a type boundary. Propositions from the initializer still flow to the enclosing scope but refer to the expression's own TypeIds, not the annotated binding's.
+
+### Derivation Engine
+
+When propositions are applied to a child `TypeEnv`, all consequences are derived eagerly via forward-chaining (modus ponens). Implications are indexed by their antecedent in a `HashMap<Prop, Vec<Prop>>`. When a new atomic proposition is proven:
+
+1. Look up its consequents in the index.
+2. Add each consequent to the proven set.
+3. Recursively prove further consequences triggered by newly proven propositions.
+
+The fully derived set — including a `RefinesTo` map — is stored in the `TypeEnv`.
+
+### Refinement at Variable Resolution
+
+Refinement is applied **at variable resolution time**, not when entering a scope. When a variable is looked up, the proven `RefinesTo` map is consulted and applied **recursively**: the substitution walks the type tree, replacing any type whose TypeId matches a proven refinement, then continues into the replacement (since it may contain further refinable TypeIds). This fixed-point application ensures nested refinements compose correctly.
+
+This avoids the cost of walking all locals when entering a scope, handles intermediate TypeIds (like `?.` result wrappers) that never appear in a local's type directly, and ensures the LSP cursor tracking sees fully refined types.
+
+### Storage and Lifetime Model
+
+Propositions are stack-scoped. `TypeEnv` borrows propositions rather than owning them, fitting the existing `'a` lifetime pattern. Expression synthesis returns owned propositions on the caller's stack; child `TypeEnv`s borrow references to them. Derived propositions are owned by a derivation result struct on the stack, also borrowed by `TypeEnv`.
+
+### Operators
+
+**If-expression** — the primary consumer of propositions:
+
+1. Check the condition, collecting its propositions.
+2. Create child envs with those propositions applied plus:
+   - `IsTrue(condition_type_id)` for the consequent branch.
+   - `Not(IsTrue(condition_type_id))` for the else branch.
+3. Propositions returned from both branches are wrapped in implications (branch assumption → branch proposition), preserving the logical relationship.
+
+**`!` (NOT)** — emits a biconditional on `IsTrue`:
+- `Implies(IsTrue(result), Not(IsTrue(operand)))`
+- `Implies(Not(IsTrue(result)), IsTrue(operand))`
+
+**`&&` (AND)** — emits conjunction implications:
+- `Implies(IsTrue(result), IsTrue(lhs))` and `Implies(IsTrue(result), IsTrue(rhs))`
+- RHS is checked in a child env where `IsTrue(lhs_id)` is assumed (matching short-circuit semantics). RHS propositions are wrapped in `Implies(IsTrue(lhs_id), ...)`.
+
+**`||` (OR)** — emits disjunction implications:
+- `Implies(Not(IsTrue(result)), Not(IsTrue(lhs)))` and `Implies(Not(IsTrue(result)), Not(IsTrue(rhs)))`
+- RHS is checked in a child env where `Not(IsTrue(lhs_id))` is assumed. RHS propositions are wrapped in `Implies(Not(IsTrue(lhs_id)), ...)`.
+
+**`!= nil` / `== nil`** — emit `RefinesTo` propositions with the unwrapped inner type:
+- `x != nil` where `x : Optional(inner)`: `Implies(IsTrue(result), RefinesTo(optional_id, inner))`
+- `x == nil`: `Implies(Not(IsTrue(result)), RefinesTo(optional_id, inner))`
+
+**`?.` (optional chaining)** — creates a fresh `Optional` wrapper, reusing the inner type's TypeId. Emits:
+- Source unwrap: `Implies(RefinesTo(result, inner), RefinesTo(source, unwrapped_source))`
+- Field unwrap (only when the field is itself optional): `Implies(RefinesTo(result, inner), RefinesTo(field_type, field_inner))`
+
+**`??` (nil coalesce)** — no propositions emitted. The result type propagates the inner TypeId from the optional.
+
+### Example
+
+```scl
+let z: { x: Int }? = ...    // { x: Int }(1), Int(2), { x: Int }?(3)
+let q = z?.x                 // Int?(4) wrapping Int(2)
+                              // Implies(RefinesTo(4, Int(2)), RefinesTo(3, { x: Int }(1)))
+let a = q != nil             // Bool(5)
+                              // Implies(IsTrue(5), RefinesTo(4, Int(2)))
+if (a)
+  // Derivation: IsTrue(5) → RefinesTo(4, Int(2)) → RefinesTo(3, { x: Int }(1))
+  // z is refined from { x: Int }? to { x: Int }
+  z.x                        // : Int
+```
+
+### Scope
+
+Emitters: `== nil`, `!= nil`, `!`, `&&`, `||`, `?.`. Consumer: `if`. Propositions do not cross function boundaries.
+
 ## Related Crates
 
 - [DE](../de/) — compiles deployment configs using SCLC
