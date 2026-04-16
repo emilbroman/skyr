@@ -38,7 +38,7 @@ impl russh::client::Handler for SshHandler {
 }
 
 pub async fn run_port_forward(args: PortForwardArgs) -> anyhow::Result<()> {
-    let user_config = read_user_config().await?;
+    let user_config = auth::read_user_config().await?;
     let key_path = auth::expand_tilde(&user_config.key)?;
     let private_key_pem = tokio::fs::read_to_string(&key_path)
         .await
@@ -171,25 +171,3 @@ async fn proxy_connection(
     Ok(())
 }
 
-/// User config stored at ~/.config/skyr/user.json
-#[derive(serde::Deserialize)]
-struct UserConfig {
-    username: String,
-    key: String,
-}
-
-async fn read_user_config() -> anyhow::Result<UserConfig> {
-    let home = std::env::var("HOME").context("HOME is not set")?;
-    let path = std::path::PathBuf::from(home)
-        .join(".config")
-        .join("skyr")
-        .join("user.json");
-    let contents = tokio::fs::read_to_string(&path).await.with_context(|| {
-        format!(
-            "failed to read user config at {} (have you run `skyr signin`?)",
-            path.display()
-        )
-    })?;
-    serde_json::from_str::<UserConfig>(&contents)
-        .with_context(|| format!("failed to parse {}", path.display()))
-}

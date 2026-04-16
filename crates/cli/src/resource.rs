@@ -122,21 +122,8 @@ async fn list_resources(
     let (_, repository_name) = repo::parse_repository_path(repository)?;
 
     let body = ListRepositoryResources::build_query(list_repository_resources::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send resources query")?;
-    let response: graphql_client::Response<list_repository_resources::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode resources response")?;
-    let data = auth::graphql_response_data(response, "resource list")?;
+    let data: list_repository_resources::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "resource list").await?;
     let repo = data
         .repositories
         .into_iter()
@@ -242,21 +229,8 @@ async fn print_resource_last_logs(
     let body = ResourceLastLogs::build_query(resource_last_logs::Variables {
         amount: Some(amount),
     });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send resource logs query")?;
-    let response: graphql_client::Response<resource_last_logs::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode resource logs response")?;
-    let data = auth::graphql_response_data(response, "resource logs")?;
+    let data: resource_last_logs::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "resource logs").await?;
 
     let mut results: Vec<ResourceLogOutput> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();

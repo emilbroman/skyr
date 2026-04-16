@@ -199,21 +199,8 @@ async fn print_deployment_last_logs(
     let body = DeploymentLastLogs::build_query(deployment_last_logs::Variables {
         amount: Some(amount),
     });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send deployment logs query")?;
-    let response: graphql_client::Response<deployment_last_logs::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode deployment logs response")?;
-    let data = auth::graphql_response_data(response, "deployment logs")?;
+    let data: deployment_last_logs::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "deployment logs").await?;
     let repo = data
         .repositories
         .into_iter()
@@ -368,21 +355,8 @@ async fn query_repository_environments(
     Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesEnvironments>,
 > {
     let body = ListRepositoryDeployments::build_query(list_repository_deployments::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send deployments query")?;
-    let response: graphql_client::Response<list_repository_deployments::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode deployments response")?;
-    let data = auth::graphql_response_data(response, "deployment list")?;
+    let data: list_repository_deployments::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "deployment list").await?;
     let repository = data
         .repositories
         .into_iter()

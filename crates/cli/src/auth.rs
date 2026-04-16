@@ -1,5 +1,6 @@
 use anyhow::{Context, anyhow};
 use graphql_client::GraphQLQuery;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -68,17 +69,8 @@ pub(crate) async fn signin_with_key(
         proof: serde_json::Value::String(proof),
     });
 
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send signin mutation")?;
-    let response: graphql_client::Response<signin::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode signin response")?;
-    let data = graphql_response_data(response, "signin")?;
+    let data: signin::ResponseData =
+        send_graphql_unauthed(client, endpoint, body, "signin").await?;
     Ok(data.signin.token)
 }
 
@@ -118,18 +110,8 @@ async fn query_auth_challenge(
         username: username.to_owned(),
     });
 
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .context("failed to fetch auth challenge")?;
-
-    let response: graphql_client::Response<auth_challenge::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode auth challenge response")?;
-    let data = graphql_response_data(response, "auth challenge")?;
+    let data: auth_challenge::ResponseData =
+        send_graphql_unauthed(client, endpoint, body, "auth challenge").await?;
     Ok(data.auth_challenge.challenge)
 }
 
@@ -218,6 +200,51 @@ pub(crate) fn graphql_response_data<T>(
     response
         .data
         .ok_or_else(|| anyhow!("{operation} response did not include data"))
+}
+
+/// Send an authenticated GraphQL request and return the response data.
+pub(crate) async fn send_graphql<V: Serialize, R: DeserializeOwned>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    body: graphql_client::QueryBody<V>,
+    operation: &str,
+) -> anyhow::Result<R> {
+    let response = client
+        .post(endpoint)
+        .header(
+            reqwest::header::AUTHORIZATION,
+            bearer_header_value(token)?,
+        )
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("failed to send {operation}"))?;
+    let response: graphql_client::Response<R> = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode {operation} response"))?;
+    graphql_response_data(response, operation)
+}
+
+/// Send an unauthenticated GraphQL request and return the response data.
+pub(crate) async fn send_graphql_unauthed<V: Serialize, R: DeserializeOwned>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    body: graphql_client::QueryBody<V>,
+    operation: &str,
+) -> anyhow::Result<R> {
+    let response = client
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("failed to send {operation}"))?;
+    let response: graphql_client::Response<R> = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode {operation} response"))?;
+    graphql_response_data(response, operation)
 }
 
 /// Construct an `Authorization: Bearer {token}` header value, validating the

@@ -1,4 +1,4 @@
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
@@ -62,21 +62,8 @@ async fn create_repository(
         organization: organization.to_owned(),
         repository: repository.to_owned(),
     });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send create repository mutation")?;
-    let response: graphql_client::Response<create_repository::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode create repository response")?;
-    let data = auth::graphql_response_data(response, "repository create")?;
+    let data: create_repository::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "repository create").await?;
 
     #[derive(Serialize)]
     struct CreateRepositoryOutput {
@@ -102,21 +89,8 @@ async fn list_repositories(
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let body = ListRepositories::build_query(list_repositories::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send repositories query")?;
-    let response: graphql_client::Response<list_repositories::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode repositories response")?;
-    let data = auth::graphql_response_data(response, "repository list")?;
+    let data: list_repositories::ResponseData =
+        auth::send_graphql(client, endpoint, token, body, "repository list").await?;
 
     #[derive(Serialize)]
     struct RepositoryOutput {
