@@ -64,21 +64,27 @@ impl ListExpr {
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let list_ty = if let Some((first, rest)) = self.items.split_first() {
-            let first_ty = checker
+            let (first_ty, first_props) = checker
                 .check_list_item(env, first, None)?
-                .unpack(&mut diags)
-                .unfold();
+                .unpack_with_props(&mut diags);
+            let first_ty = first_ty.unfold();
+            props.extend(first_props);
             for item in rest {
-                checker
+                let (_, item_props) = checker
                     .check_list_item(env, item, Some(&first_ty))?
-                    .unpack(&mut diags);
+                    .unpack_with_props(&mut diags);
+                props.extend(item_props);
             }
             crate::Type::List(Box::new(first_ty))
         } else {
             crate::Type::List(Box::new(crate::Type::Never()))
         };
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(list_ty, diags)))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(list_ty, diags),
+            props,
+        ))
     }
 
     #[inline(never)]
@@ -103,16 +109,18 @@ impl ListExpr {
         expected_item_ty: &crate::Type,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let expected_item_ty = expected_item_ty.clone().unfold();
         for item in &self.items {
-            checker
+            let (_, item_props) = checker
                 .check_list_item(env, item, Some(&expected_item_ty))?
-                .unpack(&mut diags);
+                .unpack_with_props(&mut diags);
+            props.extend(item_props);
         }
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
-            crate::Type::List(Box::new(expected_item_ty)),
-            diags,
-        )))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(crate::Type::List(Box::new(expected_item_ty)), diags),
+            props,
+        ))
     }
 
     pub(crate) fn eval(

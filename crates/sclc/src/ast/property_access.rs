@@ -225,7 +225,10 @@ impl PropertyAccessExpr {
                     (ref_module.clone(), self.property.span()),
                 );
             }
-            return Ok(crate::TypeSynth::new(Diagnosed::new(member_ty, diags)));
+            return Ok(crate::TypeSynth::with_props(
+                Diagnosed::new(member_ty, diags),
+                props,
+            ));
         }
 
         diags.push(crate::checker::UndefinedMember {
@@ -234,7 +237,10 @@ impl PropertyAccessExpr {
             ty: lhs_ty,
             property: self.property.clone(),
         });
-        Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
+        Ok(crate::TypeSynth::with_props(
+            Diagnosed::new(Type::Never(), diags),
+            props,
+        ))
     }
 
     pub fn eval(

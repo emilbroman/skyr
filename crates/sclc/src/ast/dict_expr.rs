@@ -31,22 +31,27 @@ impl DictExpr {
         env: &crate::checker::TypeEnv<'_>,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let dict_ty = if let Some((first, rest)) = self.entries.split_first() {
-            let key_ty = checker
+            let (key_ty, key_props) = checker
                 .synth_expr(env, &first.key)?
-                .unpack(&mut diags)
-                .unfold();
-            let value_ty = checker
+                .unpack_with_props(&mut diags);
+            let key_ty = key_ty.unfold();
+            props.extend(key_props);
+            let (value_ty, value_props) = checker
                 .synth_expr(env, &first.value)?
-                .unpack(&mut diags)
-                .unfold();
+                .unpack_with_props(&mut diags);
+            let value_ty = value_ty.unfold();
+            props.extend(value_props);
             for entry in rest {
-                checker
+                let (_, entry_props) = checker
                     .check_expr(env, &entry.key, Some(&key_ty))?
-                    .unpack(&mut diags);
-                checker
+                    .unpack_with_props(&mut diags);
+                props.extend(entry_props);
+                let (_, entry_props) = checker
                     .check_expr(env, &entry.value, Some(&value_ty))?
-                    .unpack(&mut diags);
+                    .unpack_with_props(&mut diags);
+                props.extend(entry_props);
             }
             crate::Type::Dict(crate::DictType {
                 key: Box::new(key_ty),
@@ -58,7 +63,10 @@ impl DictExpr {
                 value: Box::new(crate::Type::Never()),
             })
         };
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(dict_ty, diags)))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(dict_ty, diags),
+            props,
+        ))
     }
 
     #[inline(never)]
@@ -83,23 +91,29 @@ impl DictExpr {
         expected_dict: &crate::DictType,
     ) -> Result<crate::TypeSynth, crate::checker::TypeCheckError> {
         let mut diags = crate::DiagList::new();
+        let mut props = Vec::new();
         let expected_key = expected_dict.key.as_ref().clone().unfold();
         let expected_value = expected_dict.value.as_ref().clone().unfold();
         for entry in &self.entries {
-            checker
+            let (_, entry_props) = checker
                 .check_expr(env, &entry.key, Some(&expected_key))?
-                .unpack(&mut diags);
-            checker
+                .unpack_with_props(&mut diags);
+            props.extend(entry_props);
+            let (_, entry_props) = checker
                 .check_expr(env, &entry.value, Some(&expected_value))?
-                .unpack(&mut diags);
+                .unpack_with_props(&mut diags);
+            props.extend(entry_props);
         }
-        Ok(crate::TypeSynth::new(crate::Diagnosed::new(
-            crate::Type::Dict(crate::DictType {
-                key: Box::new(expected_key),
-                value: Box::new(expected_value),
-            }),
-            diags,
-        )))
+        Ok(crate::TypeSynth::with_props(
+            crate::Diagnosed::new(
+                crate::Type::Dict(crate::DictType {
+                    key: Box::new(expected_key),
+                    value: Box::new(expected_value),
+                }),
+                diags,
+            ),
+            props,
+        ))
     }
 
     pub(crate) fn eval(
