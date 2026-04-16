@@ -1690,4 +1690,85 @@ mod tests {
             err.kind
         );
     }
+
+    #[test]
+    fn calling_non_function_raises_eval_error() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("f", TrackedValue::new(Value::Int(42)));
+        let expr = parse_expr("f()", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("calling non-function should trap");
+        assert!(
+            matches!(
+                err.kind,
+                super::EvalErrorKind::UnexpectedValue(Value::Int(42))
+            ),
+            "expected UnexpectedValue(Int(42)), got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn property_access_on_non_record_raises_eval_error() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("x", TrackedValue::new(Value::Int(42)));
+        let expr = parse_expr("x.foo", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("property access on non-record should trap");
+        assert!(
+            matches!(
+                err.kind,
+                super::EvalErrorKind::UnexpectedValue(Value::Int(42))
+            ),
+            "expected UnexpectedValue(Int(42)), got {:?}",
+            err.kind
+        );
+    }
+
+    #[test]
+    fn indexed_access_on_non_container_raises_eval_error() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let eval = Eval::from_externs(
+            HashMap::new(),
+            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+        );
+        let module_id = ModuleId::default();
+        let ge = GlobalEvalEnv::default();
+        let env = EvalEnv::new(&ge)
+            .with_module_id(&module_id)
+            .with_local("x", TrackedValue::new(Value::Int(42)));
+        let expr = parse_expr("x[0]", &module_id);
+
+        let err = eval
+            .eval_expr(&env, &expr)
+            .expect_err("indexed access on non-container should trap");
+        assert!(
+            matches!(
+                err.kind,
+                super::EvalErrorKind::UnexpectedValue(Value::Int(42))
+            ),
+            "expected UnexpectedValue(Int(42)), got {:?}",
+            err.kind
+        );
+    }
 }
