@@ -6,3 +6,4 @@ test-repo/
 *.tfstate
 *.tfstate.backup
 infra/cloud/provider.tf
+spec/*.pdf
