@@ -473,10 +473,10 @@ Calls to _extern_ functions defer to the host environment:
 
 The function $"host" : "Name" times overline("Value") arrow "Value"$
 is provided by the deployer; the reference evaluator defines a
-canonical host that interprets the standard library as described in
-Chapter 10 and dispatches all other externs to the plug-in runtime
-(RTP). An extern invocation may also introduce a _pending_ value,
-which propagates as described in Section 8.12.
+canonical host that dispatches pure externs directly and resource
+externs via the plug-in runtime (RTP), as described in Chapter 10.
+An extern invocation may also introduce a _pending_ value, which
+propagates as described in Section 8.12.
 
 == Property and indexed access
 

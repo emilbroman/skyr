@@ -123,7 +123,8 @@ concrete syntax to denotations:
 + #strong[Chapter 9] describes programs in the large: modules,
   packages, imports, and the strongly-connected-component-based
   resolution of mutually recursive globals.
-+ #strong[Chapter 10] gives a brief survey of the standard library and
-  its embedding as _external functions_ in the dynamic semantics.
++ #strong[Chapter 10] specifies the _extern function_ mechanism and
+  its run-time plug-in protocol, the single bridge between the
+  language and a host-provided environment.
 + Appendix A collects every judgment form defined in the body of the
   document in a single reference.

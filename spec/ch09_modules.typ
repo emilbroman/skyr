@@ -20,8 +20,8 @@ $"pkg" in "PackageId"$, an opaque token supplied by the loader.
 Examples of package identities include the special token #raw("Self")
 referring to the package containing the compilation unit, a Git remote
 reference such as `github.com/owner/repo@v1.2.3` bound to a
-reproducible commit SHA, and the built-in token #raw("Std") naming the
-standard library package.
+reproducible commit SHA, and the built-in token #raw("Std") naming
+the host-provided standard package (§ 9.9).
 
 A _module_ is a text file of SCL source. Its identity has two layers:
 its _raw module id_ $r in "RawModuleId"$ is a package-identity paired
@@ -236,8 +236,12 @@ each other across modules) is well-defined.
 
 == The `Std` package
 
-The standard library is made available as a built-in package named
-#raw("Std"). Its contents are described in Chapter 10. References to
-#raw("Std") do not appear in the package manifest; the loader
-unconditionally resolves the identifier #raw("Std") to the built-in
-package. Every other package identifier must appear in the manifest.
+The identifier #raw("Std") is reserved for a built-in package made
+available by the host environment. References to #raw("Std") do not
+appear in the package manifest; the loader unconditionally resolves
+the identifier #raw("Std") to whatever the host has registered under
+that name. The contents of #raw("Std") are not fixed by this
+specification — the package is a userland convention layered over
+the extern mechanism of Chapter 10 — and a host that registers no
+standard modules is still conformant. Every other package identifier
+must appear in the manifest.
