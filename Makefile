@@ -1,4 +1,4 @@
-.PHONY: image scoc-image web-image deps compose up down build-cli install-cli uninstall-cli cloud-config
+.PHONY: image scoc-image web-image deps compose up down build-cli install-cli uninstall-cli cloud-config spec spec-watch spec-clean
 
 image:
 	podman build -f dev/Containerfile.skyr -t skyr:latest -t localhost/skyr:latest .
@@ -33,3 +33,15 @@ uninstall-cli:
 
 cloud-config:
 	envsubst < infra/scoc-cloud-config.yaml
+
+# Compile the SCL formal specification to PDF. The PDF is a build artifact
+# and should not be committed. Run from within `nix develop` to ensure the
+# `typst` binary is on PATH.
+spec:
+	typst compile spec/main.typ spec/scl-spec.pdf
+
+spec-watch:
+	typst watch spec/main.typ spec/scl-spec.pdf
+
+spec-clean:
+	rm -f spec/scl-spec.pdf

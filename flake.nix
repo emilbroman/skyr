@@ -24,6 +24,7 @@
             nodejs_25
             wasm-pack
             wasm-bindgen-cli
+            typst
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
