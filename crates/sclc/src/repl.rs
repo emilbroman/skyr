@@ -226,7 +226,7 @@ impl Repl {
         let ty = new_global_type_env
             .get(&GlobalKey::ModuleValue(import_raw_id.clone()))
             .cloned()
-            .unwrap_or(Type::Never);
+            .unwrap_or(Type::Never());
 
         let type_exports =
             match new_global_type_env.get(&GlobalKey::ModuleTypeLevel(import_raw_id.clone())) {

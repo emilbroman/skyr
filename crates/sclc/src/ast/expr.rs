@@ -176,19 +176,19 @@ impl Expr {
         expr: &Loc<Expr>,
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         match self {
-            Expr::Int(_) => Ok(Diagnosed::new(Type::Int, DiagList::new())),
-            Expr::Float(_) => Ok(Diagnosed::new(Type::Float, DiagList::new())),
-            Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool, DiagList::new())),
+            Expr::Int(_) => Ok(Diagnosed::new(Type::Int(), DiagList::new())),
+            Expr::Float(_) => Ok(Diagnosed::new(Type::Float(), DiagList::new())),
+            Expr::Bool(_) => Ok(Diagnosed::new(Type::Bool(), DiagList::new())),
             Expr::Nil => Ok(Diagnosed::new(
-                Type::Optional(Box::new(Type::Never)),
+                Type::Optional(Box::new(Type::Never())),
                 DiagList::new(),
             )),
-            Expr::Str(_) => Ok(Diagnosed::new(Type::Str, DiagList::new())),
+            Expr::Str(_) => Ok(Diagnosed::new(Type::Str(), DiagList::new())),
             Expr::Path(path_expr) => {
                 // Path validation is handled by the Loader; the TypeChecker
                 // no longer carries a children cache for validation.
                 checker.add_path_completions(env, path_expr);
-                Ok(Diagnosed::new(Type::Path, DiagList::new()))
+                Ok(Diagnosed::new(Type::Path(), DiagList::new()))
             }
             Expr::Extern(extern_expr) => extern_expr.type_synth(checker, env),
             Expr::If(if_expr) => if_expr.type_synth(checker, env, expr),

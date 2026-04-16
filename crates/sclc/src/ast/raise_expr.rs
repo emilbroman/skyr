@@ -32,7 +32,7 @@ impl RaiseExpr {
                 span: self.expr.span(),
             });
         }
-        Ok(Diagnosed::new(Type::Never, diags))
+        Ok(Diagnosed::new(Type::Never(), diags))
     }
 
     pub(crate) fn eval(

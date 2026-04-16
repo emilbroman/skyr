@@ -22,7 +22,7 @@ impl IfExpr {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         checker
-            .check_expr(env, self.condition.as_ref(), Some(&Type::Bool))?
+            .check_expr(env, self.condition.as_ref(), Some(&Type::Bool()))?
             .unpack(&mut diags);
 
         let then_ty = checker
@@ -49,7 +49,7 @@ impl IfExpr {
     ) -> Result<Diagnosed<Type>, TypeCheckError> {
         let mut diags = DiagList::new();
         checker
-            .check_expr(env, self.condition.as_ref(), Some(&Type::Bool))?
+            .check_expr(env, self.condition.as_ref(), Some(&Type::Bool()))?
             .unpack(&mut diags);
 
         let then_ty = checker

@@ -55,7 +55,7 @@ impl PropertyAccessExpr {
             .unfold();
         let lhs_ty = env.resolve_var_bound(&raw_lhs_ty).unfold();
         if matches!(lhs_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
+            return Ok(Diagnosed::new(Type::Never(), diags));
         }
 
         if self.optional {
@@ -102,7 +102,7 @@ impl PropertyAccessExpr {
                     ty: inner_ty,
                     property: self.property.clone(),
                 });
-                return Ok(Diagnosed::new(Type::Never, diags));
+                return Ok(Diagnosed::new(Type::Never(), diags));
             } else {
                 // Optional chaining on non-optional type
                 diags.push(crate::checker::OptionalChainOnNonOptional {
@@ -110,7 +110,7 @@ impl PropertyAccessExpr {
                     ty: lhs_ty.clone(),
                     span: self.property.span(),
                 });
-                return Ok(Diagnosed::new(Type::Never, diags));
+                return Ok(Diagnosed::new(Type::Never(), diags));
             }
         }
 
@@ -191,7 +191,7 @@ impl PropertyAccessExpr {
             ty: lhs_ty,
             property: self.property.clone(),
         });
-        Ok(Diagnosed::new(Type::Never, diags))
+        Ok(Diagnosed::new(Type::Never(), diags))
     }
 
     pub fn eval(

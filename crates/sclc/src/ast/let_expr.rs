@@ -38,7 +38,7 @@ impl LetExpr {
                 .synth_expr(&inner_env, body.as_ref())?
                 .unpack(&mut diags)
         } else {
-            Type::Never
+            Type::Never()
         };
         Ok(Diagnosed::new(body_ty, diags))
     }
@@ -69,7 +69,7 @@ impl LetExpr {
                 .check_expr(&inner_env, body.as_ref(), Some(expected))?
                 .unpack(&mut diags)
         } else {
-            Type::Never
+            Type::Never()
         };
         Ok(Diagnosed::new(body_ty, diags))
     }

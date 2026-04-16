@@ -43,7 +43,7 @@ impl CallExpr {
             .unfold();
         let callee_ty = env.resolve_var_bound(&raw_callee_ty).unfold();
         if matches!(callee_ty.kind, TypeKind::Never) {
-            return Ok(Diagnosed::new(Type::Never, diags));
+            return Ok(Diagnosed::new(Type::Never(), diags));
         }
 
         // Free variable callee constraint handling
@@ -59,7 +59,7 @@ impl CallExpr {
                 ty: callee_ty,
                 span: self.callee.span(),
             });
-            return Ok(Diagnosed::new(Type::Never, diags));
+            return Ok(Diagnosed::new(Type::Never(), diags));
         };
 
         let mut fn_ty = checker.instantiate_call_type_args(env, expr, self, fn_ty, &mut diags)?;
@@ -207,12 +207,12 @@ impl CallExpr {
         let param_replacements: Vec<(usize, Type)> = fn_ty
             .type_params
             .iter()
-            .map(|(id, _)| (*id, Type::Any))
+            .map(|(id, _)| (*id, Type::Any()))
             .collect();
         let ret_replacements: Vec<(usize, Type)> = fn_ty
             .type_params
             .iter()
-            .map(|(id, _)| (*id, Type::Never))
+            .map(|(id, _)| (*id, Type::Never()))
             .collect();
         FnType {
             type_params: vec![],

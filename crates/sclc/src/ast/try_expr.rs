@@ -99,7 +99,7 @@ impl TryExpr {
                         });
                     }
                     if let Some(catch_arg) = &catch.catch_arg {
-                        let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never);
+                        let param_ty = fn_ty.params.first().cloned().unwrap_or(Type::Never());
                         let inner_env =
                             env.with_local(catch_arg.name.as_str(), catch_arg.span(), param_ty);
                         checker

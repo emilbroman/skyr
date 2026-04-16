@@ -26,7 +26,7 @@ use thiserror::Error;
 /// stable or reproducible across runs.
 static NEXT_TYPE_ID: AtomicUsize = AtomicUsize::new(0);
 
-pub(crate) fn next_type_id() -> usize {
+pub fn next_type_id() -> usize {
     NEXT_TYPE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
@@ -407,7 +407,7 @@ impl FreeVarConstraints {
 
     /// Register a new free variable with initial lower bound `Never`.
     pub(crate) fn register(&mut self, id: usize) {
-        self.lower_bounds.insert(id, Type::Never);
+        self.lower_bounds.insert(id, Type::Never());
     }
 
     /// Returns true if `id` is a tracked free variable.
@@ -463,11 +463,11 @@ impl FreeVarConstraints {
             .iter()
             .map(|(id, bound)| {
                 if primary_ids.contains(id) {
-                    (*id, Type::Never)
+                    (*id, Type::Never())
                 } else if let Some(solved) = solutions.get(id) {
                     (*id, solved.clone())
                 } else if matches!(bound.kind, TypeKind::Never) {
-                    (*id, Type::Never)
+                    (*id, Type::Never())
                 } else {
                     (*id, bound.clone())
                 }
@@ -1034,7 +1034,7 @@ impl<'p> TypeChecker<'p> {
                     let cache_key = let_bind.expr.as_ref() as *const crate::Loc<ast::Expr>;
                     self.global_cache
                         .borrow_mut()
-                        .insert(cache_key, Type::Never);
+                        .insert(cache_key, Type::Never());
                 } else {
                     self.check_global_let_bind(&env, let_bind)?
                         .unpack(&mut diags);
@@ -1065,7 +1065,7 @@ impl<'p> TypeChecker<'p> {
                         let cache_key = lb.expr.as_ref() as *const crate::Loc<ast::Expr>;
                         self.global_cache
                             .borrow_mut()
-                            .insert(cache_key, Type::Never);
+                            .insert(cache_key, Type::Never());
                     }
                 } else {
                     // All are functions: check mutually recursive group
@@ -1334,39 +1334,39 @@ impl<'p> TypeChecker<'p> {
         let ty = match type_expr.as_ref() {
             ast::TypeExpr::Var(var) if var.name == "Any" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Any);
+                    cursor.set_type(Type::Any());
                 }
-                Type::Any
+                Type::Any()
             }
             ast::TypeExpr::Var(var) if var.name == "Int" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Int);
+                    cursor.set_type(Type::Int());
                 }
-                Type::Int
+                Type::Int()
             }
             ast::TypeExpr::Var(var) if var.name == "Float" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Float);
+                    cursor.set_type(Type::Float());
                 }
-                Type::Float
+                Type::Float()
             }
             ast::TypeExpr::Var(var) if var.name == "Bool" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Bool);
+                    cursor.set_type(Type::Bool());
                 }
-                Type::Bool
+                Type::Bool()
             }
             ast::TypeExpr::Var(var) if var.name == "Str" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Str);
+                    cursor.set_type(Type::Str());
                 }
-                Type::Str
+                Type::Str()
             }
             ast::TypeExpr::Var(var) if var.name == "Path" => {
                 if let Some((cursor, _)) = &var.cursor {
-                    cursor.set_type(Type::Path);
+                    cursor.set_type(Type::Path());
                 }
-                Type::Path
+                Type::Path()
             }
             ast::TypeExpr::Var(var) => {
                 let (resolved, doc_comment) = if let Some(ty) =
@@ -1390,7 +1390,7 @@ impl<'p> TypeChecker<'p> {
                             span: type_expr.span(),
                         });
                     }
-                    (Type::Never, None)
+                    (Type::Never(), None)
                 };
                 if let Some((cursor, _)) = &var.cursor {
                     cursor.set_type(resolved.clone().strip_name());
@@ -1423,7 +1423,7 @@ impl<'p> TypeChecker<'p> {
                         self.resolve_type_expr(&fn_env, bound_expr)
                             .unpack(&mut diags)
                     } else {
-                        Type::Any
+                        Type::Any()
                     };
                     type_param_entries.push((type_id, upper_bound));
                 }
@@ -1492,7 +1492,7 @@ impl<'p> TypeChecker<'p> {
                                     span: type_expr.span(),
                                 });
                             }
-                            Type::Never
+                            Type::Never()
                         } else {
                             let resolved_args: Vec<Type> = app
                                 .args
@@ -1553,7 +1553,7 @@ impl<'p> TypeChecker<'p> {
                                 span: type_expr.span(),
                             });
                         }
-                        Type::Never
+                        Type::Never()
                     }
                 }
             }
@@ -1578,7 +1578,7 @@ impl<'p> TypeChecker<'p> {
                     }
                 }
                 if let TypeKind::Never = &lhs_ty.kind {
-                    Type::Never
+                    Type::Never()
                 } else if let TypeKind::Record(record_ty) = &lhs_ty.kind
                     && let Some(member_ty) = record_ty.get(prop_access.property.name.as_str())
                 {
@@ -1607,7 +1607,7 @@ impl<'p> TypeChecker<'p> {
                             property: prop_access.property.clone(),
                         });
                     }
-                    Type::Never
+                    Type::Never()
                 }
             }
         };
@@ -1632,7 +1632,7 @@ impl<'p> TypeChecker<'p> {
                 self.resolve_type_expr(&fn_env, bound_expr)
                     .unpack(&mut diags)
             } else {
-                Type::Any
+                Type::Any()
             };
             fn_env = fn_env.with_type_var_bound(type_id, upper_bound.clone());
             type_param_entries.push((type_id, upper_bound));
@@ -1735,12 +1735,12 @@ impl<'p> TypeChecker<'p> {
                 let param_replacements: Vec<(usize, Type)> = fn_ty
                     .type_params
                     .iter()
-                    .map(|(id, _)| (*id, Type::Any))
+                    .map(|(id, _)| (*id, Type::Any()))
                     .collect();
                 let ret_replacements: Vec<(usize, Type)> = fn_ty
                     .type_params
                     .iter()
-                    .map(|(id, _)| (*id, Type::Never))
+                    .map(|(id, _)| (*id, Type::Never()))
                     .collect();
                 Ok(FnType {
                     type_params: vec![],
@@ -1805,11 +1805,11 @@ impl<'p> TypeChecker<'p> {
         rhs: &TypeKind,
     ) -> Option<Type> {
         match (lhs, rhs) {
-            (TypeKind::Int, TypeKind::Int) => Some(Type::Int),
+            (TypeKind::Int, TypeKind::Int) => Some(Type::Int()),
             (TypeKind::Float, TypeKind::Float)
             | (TypeKind::Int, TypeKind::Float)
-            | (TypeKind::Float, TypeKind::Int) => Some(Type::Float),
-            (TypeKind::Str, TypeKind::Str) if matches!(op, ast::BinaryOp::Add) => Some(Type::Str),
+            | (TypeKind::Float, TypeKind::Int) => Some(Type::Float()),
+            (TypeKind::Str, TypeKind::Str) if matches!(op, ast::BinaryOp::Add) => Some(Type::Str()),
             _ => None,
         }
     }
@@ -1820,7 +1820,7 @@ impl<'p> TypeChecker<'p> {
             (TypeKind::Int, TypeKind::Int)
             | (TypeKind::Float, TypeKind::Float)
             | (TypeKind::Int, TypeKind::Float)
-            | (TypeKind::Float, TypeKind::Int) => Some(Type::Bool),
+            | (TypeKind::Float, TypeKind::Int) => Some(Type::Bool()),
             _ => None,
         }
     }
@@ -1828,7 +1828,7 @@ impl<'p> TypeChecker<'p> {
     /// Compute the result type for a logical binary operator (&&, ||).
     pub(crate) fn logical_result(lhs: &TypeKind, rhs: &TypeKind) -> Option<Type> {
         match (lhs, rhs) {
-            (TypeKind::Bool, TypeKind::Bool) => Some(Type::Bool),
+            (TypeKind::Bool, TypeKind::Bool) => Some(Type::Bool()),
             _ => None,
         }
     }
@@ -1963,7 +1963,7 @@ impl<'p> TypeChecker<'p> {
             ast::ListItem::Expr(expr) => self.check_expr(env, expr, expected_type),
             ast::ListItem::If(if_item) => {
                 let mut diags = DiagList::new();
-                self.check_expr(env, if_item.condition.as_ref(), Some(&Type::Bool))?
+                self.check_expr(env, if_item.condition.as_ref(), Some(&Type::Bool()))?
                     .unpack(&mut diags);
                 let item_ty = self
                     .check_list_item(env, if_item.then_item.as_ref(), expected_type)?
@@ -1982,12 +1982,12 @@ impl<'p> TypeChecker<'p> {
                         diags.push(InvalidType {
                             module_id: env.module_id()?,
                             error: TypeError::new(TypeIssue::Mismatch(
-                                Type::List(Box::new(Type::Any)),
+                                Type::List(Box::new(Type::Any())),
                                 iterable_ty,
                             )),
                             span: for_item.iterable.span(),
                         });
-                        Type::Never
+                        Type::Never()
                     }
                 };
                 let inner_env =
@@ -2235,27 +2235,27 @@ mod tests {
 
     #[test]
     fn assign_type_accepts_exact_match() {
-        assert!(Type::Int.is_assignable_from(&Type::Int).is_ok());
+        assert!(Type::Int().is_assignable_from(&Type::Int()).is_ok());
     }
 
     #[test]
     fn assign_type_accepts_non_optional_rhs_for_optional_lhs() {
-        let lhs = Type::Optional(Box::new(Type::Int));
-        let rhs = Type::Int;
+        let lhs = Type::Optional(Box::new(Type::Int()));
+        let rhs = Type::Int();
         assert!(lhs.is_assignable_from(&rhs).is_ok());
     }
 
     #[test]
     fn assign_type_rejects_optional_rhs_for_non_optional_lhs() {
-        let lhs = Type::Int;
-        let rhs = Type::Optional(Box::new(Type::Int));
+        let lhs = Type::Int();
+        let rhs = Type::Optional(Box::new(Type::Int()));
         assert!(lhs.is_assignable_from(&rhs).is_err());
     }
 
     #[test]
     fn assign_type_error_has_causal_chain() {
-        let lhs = Type::Optional(Box::new(Type::Str));
-        let rhs = Type::Int;
+        let lhs = Type::Optional(Box::new(Type::Str()));
+        let rhs = Type::Int();
         let error = lhs.is_assignable_from(&rhs).expect_err("expected mismatch");
         let text = error.to_string();
 
@@ -2267,14 +2267,14 @@ mod tests {
     #[test]
     fn assign_type_record_width_subtyping() {
         let mut lhs_record = RecordType::default();
-        lhs_record.insert("a".into(), Type::Int);
-        lhs_record.insert("c".into(), Type::Bool);
+        lhs_record.insert("a".into(), Type::Int());
+        lhs_record.insert("c".into(), Type::Bool());
         let lhs = Type::Record(lhs_record);
 
         let mut rhs_record = RecordType::default();
-        rhs_record.insert("a".into(), Type::Int);
-        rhs_record.insert("b".into(), Type::Str);
-        rhs_record.insert("c".into(), Type::Bool);
+        rhs_record.insert("a".into(), Type::Int());
+        rhs_record.insert("b".into(), Type::Str());
+        rhs_record.insert("c".into(), Type::Bool());
         let rhs = Type::Record(rhs_record);
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2283,11 +2283,11 @@ mod tests {
     #[test]
     fn assign_type_record_depth_subtyping() {
         let mut lhs_record = RecordType::default();
-        lhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
+        lhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int())));
         let lhs = Type::Record(lhs_record);
 
         let mut rhs_record = RecordType::default();
-        rhs_record.insert("a".into(), Type::Int);
+        rhs_record.insert("a".into(), Type::Int());
         let rhs = Type::Record(rhs_record);
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2296,12 +2296,12 @@ mod tests {
     #[test]
     fn assign_type_record_missing_field_rejected() {
         let mut lhs_record = RecordType::default();
-        lhs_record.insert("a".into(), Type::Int);
-        lhs_record.insert("b".into(), Type::Str);
+        lhs_record.insert("a".into(), Type::Int());
+        lhs_record.insert("b".into(), Type::Str());
         let lhs = Type::Record(lhs_record);
 
         let mut rhs_record = RecordType::default();
-        rhs_record.insert("a".into(), Type::Int);
+        rhs_record.insert("a".into(), Type::Int());
         let rhs = Type::Record(rhs_record);
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2310,12 +2310,12 @@ mod tests {
     #[test]
     fn assign_type_record_missing_optional_field_accepted() {
         let mut lhs_record = RecordType::default();
-        lhs_record.insert("a".into(), Type::Int);
-        lhs_record.insert("b".into(), Type::Optional(Box::new(Type::Str)));
+        lhs_record.insert("a".into(), Type::Int());
+        lhs_record.insert("b".into(), Type::Optional(Box::new(Type::Str())));
         let lhs = Type::Record(lhs_record);
 
         let mut rhs_record = RecordType::default();
-        rhs_record.insert("a".into(), Type::Int);
+        rhs_record.insert("a".into(), Type::Int());
         let rhs = Type::Record(rhs_record);
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2347,8 +2347,8 @@ mod tests {
         );
 
         let mut expected_record = RecordType::default();
-        expected_record.insert("a".into(), Type::Int);
-        expected_record.insert("b".into(), Type::Optional(Box::new(Type::Str)));
+        expected_record.insert("a".into(), Type::Int());
+        expected_record.insert("b".into(), Type::Optional(Box::new(Type::Str())));
         let expected_ty = Type::Record(expected_record);
 
         let diagnosed = checker
@@ -2364,11 +2364,11 @@ mod tests {
     #[test]
     fn assign_type_record_field_not_subtype_rejected() {
         let mut lhs_record = RecordType::default();
-        lhs_record.insert("a".into(), Type::Int);
+        lhs_record.insert("a".into(), Type::Int());
         let lhs = Type::Record(lhs_record);
 
         let mut rhs_record = RecordType::default();
-        rhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int)));
+        rhs_record.insert("a".into(), Type::Optional(Box::new(Type::Int())));
         let rhs = Type::Record(rhs_record);
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2401,7 +2401,7 @@ mod tests {
         );
 
         let mut expected_record = RecordType::default();
-        expected_record.insert("a".into(), Type::Str);
+        expected_record.insert("a".into(), Type::Str());
         let expected_ty = Type::Record(expected_record);
 
         let diagnosed = checker
@@ -2418,12 +2418,12 @@ mod tests {
     #[test]
     fn assign_type_dict_covariant() {
         let lhs = Type::Dict(DictType {
-            key: Box::new(Type::Optional(Box::new(Type::Str))),
-            value: Box::new(Type::Optional(Box::new(Type::Int))),
+            key: Box::new(Type::Optional(Box::new(Type::Str()))),
+            value: Box::new(Type::Optional(Box::new(Type::Int()))),
         });
         let rhs = Type::Dict(DictType {
-            key: Box::new(Type::Str),
-            value: Box::new(Type::Int),
+            key: Box::new(Type::Str()),
+            value: Box::new(Type::Int()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2459,8 +2459,8 @@ mod tests {
         assert_eq!(
             diagnosed.into_inner(),
             Type::Dict(DictType {
-                key: Box::new(Type::Int),
-                value: Box::new(Type::Str),
+                key: Box::new(Type::Int()),
+                value: Box::new(Type::Str()),
             })
         );
     }
@@ -2485,7 +2485,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &add_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Int);
+        assert_eq!(diagnosed.into_inner(), Type::Int());
     }
 
     #[test]
@@ -2508,7 +2508,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &add_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Str);
+        assert_eq!(diagnosed.into_inner(), Type::Str());
     }
 
     #[test]
@@ -2559,7 +2559,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &sub_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Int);
+        assert_eq!(diagnosed.into_inner(), Type::Int());
     }
 
     #[test]
@@ -2586,7 +2586,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &unary_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Float);
+        assert_eq!(diagnosed.into_inner(), Type::Float());
     }
 
     #[test]
@@ -2609,7 +2609,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &mul_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Int);
+        assert_eq!(diagnosed.into_inner(), Type::Int());
     }
 
     #[test]
@@ -2632,7 +2632,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &div_expr, None)
             .expect("type check should succeed");
-        assert_eq!(diagnosed.into_inner(), Type::Int);
+        assert_eq!(diagnosed.into_inner(), Type::Int());
     }
 
     #[test]
@@ -2655,7 +2655,7 @@ mod tests {
         let diagnosed = checker
             .check_expr(&env, &eq_expr, None)
             .expect("type check should succeed with diags");
-        assert_eq!(diagnosed.as_ref(), &Type::Bool);
+        assert_eq!(diagnosed.as_ref(), &Type::Bool());
 
         let mut diags = diagnosed.diags().iter();
         let diag = diags.next().expect("expected warning");
@@ -2712,8 +2712,8 @@ mod tests {
     fn assign_type_fn_exact_match() {
         let ty = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
 
         assert!(ty.is_assignable_from(&ty).is_ok());
@@ -2723,13 +2723,13 @@ mod tests {
     fn assign_type_fn_covariant_return() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Optional(Box::new(Type::Str))),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Optional(Box::new(Type::Str()))),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2739,13 +2739,13 @@ mod tests {
     fn assign_type_fn_rejects_return_type_mismatch() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Bool),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Bool()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2755,13 +2755,13 @@ mod tests {
     fn assign_type_fn_rejects_param_count_mismatch() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int, Type::Bool],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int(), Type::Bool()],
+            ret: Box::new(Type::Str()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2771,13 +2771,13 @@ mod tests {
     fn assign_type_fn_rejects_param_type_mismatch() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Bool],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Bool()],
+            ret: Box::new(Type::Str()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2787,11 +2787,11 @@ mod tests {
     fn assign_type_fn_rejects_non_fn_rhs() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
 
-        assert!(lhs.is_assignable_from(&Type::Int).is_err());
+        assert!(lhs.is_assignable_from(&Type::Int()).is_err());
     }
 
     #[test]
@@ -2799,14 +2799,14 @@ mod tests {
         let id_a = next_type_id();
 
         let lhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Any)],
+            type_params: vec![(id_a, Type::Any())],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2817,14 +2817,14 @@ mod tests {
         let id_a = next_type_id();
 
         let lhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Int)],
+            type_params: vec![(id_a, Type::Int())],
             params: vec![Type::Var(id_a)],
-            ret: Box::new(Type::Int),
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2836,11 +2836,11 @@ mod tests {
 
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Any)],
+            type_params: vec![(id_a, Type::Any())],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
@@ -2854,12 +2854,12 @@ mod tests {
         let id_b = next_type_id();
 
         let lhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Any)],
+            type_params: vec![(id_a, Type::Any())],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_b, Type::Any)],
+            type_params: vec![(id_b, Type::Any())],
             params: vec![Type::Var(id_b)],
             ret: Box::new(Type::Var(id_b)),
         });
@@ -2873,11 +2873,11 @@ mod tests {
 
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_t, Type::Optional(Box::new(Type::Int)))],
+            type_params: vec![(id_t, Type::Optional(Box::new(Type::Int())))],
             params: vec![Type::Var(id_t)],
             ret: Box::new(Type::Var(id_t)),
         });
@@ -2891,11 +2891,11 @@ mod tests {
 
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Optional(Box::new(Type::Int))],
-            ret: Box::new(Type::Optional(Box::new(Type::Int))),
+            params: vec![Type::Optional(Box::new(Type::Int()))],
+            ret: Box::new(Type::Optional(Box::new(Type::Int()))),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_t, Type::Int)],
+            type_params: vec![(id_t, Type::Int())],
             params: vec![Type::Var(id_t)],
             ret: Box::new(Type::Var(id_t)),
         });
@@ -2911,17 +2911,17 @@ mod tests {
             type_params: vec![],
             params: vec![Type::Fn(FnType {
                 type_params: vec![],
-                params: vec![Type::Int],
-                ret: Box::new(Type::Int),
+                params: vec![Type::Int()],
+                ret: Box::new(Type::Int()),
             })],
-            ret: Box::new(Type::Int),
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_t, Type::Int)],
+            type_params: vec![(id_t, Type::Int())],
             params: vec![Type::Fn(FnType {
                 type_params: vec![],
                 params: vec![Type::Var(id_t)],
-                ret: Box::new(Type::Int),
+                ret: Box::new(Type::Int()),
             })],
             ret: Box::new(Type::Var(id_t)),
         });
@@ -2933,13 +2933,13 @@ mod tests {
     fn assign_type_fn_contravariant_params() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Optional(Box::new(Type::Int))],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Optional(Box::new(Type::Int()))],
+            ret: Box::new(Type::Int()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_ok());
@@ -2949,13 +2949,13 @@ mod tests {
     fn assign_type_fn_contravariant_params_reject() {
         let lhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Optional(Box::new(Type::Int))],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Optional(Box::new(Type::Int()))],
+            ret: Box::new(Type::Int()),
         });
         let rhs = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
 
         assert!(lhs.is_assignable_from(&rhs).is_err());
@@ -2967,12 +2967,12 @@ mod tests {
         let id_b = next_type_id();
 
         let lhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Optional(Box::new(Type::Int)))],
+            type_params: vec![(id_a, Type::Optional(Box::new(Type::Int())))],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_b, Type::Int)],
+            type_params: vec![(id_b, Type::Int())],
             params: vec![Type::Var(id_b)],
             ret: Box::new(Type::Var(id_b)),
         });
@@ -2986,12 +2986,12 @@ mod tests {
         let id_b = next_type_id();
 
         let lhs = Type::Fn(FnType {
-            type_params: vec![(id_a, Type::Int)],
+            type_params: vec![(id_a, Type::Int())],
             params: vec![Type::Var(id_a)],
             ret: Box::new(Type::Var(id_a)),
         });
         let rhs = Type::Fn(FnType {
-            type_params: vec![(id_b, Type::Optional(Box::new(Type::Int)))],
+            type_params: vec![(id_b, Type::Optional(Box::new(Type::Int())))],
             params: vec![Type::Var(id_b)],
             ret: Box::new(Type::Var(id_b)),
         });
@@ -3003,10 +3003,10 @@ mod tests {
     fn assign_type_var_to_bound_via_upper_bound() {
         use std::collections::HashMap;
         let id = next_type_id();
-        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int())))]);
         assert!(
             crate::assign_type_with_bounds(
-                &Type::Optional(Box::new(Type::Int)),
+                &Type::Optional(Box::new(Type::Int())),
                 &Type::Var(id),
                 &bounds
             )
@@ -3018,8 +3018,8 @@ mod tests {
     fn assign_type_var_to_stricter_than_bound_fails() {
         use std::collections::HashMap;
         let id = next_type_id();
-        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int)))]);
-        assert!(crate::assign_type_with_bounds(&Type::Int, &Type::Var(id), &bounds).is_err());
+        let bounds = HashMap::from([(id, Type::Optional(Box::new(Type::Int())))]);
+        assert!(crate::assign_type_with_bounds(&Type::Int(), &Type::Var(id), &bounds).is_err());
     }
 
     #[test]
@@ -3027,7 +3027,7 @@ mod tests {
         use std::collections::HashMap;
         let id = next_type_id();
         let mut record = RecordType::default();
-        record.insert("x".to_string(), Type::Int);
+        record.insert("x".to_string(), Type::Int());
         let bounds = HashMap::from([(id, Type::Record(record.clone()))]);
         assert!(
             crate::assign_type_with_bounds(&Type::Record(record), &Type::Var(id), &bounds).is_ok()
@@ -3040,8 +3040,8 @@ mod tests {
         let id = next_type_id();
         let fn_ty = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Int),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Int()),
         });
         let bounds = HashMap::from([(id, fn_ty.clone())]);
         assert!(crate::assign_type_with_bounds(&fn_ty, &Type::Var(id), &bounds).is_ok());
@@ -3086,8 +3086,8 @@ mod tests {
             diagnosed.diags()
         );
         let fn_ty = get_export_fn(&diagnosed, "p");
-        assert_eq!(fn_ty.params[0], Type::Int);
-        assert_eq!(*fn_ty.ret, Type::Int);
+        assert_eq!(fn_ty.params[0], Type::Int());
+        assert_eq!(*fn_ty.ret, Type::Int());
     }
 
     #[test]
@@ -3104,9 +3104,9 @@ mod tests {
         let TypeKind::Record(param_rec) = &fn_ty.params[0].kind else {
             panic!("expected record param type, got: {}", fn_ty.params[0]);
         };
-        assert_eq!(param_rec.get("fst"), Some(&Type::Int));
-        assert_eq!(param_rec.get("snd"), Some(&Type::Str));
-        assert_eq!(*fn_ty.ret, Type::Int);
+        assert_eq!(param_rec.get("fst"), Some(&Type::Int()));
+        assert_eq!(param_rec.get("snd"), Some(&Type::Str()));
+        assert_eq!(*fn_ty.ret, Type::Int());
     }
 
     #[test]
@@ -3118,7 +3118,7 @@ mod tests {
             diagnosed.diags()
         );
         let fn_ty = get_export_fn(&diagnosed, "f");
-        assert_eq!(fn_ty.params[0], Type::Int);
+        assert_eq!(fn_ty.params[0], Type::Int());
     }
 
     #[test]
@@ -3158,8 +3158,8 @@ mod tests {
         let TypeKind::Record(config_rec) = &config_ty.kind else {
             panic!("expected record type");
         };
-        assert_eq!(config_rec.get("host"), Some(&Type::Str));
-        assert_eq!(config_rec.get("port"), Some(&Type::Int));
+        assert_eq!(config_rec.get("host"), Some(&Type::Str()));
+        assert_eq!(config_rec.get("port"), Some(&Type::Int()));
     }
 
     #[test]
@@ -3220,7 +3220,7 @@ mod tests {
         };
         let x_ty = exports.get("x").expect("expected 'x' export");
         let unfolded = x_ty.unfold();
-        assert_eq!(unfolded, Type::Int);
+        assert_eq!(unfolded, Type::Int());
     }
 
     #[test]
@@ -3236,7 +3236,7 @@ mod tests {
         constraints.constrain(primary_id, Type::Record(record));
 
         let mut body_record = RecordType::default();
-        body_record.insert("value".into(), Type::Int);
+        body_record.insert("value".into(), Type::Int());
         body_record.insert("child".into(), Type::Var(primary_id));
         let body_type = Type::Record(body_record);
 
@@ -3245,7 +3245,7 @@ mod tests {
         let member_solution = solved.iter().find(|(id, _)| *id == member_id);
         assert_eq!(
             member_solution.map(|(_, ty)| ty),
-            Some(&Type::Int),
+            Some(&Type::Int()),
             "member_id should resolve to Int via unification"
         );
     }
@@ -3262,15 +3262,15 @@ mod tests {
             primary_id,
             Type::Fn(FnType {
                 type_params: vec![],
-                params: vec![Type::Int],
+                params: vec![Type::Int()],
                 ret: Box::new(Type::Var(ret_id)),
             }),
         );
 
         let body_type = Type::Fn(FnType {
             type_params: vec![],
-            params: vec![Type::Int],
-            ret: Box::new(Type::Str),
+            params: vec![Type::Int()],
+            ret: Box::new(Type::Str()),
         });
 
         let solved = constraints.solve(primary_id, &body_type);
@@ -3278,7 +3278,7 @@ mod tests {
         let ret_solution = solved.iter().find(|(id, _)| *id == ret_id);
         assert_eq!(
             ret_solution.map(|(_, ty)| ty),
-            Some(&Type::Str),
+            Some(&Type::Str()),
             "return type var should resolve to Str via unification"
         );
     }
