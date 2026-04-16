@@ -35,7 +35,9 @@ impl LetExpr {
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let inner_env = inner_env.with_propositions(&bind_props);
         if let Some(body) = &self.expr {
-            checker.synth_expr(&inner_env, body.as_ref())
+            let mut result = checker.synth_expr(&inner_env, body.as_ref())?;
+            result.diags_mut().extend(diags);
+            Ok(result)
         } else {
             Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
         }
@@ -64,7 +66,9 @@ impl LetExpr {
         let inner_env = env.with_local(self.bind.var.name.as_str(), self.bind.var.span(), bind_ty);
         let inner_env = inner_env.with_propositions(&bind_props);
         if let Some(body) = &self.expr {
-            checker.check_expr(&inner_env, body.as_ref(), Some(expected))
+            let mut result = checker.check_expr(&inner_env, body.as_ref(), Some(expected))?;
+            result.diags_mut().extend(diags);
+            Ok(result)
         } else {
             Ok(crate::TypeSynth::new(Diagnosed::new(Type::Never(), diags)))
         }
