@@ -87,13 +87,25 @@ fn nil_comparison_props(op: BinaryOp, result_id: usize, lhs_ty: &Type, rhs_ty: &
         return Vec::new();
     };
 
-    let refines_to = Prop::RefinesTo(opt_ty.id(), inner.as_ref().clone());
+    // The "non-nil" branch refines the optional to its inner type (A),
+    // and the "nil-confirmed" branch refines it to `Never?` — the
+    // singleton type of `nil` itself — matching the type that `nil`
+    // expressions synthesize.
+    let refines_non_nil = Prop::RefinesTo(opt_ty.id(), inner.as_ref().clone());
+    let refines_nil = Prop::RefinesTo(opt_ty.id(), Type::Optional(Box::new(Type::Never())));
+    let is_true = Prop::IsTrue(result_id);
 
     match op {
-        // x != nil: if result is true, x refines to inner
-        BinaryOp::Neq => vec![Prop::IsTrue(result_id).implies(refines_to)],
-        // x == nil: if result is false (Not(IsTrue)), x refines to inner
-        BinaryOp::Eq => vec![Prop::IsTrue(result_id).negated().implies(refines_to)],
+        // x != nil: IsTrue(result) ⇒ x : A;  ¬IsTrue(result) ⇒ x : Never?.
+        BinaryOp::Neq => vec![
+            is_true.clone().implies(refines_non_nil),
+            is_true.negated().implies(refines_nil),
+        ],
+        // x == nil: ¬IsTrue(result) ⇒ x : A;  IsTrue(result) ⇒ x : Never?.
+        BinaryOp::Eq => vec![
+            is_true.clone().negated().implies(refines_non_nil),
+            is_true.implies(refines_nil),
+        ],
         _ => Vec::new(),
     }
 }
