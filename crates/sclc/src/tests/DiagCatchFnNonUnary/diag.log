@@ -1,1 +1,1 @@
-DiagCatchFnNonUnary/Main 7:7,7:14: catch target must be an exception (for `catch x:`) or a unary function returning an exception (for `catch x(y):`), got fn(Str, Str) Exception#2
+DiagCatchFnNonUnary/Main 7:7,7:14: catch target must be an exception (for `catch x:`) or a unary function returning an exception (for `catch x(y):`), got fn(Str, Str) Exception#aaf61f66

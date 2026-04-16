@@ -1,9 +1,31 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 
 use peg::{Parse, ParseElem, RuleResult};
 use thiserror::Error;
+
+/// Assign a globally-unique, deterministic 64-bit id to an `exception`
+/// introduction.
+///
+/// Spec §4 requires exception types to be nominal and identified by a
+/// fresh 64-bit id; Spec §8 requires every `exception` introduction to be
+/// fresh across the whole program. We derive the id as a hash of the
+/// introducing module's id together with the source span of the
+/// `exception` keyword: every introduction site in the program maps to a
+/// distinct `(module_id, span)` pair, so ids are unique across modules,
+/// while remaining deterministic across compiler invocations (unlike a
+/// process-global counter, which would make parallel parse order
+/// observable through diagnostic output).
+fn exception_id_for(module_id: &ModuleId, span: Span) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    module_id.hash(&mut hasher);
+    span.hash(&mut hasher);
+    let h = hasher.finish();
+    // Reserve 0 as a sentinel.
+    if h == 0 { 1 } else { h }
+}
 
 use crate::{
     BinaryExpr, BinaryOp, Bool, CallExpr, CatchClause, Diag, DiagList, Diagnosed, DictEntry,
@@ -192,7 +214,7 @@ impl<'input: 'a, 'a> ParseElem<'input> for TokenStream<'a> {
 }
 
 peg::parser! {
-    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, exception_id: &mut u64, cursor: &Option<crate::Cursor>, skip_span: &mut Option<Span>, last_postfix_end: &std::cell::Cell<Position>) for TokenStream<'tok> {
+    grammar grammar<'tok>(diags: &mut DiagList, module_id: &ModuleId, cursor: &Option<crate::Cursor>, skip_span: &mut Option<Span>, last_postfix_end: &std::cell::Cell<Position>) for TokenStream<'tok> {
         pub rule file_mod() -> FileMod
             = items:file_mod_item()* eof() {
                 flush_skip(skip_span, diags, module_id);
@@ -651,16 +673,14 @@ peg::parser! {
 
         rule exception_expr() -> Loc<Expr>
             = exception_kw_span:exception_keyword() open_paren() ty:type_expr() end:close_paren() {
-                let id = *exception_id;
-                *exception_id += 1;
+                let id = exception_id_for(module_id, exception_kw_span);
                 Loc::new(
                     Expr::Exception(ExceptionExpr { exception_id: id, ty: Some(ty) }),
                     Span::new(exception_kw_span.start(), end.end()),
                 )
             }
             / exception_kw_span:exception_keyword() {
-                let id = *exception_id;
-                *exception_id += 1;
+                let id = exception_id_for(module_id, exception_kw_span);
                 Loc::new(
                     Expr::Exception(ExceptionExpr { exception_id: id, ty: None }),
                     exception_kw_span,
@@ -1525,7 +1545,6 @@ pub fn parse_file_mod_with_cursor(
         return Diagnosed::new(FileMod::default(), diags);
     }
 
-    let mut exception_id = 0u64;
     let mut skip_span = None;
     let token_stream = match &cursor {
         Some(c) => TokenStream::with_cursor(source, c.clone()),
@@ -1536,7 +1555,6 @@ pub fn parse_file_mod_with_cursor(
         &token_stream,
         &mut diags,
         module_id,
-        &mut exception_id,
         &cursor,
         &mut skip_span,
         &last_postfix_end,
@@ -1598,7 +1616,6 @@ pub fn parse_repl_line_with_cursor(
         return Diagnosed::new(None, diags);
     }
 
-    let mut exception_id = 0u64;
     let mut skip_span = None;
     let token_stream = match &cursor {
         Some(c) => TokenStream::with_cursor(source, c.clone()),
@@ -1609,7 +1626,6 @@ pub fn parse_repl_line_with_cursor(
         &token_stream,
         &mut diags,
         module_id,
-        &mut exception_id,
         &cursor,
         &mut skip_span,
         &last_postfix_end,
@@ -1649,7 +1665,6 @@ pub fn parse_scle_with_cursor(
         return Diagnosed::new(None, diags);
     }
 
-    let mut exception_id = 0u64;
     let mut skip_span = None;
     let token_stream = match &cursor {
         Some(c) => TokenStream::with_cursor(source, c.clone()),
@@ -1660,7 +1675,6 @@ pub fn parse_scle_with_cursor(
         &token_stream,
         &mut diags,
         module_id,
-        &mut exception_id,
         &cursor,
         &mut skip_span,
         &last_postfix_end,
@@ -2748,6 +2762,80 @@ import Std/Option
             .filter(|d| d.to_string().contains("duplicate name"))
             .collect();
         assert!(dup_diags.is_empty(), "no duplicates should be reported");
+    }
+
+    /// Spec §4 / §8: every `exception` introduction must be globally fresh,
+    /// even when declared in different modules that parse identically. The
+    /// implementation must not hand two different modules the same id for
+    /// the first exception each declares.
+    #[test]
+    fn exception_ids_are_unique_across_modules() {
+        fn first_exception_id(module_id: &ModuleId, source: &str) -> u64 {
+            let file_mod = super::parse_file_mod(source, module_id).into_inner();
+            for stmt in &file_mod.statements {
+                let bind = match stmt {
+                    crate::ModStmt::Let(bind) | crate::ModStmt::Export(bind) => bind,
+                    _ => continue,
+                };
+                if let crate::Expr::Exception(exc) = bind.expr.as_ref().as_ref() {
+                    return exc.exception_id;
+                }
+            }
+            panic!("no exception found");
+        }
+
+        let module_a = ModuleId::new(PackageId::from(["Pkg"]), vec!["A".to_owned()]);
+        let module_b = ModuleId::new(PackageId::from(["Pkg"]), vec!["B".to_owned()]);
+        let id_a = first_exception_id(&module_a, "let E = exception\n");
+        let id_b = first_exception_id(&module_b, "let E = exception\n");
+
+        assert_ne!(
+            id_a, id_b,
+            "two different modules declaring their first `exception` must get distinct nominal ids",
+        );
+    }
+
+    /// Exception ids within a single module must all be distinct.
+    #[test]
+    fn exception_ids_within_a_module_are_distinct() {
+        let module_id = ModuleId::new(PackageId::from(["Pkg"]), vec!["M".to_owned()]);
+        let file_mod =
+            super::parse_file_mod("let E1 = exception\nlet E2 = exception\n", &module_id)
+                .into_inner();
+        let mut ids = Vec::new();
+        for stmt in &file_mod.statements {
+            let bind = match stmt {
+                crate::ModStmt::Let(bind) | crate::ModStmt::Export(bind) => bind,
+                _ => continue,
+            };
+            if let crate::Expr::Exception(exc) = bind.expr.as_ref().as_ref() {
+                ids.push(exc.exception_id);
+            }
+        }
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "two exceptions in one module must differ");
+    }
+
+    /// Reparsing the same source must produce the same id — the scheme is
+    /// deterministic so diagnostic output remains stable across runs.
+    #[test]
+    fn exception_ids_are_deterministic_across_reparses() {
+        let module_id = ModuleId::new(PackageId::from(["Pkg"]), vec!["M".to_owned()]);
+        let source = "let E = exception\n";
+
+        fn first_id(module_id: &ModuleId, source: &str) -> u64 {
+            let file_mod = super::parse_file_mod(source, module_id).into_inner();
+            for stmt in &file_mod.statements {
+                if let crate::ModStmt::Let(bind) | crate::ModStmt::Export(bind) = stmt
+                    && let crate::Expr::Exception(exc) = bind.expr.as_ref().as_ref()
+                {
+                    return exc.exception_id;
+                }
+            }
+            panic!("no exception found");
+        }
+
+        assert_eq!(first_id(&module_id, source), first_id(&module_id, source));
     }
 
     #[test]
