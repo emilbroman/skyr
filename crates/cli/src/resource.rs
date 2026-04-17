@@ -4,7 +4,7 @@ use graphql_client::GraphQLQuery;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::{auth, auth::JSON, output::OutputFormat, repo, ws};
+use crate::{auth, auth::JSON, output, output::OutputFormat, repo, ws};
 
 #[derive(Args, Debug)]
 pub struct ResourcesArgs {
@@ -165,10 +165,10 @@ async fn list_resources(
         .collect();
 
     match format {
-        OutputFormat::Json => crate::output::print_json(&resources)?,
+        OutputFormat::Json => output::print_json(&resources)?,
         OutputFormat::Text => {
-            let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}  {:<}  {:<}");
-            table.add_row(crate::output::row(vec![
+            let mut table = output::table("{:<}  {:<}  {:<}  {:<}  {:<}  {:<}");
+            table.add_row(output::row(vec![
                 String::from("ENVIRONMENT"),
                 String::from("TYPE"),
                 String::from("NAME"),
@@ -185,7 +185,7 @@ async fn list_resources(
                     .outputs
                     .map(|v| serde_json::to_string(&v).unwrap_or_default())
                     .unwrap_or_default();
-                table.add_row(crate::output::row(vec![
+                table.add_row(output::row(vec![
                     resource.environment,
                     resource.r#type,
                     resource.name,
@@ -209,14 +209,7 @@ fn build_resource_qid(env_qid: &str, resource_type: &str, resource_name: &str) -
 #[derive(Serialize)]
 struct ResourceLogOutput {
     resource_qid: String,
-    logs: Vec<LogOutput>,
-}
-
-#[derive(Serialize)]
-struct LogOutput {
-    severity: String,
-    timestamp: String,
-    message: String,
+    logs: Vec<output::LogOutput>,
 }
 
 async fn print_resource_last_logs(
@@ -254,7 +247,7 @@ async fn print_resource_last_logs(
                             logs: resource
                                 .last_logs
                                 .iter()
-                                .map(|l| LogOutput {
+                                .map(|l| output::LogOutput {
                                     severity: format!("{:?}", l.severity),
                                     timestamp: l.timestamp.clone(),
                                     message: l.message.clone(),
@@ -275,17 +268,13 @@ async fn print_resource_last_logs(
     }
 
     match format {
-        OutputFormat::Json => crate::output::print_json(&results)?,
+        OutputFormat::Json => output::print_json(&results)?,
         OutputFormat::Text => {
-            for (i, result) in results.iter().enumerate() {
-                if i > 0 {
-                    println!();
-                }
-                println!("==> {} <==", result.resource_qid);
-                for log in &result.logs {
-                    println!("[{}] [{}] {}", log.timestamp, log.severity, log.message);
-                }
-            }
+            let groups: Vec<_> = results
+                .iter()
+                .map(|r| (r.resource_qid.as_str(), r.logs.as_slice()))
+                .collect();
+            output::print_logs_text(&groups);
         }
     }
 

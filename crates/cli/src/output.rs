@@ -60,6 +60,26 @@ pub(crate) fn report_diagnostics<T>(diagnosed: sclc::Diagnosed<T>) -> Option<T> 
     Some(diagnosed.into_inner())
 }
 
+#[derive(Clone, Serialize)]
+pub(crate) struct LogOutput {
+    pub(crate) severity: String,
+    pub(crate) timestamp: String,
+    pub(crate) message: String,
+}
+
+/// Print groups of logs in text format, where each group has a label header.
+pub(crate) fn print_logs_text(groups: &[(&str, &[LogOutput])]) {
+    for (i, (label, logs)) in groups.iter().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        println!("==> {label} <==");
+        for log in *logs {
+            println!("[{}] [{}] {}", log.timestamp, log.severity, log.message);
+        }
+    }
+}
+
 pub(crate) fn shorten_commit_hash(hash: &str) -> String {
     hash.chars().take(16).collect::<String>()
 }
