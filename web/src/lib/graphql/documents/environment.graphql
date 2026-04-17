@@ -101,6 +101,23 @@ query ResourceDetail(
   }
 }
 
+mutation MakeDeploymentDesired(
+  $org: String!
+  $repo: String!
+  $env: String!
+  $commit: String!
+) {
+  makeDeploymentDesired(
+    organization: $org
+    repository: $repo
+    environment: $env
+    deployment: $commit
+  ) {
+    id
+    state
+  }
+}
+
 query DeploymentDetail(
   $org: String!
   $repo: String!
