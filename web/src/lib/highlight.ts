@@ -74,6 +74,7 @@ const EXT_TO_LANG: Record<string, string> = {
     diff: "diff",
     patch: "diff",
     scl: "scl",
+    scle: "scl",
     txt: "plaintext",
     lock: "plaintext",
 };
