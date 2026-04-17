@@ -167,39 +167,22 @@ impl<'a> EvalEnv<'a> {
     }
 
     pub fn with_globals(&self, globals: &'a GlobalsMap<'a>) -> Self {
-        Self {
-            module_id: self.module_id,
-            global_env: self.global_env,
-            raw_module_id: self.raw_module_id,
-            globals: Some(globals),
-            locals: HashMap::new(),
-            precomputed: self.precomputed.clone(),
-            stack: self.stack,
-        }
+        let mut env = self.inner();
+        env.globals = Some(globals);
+        env.locals = HashMap::new();
+        env
     }
 
     pub fn with_module_id(&self, module_id: &'a crate::ModuleId) -> Self {
-        Self {
-            module_id: Some(module_id),
-            global_env: self.global_env,
-            raw_module_id: self.raw_module_id,
-            globals: self.globals,
-            locals: self.locals.clone(),
-            precomputed: self.precomputed.clone(),
-            stack: self.stack,
-        }
+        let mut env = self.inner();
+        env.module_id = Some(module_id);
+        env
     }
 
     pub fn with_raw_module_id(&self, raw_module_id: &'a RawModuleId) -> Self {
-        Self {
-            module_id: self.module_id,
-            global_env: self.global_env,
-            raw_module_id: Some(raw_module_id),
-            globals: self.globals,
-            locals: self.locals.clone(),
-            precomputed: self.precomputed.clone(),
-            stack: self.stack,
-        }
+        let mut env = self.inner();
+        env.raw_module_id = Some(raw_module_id);
+        env
     }
 
     pub fn with_local(&self, name: &'a str, value: TrackedValue) -> Self {
@@ -219,15 +202,9 @@ impl<'a> EvalEnv<'a> {
     }
 
     pub fn without_locals(&self) -> Self {
-        Self {
-            module_id: self.module_id,
-            global_env: self.global_env,
-            raw_module_id: self.raw_module_id,
-            globals: self.globals,
-            locals: HashMap::new(),
-            precomputed: self.precomputed.clone(),
-            stack: self.stack,
-        }
+        let mut env = self.inner();
+        env.locals = HashMap::new();
+        env
     }
 
     pub fn with_stack_frame(&self, frame: &'a StackFrame<'a>) -> Result<Self, EvalError> {

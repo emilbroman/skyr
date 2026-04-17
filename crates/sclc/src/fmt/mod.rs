@@ -28,25 +28,20 @@ pub struct Formatter;
 
 impl Formatter {
     pub fn format(source: &str, file_mod: &FileMod) -> String {
-        let comments = collect_comments(source);
-        let mut builder = build::BlockBuilder::new(comments);
-        let block = builder.build_file_mod(file_mod);
-        let mut renderer = render::Renderer::new(100, 4);
-        renderer.render(&block);
-        let output = renderer.into_output();
-        // Ensure file ends with a single newline
-        let trimmed = output.trim_end().to_owned();
-        if trimmed.is_empty() {
-            trimmed
-        } else {
-            trimmed + "\n"
-        }
+        Self::render(source, |b| b.build_file_mod(file_mod))
     }
 
     pub fn format_scle(source: &str, scle: &ScleMod) -> String {
+        Self::render(source, |b| b.build_scle_mod(scle))
+    }
+
+    fn render(
+        source: &str,
+        build: impl FnOnce(&mut build::BlockBuilder) -> block::Block,
+    ) -> String {
         let comments = collect_comments(source);
         let mut builder = build::BlockBuilder::new(comments);
-        let block = builder.build_scle_mod(scle);
+        let block = build(&mut builder);
         let mut renderer = render::Renderer::new(100, 4);
         renderer.render(&block);
         let output = renderer.into_output();
