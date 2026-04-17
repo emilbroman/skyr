@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::{collections::BTreeSet, time::Duration};
 
-use crate::{auth, auth::JSON, output::OutputFormat, repo, ws};
+use crate::{auth, auth::JSON, output, output::OutputFormat, repo, ws};
 
 #[derive(Args, Debug)]
 pub struct DeploymentsArgs {
@@ -143,10 +143,10 @@ async fn list_deployments(
         .collect();
 
     match format {
-        OutputFormat::Json => crate::output::print_json(&deployments)?,
+        OutputFormat::Json => output::print_json(&deployments)?,
         OutputFormat::Text => {
-            let mut table = crate::output::table("{:<}  {:<}  {:<}  {:<}  {:>}");
-            table.add_row(crate::output::row(vec![
+            let mut table = output::table("{:<}  {:<}  {:<}  {:<}  {:>}");
+            table.add_row(output::row(vec![
                 String::from("REF"),
                 String::from("COMMIT"),
                 String::from("CREATED"),
@@ -154,10 +154,10 @@ async fn list_deployments(
                 String::from("RESOURCES"),
             ]));
             for deployment in deployments {
-                table.add_row(crate::output::row(vec![
+                table.add_row(output::row(vec![
                     deployment.r#ref,
-                    crate::output::shorten_commit_hash(&deployment.commit),
-                    crate::output::format_created_at(&deployment.created_at),
+                    output::shorten_commit_hash(&deployment.commit),
+                    output::format_created_at(&deployment.created_at),
                     deployment.state,
                     deployment.resources.len().to_string(),
                 ]));
@@ -172,14 +172,7 @@ async fn list_deployments(
 #[derive(Serialize)]
 struct DeploymentLogOutput {
     deployment_id: String,
-    logs: Vec<LogOutput>,
-}
-
-#[derive(Serialize)]
-struct LogOutput {
-    severity: String,
-    timestamp: String,
-    message: String,
+    logs: Vec<output::LogOutput>,
 }
 
 async fn print_deployment_last_logs(
@@ -223,7 +216,7 @@ async fn print_deployment_last_logs(
                     logs: d
                         .last_logs
                         .into_iter()
-                        .map(|l| LogOutput {
+                        .map(|l| output::LogOutput {
                             severity: format!("{:?}", l.severity),
                             timestamp: l.timestamp,
                             message: l.message,
@@ -241,17 +234,13 @@ async fn print_deployment_last_logs(
     }
 
     match format {
-        OutputFormat::Json => crate::output::print_json(&deployments)?,
+        OutputFormat::Json => output::print_json(&deployments)?,
         OutputFormat::Text => {
-            for (i, deployment) in deployments.iter().enumerate() {
-                if i > 0 {
-                    println!();
-                }
-                println!("==> {} <==", deployment.deployment_id);
-                for log in &deployment.logs {
-                    println!("[{}] [{}] {}", log.timestamp, log.severity, log.message);
-                }
-            }
+            let groups: Vec<_> = deployments
+                .iter()
+                .map(|d| (d.deployment_id.as_str(), d.logs.as_slice()))
+                .collect();
+            output::print_logs_text(&groups);
         }
     }
 
