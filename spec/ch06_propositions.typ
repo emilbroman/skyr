@@ -155,6 +155,31 @@ i.e. the truth value of the comparison determines which of the two
 possible shapes of $e$ is in play, and the type of $e$ may be
 refined accordingly.
 
+=== Boolean-literal comparison
+
+An expression $e_1 plus.o e_2$ with $plus.o in { #raw("=="), #raw("!=") }$
+where one operand is syntactically the literal #kw("true") or
+#kw("false") and the other is $e$ with origin $id$ emits implications
+linking the truth value of the comparison's result (of origin
+$id_r$) to the truth value of $e$:
+
+#align(center)[
+    #table(
+        columns: 2,
+        stroke: 0.4pt,
+        inset: (x: 6pt, y: 4pt),
+        [$e == #kw("true")$], [$"IsTrue"(id_r) implies "IsTrue"(id)$, $not "IsTrue"(id_r) implies not "IsTrue"(id)$],
+        [$e != #kw("true")$], [$not "IsTrue"(id_r) implies "IsTrue"(id)$, $"IsTrue"(id_r) implies not "IsTrue"(id)$],
+        [$e == #kw("false")$], [$not "IsTrue"(id_r) implies "IsTrue"(id)$, $"IsTrue"(id_r) implies not "IsTrue"(id)$],
+        [$e != #kw("false")$], [$"IsTrue"(id_r) implies "IsTrue"(id)$, $not "IsTrue"(id_r) implies not "IsTrue"(id)$],
+    )
+]
+
+The rules are symmetric with respect to operand order: #kw("true")
+$==$ $e$ emits the same propositions as $e$ $==$ #kw("true"), and
+likewise for the other three cases. When both operands are boolean
+literals no propositions are emitted.
+
 === Conditional expressions
 
 An expression #kw("if") $(e_c)$ $e_t$ #kw("else") $e_e$ with a

@@ -110,6 +110,69 @@ fn nil_comparison_props(op: BinaryOp, result_id: usize, lhs_ty: &Type, rhs_ty: &
     }
 }
 
+/// Detect a syntactic boolean literal expression, returning its value if so.
+fn as_bool_literal(expr: &Loc<Expr>) -> Option<bool> {
+    match expr.as_ref() {
+        Expr::Bool(b) => Some(b.value),
+        _ => None,
+    }
+}
+
+/// Emit propositions for comparisons with a boolean literal (`== true`,
+/// `!= true`, `== false`, `!= false`), in either operand order.
+///
+/// Let `id_x` be the origin of the non-literal operand and `id_r` the
+/// origin of the comparison's result. The propositions encode that the
+/// truth value of the comparison determines the truth value of the
+/// non-literal operand (possibly inverted):
+///
+/// * `x == true`  / `true  == x`  ⇒  `IsTrue(id_r) ⇔ IsTrue(id_x)`
+/// * `x != true`  / `true  != x`  ⇒  `IsTrue(id_r) ⇔ ¬IsTrue(id_x)`
+/// * `x == false` / `false == x`  ⇒  `IsTrue(id_r) ⇔ ¬IsTrue(id_x)`
+/// * `x != false` / `false != x`  ⇒  `IsTrue(id_r) ⇔ IsTrue(id_x)`
+///
+/// (Each `⇔` is emitted as two implications, one in each direction.)
+fn bool_literal_comparison_props(
+    op: BinaryOp,
+    result_id: usize,
+    lhs: &Loc<Expr>,
+    rhs: &Loc<Expr>,
+    lhs_ty: &Type,
+    rhs_ty: &Type,
+) -> Vec<Prop> {
+    let (operand_id, lit) = match (as_bool_literal(lhs), as_bool_literal(rhs)) {
+        (Some(_), Some(_)) => return Vec::new(),
+        (Some(b), None) => (rhs_ty.id(), b),
+        (None, Some(b)) => (lhs_ty.id(), b),
+        (None, None) => return Vec::new(),
+    };
+
+    // `x == true` and `x != false` both mean "result truthiness matches x".
+    // `x == false` and `x != true` both mean "result truthiness inverts x".
+    let result_matches_operand = match (op, lit) {
+        (BinaryOp::Eq, true) | (BinaryOp::Neq, false) => true,
+        (BinaryOp::Eq, false) | (BinaryOp::Neq, true) => false,
+        _ => return Vec::new(),
+    };
+
+    let is_true_result = Prop::IsTrue(result_id);
+    let is_true_operand = Prop::IsTrue(operand_id);
+
+    if result_matches_operand {
+        vec![
+            is_true_result.clone().implies(is_true_operand.clone()),
+            is_true_result.negated().implies(is_true_operand.negated()),
+        ]
+    } else {
+        vec![
+            is_true_result
+                .clone()
+                .implies(is_true_operand.clone().negated()),
+            is_true_result.negated().implies(is_true_operand),
+        ]
+    }
+}
+
 impl BinaryExpr {
     #[inline(never)]
     pub(crate) fn type_synth(
@@ -200,6 +263,15 @@ impl BinaryExpr {
                         let result = Type::Bool();
                         // Emit nil comparison propositions.
                         props.extend(nil_comparison_props(self.op, result.id(), &lhs_ty, &rhs_ty));
+                        // Emit bool-literal comparison propositions.
+                        props.extend(bool_literal_comparison_props(
+                            self.op,
+                            result.id(),
+                            self.lhs.as_ref(),
+                            self.rhs.as_ref(),
+                            &lhs_ty,
+                            &rhs_ty,
+                        ));
                         result
                     }
                     BinaryOp::Lt | BinaryOp::Lte | BinaryOp::Gt | BinaryOp::Gte => {

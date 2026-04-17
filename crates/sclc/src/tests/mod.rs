@@ -556,6 +556,11 @@ test_case!(NilRefinementRecordProp);
 test_case!(NilRefinementAndMultiple);
 test_case!(NilRefinementInlineRecord);
 test_case!(NilRefinementGlobal);
+test_case!(BoolLitRefinementEqTrue);
+test_case!(BoolLitRefinementNeqFalse);
+test_case!(BoolLitRefinementEqFalse);
+test_case!(BoolLitRefinementNeqTrue);
+test_case!(BoolLitRefinementCommutative);
 
 mod effect_owner;
 mod scle;
