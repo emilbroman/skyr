@@ -1,4 +1,3 @@
-use anyhow::Context;
 use clap::Args;
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
@@ -24,22 +23,8 @@ pub async fn run_whoami(args: WhoamiArgs, format: OutputFormat) -> anyhow::Resul
     let token = auth::acquire_token(&client, &args.api_url).await?;
     let endpoint = auth::graphql_endpoint(&args.api_url);
 
-    let body = Me::build_query(me::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(&token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send me query")?;
-    let response: graphql_client::Response<me::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode me response")?;
-    let data = auth::graphql_response_data(response, "whoami")?;
+    let data =
+        auth::graphql_query::<Me>(&client, &endpoint, &token, me::Variables {}, "whoami").await?;
 
     #[derive(Serialize)]
     struct WhoamiOutput {

@@ -4,11 +4,7 @@ use graphql_client::GraphQLQuery;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::{auth, output::OutputFormat, repo, ws};
-
-/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
-#[allow(clippy::upper_case_acronyms)]
-type JSON = serde_json::Value;
+use crate::{auth, auth::JSON, output::OutputFormat, repo, ws};
 
 #[derive(Args, Debug)]
 pub struct ResourcesArgs {
@@ -121,22 +117,14 @@ async fn list_resources(
 ) -> anyhow::Result<()> {
     let (_, repository_name) = repo::parse_repository_path(repository)?;
 
-    let body = ListRepositoryResources::build_query(list_repository_resources::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send resources query")?;
-    let response: graphql_client::Response<list_repository_resources::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode resources response")?;
-    let data = auth::graphql_response_data(response, "resource list")?;
+    let data = auth::graphql_query::<ListRepositoryResources>(
+        client,
+        endpoint,
+        token,
+        list_repository_resources::Variables {},
+        "resource list",
+    )
+    .await?;
     let repo = data
         .repositories
         .into_iter()
@@ -239,24 +227,16 @@ async fn print_resource_last_logs(
     amount: i64,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let body = ResourceLastLogs::build_query(resource_last_logs::Variables {
-        amount: Some(amount),
-    });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send resource logs query")?;
-    let response: graphql_client::Response<resource_last_logs::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode resource logs response")?;
-    let data = auth::graphql_response_data(response, "resource logs")?;
+    let data = auth::graphql_query::<ResourceLastLogs>(
+        client,
+        endpoint,
+        token,
+        resource_last_logs::Variables {
+            amount: Some(amount),
+        },
+        "resource logs",
+    )
+    .await?;
 
     let mut results: Vec<ResourceLogOutput> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();

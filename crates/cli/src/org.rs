@@ -1,4 +1,3 @@
-use anyhow::Context;
 use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
@@ -89,22 +88,14 @@ async fn list_organizations(
     token: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let body = ListOrganizations::build_query(list_organizations::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send organizations query")?;
-    let response: graphql_client::Response<list_organizations::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode organizations response")?;
-    let data = auth::graphql_response_data(response, "organization list")?;
+    let data = auth::graphql_query::<ListOrganizations>(
+        client,
+        endpoint,
+        token,
+        list_organizations::Variables {},
+        "organization list",
+    )
+    .await?;
 
     #[derive(Serialize)]
     struct OrgOutput {
@@ -145,24 +136,16 @@ async fn create_organization(
     name: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let body = CreateOrganization::build_query(create_organization::Variables {
-        name: name.to_owned(),
-    });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send create organization mutation")?;
-    let response: graphql_client::Response<create_organization::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode create organization response")?;
-    let data = auth::graphql_response_data(response, "organization create")?;
+    let data = auth::graphql_query::<CreateOrganization>(
+        client,
+        endpoint,
+        token,
+        create_organization::Variables {
+            name: name.to_owned(),
+        },
+        "organization create",
+    )
+    .await?;
 
     #[derive(Serialize)]
     struct CreateOrgOutput {
@@ -189,25 +172,17 @@ async fn add_organization_member(
     username: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let body = AddOrganizationMember::build_query(add_organization_member::Variables {
-        organization: organization.to_owned(),
-        username: username.to_owned(),
-    });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send add organization member mutation")?;
-    let response: graphql_client::Response<add_organization_member::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode add organization member response")?;
-    let data = auth::graphql_response_data(response, "organization add-member")?;
+    let data = auth::graphql_query::<AddOrganizationMember>(
+        client,
+        endpoint,
+        token,
+        add_organization_member::Variables {
+            organization: organization.to_owned(),
+            username: username.to_owned(),
+        },
+        "organization add-member",
+    )
+    .await?;
 
     #[derive(Serialize)]
     struct AddMemberOutput {
@@ -243,24 +218,16 @@ async fn leave_organization(
     organization: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let body = LeaveOrganization::build_query(leave_organization::Variables {
-        organization: organization.to_owned(),
-    });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send leave organization mutation")?;
-    let response: graphql_client::Response<leave_organization::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode leave organization response")?;
-    auth::graphql_response_data(response, "organization leave")?;
+    auth::graphql_query::<LeaveOrganization>(
+        client,
+        endpoint,
+        token,
+        leave_organization::Variables {
+            organization: organization.to_owned(),
+        },
+        "organization leave",
+    )
+    .await?;
 
     #[derive(Serialize)]
     struct LeaveOrgOutput {
