@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 
 use crate::{
     Asg, AsgChecker, AsgEvaluator, DiagList, Diagnosed, Effect, Eval, EvalCtx, EvalEnv, EvalError,
-    GlobalEvalEnv, GlobalKey, GlobalTypeEnv, Loader, ModuleId, PackageFinder, PackageId,
-    RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
+    GlobalEvalEnv, GlobalKey, GlobalTypeEnv, Loader, ModuleId, PackageFinder, PackageId, Prop,
+    ProvenSet, RecordType, TrackedValue, Type, TypeCheckError, TypeChecker, TypeEnv, ast,
     build_default_finder,
 };
 
@@ -25,6 +25,10 @@ pub struct Repl {
     package_id: PackageId,
     /// Import entry points accumulated across REPL lines.
     import_entries: Vec<Vec<String>>,
+    /// Propositions proven by prior REPL lines, carried forward so later
+    /// lines can benefit from the same refinements that apply within a
+    /// single module's body.
+    proven: ProvenSet,
 }
 
 pub enum ReplOutcome {
@@ -71,6 +75,7 @@ impl Repl {
             namespace,
             package_id,
             import_entries: Vec::new(),
+            proven: ProvenSet::new(),
         }
     }
 
@@ -133,7 +138,9 @@ impl Repl {
 
     pub fn type_env<'a>(&'a self, module_id: &'a ModuleId) -> TypeEnv<'a> {
         let env = self.bindings.iter().fold(
-            TypeEnv::new(&self.global_type_env).with_module_id(module_id),
+            TypeEnv::new(&self.global_type_env)
+                .with_module_id(module_id)
+                .with_proven_set(self.proven.clone()),
             |env, (name, (ty, _))| {
                 env.with_local(name.as_str(), crate::Span::default(), ty.clone())
             },
@@ -351,17 +358,38 @@ impl Repl {
                 panic!("imports must be handled by process_import, not process_statement")
             }
             crate::ast::ModStmt::Let(let_bind) | crate::ast::ModStmt::Export(let_bind) => {
-                let diagnosed = checker.check_global_let_bind(&type_env, let_bind)?;
-                let ty = check_diagnosed(diagnosed)?;
+                // Mirror LetExpr::type_synth rather than check_global_let_bind:
+                // REPL lines behave like successive `let` bindings in a block, so
+                // the variable's type is the raw expression type (not an IsoRec
+                // wrapper). This keeps the binding's TypeId equal to the id of
+                // the bound expression, so propositions emitted about that id
+                // (e.g. `IsTrue(<x != nil>) ⇒ RefinesTo(x, Int)`) chain through
+                // to later references of the binding.
+                let mut diags = DiagList::new();
+                let annotation_ty = let_bind
+                    .ty
+                    .as_ref()
+                    .map(|te| checker.resolve_type_expr(&type_env, te).unpack(&mut diags));
+                let synth =
+                    checker.check_expr(&type_env, &let_bind.expr, annotation_ty.as_ref())?;
+                let (resolved_ty, props) = synth.unpack_with_props(&mut diags);
+                if diags.has_errors() {
+                    return Err(ReplError::Diagnostics(diags));
+                }
+                let ty = annotation_ty.unwrap_or(resolved_ty);
                 let value = eval.eval_expr(&eval_env, &let_bind.expr)?;
+                drop(eval_env);
+                self.extend_proven(&props);
                 let name = let_bind.var.name.clone();
                 self.bindings.insert(name.clone(), (ty.clone(), value));
                 Ok(ReplOutcome::Binding { name, ty })
             }
             crate::ast::ModStmt::Expr(expr) => {
-                let diagnosed = checker.check_stmt(&type_env, statement)?;
-                check_diagnosed(diagnosed)?;
+                let synth = checker.check_expr(&type_env, expr, None)?;
+                let (_, props) = check_type_synth(synth)?;
                 let value = eval.eval_expr(&eval_env, expr)?;
+                drop(eval_env);
+                self.extend_proven(&props);
                 Ok(ReplOutcome::Value { value })
             }
             crate::ast::ModStmt::TypeDef(type_def)
@@ -373,6 +401,15 @@ impl Repl {
                 Ok(ReplOutcome::TypeDef { name })
             }
         }
+    }
+
+    /// Derive and store consequences of newly proven propositions, carrying
+    /// them forward to subsequent REPL lines.
+    fn extend_proven(&mut self, props: &[Prop]) {
+        if props.is_empty() {
+            return;
+        }
+        self.proven = self.proven.with_propositions(props);
     }
 
     /// Collect extern values from all packages in the cached ASG.
@@ -429,6 +466,18 @@ fn check_diagnosed<T>(diagnosed: Diagnosed<T>) -> Result<T, ReplError> {
         Err(ReplError::Diagnostics(diags))
     } else {
         Ok(diagnosed.into_inner())
+    }
+}
+
+fn check_type_synth(synth: crate::TypeSynth) -> Result<(Type, Vec<Prop>), ReplError> {
+    if synth.diags().has_errors() {
+        let mut diags = DiagList::new();
+        synth.unpack(&mut diags);
+        Err(ReplError::Diagnostics(diags))
+    } else {
+        let mut diags = DiagList::new();
+        let result = synth.unpack_with_props(&mut diags);
+        Ok(result)
     }
 }
 

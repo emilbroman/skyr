@@ -726,6 +726,15 @@ impl<'a> TypeEnv<'a> {
         env
     }
 
+    /// Create a derived environment with the given proven set installed,
+    /// replacing any previously accumulated propositions. Used by the REPL
+    /// to carry proven propositions across successive lines.
+    pub fn with_proven_set(&self, proven: crate::ProvenSet) -> Self {
+        let mut env = self.inner();
+        env.maps.proven = proven;
+        env
+    }
+
     /// Apply propositional type refinement to a type, recursively replacing
     /// any TypeId that has a proven RefinesTo.
     pub(crate) fn refine_type(&self, ty: &Type) -> Type {
@@ -1829,7 +1838,7 @@ impl<'p> TypeChecker<'p> {
         &self,
         env: &TypeEnv<'_>,
         let_bind: &ast::LetBind,
-    ) -> Result<Diagnosed<Type>, TypeCheckError> {
+    ) -> Result<crate::TypeSynth, TypeCheckError> {
         let mut diags = DiagList::new();
         let annotation_ty = let_bind
             .ty
@@ -1843,9 +1852,9 @@ impl<'p> TypeChecker<'p> {
             type_id,
             constraints.clone(),
         );
-        let resolved_ty = self
+        let (resolved_ty, props) = self
             .check_expr(&env, let_bind.expr.as_ref(), annotation_ty.as_ref())?
-            .unpack(&mut diags);
+            .unpack_with_props(&mut diags);
         let solved = constraints.borrow().solve(type_id, &resolved_ty);
         let resolved_ty = resolved_ty.substitute(&solved);
         let binding_ty = annotation_ty.unwrap_or(resolved_ty);
@@ -1861,7 +1870,10 @@ impl<'p> TypeChecker<'p> {
                 cursor.set_description(doc.clone());
             }
         }
-        Ok(Diagnosed::new(ty, diags))
+        Ok(crate::TypeSynth::with_props(
+            Diagnosed::new(ty, diags),
+            props,
+        ))
     }
 
     /// Check a mutually recursive SCC group where all bindings are function literals.
