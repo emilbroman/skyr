@@ -124,19 +124,8 @@ async fn resolve_deps(
         Arc::new(sclc::FsPackage::new(root.to_path_buf(), package_id.clone()));
     let default_finder = sclc::build_default_finder(Arc::clone(&user_package));
 
-    let manifest = sclc::load_manifest(Arc::clone(&user_package), default_finder.clone()).await?;
-    let Some(manifest) = manifest else {
-        return Ok((Vec::new(), package_roots));
-    };
-    if manifest.dependencies.is_empty() {
-        return Ok((Vec::new(), package_roots));
-    }
-
-    let git_client = crate::git_client::GitClient::from_config(git_server.to_string()).await?;
-
     let resolved =
-        crate::resolver::resolve_all(Arc::clone(&user_package), default_finder, &git_client)
-            .await?;
+        crate::resolver::resolve_package_deps(user_package, default_finder, git_server).await?;
 
     let finders: Vec<Arc<dyn sclc::PackageFinder>> = resolved
         .into_iter()
