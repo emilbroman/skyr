@@ -5,11 +5,7 @@ use serde::Serialize;
 use serde_json::json;
 use std::{collections::BTreeSet, time::Duration};
 
-use crate::{auth, output::OutputFormat, repo, ws};
-
-/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
-#[allow(clippy::upper_case_acronyms)]
-type JSON = serde_json::Value;
+use crate::{auth, auth::JSON, output::OutputFormat, repo, ws};
 
 #[derive(Args, Debug)]
 pub struct DeploymentsArgs {
@@ -196,24 +192,16 @@ async fn print_deployment_last_logs(
 ) -> anyhow::Result<()> {
     let (_, repository_name) = repo::parse_repository_path(repository)?;
 
-    let body = DeploymentLastLogs::build_query(deployment_last_logs::Variables {
-        amount: Some(amount),
-    });
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send deployment logs query")?;
-    let response: graphql_client::Response<deployment_last_logs::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode deployment logs response")?;
-    let data = auth::graphql_response_data(response, "deployment logs")?;
+    let data = auth::graphql_query::<DeploymentLastLogs>(
+        client,
+        endpoint,
+        token,
+        deployment_last_logs::Variables {
+            amount: Some(amount),
+        },
+        "deployment logs",
+    )
+    .await?;
     let repo = data
         .repositories
         .into_iter()
@@ -367,22 +355,14 @@ async fn query_repository_environments(
 ) -> anyhow::Result<
     Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesEnvironments>,
 > {
-    let body = ListRepositoryDeployments::build_query(list_repository_deployments::Variables {});
-    let response = client
-        .post(endpoint)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            auth::bearer_header_value(token)?,
-        )
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send deployments query")?;
-    let response: graphql_client::Response<list_repository_deployments::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode deployments response")?;
-    let data = auth::graphql_response_data(response, "deployment list")?;
+    let data = auth::graphql_query::<ListRepositoryDeployments>(
+        client,
+        endpoint,
+        token,
+        list_repository_deployments::Variables {},
+        "deployment list",
+    )
+    .await?;
     let repository = data
         .repositories
         .into_iter()

@@ -7,7 +7,7 @@ use zeroize::Zeroizing;
 
 /// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
 #[allow(clippy::upper_case_acronyms)]
-type JSON = serde_json::Value;
+pub(crate) type JSON = serde_json::Value;
 
 const SIGNATURE_NAMESPACE: &str = "skyr-auth-challenge";
 
@@ -63,22 +63,16 @@ pub(crate) async fn signin_with_key(
     key_path: &Path,
 ) -> anyhow::Result<String> {
     let proof = build_auth_proof(client, endpoint, username, key_path).await?;
-    let body = Signin::build_query(signin::Variables {
-        username: username.to_owned(),
-        proof: serde_json::Value::String(proof),
-    });
-
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send signin mutation")?;
-    let response: graphql_client::Response<signin::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode signin response")?;
-    let data = graphql_response_data(response, "signin")?;
+    let data = graphql_query_unauth::<Signin>(
+        client,
+        endpoint,
+        signin::Variables {
+            username: username.to_owned(),
+            proof: serde_json::Value::String(proof),
+        },
+        "signin",
+    )
+    .await?;
     Ok(data.signin.token)
 }
 
@@ -114,22 +108,15 @@ async fn query_auth_challenge(
     endpoint: &str,
     username: &str,
 ) -> anyhow::Result<String> {
-    let body = AuthChallenge::build_query(auth_challenge::Variables {
-        username: username.to_owned(),
-    });
-
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .context("failed to fetch auth challenge")?;
-
-    let response: graphql_client::Response<auth_challenge::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode auth challenge response")?;
-    let data = graphql_response_data(response, "auth challenge")?;
+    let data = graphql_query_unauth::<AuthChallenge>(
+        client,
+        endpoint,
+        auth_challenge::Variables {
+            username: username.to_owned(),
+        },
+        "auth challenge",
+    )
+    .await?;
     Ok(data.auth_challenge.challenge)
 }
 
@@ -218,6 +205,56 @@ pub(crate) fn graphql_response_data<T>(
     response
         .data
         .ok_or_else(|| anyhow!("{operation} response did not include data"))
+}
+
+/// Execute an authenticated GraphQL query/mutation and return the response data.
+pub(crate) async fn graphql_query<Q: GraphQLQuery>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    variables: Q::Variables,
+    operation: &str,
+) -> anyhow::Result<Q::ResponseData>
+where
+    Q::ResponseData: serde::de::DeserializeOwned,
+{
+    let body = Q::build_query(variables);
+    let response = client
+        .post(endpoint)
+        .header(reqwest::header::AUTHORIZATION, bearer_header_value(token)?)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("failed to send {operation}"))?;
+    let response: graphql_client::Response<Q::ResponseData> = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode {operation} response"))?;
+    graphql_response_data(response, operation)
+}
+
+/// Execute an unauthenticated GraphQL query/mutation and return the response data.
+pub(crate) async fn graphql_query_unauth<Q: GraphQLQuery>(
+    client: &reqwest::Client,
+    endpoint: &str,
+    variables: Q::Variables,
+    operation: &str,
+) -> anyhow::Result<Q::ResponseData>
+where
+    Q::ResponseData: serde::de::DeserializeOwned,
+{
+    let body = Q::build_query(variables);
+    let response = client
+        .post(endpoint)
+        .json(&body)
+        .send()
+        .await
+        .with_context(|| format!("failed to send {operation}"))?;
+    let response: graphql_client::Response<Q::ResponseData> = response
+        .json()
+        .await
+        .with_context(|| format!("failed to decode {operation} response"))?;
+    graphql_response_data(response, operation)
 }
 
 /// Construct an `Authorization: Bearer {token}` header value, validating the

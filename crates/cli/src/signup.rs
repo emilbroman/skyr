@@ -1,13 +1,8 @@
-use anyhow::Context;
 use clap::Args;
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
 
-use crate::{auth, output::OutputFormat};
-
-/// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
-#[allow(clippy::upper_case_acronyms)]
-type JSON = serde_json::Value;
+use crate::{auth, auth::JSON, output::OutputFormat};
 
 #[derive(Args, Debug)]
 pub struct SignupArgs {
@@ -38,25 +33,18 @@ pub async fn run_signup(args: SignupArgs, format: OutputFormat) -> anyhow::Resul
     let key_path = auth::expand_tilde(&args.key)?;
     let proof = auth::build_auth_proof(&client, &endpoint, &args.username, &key_path).await?;
 
-    let body = Signup::build_query(signup::Variables {
-        username: args.username.clone(),
-        email: args.email.clone(),
-        proof: serde_json::Value::String(proof),
-        fullname: args.fullname.clone(),
-    });
-
-    let response = client
-        .post(endpoint)
-        .json(&body)
-        .send()
-        .await
-        .context("failed to send signup mutation")?;
-
-    let response: graphql_client::Response<signup::ResponseData> = response
-        .json()
-        .await
-        .context("failed to decode graphql response")?;
-    let data = auth::graphql_response_data(response, "signup")?;
+    let data = auth::graphql_query_unauth::<Signup>(
+        &client,
+        &endpoint,
+        signup::Variables {
+            username: args.username.clone(),
+            email: args.email.clone(),
+            proof: serde_json::Value::String(proof),
+            fullname: args.fullname.clone(),
+        },
+        "signup",
+    )
+    .await?;
     auth::persist_auth_state(&data.signup.user.username, &key_path, &data.signup.token).await?;
 
     #[derive(Serialize)]
