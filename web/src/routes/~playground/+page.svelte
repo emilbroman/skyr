@@ -49,15 +49,15 @@ let resizing = $state<"sidebar" | "bottom" | null>(null);
 function startResize(panel: "sidebar" | "bottom", e: MouseEvent | TouchEvent) {
     e.preventDefault();
     resizing = panel;
-    const isTouch = e instanceof TouchEvent;
+    const isTouch = "touches" in e;
     const startX = isTouch ? e.touches[0].clientX : e.clientX;
     const startY = isTouch ? e.touches[0].clientY : e.clientY;
     const startSidebarWidth = sidebarWidth;
     const startBottomHeight = bottomPanelHeight;
 
     function onPointerMove(e: MouseEvent | TouchEvent) {
-        const clientX = e instanceof TouchEvent ? e.touches[0].clientX : e.clientX;
-        const clientY = e instanceof TouchEvent ? e.touches[0].clientY : e.clientY;
+        const clientX = "touches" in e ? e.touches[0].clientX : e.clientX;
+        const clientY = "touches" in e ? e.touches[0].clientY : e.clientY;
         if (panel === "sidebar") {
             sidebarWidth = Math.max(120, Math.min(600, startSidebarWidth + (clientX - startX)));
         } else {
