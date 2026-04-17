@@ -22,6 +22,8 @@ function getClient(): Client {
             }
             return {};
         },
+        lazyCloseTimeout: 5_000,
+        keepAlive: 12_000,
         shouldRetry: () => true,
         retryAttempts: 5,
         retryWait: (attempt) =>
