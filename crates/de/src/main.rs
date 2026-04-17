@@ -4,7 +4,7 @@ use std::{
     time::Duration,
 };
 
-use cdb::{DeploymentClient, DeploymentState};
+use cdb::{Deployment, DeploymentClient, DeploymentState};
 use clap::Parser;
 use futures_util::{StreamExt, TryStreamExt};
 use tokio::{
@@ -257,6 +257,7 @@ async fn process(
                 namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
+                backoff: None,
             };
 
             let span = tracing::info_span!("worker", dep = %deployment_qid);
@@ -282,6 +283,45 @@ struct Worker {
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
     log_publisher: ldb::NamespacePublisher,
+    /// In-memory backoff state for `Failing` deployments. Reset whenever
+    /// the deployment transitions out of `Failing` (by recovery or fatal
+    /// escalation). Intentionally not persisted: on worker restart we start
+    /// fresh at attempt 1, which is acceptable since backoff is an
+    /// optimisation to reduce reconciliation pressure, not a correctness
+    /// property.
+    backoff: Option<BackoffState>,
+}
+
+/// Initial backoff delay after the first transient failure (`Desired` →
+/// `Failing`).
+const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
+/// Maximum backoff delay between reconciliation attempts for a `Failing`
+/// deployment. Long, because a fatal-in-practice failure may require
+/// operator work that is not worth hammering on; the operator can manually
+/// nudge the deployment back to `Desired` once they've addressed the
+/// underlying issue.
+const BACKOFF_MAX: Duration = Duration::from_secs(24 * 60 * 60);
+/// Multiplicative growth factor per failed attempt. With a 5s base and 1.1
+/// growth, cumulative retry time reaches roughly a day after ~80 attempts.
+const BACKOFF_FACTOR: f64 = 1.1;
+
+#[derive(Clone, Copy, Debug)]
+struct BackoffState {
+    attempts: u32,
+    next_attempt_at: Instant,
+}
+
+impl BackoffState {
+    /// Compute the next backoff entry given the previous state (if any).
+    fn bump(prev: Option<Self>, now: Instant) -> Self {
+        let attempts = prev.map_or(0, |s| s.attempts).saturating_add(1);
+        let factor = BACKOFF_FACTOR.powi(attempts.saturating_sub(1) as i32);
+        let delay_secs = (BACKOFF_INITIAL.as_secs_f64() * factor).min(BACKOFF_MAX.as_secs_f64());
+        Self {
+            attempts,
+            next_attempt_at: now + Duration::from_secs_f64(delay_secs),
+        }
+    }
 }
 
 enum EvalCompleteness {
@@ -304,6 +344,11 @@ struct EvalOutcome {
     /// reconciling so the foreign upstream's changes propagate. See
     /// `CROSS_REPO_IMPORTS.md` §6a.
     has_volatile_cross_repo_pins: bool,
+    /// True when compilation produced one or more `Error`-severity
+    /// diagnostics. These are treated as *fatal* — retrying will not
+    /// recover without a code change — so the deployment is escalated to
+    /// `Failed` rather than kept in retry.
+    had_fatal_errors: bool,
 }
 
 /// Enqueue an RTQ message, logging errors to both tracing and the deployment
@@ -355,7 +400,7 @@ impl Worker {
     async fn work(&mut self) -> anyhow::Result<()> {
         let deployment = self.client.get().await?;
         let deployment_id = deployment.deployment.clone();
-        let sid = short_id(deployment_id.as_str());
+        let sid = short_id(deployment_id.as_str()).to_string();
 
         match deployment.state {
             DeploymentState::Down => {
@@ -363,89 +408,28 @@ impl Worker {
                 Ok(())
             }
 
-            DeploymentState::Desired => {
-                tracing::info!("{sid} reconciling");
-
-                // If the commit has no Main.scl, there is nothing to
-                // evaluate. Log an info note and transition directly to
-                // Up instead of treating it as a compilation error.
-                if self
-                    .client
-                    .path_hash(std::path::Path::new("Main.scl"))
-                    .await?
-                    .is_none()
-                {
-                    tracing::info!("{sid} no Main.scl; transitioning to UP");
-                    self.log_publisher
-                        .info(format!("{sid} is up (no Main.scl in commit)"))
-                        .await;
-                    self.client.set(DeploymentState::Up).await?;
-                    return Ok(());
-                }
-
-                let outcome = self.compile_and_evaluate().await?;
-                let owner_deployment_qid = deployment.deployment_qid().to_string();
-
-                // When the evaluation tree was fully explored (no pending
-                // Create/Update effects), we know the complete set of
-                // referenced resources. Destroy any owned resources that
-                // the evaluation never touched.
-                if outcome.fully_explored {
-                    self.destroy_untouched_resources(
-                        &owner_deployment_qid,
-                        &deployment_id,
-                        &outcome.touched_resource_ids,
-                    )
-                    .await?;
-                }
-
-                match outcome.completeness {
-                    EvalCompleteness::Complete => {
-                        for superseded in self.client.superseded().await? {
-                            let superseded_deployment = superseded.get().await?;
-                            if superseded_deployment.state == DeploymentState::Lingering {
-                                superseded.set(DeploymentState::Undesired).await?;
-                            }
-                        }
-
-                        // Check if all owned resources are non-volatile.
-                        // If so, transition to Up (no further reconciliation needed).
-                        let mut has_volatile = false;
-                        let mut resources = self
-                            .namespace
-                            .list_resources_by_owner(&owner_deployment_qid)
-                            .await?;
-                        while let Some(resource) = resources.try_next().await? {
-                            if resource.markers.contains(&sclc::Marker::Volatile) {
-                                has_volatile = true;
-                                break;
-                            }
-                        }
-                        drop(resources);
-
-                        if has_volatile {
-                            // Has at least one intrinsically-volatile resource —
-                            // stay in Desired so reconciliation keeps probing.
-                        } else if outcome.has_volatile_cross_repo_pins {
-                            tracing::info!(
-                                "{sid} has volatile cross-repo pins; staying in Desired"
-                            );
-                        } else {
-                            tracing::info!("{sid} all resources non-volatile; transitioning to UP");
-                            self.client.set(DeploymentState::Up).await?;
-                            self.log_publisher
-                                .info(format!("{sid} is up (all resources non-volatile)"))
-                                .await;
-                        }
-                    }
-                    EvalCompleteness::Partial => {
-                        tracing::info!(
-                            "evaluation incomplete; deferring superseded deployment teardown"
-                        );
-                    }
-                }
-
+            DeploymentState::Failed => {
+                tracing::debug!("{sid} failed; no reconciliation");
                 Ok(())
+            }
+
+            DeploymentState::Desired => self.run_reconcile_active(&deployment).await,
+
+            DeploymentState::Failing => {
+                // Respect in-memory backoff: if the next attempt isn't due
+                // yet, skip this iteration entirely.
+                if let Some(state) = self.backoff {
+                    let now = Instant::now();
+                    if now < state.next_attempt_at {
+                        tracing::debug!(
+                            "{sid} failing (attempt {}); backoff in {:.0}s",
+                            state.attempts,
+                            (state.next_attempt_at - now).as_secs_f64(),
+                        );
+                        return Ok(());
+                    }
+                }
+                self.run_reconcile_active(&deployment).await
             }
 
             DeploymentState::Up => {
@@ -599,6 +583,189 @@ impl Worker {
         }
     }
 
+    /// Dispatch to [`reconcile_active`](Self::reconcile_active) and apply
+    /// the resulting state transition.
+    ///
+    /// * Ok with fatal errors → transition to `Failed`, clear backoff, and
+    ///   try to make the deployment this one superseded desired again
+    ///   (rollback).
+    /// * Ok without fatal errors → success. If we were previously
+    ///   `Failing`, clear backoff and move back to `Desired` (unless the
+    ///   reconciliation itself promoted us to `Up`).
+    /// * Err → transient failure. Transition to `Failing` if not already,
+    ///   and bump the in-memory backoff so the next attempt is delayed.
+    async fn run_reconcile_active(&mut self, deployment: &Deployment) -> anyhow::Result<()> {
+        let sid = short_id(deployment.deployment.as_str()).to_string();
+        let was_failing = deployment.state == DeploymentState::Failing;
+
+        match self.reconcile_active(deployment).await {
+            Ok(had_fatal_errors) => {
+                if had_fatal_errors {
+                    tracing::error!("{sid} fatal compile errors; marking FAILED");
+                    self.log_publisher
+                        .error(format!("{sid} failed fatally: compile errors"))
+                        .await;
+                    self.client.set(DeploymentState::Failed).await?;
+                    self.backoff = None;
+                    self.attempt_rollback(&sid).await?;
+                    return Ok(());
+                }
+
+                if was_failing {
+                    self.backoff = None;
+                    // The reconciliation may have already promoted us to
+                    // `Up`; only move back to `Desired` if we're still
+                    // `Failing`.
+                    let current = self.client.get().await?;
+                    if current.state == DeploymentState::Failing {
+                        self.client.set(DeploymentState::Desired).await?;
+                        self.log_publisher
+                            .info(format!("{sid} recovered; resuming as DESIRED"))
+                            .await;
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                tracing::warn!("{sid} transient error: {error:#}");
+                self.log_publisher
+                    .warn(format!("{sid} transient error: {error}"))
+                    .await;
+                if !was_failing {
+                    self.client.set(DeploymentState::Failing).await?;
+                }
+                self.backoff = Some(BackoffState::bump(self.backoff, Instant::now()));
+                Ok(())
+            }
+        }
+    }
+
+    /// Attempt to roll back to a predecessor deployment after a fatal
+    /// failure. Best-effort: a failure to find or promote a target is
+    /// logged but not propagated, since the failing deployment has
+    /// already been marked `Failed`.
+    async fn attempt_rollback(&self, sid: &str) -> anyhow::Result<()> {
+        match self.client.rollback_target().await? {
+            Some(target) => {
+                let target_sid = short_id(target.deployment.as_str()).to_string();
+                let target_client = self
+                    .cdb_client
+                    .repo(target.repo.clone())
+                    .deployment(target.environment.clone(), target.deployment.clone());
+                target_client.make_desired().await?;
+                tracing::info!("{sid} rolled back to {target_sid}");
+                self.log_publisher
+                    .info(format!("rolled back {sid} to {target_sid}"))
+                    .await;
+            }
+            None => {
+                tracing::warn!("{sid} no rollback target found");
+                self.log_publisher
+                    .error(format!("no rollback target for failed {sid}"))
+                    .await;
+            }
+        }
+        Ok(())
+    }
+
+    /// Perform one iteration of reconciliation for an active deployment
+    /// (`Desired` or `Failing`). Returns `true` if compilation produced
+    /// fatal errors — the caller is responsible for escalating the state.
+    ///
+    /// Any error returned is considered *transient*: the caller will bump
+    /// the backoff and retry later.
+    async fn reconcile_active(&mut self, deployment: &Deployment) -> anyhow::Result<bool> {
+        let deployment_id = deployment.deployment.clone();
+        let sid = short_id(deployment_id.as_str()).to_string();
+        tracing::info!("{sid} reconciling");
+
+        // If the commit has no Main.scl, there is nothing to evaluate.
+        // Log an info note and transition directly to Up instead of
+        // treating it as a compilation error.
+        if self
+            .client
+            .path_hash(std::path::Path::new("Main.scl"))
+            .await?
+            .is_none()
+        {
+            tracing::info!("{sid} no Main.scl; transitioning to UP");
+            self.log_publisher
+                .info(format!("{sid} is up (no Main.scl in commit)"))
+                .await;
+            self.client.set(DeploymentState::Up).await?;
+            return Ok(false);
+        }
+
+        let outcome = self.compile_and_evaluate().await?;
+
+        // Fatal compile errors short-circuit: skip teardown work and
+        // return early so the caller can escalate. We intentionally do
+        // NOT transition volatile or partial-evaluation bookkeeping on a
+        // failed compile, because the evaluation tree is unreliable.
+        if outcome.had_fatal_errors {
+            return Ok(true);
+        }
+
+        let owner_deployment_qid = deployment.deployment_qid().to_string();
+
+        // When the evaluation tree was fully explored (no pending
+        // Create/Update effects), we know the complete set of
+        // referenced resources. Destroy any owned resources that
+        // the evaluation never touched.
+        if outcome.fully_explored {
+            self.destroy_untouched_resources(
+                &owner_deployment_qid,
+                &deployment_id,
+                &outcome.touched_resource_ids,
+            )
+            .await?;
+        }
+
+        match outcome.completeness {
+            EvalCompleteness::Complete => {
+                for superseded in self.client.superseded().await? {
+                    let superseded_deployment = superseded.get().await?;
+                    if superseded_deployment.state == DeploymentState::Lingering {
+                        superseded.set(DeploymentState::Undesired).await?;
+                    }
+                }
+
+                // Check if all owned resources are non-volatile.
+                // If so, transition to Up (no further reconciliation needed).
+                let mut has_volatile = false;
+                let mut resources = self
+                    .namespace
+                    .list_resources_by_owner(&owner_deployment_qid)
+                    .await?;
+                while let Some(resource) = resources.try_next().await? {
+                    if resource.markers.contains(&sclc::Marker::Volatile) {
+                        has_volatile = true;
+                        break;
+                    }
+                }
+                drop(resources);
+
+                if has_volatile {
+                    // Has at least one intrinsically-volatile resource —
+                    // stay in Desired so reconciliation keeps probing.
+                } else if outcome.has_volatile_cross_repo_pins {
+                    tracing::info!("{sid} has volatile cross-repo pins; staying in Desired");
+                } else {
+                    tracing::info!("{sid} all resources non-volatile; transitioning to UP");
+                    self.client.set(DeploymentState::Up).await?;
+                    self.log_publisher
+                        .info(format!("{sid} is up (all resources non-volatile)"))
+                        .await;
+                }
+            }
+            EvalCompleteness::Partial => {
+                tracing::info!("evaluation incomplete; deferring superseded deployment teardown");
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Destroy resources owned by this deployment that were not referenced
     /// during the latest evaluation. This handles the case where volatile
     /// resources change in a way that causes previously-created resources
@@ -739,6 +906,7 @@ impl Worker {
                 has_volatile_cross_repo_pins: cross_repo_finder
                     .as_ref()
                     .is_some_and(|f| f.has_volatile_pins()),
+                had_fatal_errors: true,
             });
         }
 
@@ -1116,6 +1284,7 @@ impl Worker {
                         touched_resource_ids,
                         fully_explored: !had_mutation,
                         has_volatile_cross_repo_pins,
+                        had_fatal_errors: false,
                     }
                 }
             }
