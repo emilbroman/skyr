@@ -89,9 +89,10 @@ slash-separated path segments as defined in Section 3.4.
 The _type name_ form $x$ names either a _generic type variable_ bound by
 an enclosing #kw("fn") or #kw("type") declaration, a _type declaration_
 introduced by a #kw("type") statement, or one of the primitive types
-`Int`, `Float`, `Bool`, `Str`, `Path`, `Any`. The primitive names are
-not keywords and share the identifier namespace with user-declared
-types; shadowing rules are those of Chapter 9.
+`Int`, `Float`, `Bool`, `Str`, `Path`, `Any`, or the bottom type
+`Never`. The primitive names are not keywords and share the
+identifier namespace with user-declared types; shadowing rules are
+those of Chapter 9.
 
 === Module statements
 

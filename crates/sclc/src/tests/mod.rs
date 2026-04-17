@@ -394,6 +394,7 @@ macro_rules! test_case {
 }
 
 test_case!(BasicExport);
+test_case!(NeverTypeAnnotation);
 test_case!(UnaryNot);
 test_case!(DiagUnaryNotInvalid);
 test_case!(MultiExport);

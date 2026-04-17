@@ -1320,6 +1320,12 @@ impl<'p> TypeChecker<'p> {
                 }
                 Type::Any()
             }
+            ast::TypeExpr::Var(var) if var.name == "Never" => {
+                if let Some((cursor, _)) = &var.cursor {
+                    cursor.set_type(Type::Never());
+                }
+                Type::Never()
+            }
             ast::TypeExpr::Var(var) if var.name == "Int" => {
                 if let Some((cursor, _)) = &var.cursor {
                     cursor.set_type(Type::Int());

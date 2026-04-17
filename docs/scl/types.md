@@ -331,6 +331,13 @@ let empty: [Int] = []      // [] has type [Never], assignable to [Int]
 let strings: [Str] = []    // Also works
 ```
 
+`Never` can be used as a type annotation anywhere a type is expected — for example, on a function that always raises and never returns normally:
+
+```scl
+let Unreachable = exception
+let bail: fn() Never = fn() raise Unreachable
+```
+
 ### Never?
 
 The type of `nil`. Only assignable to optional types:
