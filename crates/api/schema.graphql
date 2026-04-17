@@ -10,6 +10,8 @@ enum DeploymentState {
   LINGERING
   DESIRED
   UP
+  FAILING
+  FAILED
 }
 
 enum ResourceMarker {
@@ -94,6 +96,18 @@ type Mutation {
   createOrganization(name: String!): Organization!
   addOrganizationMember(organization: String!, username: String!): Organization!
   leaveOrganization(organization: String!): Boolean!
+  """
+    Manually promote a deployment to `Desired`, superseding whichever
+    deployment is currently active in the same environment.
+
+    Accepts a deployment in *any* state (including `Failed` or `Down`),
+    since this mutation is the escape hatch operators use to roll
+    forward or back after a deployment has gotten stuck.
+
+    Requires the caller to be a member of the owning organisation (the
+    same access level as other repository-scoped operations).
+  """
+  makeDeploymentDesired(organization: String!, repository: String!, environment: String!, deployment: String!): Deployment!
 }
 
 type Organization {

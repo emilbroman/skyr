@@ -24,6 +24,14 @@ const styles: Record<DeploymentState, { bg: string; text: string }> = {
         bg: "bg-orange-50 border-orange-300",
         text: "text-orange-700",
     },
+    [DeploymentState.Failing]: {
+        bg: "bg-amber-50 border-amber-300",
+        text: "text-amber-700",
+    },
+    [DeploymentState.Failed]: {
+        bg: "bg-red-50 border-red-300",
+        text: "text-red-700",
+    },
 };
 
 const style = $derived(styles[state]);
@@ -87,6 +95,33 @@ const iconSize = $derived(size === "small" ? 10 : 12);
             stroke-linecap="round"
         >
             <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
+        </svg>
+    {:else if state === DeploymentState.Failing}
+        <svg
+            class="spinner-slow"
+            width={iconSize}
+            height={iconSize}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+        >
+            <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
+        </svg>
+    {:else if state === DeploymentState.Failed}
+        <svg
+            width={iconSize}
+            height={iconSize}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+        >
+            <line x1="4" y1="4" x2="12" y2="12" />
+            <line x1="12" y1="4" x2="4" y2="12" />
         </svg>
     {/if}
     {state}

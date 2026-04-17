@@ -668,6 +668,86 @@ impl Mutation {
 
         Ok(true)
     }
+
+    /// Manually promote a deployment to `Desired`, superseding whichever
+    /// deployment is currently active in the same environment.
+    ///
+    /// Accepts a deployment in *any* state (including `Failed` or `Down`),
+    /// since this mutation is the escape hatch operators use to roll
+    /// forward or back after a deployment has gotten stuck.
+    ///
+    /// Requires the caller to be a member of the owning organisation (the
+    /// same access level as other repository-scoped operations).
+    #[graphql(name = "makeDeploymentDesired")]
+    async fn make_deployment_desired(
+        context: &Context,
+        organization: String,
+        repository: String,
+        environment: String,
+        deployment: String,
+    ) -> FieldResult<Deployment> {
+        let (_, user) = context.check_auth().await?;
+
+        // Access check: caller must be a member of the owning org (or it
+        // must be their own personal org).
+        if organization != user.username {
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
+        }
+
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let deployment_id: ids::DeploymentId = deployment
+            .parse()
+            .map_err(|_| field_error("Invalid deployment hash"))?;
+        let repo_qid = ids::RepoQid { org, repo };
+
+        let client = context
+            .cdb_client
+            .repo(repo_qid)
+            .deployment(env, deployment_id);
+
+        // Verify the deployment exists before mutating anything.
+        if let Err(e) = client.get().await {
+            return Err(match e {
+                cdb::DeploymentQueryError::NotFound => field_error("Deployment not found"),
+                other => {
+                    tracing::error!("Failed to load deployment: {}", other);
+                    internal_error()
+                }
+            });
+        }
+
+        client.make_desired().await.map_err(|e| {
+            tracing::error!("Failed to make deployment desired: {}", e);
+            internal_error()
+        })?;
+
+        let deployment = client.get().await.map_err(|e| {
+            tracing::error!("Failed to load deployment after make_desired: {}", e);
+            internal_error()
+        })?;
+
+        Ok(Deployment { deployment })
+    }
 }
 
 /// Dispatch proof verification: SSH (string) or WebAuthn (object).
@@ -1869,6 +1949,10 @@ enum DeploymentState {
     Desired,
     #[graphql(name = "UP")]
     Up,
+    #[graphql(name = "FAILING")]
+    Failing,
+    #[graphql(name = "FAILED")]
+    Failed,
 }
 
 impl From<cdb::DeploymentState> for DeploymentState {
@@ -1879,6 +1963,8 @@ impl From<cdb::DeploymentState> for DeploymentState {
             cdb::DeploymentState::Lingering => DeploymentState::Lingering,
             cdb::DeploymentState::Desired => DeploymentState::Desired,
             cdb::DeploymentState::Up => DeploymentState::Up,
+            cdb::DeploymentState::Failing => DeploymentState::Failing,
+            cdb::DeploymentState::Failed => DeploymentState::Failed,
         }
     }
 }

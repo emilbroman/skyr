@@ -1,8 +1,12 @@
 <script lang="ts">
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
-import { EnvironmentDetailDocument } from "$lib/graphql/generated";
-import { graphqlQuery } from "$lib/graphql/query";
+import {
+    DeploymentState,
+    EnvironmentDetailDocument,
+    MakeDeploymentDesiredDocument,
+} from "$lib/graphql/generated";
+import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { decodeSegment, deploymentHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
@@ -59,11 +63,43 @@ function sortIndicator(column: SortColumn): string {
     if (sortColumn !== column) return "";
     return sortDirection === "asc" ? " \u25B2" : " \u25BC";
 }
+
+let pendingCommit = $state<string | null>(null);
+let makeDesiredError = $state<string | null>(null);
+
+const makeDesired = graphqlMutation(MakeDeploymentDesiredDocument, {
+    onSuccess: () => {
+        pendingCommit = null;
+        makeDesiredError = null;
+        envDetail.refetch();
+    },
+    onError: (e) => {
+        pendingCommit = null;
+        makeDesiredError = e.message;
+    },
+});
+
+function onMakeDesired(commit: string) {
+    pendingCommit = commit;
+    makeDesiredError = null;
+    makeDesired.mutate({
+        org: orgName,
+        repo: repoName,
+        env: envName,
+        commit,
+    });
+}
 </script>
 
 <svelte:head>
     <title>Deployments · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
+
+{#if makeDesiredError}
+  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600">
+    {makeDesiredError}
+  </div>
+{/if}
 
 {#if env}
   {#if env.deployments.length === 0}
@@ -113,6 +149,7 @@ function sortIndicator(column: SortColumn): string {
               Resources{sortIndicator("resources")}
             </button>
           </th>
+          <th class="pb-3 pt-3 pr-4 font-medium"></th>
         </tr>
       </thead>
       <tbody>
@@ -137,6 +174,20 @@ function sortIndicator(column: SortColumn): string {
             </td>
             <td class="py-3 pr-4 text-gray-500">
               {deployment.resources.length}
+            </td>
+            <td class="py-3 pr-4 text-right">
+              {#if deployment.state !== DeploymentState.Desired}
+                <button
+                  type="button"
+                  onclick={() => onMakeDesired(deployment.commit.hash)}
+                  disabled={makeDesired.isPending && pendingCommit === deployment.commit.hash}
+                  class="px-2 py-1 text-xs bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {makeDesired.isPending && pendingCommit === deployment.commit.hash
+                    ? "Working..."
+                    : "Make desired"}
+                </button>
+              {/if}
             </td>
           </tr>
         {/each}

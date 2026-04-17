@@ -8,8 +8,9 @@ import {
     DeploymentDetailDocument,
     DeploymentLogsDocument,
     DeploymentState,
+    MakeDeploymentDesiredDocument,
 } from "$lib/graphql/generated";
-import { graphqlQuery } from "$lib/graphql/query";
+import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
@@ -36,8 +37,33 @@ const liveStates: DeploymentState[] = [
     DeploymentState.Desired,
     DeploymentState.Lingering,
     DeploymentState.Undesired,
+    DeploymentState.Failing,
 ];
 let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
+
+let makeDesiredError = $state<string | null>(null);
+
+const makeDesired = graphqlMutation(MakeDeploymentDesiredDocument, {
+    onSuccess: () => {
+        makeDesiredError = null;
+        deploymentDetail.refetch();
+    },
+    onError: (e) => {
+        makeDesiredError = e.message;
+    },
+});
+
+let canMakeDesired = $derived(deployment != null && deployment.state !== DeploymentState.Desired);
+
+function onMakeDesired() {
+    makeDesiredError = null;
+    makeDesired.mutate({
+        org: orgName,
+        repo: repoName,
+        env: envName,
+        commit: commitHash,
+    });
+}
 </script>
 
 <svelte:head>
@@ -77,12 +103,31 @@ let isLive = $derived(deployment != null && liveStates.includes(deployment.state
           <dd><DeploymentStateBadge state={deployment.state} /></dd>
         </div>
       </dl>
-      <a
-        href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
-        class="inline-block mt-3 text-orange-600 hover:text-orange-500 transition-colors"
-      >
-        View files &rarr;
-      </a>
+      <div class="mt-3 flex items-center gap-4">
+        <a
+          href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
+          class="text-orange-600 hover:text-orange-500 transition-colors"
+        >
+          View files &rarr;
+        </a>
+        {#if canMakeDesired}
+          <button
+            type="button"
+            onclick={onMakeDesired}
+            disabled={makeDesired.isPending}
+            class="px-3 py-1 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {makeDesired.isPending ? "Making desired..." : "Make desired"}
+          </button>
+        {/if}
+      </div>
+      {#if makeDesiredError}
+        <div
+          class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-600"
+        >
+          {makeDesiredError}
+        </div>
+      {/if}
     </div>
 
     <!-- Logs -->
