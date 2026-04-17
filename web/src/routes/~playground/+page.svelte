@@ -111,6 +111,9 @@ onMount(async () => {
     registerSclLanguage();
     worker = new SclWorker();
 
+    // Wait for persisted state to load from IndexedDB before initializing the editor
+    await playgroundState.ready();
+
     // Create initial model and editor
     const initialModel = getOrCreateModel(
         playgroundState.activeFile,
