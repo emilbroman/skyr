@@ -23,6 +23,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       web: ${{ steps.filter.outputs.web }}
+      spec: ${{ steps.filter.outputs.spec }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -41,6 +42,8 @@ jobs:
               - 'crates/sclc-wasm/**'
               - 'crates/sclc-docgen/**'
               - 'crates/ids/**'
+            spec:
+              - 'spec/**'
 
   rust-check:
     name: Rust Check & Test
@@ -102,6 +105,31 @@ jobs:
       - name: web check
         run: npm run check
         working-directory: web
+
+  # ---------------------------------------------------------------------------
+  # SCL Specification PDF (main only)
+  # ---------------------------------------------------------------------------
+  build-spec:
+    name: Build SCL Spec
+    needs: [changes]
+    if: |
+      always() &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Compile spec PDF
+        run: nix develop -c typst compile spec/main.typ spec/scl-spec.pdf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scl-spec
+          path: spec/scl-spec.pdf
 
   # ---------------------------------------------------------------------------
   # Container images (main only)
@@ -340,7 +368,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Create Release
-    needs: [build-cli, build-scoc, base-image, service-images, web-image]
+    needs: [build-cli, build-scoc, base-image, service-images, web-image, build-spec]
     if: |
       always() &&
       github.ref == 'refs/heads/main' &&
@@ -361,6 +389,12 @@ jobs:
           path: artifacts
           pattern: bin-*
           merge-multiple: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: scl-spec
+          path: artifacts
+        continue-on-error: true
 
       - name: Create release
         uses: softprops/action-gh-release@v2.4.2
