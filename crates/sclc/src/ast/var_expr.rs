@@ -44,7 +44,8 @@ pub(crate) fn synth_var(
     if let Some(raw_id) = env.raw_module_id()
         && let Some(ty) = env.global_env.resolve_variable(var.name.as_str(), raw_id)
     {
-        let ty = ty.clone();
+        // Apply propositional type refinement at variable resolution time.
+        let ty = env.refine_type(ty);
         if let Some((cursor, _)) = &var.cursor {
             cursor.set_type(ty.clone());
             cursor.set_identifier(crate::CursorIdentifier::Let(var.name.clone()));
