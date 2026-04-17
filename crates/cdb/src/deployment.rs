@@ -41,6 +41,24 @@ pub enum DeploymentState {
     Lingering,
     Desired,
     Up,
+    Failing,
+    Failed,
+}
+
+impl DeploymentState {
+    /// Whether a deployment in this state is considered "active" for
+    /// supersession purposes — i.e. a new `Desired` deployment arriving in
+    /// the same environment should transition it to `Lingering`.
+    ///
+    /// `Failed` is intentionally excluded: once a deployment has failed
+    /// fatally we may have already rolled back to a prior deployment, so it
+    /// is treated as a terminal state that does not get re-lingered.
+    pub fn is_active(self) -> bool {
+        matches!(
+            self,
+            DeploymentState::Desired | DeploymentState::Up | DeploymentState::Failing
+        )
+    }
 }
 
 impl fmt::Display for DeploymentState {
@@ -51,6 +69,8 @@ impl fmt::Display for DeploymentState {
             Self::Lingering => write!(f, "LINGERING"),
             Self::Desired => write!(f, "DESIRED"),
             Self::Up => write!(f, "UP"),
+            Self::Failing => write!(f, "FAILING"),
+            Self::Failed => write!(f, "FAILED"),
         }
     }
 }
@@ -69,6 +89,8 @@ impl FromStr for DeploymentState {
             "LINGERING" => Ok(DeploymentState::Lingering),
             "DESIRED" => Ok(DeploymentState::Desired),
             "UP" => Ok(DeploymentState::Up),
+            "FAILING" => Ok(DeploymentState::Failing),
+            "FAILED" => Ok(DeploymentState::Failed),
             v => Err(InvalidDeploymentState(v.to_string())),
         }
     }
