@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, anyhow};
 use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
@@ -231,34 +233,38 @@ async fn print_resource_last_logs(
     )
     .await?;
 
+    // Index all resources by QID for O(1) lookups instead of nested iteration.
+    let mut resource_logs: HashMap<String, Vec<output::LogOutput>> = HashMap::new();
+    for repo in &data.repositories {
+        for env in &repo.environments {
+            for resource in &env.resources {
+                let qid = build_resource_qid(&env.qid, &resource.type_, &resource.name);
+                resource_logs.insert(
+                    qid,
+                    resource
+                        .last_logs
+                        .iter()
+                        .map(|l| output::LogOutput {
+                            severity: format!("{:?}", l.severity),
+                            timestamp: l.timestamp.clone(),
+                            message: l.message.clone(),
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+
     let mut results: Vec<ResourceLogOutput> = Vec::new();
     let mut missing: Vec<&str> = Vec::new();
 
     for qid in resource_qids {
-        let mut found = false;
-        for repo in &data.repositories {
-            for env in &repo.environments {
-                for resource in &env.resources {
-                    let candidate = build_resource_qid(&env.qid, &resource.type_, &resource.name);
-                    if candidate == *qid {
-                        found = true;
-                        results.push(ResourceLogOutput {
-                            resource_qid: qid.clone(),
-                            logs: resource
-                                .last_logs
-                                .iter()
-                                .map(|l| output::LogOutput {
-                                    severity: format!("{:?}", l.severity),
-                                    timestamp: l.timestamp.clone(),
-                                    message: l.message.clone(),
-                                })
-                                .collect(),
-                        });
-                    }
-                }
-            }
-        }
-        if !found {
+        if let Some(logs) = resource_logs.remove(qid.as_str()) {
+            results.push(ResourceLogOutput {
+                resource_qid: qid.clone(),
+                logs,
+            });
+        } else {
             missing.push(qid);
         }
     }

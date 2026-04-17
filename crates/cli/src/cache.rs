@@ -12,7 +12,7 @@
 //! │   └── ...
 //! ```
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -39,6 +39,27 @@ pub fn package_version_dir(pkg_id: &sclc::PackageId, version: &str) -> anyhow::R
 pub fn is_cached(pkg_id: &sclc::PackageId, version: &str) -> anyhow::Result<bool> {
     let dir = package_version_dir(pkg_id, version)?;
     Ok(dir.is_dir())
+}
+
+/// Atomically moves `tmp` to `target` with race-condition handling.
+///
+/// If the rename fails because another process already placed the directory,
+/// the temporary directory is cleaned up. If the parent directory is missing,
+/// it is created and the rename is retried once.
+pub(crate) async fn atomic_rename_dir(tmp: &Path, target: &Path) -> anyhow::Result<()> {
+    if let Err(_e) = tokio::fs::rename(tmp, target).await {
+        if target.is_dir() {
+            let _ = tokio::fs::remove_dir_all(tmp).await;
+            return Ok(());
+        }
+        if let Some(parent) = target.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        tokio::fs::rename(tmp, target).await.with_context(|| {
+            format!("failed to rename {} to {}", tmp.display(), target.display())
+        })?;
+    }
+    Ok(())
 }
 
 /// Writes the bundled stdlib `.scl` files to disk under the cache directory.
@@ -71,21 +92,7 @@ pub async fn populate_stdlib() -> anyhow::Result<PathBuf> {
         tokio::fs::write(&dest, content).await?;
     }
 
-    // Atomic rename into place. If another process raced us, ignore the
-    // rename error and verify the target exists.
-    if let Err(_e) = tokio::fs::rename(&tmp, &dir).await {
-        if dir.is_dir() {
-            let _ = tokio::fs::remove_dir_all(&tmp).await;
-            return Ok(dir);
-        }
-        // Ensure parent exists and retry once.
-        if let Some(parent) = dir.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        tokio::fs::rename(&tmp, &dir)
-            .await
-            .with_context(|| format!("failed to rename {} to {}", tmp.display(), dir.display()))?;
-    }
+    atomic_rename_dir(&tmp, &dir).await?;
 
     Ok(dir)
 }
