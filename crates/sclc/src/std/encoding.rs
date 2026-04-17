@@ -5,14 +5,10 @@ use crate::{Dict, EvalError, EvalErrorKind, Record, Value};
 
 pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/Encoding.toJson", |args, _ctx| {
-        let mut args = args.into_iter();
-        let first = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        if first.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
-        }
+        let first = match super::extract_arg(args) {
+            super::ExternArg::Ready(arg) => arg,
+            super::ExternArg::Pending(p) => return Ok(p),
+        };
 
         first.try_map(|value| {
             let json = to_json_value(&value)?;
@@ -25,14 +21,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/Encoding.fromJson", |args, _ctx| {
         use crate::ValueAssertions;
 
-        let mut args = args.into_iter();
-        let first = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        if first.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
-        }
+        let first = match super::extract_arg(args) {
+            super::ExternArg::Ready(arg) => arg,
+            super::ExternArg::Pending(p) => return Ok(p),
+        };
 
         first.try_map(|value| {
             let input = value.assert_str()?;

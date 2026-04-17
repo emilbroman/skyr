@@ -2,14 +2,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/List.range", |args, _ctx| {
         use crate::ValueAssertions;
 
-        let mut args = args.into_iter();
-        let first = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-
-        if first.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
-        }
+        let first = match super::extract_arg(args) {
+            super::ExternArg::Ready(arg) => arg,
+            super::ExternArg::Pending(p) => return Ok(p),
+        };
 
         first.try_map(|value| {
             let n = value.assert_int()?;

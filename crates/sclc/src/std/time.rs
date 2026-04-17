@@ -6,14 +6,10 @@ const SCHEDULE_RESOURCE_TYPE: &str = "Std/Time.Schedule";
 
 pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     eval.add_extern_fn("Std/Time.toISO", |args, _ctx| {
-        let mut args = args.into_iter();
-        let first = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        if first.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
-        }
+        let first = match super::extract_arg(args) {
+            super::ExternArg::Ready(arg) => arg,
+            super::ExternArg::Pending(p) => return Ok(p),
+        };
 
         first.try_map(|value| {
             let record = value.assert_record()?;
@@ -24,14 +20,10 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
     });
 
     eval.add_extern_fn("Std/Time.utc", |args, _ctx| {
-        let mut args = args.into_iter();
-        let first = args
-            .next()
-            .unwrap_or_else(|| crate::TrackedValue::new(Value::Nil));
-
-        if first.value.has_pending() {
-            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
-        }
+        let first = match super::extract_arg(args) {
+            super::ExternArg::Ready(arg) => arg,
+            super::ExternArg::Pending(p) => return Ok(p),
+        };
 
         first.try_map(|value| {
             let record = value.assert_record()?;

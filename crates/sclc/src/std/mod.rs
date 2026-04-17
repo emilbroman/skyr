@@ -82,31 +82,71 @@ pub fn bundled_stdlib_files() -> &'static [(&'static str, &'static [u8])] {
     &BUNDLED_FILES
 }
 
-/// Extracts the first argument from an extern function call, handling the
-/// common pattern of defaulting to Nil and short-circuiting on pending values.
+/// Result of extracting the first argument from an extern function.
+pub(crate) enum ExternArg {
+    /// The argument is ready (not pending).
+    Ready(crate::TrackedValue),
+    /// The argument is pending; the caller should return this value immediately.
+    Pending(crate::TrackedValue),
+}
+
+/// Extracts the first argument from an extern function's argument list.
+///
+/// Defaults to nil if no arguments are provided. Returns [`ExternArg::Pending`]
+/// if the argument contains pending values.
+pub(crate) fn extract_arg(args: Vec<crate::TrackedValue>) -> ExternArg {
+    let arg = args
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+    if arg.value.has_pending() {
+        ExternArg::Pending(crate::TrackedValue::pending().with_dependencies(arg.dependencies))
+    } else {
+        ExternArg::Ready(arg)
+    }
+}
+
+/// Extracts the first argument as a record, handling nil defaults and pending checks.
 ///
 /// Returns `Ok(Ok((config_record, dependencies)))` on success,
 /// `Ok(Err(pending_result))` if the argument has pending values, or
 /// `Err(...)` if the value is not a record.
+///
+/// Extra dependencies (e.g. a parent resource ID) are merged into the
+/// dependency set so that pending results propagate them correctly.
+pub(crate) fn extract_config_arg_with_deps(
+    args: Vec<crate::TrackedValue>,
+    extra_deps: impl IntoIterator<Item = ids::ResourceId>,
+) -> Result<
+    Result<(crate::Record, std::collections::BTreeSet<ids::ResourceId>), crate::TrackedValue>,
+    crate::EvalError,
+> {
+    let arg = args
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+    let mut deps = arg.dependencies.clone();
+    deps.extend(extra_deps);
+
+    if arg.value.has_pending() {
+        return Ok(Err(crate::TrackedValue::pending().with_dependencies(deps)));
+    }
+
+    use crate::ValueAssertions;
+    let config = arg.value.assert_record()?;
+    Ok(Ok((config, deps)))
+}
+
+/// Extracts the first argument as a record with no extra dependencies.
+///
+/// Convenience wrapper around [`extract_config_arg_with_deps`].
 pub(crate) fn extract_config_arg(
     args: Vec<crate::TrackedValue>,
 ) -> Result<
     Result<(crate::Record, std::collections::BTreeSet<ids::ResourceId>), crate::TrackedValue>,
     crate::EvalError,
 > {
-    let mut args = args.into_iter();
-    let config_arg = args
-        .next()
-        .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
-    let deps = config_arg.dependencies.clone();
-
-    if config_arg.value.has_pending() {
-        return Ok(Err(crate::TrackedValue::pending().with_dependencies(deps)));
-    }
-
-    use crate::ValueAssertions;
-    let config = config_arg.value.assert_record()?;
-    Ok(Ok((config, deps)))
+    extract_config_arg_with_deps(args, std::iter::empty())
 }
 
 std_modules! {
