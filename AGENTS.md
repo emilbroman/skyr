@@ -61,6 +61,25 @@ The `web/` directory uses [Biome](https://biomejs.dev/) for formatting and linti
   - `docs/scl/stdlib.md` — for new or changed standard library modules and functions
   - `docs/scl/index.md` — if the feature deserves a mention in the "Language Features at a Glance" section
 
+### SCL Compiler and Specification
+
+The SCL language has two sources of truth that must stay in sync: the reference implementation in `crates/sclc` and the formal specification under `spec/` (Typst chapters, compiled via `spec/main.typ` to `spec/scl-spec.pdf`).
+
+- **Any syntactic or semantic change to the compiler must be accompanied by the corresponding change to the specification, in the same PR.** This includes (but is not limited to):
+  - Grammar changes in `crates/sclc/src/parser.rs` → update `spec/ch02_lexical.typ` and/or `spec/ch03_syntax.typ`
+  - New or changed type-checking rules (`crates/sclc/src/checker.rs`, `crates/sclc/src/ast/*.rs` `type_synth`/`type_check` impls) → update `spec/ch04_types.typ`, `spec/ch05_subtyping.typ`, `spec/ch06_propositions.typ`, or `spec/ch07_static.typ` as appropriate
+  - Changes to evaluation behavior (`crates/sclc/src/eval.rs`, `ast/*.rs` `eval` impls) → update `spec/ch08_dynamic.typ`
+  - Changes to module resolution, import semantics, or dependency analysis → update `spec/ch09_modules.typ`
+- **Grammar changes must also be mirrored in every other grammar consumer in this repo**, or SCL source will render/parse incorrectly in editors, docs, and tooling:
+  - `web/src/lib/scl.tmLanguage.json` — TextMate grammar used by the web frontend for syntax highlighting (docs, code blocks, any `.scl` rendering in the UI).
+  - `crates/sclc/tree-sitter-scl/grammar.js` — tree-sitter grammar for SCL source files (editor tooling, incremental parsing).
+  - `crates/sclc/tree-sitter-scle/grammar.js` — tree-sitter grammar for SCLE (the evaluated/serialized SCL form); update this only if the change affects the SCLE subset.
+- **Conversely**, do not change the spec in isolation either — if the spec is wrong, either fix the spec to match the compiler *or* change the compiler to match the corrected spec, but do not leave them divergent.
+- When the change is a bug fix that aligns the two, state in the commit message which direction the alignment went (e.g., "compiler now matches spec §8 rule E-Call" vs. "spec §4.1 corrected to match implementation").
+- The spec is authoritative for *language* semantics; the implementation is authoritative for host/runtime details (stdlib extern bindings, resource effects, RDB formats). Chapter 10 (`ch10_stdlib.typ`) intentionally does **not** enumerate stdlib signatures — those live in `crates/sclc/src/std/*.scl` and its rendered form in `docs/scl/stdlib.md`.
+- Changes to the end-user documentation in `docs/scl/` are separate from spec updates — see the `docs/scl/*` bullets above. Spec updates are for language designers and implementers; `docs/` is for SCL users.
+- Before committing spec changes, render the PDF to make sure the Typst sources still compile: `make spec` (or `typst compile spec/main.typ spec/scl-spec.pdf` directly). `make spec-watch` is useful while iterating.
+
 ### Adding a New RTP Plugin
 
 When adding a new standard library RTP plugin (e.g., `plugin_std_foo` for `Std/Foo`), update the following locations:
