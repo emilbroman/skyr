@@ -119,17 +119,7 @@ fn resolve_deps<'a>(
                     .await
                     .with_context(|| format!("failed to fetch {} at {}", repo_qid, commit_hash))?;
 
-                // Atomic rename.
-                if let Err(_e) = tokio::fs::rename(&tmp, &dir).await {
-                    if dir.is_dir() {
-                        let _ = tokio::fs::remove_dir_all(&tmp).await;
-                    } else {
-                        if let Some(parent) = dir.parent() {
-                            tokio::fs::create_dir_all(parent).await?;
-                        }
-                        tokio::fs::rename(&tmp, &dir).await?;
-                    }
-                }
+                cache::atomic_rename_dir(&tmp, &dir).await?;
                 dir
             } else {
                 cache::package_version_dir(&package_id, &commit_hash)?
