@@ -14,6 +14,38 @@ use ids::RepoQid;
 use crate::cache::{self, ResolvedPackage};
 use crate::git_client::GitClient;
 
+/// Parse a slash-separated package string (e.g. `"MyOrg/MyRepo"`) into a
+/// [`sclc::PackageId`], filtering out empty segments.
+pub fn parse_package_id(package: &str) -> sclc::PackageId {
+    package
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_owned)
+        .collect::<sclc::PackageId>()
+}
+
+/// Load the manifest for `user_package`, and if it declares dependencies,
+/// create a [`GitClient`] and resolve them all (direct + transitive).
+///
+/// Returns an empty vec when there is no manifest or no dependencies,
+/// avoiding the SSH handshake required to construct a [`GitClient`].
+pub async fn resolve_package_deps(
+    user_package: Arc<dyn sclc::Package>,
+    default_finder: Arc<dyn sclc::PackageFinder>,
+    git_server: &str,
+) -> anyhow::Result<Vec<ResolvedPackage>> {
+    let manifest = sclc::load_manifest(Arc::clone(&user_package), default_finder.clone()).await?;
+    let Some(manifest) = manifest else {
+        return Ok(Vec::new());
+    };
+    if manifest.dependencies.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let git_client = GitClient::from_config(git_server.to_string()).await?;
+    resolve_all(user_package, default_finder, &git_client).await
+}
+
 /// Resolve all dependencies of `root_package` (direct + transitive),
 /// populating the local cache as needed.
 ///

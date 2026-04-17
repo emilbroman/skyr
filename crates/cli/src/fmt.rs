@@ -12,6 +12,18 @@ pub struct FmtArgs {
     pub write: bool,
 }
 
+/// Check diagnostics for errors, printing them to stderr.
+/// Returns `Err` if any errors were found.
+fn check_diagnostics(diagnosed: &sclc::DiagList) -> anyhow::Result<()> {
+    if !diagnosed.has_errors() {
+        return Ok(());
+    }
+    for diag in diagnosed.iter() {
+        eprintln!("{diag}");
+    }
+    anyhow::bail!("cannot format file with syntax errors");
+}
+
 pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
     let source = std::fs::read_to_string(&args.file)?;
 
@@ -26,31 +38,15 @@ pub fn run_fmt(args: FmtArgs) -> anyhow::Result<()> {
 
     let formatted = if is_scle {
         let diagnosed = sclc::parse_scle(&source, &module_id);
-
-        if diagnosed.diags().has_errors() {
-            for diag in diagnosed.diags().iter() {
-                eprintln!("{diag}");
-            }
-            anyhow::bail!("cannot format file with syntax errors");
-        }
-
+        check_diagnostics(diagnosed.diags())?;
         let scle = diagnosed
             .into_inner()
             .ok_or_else(|| anyhow::anyhow!("cannot format file with syntax errors"))?;
-
         sclc::Formatter::format_scle(&source, &scle)
     } else {
         let diagnosed = sclc::parse_file_mod(&source, &module_id);
-
-        if diagnosed.diags().has_errors() {
-            for diag in diagnosed.diags().iter() {
-                eprintln!("{diag}");
-            }
-            anyhow::bail!("cannot format file with syntax errors");
-        }
-
+        check_diagnostics(diagnosed.diags())?;
         let file_mod = diagnosed.into_inner();
-
         sclc::Formatter::format(&source, &file_mod)
     };
 
