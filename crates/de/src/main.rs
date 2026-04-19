@@ -402,6 +402,12 @@ impl Worker {
         let deployment_id = deployment.deployment.clone();
         let sid = short_id(deployment_id.as_str()).to_string();
 
+        // Read the supersession record once up front. The self-transition
+        // invariant (see `tla/DeploymentEngine.tla`) says only our own
+        // worker writes our state column, so we react to the supersession
+        // *row* rather than waiting for someone else to write our state.
+        let is_superseded = self.client.get_superseding().await?.is_some();
+
         match deployment.state {
             DeploymentState::Down => {
                 tracing::info!("{sid} down, waiting to be decommissioned...");
@@ -413,9 +419,41 @@ impl Worker {
                 Ok(())
             }
 
-            DeploymentState::Desired => self.run_reconcile_active(&deployment).await,
+            DeploymentState::Pending => {
+                if is_superseded {
+                    // A newer push pre-empted us before we activated.
+                    tracing::info!("{sid} pre-empted while pending; marking DOWN");
+                    self.log_publisher
+                        .info(format!("{sid} pre-empted before activation"))
+                        .await;
+                    self.client.set(DeploymentState::Down).await?;
+                    return Ok(());
+                }
+                if self.predecessor_ready().await? {
+                    tracing::info!("{sid} predecessor ready; promoting PENDING → DESIRED");
+                    self.client.set(DeploymentState::Desired).await?;
+                } else {
+                    tracing::debug!("{sid} pending; waiting for predecessor to linger");
+                }
+                Ok(())
+            }
+
+            DeploymentState::Desired => {
+                if is_superseded {
+                    tracing::info!("{sid} superseded; DESIRED → LINGERING");
+                    self.client.set(DeploymentState::Lingering).await?;
+                    return Ok(());
+                }
+                self.run_reconcile_active(&deployment).await
+            }
 
             DeploymentState::Failing => {
+                if is_superseded {
+                    tracing::info!("{sid} superseded while failing; FAILING → LINGERING");
+                    self.client.set(DeploymentState::Lingering).await?;
+                    self.backoff = None;
+                    return Ok(());
+                }
                 // Respect in-memory backoff: if the next attempt isn't due
                 // yet, skip this iteration entirely.
                 if let Some(state) = self.backoff {
@@ -433,6 +471,11 @@ impl Worker {
             }
 
             DeploymentState::Up => {
+                if is_superseded {
+                    tracing::info!("{sid} superseded while up; UP → LINGERING");
+                    self.client.set(DeploymentState::Lingering).await?;
+                    return Ok(());
+                }
                 tracing::debug!("{sid} up; no reconciliation needed");
                 Ok(())
             }
@@ -545,7 +588,23 @@ impl Worker {
             }
 
             DeploymentState::Lingering => {
+                if !is_superseded {
+                    // Our supersession row has been cleared — typically
+                    // because our superseder failed and its worker ran
+                    // the rollback path. Reclaim the tip.
+                    tracing::info!("{sid} supersession cleared; LINGERING → DESIRED");
+                    self.log_publisher
+                        .info(format!("{sid} reclaiming tip (rollback)"))
+                        .await;
+                    self.client.set(DeploymentState::Desired).await?;
+                    return Ok(());
+                }
+
                 tracing::info!("{sid} lingering...");
+                // Walk the supersession chain to decide whether our
+                // superseder (or something further along the chain) has
+                // reached a steady `Up` state where tearing us down is
+                // safe.
                 let mut cursor = self.client.clone();
                 let mut seen = HashSet::new();
 
@@ -558,20 +617,9 @@ impl Worker {
                         break;
                     }
 
-                    if matches!(
-                        superseding_deployment.state,
-                        DeploymentState::Desired | DeploymentState::Up
-                    ) {
-                        self.client
-                            .mark_superseded_by(&superseding_deployment.deployment)
-                            .await?;
-
-                        // If the superseding deployment is already Up, it won't
-                        // re-check its superseded list, so transition ourselves.
-                        if superseding_deployment.state == DeploymentState::Up {
-                            self.client.set(DeploymentState::Undesired).await?;
-                        }
-
+                    if superseding_deployment.state == DeploymentState::Up {
+                        // Successor is fully converged; safe to tear down.
+                        self.client.set(DeploymentState::Undesired).await?;
                         break;
                     }
 
@@ -583,12 +631,43 @@ impl Worker {
         }
     }
 
+    /// Returns `true` if every deployment this one has superseded has
+    /// acknowledged the supersession by reaching `Lingering` (or a later
+    /// terminal state). Used by the `Pending` handler to decide when to
+    /// self-promote to `Desired`.
+    async fn predecessor_ready(&self) -> anyhow::Result<bool> {
+        for predecessor in self.client.superseded().await? {
+            match predecessor.get().await {
+                Ok(dep) => {
+                    if matches!(
+                        dep.state,
+                        DeploymentState::Lingering
+                            | DeploymentState::Undesired
+                            | DeploymentState::Down
+                            | DeploymentState::Failed
+                    ) {
+                        continue;
+                    }
+                    return Ok(false);
+                }
+                Err(cdb::DeploymentQueryError::NotFound) => {
+                    // Predecessor disappeared (shouldn't normally
+                    // happen). Treat as ready.
+                    continue;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(true)
+    }
+
     /// Dispatch to [`reconcile_active`](Self::reconcile_active) and apply
     /// the resulting state transition.
     ///
     /// * Ok with fatal errors → transition to `Failed`, clear backoff, and
-    ///   try to make the deployment this one superseded desired again
-    ///   (rollback).
+    ///   clear the supersession records naming us as superseder so any
+    ///   predecessors we superseded can self-recover from `Lingering`
+    ///   back to `Desired` on their next tick.
     /// * Ok without fatal errors → success. If we were previously
     ///   `Failing`, clear backoff and move back to `Desired` (unless the
     ///   reconciliation itself promoted us to `Up`).
@@ -607,7 +686,7 @@ impl Worker {
                         .await;
                     self.client.set(DeploymentState::Failed).await?;
                     self.backoff = None;
-                    self.attempt_rollback(&sid).await?;
+                    self.trigger_rollback(&sid).await?;
                     return Ok(());
                 }
 
@@ -640,30 +719,31 @@ impl Worker {
         }
     }
 
-    /// Attempt to roll back to a predecessor deployment after a fatal
-    /// failure. Best-effort: a failure to find or promote a target is
-    /// logged but not propagated, since the failing deployment has
-    /// already been marked `Failed`.
-    async fn attempt_rollback(&self, sid: &str) -> anyhow::Result<()> {
-        match self.client.rollback_target().await? {
-            Some(target) => {
-                let target_sid = short_id(target.deployment.as_str()).to_string();
-                let target_client = self
-                    .cdb_client
-                    .repo(target.repo.clone())
-                    .deployment(target.environment.clone(), target.deployment.clone());
-                target_client.make_desired().await?;
-                tracing::info!("{sid} rolled back to {target_sid}");
-                self.log_publisher
-                    .info(format!("rolled back {sid} to {target_sid}"))
-                    .await;
-            }
-            None => {
-                tracing::warn!("{sid} no rollback target found");
-                self.log_publisher
-                    .error(format!("no rollback target for failed {sid}"))
-                    .await;
-            }
+    /// Roll back to a predecessor after a fatal failure by clearing the
+    /// supersession rows that name us as superseder. Each predecessor's
+    /// own worker will observe the cleared row on its next tick and
+    /// self-transition from `Lingering` back to `Desired`.
+    ///
+    /// This replaces the previous cross-deployment `make_desired` write,
+    /// which violated the self-transition invariant and raced against
+    /// concurrent pushes. Best-effort: errors are logged but not
+    /// propagated since the deployment has already been marked `Failed`.
+    async fn trigger_rollback(&self, sid: &str) -> anyhow::Result<()> {
+        let predecessors = self.client.superseded().await?;
+        if predecessors.is_empty() {
+            tracing::warn!("{sid} no predecessor to roll back to");
+            self.log_publisher
+                .error(format!("no rollback target for failed {sid}"))
+                .await;
+            return Ok(());
+        }
+        self.client.clear_predecessor_supersessions().await?;
+        for predecessor in predecessors {
+            let target_sid = short_id(predecessor.deployment_id().as_str()).to_string();
+            tracing::info!("{sid} cleared supersession for {target_sid}");
+            self.log_publisher
+                .info(format!("rolled back {sid}: {target_sid} may reclaim tip"))
+                .await;
         }
         Ok(())
     }

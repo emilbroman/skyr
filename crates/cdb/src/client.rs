@@ -7,7 +7,7 @@ use crate::deployment::{Deployment, InvalidDeploymentState};
 use crate::{DeploymentState, Repository};
 use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
-use futures_util::{Stream, StreamExt, TryStreamExt, pin_mut, stream};
+use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use gix_hash::ObjectId;
 use gix_object::{Blob, Commit, Kind, Object, Tree, WriteTo};
 use ids::{DeploymentId, EnvironmentId, ParseIdError, RepoQid};
@@ -1102,70 +1102,6 @@ impl DeploymentClient {
             .await?;
 
         Ok(superseded)
-    }
-
-    /// Pick a suitable deployment to roll back to after this deployment has
-    /// failed fatally.
-    ///
-    /// The primary candidate set is the deployments that this one directly
-    /// superseded (from the supersessions table). If several exist (e.g. a
-    /// racey double-push produced multiple superseded predecessors), the
-    /// most recent by `created_at` wins. Any predecessor that is itself
-    /// `Failing` or `Failed` is skipped.
-    ///
-    /// If no direct predecessor is a viable rollback target, falls back to
-    /// the most recent non-failed deployment in the same environment,
-    /// excluding `self`.
-    ///
-    /// Returns `None` if no suitable candidate exists.
-    pub async fn rollback_target(&self) -> Result<Option<Deployment>, DeploymentQueryError> {
-        // Primary: deployments we superseded directly.
-        let superseded = self.superseded().await?;
-        let mut candidates: Vec<Deployment> = Vec::new();
-        for client in superseded {
-            match client.get().await {
-                Ok(dep) => {
-                    if !matches!(
-                        dep.state,
-                        DeploymentState::Failed | DeploymentState::Failing
-                    ) {
-                        candidates.push(dep);
-                    }
-                }
-                Err(DeploymentQueryError::NotFound) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        if let Some(best) = candidates.into_iter().max_by_key(|d| d.created_at) {
-            return Ok(Some(best));
-        }
-
-        // Fallback: most recent deployment in the same environment that
-        // isn't failing/failed or self.
-        let stream = self.repo.deployments().await?;
-        pin_mut!(stream);
-        let mut best: Option<Deployment> = None;
-        while let Some(dep) = stream.next().await {
-            let dep = dep?;
-            if dep.environment != self.environment {
-                continue;
-            }
-            if dep.deployment == self.deployment {
-                continue;
-            }
-            if matches!(
-                dep.state,
-                DeploymentState::Failed | DeploymentState::Failing
-            ) {
-                continue;
-            }
-            match &best {
-                None => best = Some(dep),
-                Some(b) if dep.created_at > b.created_at => best = Some(dep),
-                _ => {}
-            }
-        }
-        Ok(best)
     }
 
     /// Promote this deployment to be the tip of its environment by
