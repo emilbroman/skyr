@@ -34,6 +34,7 @@ let deployment = $derived(
 );
 
 const liveStates: DeploymentState[] = [
+    DeploymentState.Pending,
     DeploymentState.Desired,
     DeploymentState.Lingering,
     DeploymentState.Undesired,

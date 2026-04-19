@@ -80,6 +80,7 @@ export enum DeploymentState {
   Failed = 'FAILED',
   Failing = 'FAILING',
   Lingering = 'LINGERING',
+  Pending = 'PENDING',
   Undesired = 'UNDESIRED',
   Up = 'UP'
 }

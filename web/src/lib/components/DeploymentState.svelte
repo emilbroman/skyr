@@ -8,6 +8,10 @@ const styles: Record<DeploymentState, { bg: string; text: string }> = {
         bg: "bg-green-50 border-green-300",
         text: "text-green-700",
     },
+    [DeploymentState.Pending]: {
+        bg: "bg-slate-50 border-slate-300",
+        text: "text-slate-600",
+    },
     [DeploymentState.Desired]: {
         bg: "bg-blue-50 border-blue-300",
         text: "text-blue-700",
@@ -56,6 +60,19 @@ const iconSize = $derived(size === "small" ? 10 : 12);
             stroke-linejoin="round"
         >
             <polyline points="3,8.5 6.5,12 13,4" />
+        </svg>
+    {:else if state === DeploymentState.Pending}
+        <svg
+            class="spinner-slow"
+            width={iconSize}
+            height={iconSize}
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.5"
+            stroke-linecap="round"
+        >
+            <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
         </svg>
     {:else if state === DeploymentState.Desired}
         <svg
