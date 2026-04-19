@@ -39,6 +39,10 @@ pub enum DeploymentState {
     Down,
     Undesired,
     Lingering,
+    /// Initial state for a freshly-created deployment. The deployment's own
+    /// worker promotes it to `Desired` once any predecessor it supersedes
+    /// has acknowledged the supersession (i.e. reached `Lingering`).
+    Pending,
     Desired,
     Up,
     Failing,
@@ -46,17 +50,21 @@ pub enum DeploymentState {
 }
 
 impl DeploymentState {
-    /// Whether a deployment in this state is considered "active" for
-    /// supersession purposes — i.e. a new `Desired` deployment arriving in
-    /// the same environment should transition it to `Lingering`.
+    /// Whether a deployment in this state is a "live" lifecycle state —
+    /// i.e. not yet terminal (`Down`, `Undesired`, `Failed`) and not
+    /// waiting for teardown (`Lingering`).
     ///
-    /// `Failed` is intentionally excluded: once a deployment has failed
-    /// fatally we may have already rolled back to a prior deployment, so it
-    /// is treated as a terminal state that does not get re-lingered.
+    /// In the redesigned state machine, "which deployment is the tip of an
+    /// environment" is determined by supersession-absence rather than this
+    /// predicate, so callers should generally prefer checking the
+    /// `supersessions` table directly.
     pub fn is_active(self) -> bool {
         matches!(
             self,
-            DeploymentState::Desired | DeploymentState::Up | DeploymentState::Failing
+            DeploymentState::Pending
+                | DeploymentState::Desired
+                | DeploymentState::Up
+                | DeploymentState::Failing
         )
     }
 }
@@ -67,6 +75,7 @@ impl fmt::Display for DeploymentState {
             Self::Down => write!(f, "DOWN"),
             Self::Undesired => write!(f, "UNDESIRED"),
             Self::Lingering => write!(f, "LINGERING"),
+            Self::Pending => write!(f, "PENDING"),
             Self::Desired => write!(f, "DESIRED"),
             Self::Up => write!(f, "UP"),
             Self::Failing => write!(f, "FAILING"),
@@ -87,6 +96,7 @@ impl FromStr for DeploymentState {
             "DOWN" => Ok(DeploymentState::Down),
             "UNDESIRED" => Ok(DeploymentState::Undesired),
             "LINGERING" => Ok(DeploymentState::Lingering),
+            "PENDING" => Ok(DeploymentState::Pending),
             "DESIRED" => Ok(DeploymentState::Desired),
             "UP" => Ok(DeploymentState::Up),
             "FAILING" => Ok(DeploymentState::Failing),

@@ -250,6 +250,15 @@ prepared_statements! {
                 environment_id,
                 superseded_commit_hash
             ) VALUES (?, ?, ?, ?, ?)
+            IF NOT EXISTS
+        "#,
+
+        delete_supersession = r#"
+            DELETE FROM cdb.supersessions
+            WHERE organization = ?
+            AND repository = ?
+            AND environment_id = ?
+            AND superseded_commit_hash = ?
         "#,
 
         get_superseded_commits = r#"
@@ -976,19 +985,82 @@ impl DeploymentClient {
             .map(|e| e.oid))
     }
 
+    /// Record that this deployment is superseded by `superseding_commit`.
+    ///
+    /// Uses a lightweight transaction (`IF NOT EXISTS`) so two concurrent
+    /// writers cannot silently clobber each other's supersession record. If
+    /// a supersession row already exists for this deployment, the write is
+    /// treated as idempotent iff the existing superseder matches
+    /// `superseding_commit`; otherwise [`SetDeploymentError::SupersessionConflict`]
+    /// is returned so the caller can react (e.g. rejecting a racey push).
     pub async fn mark_superseded_by(
         &self,
         superseding_commit: &DeploymentId,
     ) -> Result<(), SetDeploymentError> {
         let superseding_oid = ObjectId::from_bytes_or_panic(&superseding_commit.to_bytes());
         let this_oid = self.commit_hash();
-        self.repo
+        let result = self
+            .repo
             .client
             .session
             .execute_unpaged(
                 &self.repo.client.statements.create_supersession,
                 (
                     superseding_oid.as_bytes(),
+                    self.repo.name.org.as_str(),
+                    self.repo.name.repo.as_str(),
+                    self.environment.as_str(),
+                    this_oid.as_bytes(),
+                ),
+            )
+            .await?;
+
+        // LWT writes return a row with the `[applied]` pseudo-column plus
+        // the existing row's columns when the write wasn't applied.
+        let rows = result.into_rows_result()?;
+        let (applied, existing) = rows
+            .single_row::<(bool, Option<Vec<u8>>)>()
+            .unwrap_or((true, None));
+
+        if applied {
+            return Ok(());
+        }
+
+        // If the existing row names the same superseder, treat it as an
+        // idempotent re-write (e.g. a retried push).
+        if let Some(existing_bytes) = existing
+            && existing_bytes == superseding_oid.as_bytes()
+        {
+            return Ok(());
+        }
+
+        Err(SetDeploymentError::SupersessionConflict)
+    }
+
+    /// Remove every supersession row naming *self* as the superseder. This
+    /// is the core of the rollback mechanism: when a deployment reaches
+    /// `Failed`, its own worker clears the records pointing into it, and
+    /// the predecessors it had superseded observe the cleared row on their
+    /// next tick and self-transition from `Lingering` back to `Desired`.
+    pub async fn clear_predecessor_supersessions(&self) -> Result<(), SetDeploymentError> {
+        for predecessor in self.superseded().await? {
+            predecessor.clear_supersession().await?;
+        }
+        Ok(())
+    }
+
+    /// Remove this deployment's supersession record, if any. Used by the
+    /// rollback path: when a superseder reaches `Failed`, its predecessors'
+    /// supersession rows are cleared so they can self-transition back to
+    /// `Desired`.
+    pub async fn clear_supersession(&self) -> Result<(), SetDeploymentError> {
+        let this_oid = self.commit_hash();
+        self.repo
+            .client
+            .session
+            .execute_unpaged(
+                &self.repo.client.statements.delete_supersession,
+                (
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
                     self.environment.as_str(),
@@ -1096,16 +1168,36 @@ impl DeploymentClient {
         Ok(best)
     }
 
-    /// Transition this deployment into the `Desired` state, taking over
-    /// from whatever deployment is currently active in the same
-    /// environment.
+    /// Promote this deployment to be the tip of its environment by
+    /// manipulating *supersession rows only* — no deployment-state writes
+    /// are performed here. The affected deployments' own workers will
+    /// observe the supersession changes on their next tick and
+    /// self-transition accordingly.
     ///
-    /// Any currently-active deployment (`Desired`, `Up`, or `Failing`) in
-    /// this environment is transitioned to `Lingering` and a supersession
-    /// row is recorded linking it to this deployment. `Failed` and
-    /// `Lingering`/`Undesired`/`Down` deployments are left untouched.
+    /// Specifically:
+    /// * Any supersession row pointing *at* this deployment is cleared,
+    ///   so it is no longer superseded (this unblocks a `Lingering` self
+    ///   to `Desired`, or a `Failed` self to be resurrected by a
+    ///   re-reconcile).
+    /// * For every currently-active, non-superseded deployment in the
+    ///   same environment, a supersession row is written pointing from
+    ///   that deployment to this one. Those deployments' workers will
+    ///   observe the supersession and transition to `Lingering`.
+    ///
+    /// This replaces the previous cross-deployment state writes and
+    /// respects the self-transition invariant documented in the TLA
+    /// model (see `tla/DeploymentEngine.tla`): only a deployment's own
+    /// worker writes that deployment's `state` column.
     pub async fn make_desired(&self) -> Result<(), SetDeploymentError> {
-        // Find currently-active deployments in the same environment.
+        // Clear any supersession row naming *self* as the superseded
+        // deployment. This is the "rollback" half of make_desired: if
+        // someone else had superseded us (we're Lingering), we are now
+        // reclaiming the tip.
+        self.clear_supersession().await?;
+
+        // Find currently-active (state-wise) deployments in the same
+        // environment and write a supersession row pointing from each to
+        // self. Skip anything already superseded (including by self).
         let mut active: Vec<Deployment> = Vec::new();
         let mut stream = self.repo.active_deployments().await?;
         while let Some(dep) = stream.next().await {
@@ -1121,21 +1213,28 @@ impl DeploymentClient {
             }
         }
 
-        // Mark each as Lingering and record the supersession.
         for dep in active {
             let predecessor = self
                 .repo
                 .deployment(dep.environment.clone(), dep.deployment.clone());
-            let (r1, r2) = futures::join!(
-                predecessor.set(DeploymentState::Lingering),
-                predecessor.mark_superseded_by(&self.deployment),
-            );
-            r1?;
-            r2?;
+            // Only supersede predecessors that aren't already superseded
+            // by somebody. If they are, we leave their chain alone —
+            // whichever deployment is the tip of the env will be
+            // superseded the next time through.
+            if predecessor.get_superseding().await?.is_some() {
+                continue;
+            }
+            match predecessor.mark_superseded_by(&self.deployment).await {
+                Ok(()) => {}
+                // A concurrent write raced us. Treat as a transient
+                // no-op: whoever won will shape the env; our caller can
+                // retry if that's not what they wanted.
+                Err(SetDeploymentError::SupersessionConflict) => {}
+                Err(e) => return Err(e),
+            }
         }
 
-        // Promote self.
-        self.set(DeploymentState::Desired).await
+        Ok(())
     }
 
     pub async fn get_superseding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
@@ -1284,4 +1383,10 @@ pub enum SetDeploymentError {
 
     #[error("failed to query: {0}")]
     Query(#[from] DeploymentQueryError),
+
+    #[error("failed to load row: {0}")]
+    IntoRows(#[from] IntoRowsResultError),
+
+    #[error("supersession row already exists with a different superseder")]
+    SupersessionConflict,
 }
