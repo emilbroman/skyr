@@ -1596,33 +1596,66 @@ impl<'a> CommandHandler<'a> {
             let environment_id = EnvironmentId::from_git_ref(&update.name)
                 .map_err(|e| anyhow!("invalid git ref '{}': {}", update.name, e))?;
 
-            if update.new != null_oid {
-                let deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
-                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self
-                    .client
-                    .deployment(environment_id.clone(), deployment_id);
-                deployment.set(DeploymentState::Desired).await?;
+            // A git push is a state-machine event, not a state write. SCS
+            // only writes two kinds of rows:
+            //   1. A supersession row from the previous tip to the new
+            //      commit (LWT, written first). The previous tip's own
+            //      worker will observe this and transition itself to
+            //      `Lingering`.
+            //   2. A fresh deployment row in `Pending` state for the new
+            //      commit. Its own worker promotes it to `Desired` once
+            //      the predecessor acknowledges the supersession.
+            //
+            // Ref deletion (update.new == null_oid) is the one exception:
+            // there is no new deployment to create, so we write
+            // `Undesired` directly to the old deployment as a teardown
+            // instruction. No supersession row is created because there
+            // is no superseder.
+            if update.new == null_oid {
+                // Deletion: tell the old deployment's worker to tear down.
+                if update.old != null_oid {
+                    let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
+                        .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+                    let deployment = self.client.deployment(environment_id, old_deployment_id);
+                    deployment.set(DeploymentState::Undesired).await?;
+                }
+                results.push(update.name.clone());
+                continue;
             }
 
+            let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
+                .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+
+            // 1. Record supersession first, *before* creating the new
+            //    deployment row. This preserves a key invariant from the
+            //    TLA model: if a worker observes the new deployment, the
+            //    supersession record it needs to see must already be
+            //    visible. Ordering the other way would let the new
+            //    deployment's worker race ahead of its predecessor's
+            //    teardown acknowledgement.
             if update.old != null_oid && update.old != update.new {
-                let state = if update.new == null_oid {
-                    DeploymentState::Undesired
-                } else {
-                    DeploymentState::Lingering
-                };
                 let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self.client.deployment(environment_id, old_deployment_id);
-                let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
-                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let (r1, r2) = futures::join!(
-                    deployment.set(state),
-                    deployment.mark_superseded_by(&new_deployment_id),
-                );
-                r1?;
-                r2?;
+                let predecessor = self
+                    .client
+                    .deployment(environment_id.clone(), old_deployment_id);
+                if let Err(e) = predecessor.mark_superseded_by(&new_deployment_id).await {
+                    // A concurrent push won the LWT. Git's fast-forward
+                    // check should have prevented this, but if it leaks
+                    // through, surface it rather than silently
+                    // overwriting.
+                    return Err(anyhow!(
+                        "failed to record supersession for {}: {e}",
+                        update.name
+                    ));
+                }
             }
+
+            // 2. Create the new deployment as `Pending`. Its worker will
+            //    promote it to `Desired` once the predecessor (if any)
+            //    reaches `Lingering`.
+            let deployment = self.client.deployment(environment_id, new_deployment_id);
+            deployment.set(DeploymentState::Pending).await?;
 
             results.push(update.name.clone());
         }
@@ -1686,24 +1719,35 @@ impl<'a> CommandHandler<'a> {
     async fn collect_refs(&self) -> anyhow::Result<Vec<Reference>> {
         let mut refs = vec![];
 
+        // The tip of an environment is the unique deployment whose state
+        // is live (not `Undesired`/`Failed`/`Down`) AND has no
+        // supersession row pointing at it. This matches the invariant
+        // verified in the TLA model (`tla/DeploymentEngine.tla`,
+        // `AtMostOneActive`). Ordinarily there is exactly one such
+        // deployment per environment; during brief windows (e.g. right
+        // after a rollback clears a supersession and before the
+        // predecessor's worker promotes itself back to `Desired`) there
+        // can be a `Lingering` with no superseder — we still advertise
+        // its commit as the ref.
         let mut deployments = self.client.active_deployments().await?;
         while let Some(deployment) = deployments.next().await {
             let deployment = deployment?;
 
-            // Filter out deployments that are not the current head of
-            // their environment:
-            //   * Undesired/Lingering — an older deployment being torn
-            //     down or waiting to be.
-            //   * Failed — this deployment is terminal; either there is a
-            //     rollback `Desired` deployment in the same env (which
-            //     would otherwise produce a duplicate ref), or this env
-            //     genuinely has no working HEAD.
-            // `Failing` is kept: it's an actively-reconciled deployment
-            // that still represents the env's latest intent.
             if matches!(
                 deployment.state,
-                DeploymentState::Undesired | DeploymentState::Lingering | DeploymentState::Failed
+                DeploymentState::Undesired | DeploymentState::Down | DeploymentState::Failed
             ) {
+                continue;
+            }
+
+            let deployment_client = self.client.deployment(
+                deployment.environment.clone(),
+                deployment.deployment.clone(),
+            );
+            if deployment_client.get_superseding().await?.is_some() {
+                // Something has superseded this deployment; a newer
+                // commit in the same environment will be advertised
+                // instead.
                 continue;
             }
 
