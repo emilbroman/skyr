@@ -1945,6 +1945,8 @@ enum DeploymentState {
     Undesired,
     #[graphql(name = "LINGERING")]
     Lingering,
+    #[graphql(name = "PENDING")]
+    Pending,
     #[graphql(name = "DESIRED")]
     Desired,
     #[graphql(name = "UP")]
@@ -1961,6 +1963,7 @@ impl From<cdb::DeploymentState> for DeploymentState {
             cdb::DeploymentState::Down => DeploymentState::Down,
             cdb::DeploymentState::Undesired => DeploymentState::Undesired,
             cdb::DeploymentState::Lingering => DeploymentState::Lingering,
+            cdb::DeploymentState::Pending => DeploymentState::Pending,
             cdb::DeploymentState::Desired => DeploymentState::Desired,
             cdb::DeploymentState::Up => DeploymentState::Up,
             cdb::DeploymentState::Failing => DeploymentState::Failing,

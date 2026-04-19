@@ -8,6 +8,7 @@ enum DeploymentState {
   DOWN
   UNDESIRED
   LINGERING
+  PENDING
   DESIRED
   UP
   FAILING
