@@ -811,6 +811,35 @@ impl RepositoryClient {
                 )
             }))
     }
+
+    /// Tear down an environment by transitioning every currently-active
+    /// deployment (`Desired`, `Up`, `Failing`) in the environment to
+    /// `Undesired`. Mirrors the state transition SCS performs when a
+    /// client deletes the environment's git ref.
+    pub async fn tear_down_environment(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<(), SetDeploymentError> {
+        let mut active: Vec<Deployment> = Vec::new();
+        let mut stream = self.active_deployments().await?;
+        while let Some(dep) = stream.next().await {
+            let dep = dep?;
+            if &dep.environment != environment {
+                continue;
+            }
+            if dep.state.is_active() {
+                active.push(dep);
+            }
+        }
+
+        for dep in active {
+            self.deployment(dep.environment.clone(), dep.deployment.clone())
+                .set(DeploymentState::Undesired)
+                .await?;
+        }
+
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------

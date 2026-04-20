@@ -748,6 +748,61 @@ impl Mutation {
 
         Ok(Deployment { deployment })
     }
+
+    /// Tear down an environment by transitioning every currently-active
+    /// deployment in it to `Undesired`. Equivalent to deleting the
+    /// environment's git ref via SCS.
+    ///
+    /// Requires the caller to be a member of the owning organisation (the
+    /// same access level as other repository-scoped operations).
+    #[graphql(name = "tearDownEnvironment")]
+    async fn tear_down_environment(
+        context: &Context,
+        organization: String,
+        repository: String,
+        environment: String,
+    ) -> FieldResult<bool> {
+        let (_, user) = context.check_auth().await?;
+
+        if organization != user.username {
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
+        }
+
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let repo_qid = ids::RepoQid { org, repo };
+
+        context
+            .cdb_client
+            .repo(repo_qid)
+            .tear_down_environment(&env)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to tear down environment: {}", e);
+                internal_error()
+            })?;
+
+        Ok(true)
+    }
 }
 
 /// Dispatch proof verification: SSH (string) or WebAuthn (object).
