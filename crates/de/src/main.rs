@@ -76,6 +76,38 @@ fn resource_id_from(resource: &rdb::Resource) -> ids::ResourceId {
     }
 }
 
+/// Validate that `from_owner_qid` is a superseded deployment and extract its
+/// deployment ID. Returns `None` (with appropriate logging) if adoption
+/// should be refused.
+async fn validate_adoption(
+    id: &ids::ResourceId,
+    from_owner_qid: &str,
+    superseded_deployment_qids: &HashSet<String>,
+    log_publisher: &ldb::NamespacePublisher,
+) -> Option<ids::DeploymentId> {
+    if !superseded_deployment_qids.contains(from_owner_qid) {
+        tracing::warn!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            from_owner = %from_owner_qid,
+            "refusing to adopt resource from non-superseded deployment",
+        );
+        log_publisher
+            .error(format!(
+                "Cannot adopt {id}: owner {from_owner_qid} is not a superseded deployment",
+            ))
+            .await;
+        return None;
+    }
+    match extract_deployment_id(from_owner_qid) {
+        Ok(dep_id) => Some(dep_id),
+        Err(error) => {
+            tracing::error!(from_owner = %from_owner_qid, "{error:#}");
+            None
+        }
+    }
+}
+
 #[derive(Parser)]
 enum Program {
     Daemon {
@@ -375,6 +407,14 @@ async fn enqueue_message(
     true
 }
 
+/// Result of [`Worker::destroy_owned_resources`]: tracks how many destroy
+/// messages were emitted and how many resources were blocked by living
+/// dependents.
+struct DestroyResult {
+    emitted: usize,
+    blocked: usize,
+}
+
 impl Worker {
     async fn run_loop(mut self, mut rx: oneshot::Receiver<()>) {
         loop {
@@ -437,150 +477,119 @@ impl Worker {
                 Ok(())
             }
 
-            DeploymentState::Undesired => {
-                tracing::info!("{sid} tearing down");
+            DeploymentState::Undesired => self.handle_undesired(&deployment, &sid).await,
 
-                let owner_deployment_qid = deployment.deployment_qid().to_string();
-                let mut all_resources = Vec::new();
-                let mut resources = self.namespace.list_resources().await?;
-                while let Some(resource) = resources.try_next().await? {
-                    all_resources.push(resource);
-                }
-
-                let owned_resources = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                    })
-                    .collect::<Vec<_>>();
-                let mut emitted = 0usize;
-                let mut blocked = 0usize;
-                // Exclude dependencies from sticky resources owned by this
-                // deployment so they don't block teardown of their own deps.
-                let living_dependency_targets = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                            && resource.markers.contains(&sclc::Marker::Sticky))
-                    })
-                    .flat_map(|resource| resource.dependencies.iter().cloned())
-                    .collect::<HashSet<_>>();
-
-                for resource in &owned_resources {
-                    let resource_id = resource_id_from(resource);
-
-                    if resource.markers.contains(&sclc::Marker::Sticky) {
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            "sticky resource; skipping destroy",
-                        );
-                        continue;
-                    }
-
-                    if living_dependency_targets.contains(&resource_id) {
-                        blocked += 1;
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            owner = ?resource.owner,
-                            "resource still has living dependents; deferring destroy",
-                        );
-                        continue;
-                    }
-
-                    let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                        resource: resource_ref(&self.environment_qid, &resource_id),
-                        deployment_id: deployment.deployment.clone(),
-                    });
-                    self.rtq_publisher.enqueue(&message).await?;
-                    emitted += 1;
-
-                    tracing::info!(
-                        resource_type = %resource.resource_type,
-                        resource_name = %resource.name,
-                        owner = ?resource.owner,
-                        "queued destroy",
-                    );
-                }
-
-                if emitted > 0 {
-                    tracing::info!("queued {} destroy messages", emitted);
-                    return Ok(());
-                }
-
-                let has_non_sticky = owned_resources
-                    .iter()
-                    .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
-
-                if !has_non_sticky {
-                    for resource in &owned_resources {
-                        self.log_publisher
-                            .info(format!(
-                                "{} will stick around",
-                                ids::ResourceId::new(&resource.resource_type, &resource.name)
-                            ))
-                            .await;
-                    }
-                    tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
-                    self.client.set(DeploymentState::Down).await?;
-                    self.log_publisher
-                        .info(format!("Undesired {sid} is fully torn down"))
-                        .await;
-                    return Ok(());
-                }
-
-                if blocked > 0 {
-                    tracing::info!(
-                        blocked_resources = blocked,
-                        "{sid} teardown waiting on living dependents",
-                    );
-                    self.log_publisher
-                        .info(format!(
-                            "Undesired {sid} still has {blocked} resources with living dependents"
-                        ))
-                        .await;
-                }
-                Ok(())
-            }
-
-            DeploymentState::Lingering => {
-                tracing::info!("{sid} lingering...");
-                let mut cursor = self.client.clone();
-                let mut seen = HashSet::new();
-
-                while let Some(superseding) = cursor.get_superseding().await? {
-                    let superseding_deployment = superseding.get().await?;
-                    let commit_hash = superseding_deployment.deployment.clone();
-
-                    if !seen.insert(commit_hash) {
-                        tracing::warn!("detected supersession cycle while lingering");
-                        break;
-                    }
-
-                    if matches!(
-                        superseding_deployment.state,
-                        DeploymentState::Desired | DeploymentState::Up
-                    ) {
-                        self.client
-                            .mark_superseded_by(&superseding_deployment.deployment)
-                            .await?;
-
-                        // If the superseding deployment is already Up, it won't
-                        // re-check its superseded list, so transition ourselves.
-                        if superseding_deployment.state == DeploymentState::Up {
-                            self.client.set(DeploymentState::Undesired).await?;
-                        }
-
-                        break;
-                    }
-
-                    cursor = superseding;
-                }
-
-                Ok(())
-            }
+            DeploymentState::Lingering => self.handle_lingering(&sid).await,
         }
+    }
+
+    /// Tear down resources for an `Undesired` deployment, transitioning to
+    /// `Down` once all non-sticky resources have been destroyed.
+    async fn handle_undesired(&self, deployment: &Deployment, sid: &str) -> anyhow::Result<()> {
+        tracing::info!("{sid} tearing down");
+
+        let owner_deployment_qid = deployment.deployment_qid().to_string();
+        let all_resources = self.collect_all_resources().await?;
+
+        let owned_resources: Vec<_> = all_resources
+            .iter()
+            .filter(|resource| resource.owner.as_deref() == Some(owner_deployment_qid.as_str()))
+            .collect();
+
+        // Exclude dependencies from sticky resources owned by this
+        // deployment so they don't block teardown of their own deps.
+        let living_dependency_targets =
+            collect_living_dependency_targets(&all_resources, |resource| {
+                resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
+                    && resource.markers.contains(&sclc::Marker::Sticky)
+            });
+
+        let result = self
+            .destroy_owned_resources(
+                &owned_resources,
+                &deployment.deployment,
+                &living_dependency_targets,
+            )
+            .await?;
+
+        if result.emitted > 0 {
+            tracing::info!("queued {} destroy messages", result.emitted);
+            return Ok(());
+        }
+
+        let has_non_sticky = owned_resources
+            .iter()
+            .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
+
+        if !has_non_sticky {
+            for resource in &owned_resources {
+                self.log_publisher
+                    .info(format!(
+                        "{} will stick around",
+                        ids::ResourceId::new(&resource.resource_type, &resource.name)
+                    ))
+                    .await;
+            }
+            tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
+            self.client.set(DeploymentState::Down).await?;
+            self.log_publisher
+                .info(format!("Undesired {sid} is fully torn down"))
+                .await;
+            return Ok(());
+        }
+
+        if result.blocked > 0 {
+            tracing::info!(
+                blocked_resources = result.blocked,
+                "{sid} teardown waiting on living dependents",
+            );
+            self.log_publisher
+                .info(format!(
+                    "Undesired {sid} still has {} resources with living dependents",
+                    result.blocked,
+                ))
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Follow the supersession chain for a `Lingering` deployment, looking
+    /// for a `Desired` or `Up` successor to hand off to.
+    async fn handle_lingering(&self, sid: &str) -> anyhow::Result<()> {
+        tracing::info!("{sid} lingering...");
+        let mut cursor = self.client.clone();
+        let mut seen = HashSet::new();
+
+        while let Some(superseding) = cursor.get_superseding().await? {
+            let superseding_deployment = superseding.get().await?;
+            let commit_hash = superseding_deployment.deployment.clone();
+
+            if !seen.insert(commit_hash) {
+                tracing::warn!("detected supersession cycle while lingering");
+                break;
+            }
+
+            if matches!(
+                superseding_deployment.state,
+                DeploymentState::Desired | DeploymentState::Up
+            ) {
+                self.client
+                    .mark_superseded_by(&superseding_deployment.deployment)
+                    .await?;
+
+                // If the superseding deployment is already Up, it won't
+                // re-check its superseded list, so transition ourselves.
+                if superseding_deployment.state == DeploymentState::Up {
+                    self.client.set(DeploymentState::Undesired).await?;
+                }
+
+                break;
+            }
+
+            cursor = superseding;
+        }
+
+        Ok(())
     }
 
     /// Dispatch to [`reconcile_active`](Self::reconcile_active) and apply
@@ -766,6 +775,66 @@ impl Worker {
         Ok(false)
     }
 
+    /// Collect all resources in this worker's environment namespace.
+    async fn collect_all_resources(&self) -> anyhow::Result<Vec<rdb::Resource>> {
+        let mut all_resources = Vec::new();
+        let mut resources = self.namespace.list_resources().await?;
+        while let Some(resource) = resources.try_next().await? {
+            all_resources.push(resource);
+        }
+        Ok(all_resources)
+    }
+
+    /// Queue destroy messages for the given owned resources, skipping
+    /// sticky resources and resources that still have living dependents.
+    async fn destroy_owned_resources(
+        &self,
+        owned_resources: &[&rdb::Resource],
+        deployment_id: &ids::DeploymentId,
+        living_dependency_targets: &HashSet<ids::ResourceId>,
+    ) -> anyhow::Result<DestroyResult> {
+        let mut emitted = 0usize;
+        let mut blocked = 0usize;
+
+        for resource in owned_resources {
+            let resource_id = resource_id_from(resource);
+
+            if resource.markers.contains(&sclc::Marker::Sticky) {
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "sticky resource; skipping destroy",
+                );
+                continue;
+            }
+
+            if living_dependency_targets.contains(&resource_id) {
+                blocked += 1;
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "resource still has living dependents; deferring destroy",
+                );
+                continue;
+            }
+
+            let message = rtq::Message::Destroy(rtq::DestroyMessage {
+                resource: resource_ref(&self.environment_qid, &resource_id),
+                deployment_id: deployment_id.clone(),
+            });
+            self.rtq_publisher.enqueue(&message).await?;
+            emitted += 1;
+
+            tracing::info!(
+                resource_type = %resource.resource_type,
+                resource_name = %resource.name,
+                "queued destroy",
+            );
+        }
+
+        Ok(DestroyResult { emitted, blocked })
+    }
+
     /// Destroy resources owned by this deployment that were not referenced
     /// during the latest evaluation. This handles the case where volatile
     /// resources change in a way that causes previously-created resources
@@ -776,12 +845,7 @@ impl Worker {
         deployment_id: &ids::DeploymentId,
         touched_resource_ids: &HashSet<ids::ResourceId>,
     ) -> anyhow::Result<()> {
-        let mut all_resources = Vec::new();
-        let mut resources = self.namespace.list_resources().await?;
-        while let Some(resource) = resources.try_next().await? {
-            all_resources.push(resource);
-        }
-        drop(resources);
+        let all_resources = self.collect_all_resources().await?;
 
         let untouched_owned: Vec<_> = all_resources
             .iter()
@@ -798,53 +862,29 @@ impl Worker {
         // Collect dependency targets from all living resources (excluding
         // untouched resources themselves) to avoid destroying resources
         // that are still depended upon.
-        let living_dependency_targets: HashSet<ids::ResourceId> = all_resources
-            .iter()
-            .filter(|resource| {
+        let living_dependency_targets =
+            collect_living_dependency_targets(&all_resources, |resource| {
                 let id = resource_id_from(resource);
                 // Don't let untouched owned resources block each other.
-                resource.owner.as_deref() != Some(owner_deployment_qid)
-                    || touched_resource_ids.contains(&id)
-            })
-            .flat_map(|resource| resource.dependencies.iter().cloned())
-            .collect();
-
-        for resource in &untouched_owned {
-            let resource_id = resource_id_from(resource);
-
-            if resource.markers.contains(&sclc::Marker::Sticky) {
-                tracing::info!(
-                    resource_type = %resource.resource_type,
-                    resource_name = %resource.name,
-                    "untouched sticky resource; skipping destroy",
-                );
-                continue;
-            }
-
-            if living_dependency_targets.contains(&resource_id) {
-                tracing::info!(
-                    resource_type = %resource.resource_type,
-                    resource_name = %resource.name,
-                    "untouched resource still has living dependents; deferring destroy",
-                );
-                continue;
-            }
-
-            let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                resource: resource_ref(&self.environment_qid, &resource_id),
-                deployment_id: deployment_id.clone(),
+                resource.owner.as_deref() == Some(owner_deployment_qid)
+                    && !touched_resource_ids.contains(&id)
             });
-            self.rtq_publisher.enqueue(&message).await?;
 
-            tracing::info!(
-                resource_type = %resource.resource_type,
-                resource_name = %resource.name,
-                "queued destroy for untouched resource",
-            );
+        let result = self
+            .destroy_owned_resources(&untouched_owned, deployment_id, &living_dependency_targets)
+            .await?;
 
-            self.log_publisher
-                .info(format!("Destroying untouched resource {resource_id}"))
-                .await;
+        if result.emitted > 0 {
+            for resource in &untouched_owned {
+                let resource_id = resource_id_from(resource);
+                if !resource.markers.contains(&sclc::Marker::Sticky)
+                    && !living_dependency_targets.contains(&resource_id)
+                {
+                    self.log_publisher
+                        .info(format!("Destroying untouched resource {resource_id}"))
+                        .await;
+                }
+            }
         }
 
         Ok(())
@@ -1085,48 +1125,32 @@ impl Worker {
                                 had_effect = true;
                                 had_mutation = true;
                                 touched_resource_ids.insert(id.clone());
-                                let desired_inputs =
-                                    match serialize_inputs(&id, &inputs, "update") {
-                                        Ok(v) => v,
-                                        Err(error) => {
-                                            tracing::error!("{error:#}");
-                                            log_publisher
-                                                .error(format!("Skipping UPDATE {id}: {error}"))
-                                                .await;
-                                            continue;
-                                        }
-                                    };
+                                let desired_inputs = match serialize_inputs(&id, &inputs, "update")
+                                {
+                                    Ok(v) => v,
+                                    Err(error) => {
+                                        tracing::error!("{error:#}");
+                                        log_publisher
+                                            .error(format!("Skipping UPDATE {id}: {error}"))
+                                            .await;
+                                        continue;
+                                    }
+                                };
                                 let dependencies = map_dependencies(&env_qid, dependencies);
                                 let message = if let Some(from_owner_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids.contains(&from_owner_qid) {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_qid,
-                                            "refusing to adopt resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
-                                    let from_deployment_id =
-                                        match extract_deployment_id(&from_owner_qid) {
-                                            Ok(id) => id,
-                                            Err(error) => {
-                                                tracing::error!(
-                                                    from_owner = %from_owner_qid,
-                                                    "{error:#}",
-                                                );
-                                                continue;
-                                            }
-                                        };
+                                    let from_deployment_id = match validate_adoption(
+                                        &id,
+                                        &from_owner_qid,
+                                        &superseded_deployment_qids,
+                                        &log_publisher,
+                                    )
+                                    .await
+                                    {
+                                        Some(dep_id) => dep_id,
+                                        None => continue,
+                                    };
                                     rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
@@ -1174,24 +1198,17 @@ impl Worker {
                                 if let Some(from_owner_deployment_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids
-                                        .contains(&from_owner_deployment_qid)
+                                    let from_deployment_id = match validate_adoption(
+                                        &id,
+                                        &from_owner_deployment_qid,
+                                        &superseded_deployment_qids,
+                                        &log_publisher,
+                                    )
+                                    .await
                                     {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_deployment_qid,
-                                            "refusing to adopt-touch resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_deployment_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
+                                        Some(dep_id) => dep_id,
+                                        None => continue,
+                                    };
                                     had_effect = true;
                                     let desired_inputs =
                                         match serialize_inputs(&id, &inputs, "touch") {
@@ -1199,25 +1216,11 @@ impl Worker {
                                             Err(error) => {
                                                 tracing::error!("{error:#}");
                                                 log_publisher
-                                                    .error(format!(
-                                                        "Skipping ADOPT {id}: {error}"
-                                                    ))
+                                                    .error(format!("Skipping ADOPT {id}: {error}"))
                                                     .await;
                                                 continue;
                                             }
                                         };
-                                    let from_deployment_id = match extract_deployment_id(
-                                        &from_owner_deployment_qid,
-                                    ) {
-                                        Ok(id) => id,
-                                        Err(error) => {
-                                            tracing::error!(
-                                                from_owner = %from_owner_deployment_qid,
-                                                "{error:#}",
-                                            );
-                                            continue;
-                                        }
-                                    };
                                     let message = rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
@@ -1332,6 +1335,21 @@ impl Worker {
             manifest.dependencies,
         ))))
     }
+}
+
+/// Collect dependency targets from all resources, excluding resources that
+/// match the `exclude` predicate. This prevents excluded resources (e.g.
+/// sticky resources during teardown, or untouched resources during cleanup)
+/// from blocking destruction of their own dependencies.
+fn collect_living_dependency_targets(
+    all_resources: &[rdb::Resource],
+    exclude: impl Fn(&rdb::Resource) -> bool,
+) -> HashSet<ids::ResourceId> {
+    all_resources
+        .iter()
+        .filter(|resource| !exclude(resource))
+        .flat_map(|resource| resource.dependencies.iter().cloned())
+        .collect()
 }
 
 /// Compose the finder chain used during compile: local user package →
