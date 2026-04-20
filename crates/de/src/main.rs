@@ -376,6 +376,16 @@ async fn enqueue_message(
 }
 
 impl Worker {
+    /// Collect all resources in the environment namespace into a Vec.
+    async fn collect_all_resources(&self) -> anyhow::Result<Vec<rdb::Resource>> {
+        let mut all_resources = Vec::new();
+        let mut resources = self.namespace.list_resources().await?;
+        while let Some(resource) = resources.try_next().await? {
+            all_resources.push(resource);
+        }
+        Ok(all_resources)
+    }
+
     async fn run_loop(mut self, mut rx: oneshot::Receiver<()>) {
         loop {
             let next_loop = Instant::now() + Duration::from_secs(5);
@@ -437,150 +447,152 @@ impl Worker {
                 Ok(())
             }
 
-            DeploymentState::Undesired => {
-                tracing::info!("{sid} tearing down");
+            DeploymentState::Undesired => self.handle_undesired(&deployment, &sid).await,
 
-                let owner_deployment_qid = deployment.deployment_qid().to_string();
-                let mut all_resources = Vec::new();
-                let mut resources = self.namespace.list_resources().await?;
-                while let Some(resource) = resources.try_next().await? {
-                    all_resources.push(resource);
-                }
-
-                let owned_resources = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                    })
-                    .collect::<Vec<_>>();
-                let mut emitted = 0usize;
-                let mut blocked = 0usize;
-                // Exclude dependencies from sticky resources owned by this
-                // deployment so they don't block teardown of their own deps.
-                let living_dependency_targets = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                            && resource.markers.contains(&sclc::Marker::Sticky))
-                    })
-                    .flat_map(|resource| resource.dependencies.iter().cloned())
-                    .collect::<HashSet<_>>();
-
-                for resource in &owned_resources {
-                    let resource_id = resource_id_from(resource);
-
-                    if resource.markers.contains(&sclc::Marker::Sticky) {
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            "sticky resource; skipping destroy",
-                        );
-                        continue;
-                    }
-
-                    if living_dependency_targets.contains(&resource_id) {
-                        blocked += 1;
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            owner = ?resource.owner,
-                            "resource still has living dependents; deferring destroy",
-                        );
-                        continue;
-                    }
-
-                    let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                        resource: resource_ref(&self.environment_qid, &resource_id),
-                        deployment_id: deployment.deployment.clone(),
-                    });
-                    self.rtq_publisher.enqueue(&message).await?;
-                    emitted += 1;
-
-                    tracing::info!(
-                        resource_type = %resource.resource_type,
-                        resource_name = %resource.name,
-                        owner = ?resource.owner,
-                        "queued destroy",
-                    );
-                }
-
-                if emitted > 0 {
-                    tracing::info!("queued {} destroy messages", emitted);
-                    return Ok(());
-                }
-
-                let has_non_sticky = owned_resources
-                    .iter()
-                    .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
-
-                if !has_non_sticky {
-                    for resource in &owned_resources {
-                        self.log_publisher
-                            .info(format!(
-                                "{} will stick around",
-                                ids::ResourceId::new(&resource.resource_type, &resource.name)
-                            ))
-                            .await;
-                    }
-                    tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
-                    self.client.set(DeploymentState::Down).await?;
-                    self.log_publisher
-                        .info(format!("Undesired {sid} is fully torn down"))
-                        .await;
-                    return Ok(());
-                }
-
-                if blocked > 0 {
-                    tracing::info!(
-                        blocked_resources = blocked,
-                        "{sid} teardown waiting on living dependents",
-                    );
-                    self.log_publisher
-                        .info(format!(
-                            "Undesired {sid} still has {blocked} resources with living dependents"
-                        ))
-                        .await;
-                }
-                Ok(())
-            }
-
-            DeploymentState::Lingering => {
-                tracing::info!("{sid} lingering...");
-                let mut cursor = self.client.clone();
-                let mut seen = HashSet::new();
-
-                while let Some(superseding) = cursor.get_superseding().await? {
-                    let superseding_deployment = superseding.get().await?;
-                    let commit_hash = superseding_deployment.deployment.clone();
-
-                    if !seen.insert(commit_hash) {
-                        tracing::warn!("detected supersession cycle while lingering");
-                        break;
-                    }
-
-                    if matches!(
-                        superseding_deployment.state,
-                        DeploymentState::Desired | DeploymentState::Up
-                    ) {
-                        self.client
-                            .mark_superseded_by(&superseding_deployment.deployment)
-                            .await?;
-
-                        // If the superseding deployment is already Up, it won't
-                        // re-check its superseded list, so transition ourselves.
-                        if superseding_deployment.state == DeploymentState::Up {
-                            self.client.set(DeploymentState::Undesired).await?;
-                        }
-
-                        break;
-                    }
-
-                    cursor = superseding;
-                }
-
-                Ok(())
-            }
+            DeploymentState::Lingering => self.handle_lingering(&sid).await,
         }
+    }
+
+    /// Tear down all non-sticky owned resources for an `Undesired` deployment,
+    /// then transition to `Down` once nothing remains.
+    async fn handle_undesired(&mut self, deployment: &Deployment, sid: &str) -> anyhow::Result<()> {
+        tracing::info!("{sid} tearing down");
+
+        let owner_deployment_qid = deployment.deployment_qid().to_string();
+        let all_resources = self.collect_all_resources().await?;
+
+        let owned_resources = all_resources
+            .iter()
+            .filter(|resource| resource.owner.as_deref() == Some(owner_deployment_qid.as_str()))
+            .collect::<Vec<_>>();
+        let mut emitted = 0usize;
+        let mut blocked = 0usize;
+        // Exclude dependencies from sticky resources owned by this
+        // deployment so they don't block teardown of their own deps.
+        let living_dependency_targets = all_resources
+            .iter()
+            .filter(|resource| {
+                !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
+                    && resource.markers.contains(&sclc::Marker::Sticky))
+            })
+            .flat_map(|resource| resource.dependencies.iter().cloned())
+            .collect::<HashSet<_>>();
+
+        for resource in &owned_resources {
+            let resource_id = resource_id_from(resource);
+
+            if resource.markers.contains(&sclc::Marker::Sticky) {
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "sticky resource; skipping destroy",
+                );
+                continue;
+            }
+
+            if living_dependency_targets.contains(&resource_id) {
+                blocked += 1;
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    owner = ?resource.owner,
+                    "resource still has living dependents; deferring destroy",
+                );
+                continue;
+            }
+
+            let message = rtq::Message::Destroy(rtq::DestroyMessage {
+                resource: resource_ref(&self.environment_qid, &resource_id),
+                deployment_id: deployment.deployment.clone(),
+            });
+            self.rtq_publisher.enqueue(&message).await?;
+            emitted += 1;
+
+            tracing::info!(
+                resource_type = %resource.resource_type,
+                resource_name = %resource.name,
+                owner = ?resource.owner,
+                "queued destroy",
+            );
+        }
+
+        if emitted > 0 {
+            tracing::info!("queued {} destroy messages", emitted);
+            return Ok(());
+        }
+
+        let has_non_sticky = owned_resources
+            .iter()
+            .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
+
+        if !has_non_sticky {
+            for resource in &owned_resources {
+                self.log_publisher
+                    .info(format!(
+                        "{} will stick around",
+                        ids::ResourceId::new(&resource.resource_type, &resource.name)
+                    ))
+                    .await;
+            }
+            tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
+            self.client.set(DeploymentState::Down).await?;
+            self.log_publisher
+                .info(format!("Undesired {sid} is fully torn down"))
+                .await;
+            return Ok(());
+        }
+
+        if blocked > 0 {
+            tracing::info!(
+                blocked_resources = blocked,
+                "{sid} teardown waiting on living dependents",
+            );
+            self.log_publisher
+                .info(format!(
+                    "Undesired {sid} still has {blocked} resources with living dependents"
+                ))
+                .await;
+        }
+        Ok(())
+    }
+
+    /// Walk the supersession chain for a `Lingering` deployment, waiting
+    /// for the superseding deployment to reach `Desired` or `Up`.
+    async fn handle_lingering(&mut self, sid: &str) -> anyhow::Result<()> {
+        tracing::info!("{sid} lingering...");
+        let mut cursor = self.client.clone();
+        let mut seen = HashSet::new();
+
+        while let Some(superseding) = cursor.get_superseding().await? {
+            let superseding_deployment = superseding.get().await?;
+            let commit_hash = superseding_deployment.deployment.clone();
+
+            if !seen.insert(commit_hash) {
+                tracing::warn!("detected supersession cycle while lingering");
+                break;
+            }
+
+            if matches!(
+                superseding_deployment.state,
+                DeploymentState::Desired | DeploymentState::Up
+            ) {
+                self.client
+                    .mark_superseded_by(&superseding_deployment.deployment)
+                    .await?;
+
+                // If the superseding deployment is already Up, it won't
+                // re-check its superseded list, so transition ourselves.
+                if superseding_deployment.state == DeploymentState::Up {
+                    self.client.set(DeploymentState::Undesired).await?;
+                }
+
+                break;
+            }
+
+            cursor = superseding;
+        }
+
+        Ok(())
     }
 
     /// Dispatch to [`reconcile_active`](Self::reconcile_active) and apply
@@ -776,12 +788,7 @@ impl Worker {
         deployment_id: &ids::DeploymentId,
         touched_resource_ids: &HashSet<ids::ResourceId>,
     ) -> anyhow::Result<()> {
-        let mut all_resources = Vec::new();
-        let mut resources = self.namespace.list_resources().await?;
-        while let Some(resource) = resources.try_next().await? {
-            all_resources.push(resource);
-        }
-        drop(resources);
+        let all_resources = self.collect_all_resources().await?;
 
         let untouched_owned: Vec<_> = all_resources
             .iter()
@@ -923,7 +930,7 @@ impl Worker {
             superseded_deployment_qids.insert(dep.deployment_qid().to_string());
         }
 
-        let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
+        let (effects_tx, effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
         let local_deployment_qid = self.client.deployment_qid();
         let mut eval_ctx = sclc::EvalCtx::new(
@@ -1003,293 +1010,24 @@ impl Worker {
         }
         drop(resources);
 
-        let log_publisher = self.log_publisher.clone();
-        let env_qid = self.environment_qid.clone();
-        let rtq_publisher = self.rtq_publisher.clone();
-        let local_deployment_qid_for_drain = local_deployment_qid.clone();
         let has_volatile_cross_repo_pins = cross_repo_finder
             .as_ref()
             .is_some_and(|f| f.has_volatile_pins());
-        let effects_task = task::spawn(
-            {
-                async move {
-                    let mut had_effect = false;
-                    let mut had_mutation = false;
-                    let mut touched_resource_ids = HashSet::new();
-                    while let Some(effect) = effects_rx.recv().await {
-                        // Drop foreign-owned effects. Phase 3 will route
-                        // these through remote-state-read logic; for now we
-                        // simply log and skip.
-                        if effect.owner() != &local_deployment_qid_for_drain {
-                            tracing::debug!(
-                                owner = %effect.owner(),
-                                local_owner = %local_deployment_qid_for_drain,
-                                "dropping foreign-owned effect",
-                            );
-                            continue;
-                        }
-                        match effect {
-                            sclc::Effect::CreateResource {
-                                id,
-                                inputs,
-                                dependencies,
-                                source_trace,
-                                owner: _,
-                            } => {
-                                had_effect = true;
-                                had_mutation = true;
-                                touched_resource_ids.insert(id.clone());
-                                let inputs_value = match serialize_inputs(&id, &inputs, "create") {
-                                    Ok(v) => v,
-                                    Err(error) => {
-                                        tracing::error!("{error:#}");
-                                        log_publisher
-                                            .error(format!("Skipping CREATE {id}: {error}"))
-                                            .await;
-                                        continue;
-                                    }
-                                };
-                                let message = rtq::Message::Create(rtq::CreateMessage {
-                                    resource: resource_ref(&env_qid, &id),
-                                    deployment_id: deployment_id.clone(),
-                                    inputs: inputs_value,
-                                    dependencies: map_dependencies(&env_qid, dependencies),
-                                    source_trace,
-                                });
-                                if !enqueue_message(
-                                    &rtq_publisher,
-                                    &log_publisher,
-                                    &message,
-                                    "CREATE",
-                                    &id,
-                                )
-                                .await
-                                {
-                                    continue;
-                                }
 
-                                tracing::info!(
-                                    resource_type = %id.typ,
-                                    resource_name = %id.name,
-                                    inputs = ?inputs,
-                                    "effect create resource",
-                                );
-                            }
-                            sclc::Effect::UpdateResource {
-                                id,
-                                inputs,
-                                dependencies,
-                                source_trace,
-                                owner: _,
-                            } => {
-                                had_effect = true;
-                                had_mutation = true;
-                                touched_resource_ids.insert(id.clone());
-                                let desired_inputs =
-                                    match serialize_inputs(&id, &inputs, "update") {
-                                        Ok(v) => v,
-                                        Err(error) => {
-                                            tracing::error!("{error:#}");
-                                            log_publisher
-                                                .error(format!("Skipping UPDATE {id}: {error}"))
-                                                .await;
-                                            continue;
-                                        }
-                                    };
-                                let dependencies = map_dependencies(&env_qid, dependencies);
-                                let message = if let Some(from_owner_qid) =
-                                    unowned_resource_owner_by_id.get(&id).cloned()
-                                {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids.contains(&from_owner_qid) {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_qid,
-                                            "refusing to adopt resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
-                                    let from_deployment_id =
-                                        match extract_deployment_id(&from_owner_qid) {
-                                            Ok(id) => id,
-                                            Err(error) => {
-                                                tracing::error!(
-                                                    from_owner = %from_owner_qid,
-                                                    "{error:#}",
-                                                );
-                                                continue;
-                                            }
-                                        };
-                                    rtq::Message::Adopt(rtq::AdoptMessage {
-                                        resource: resource_ref(&env_qid, &id),
-                                        from_deployment_id,
-                                        to_deployment_id: deployment_id.clone(),
-                                        desired_inputs,
-                                        dependencies,
-                                        source_trace,
-                                    })
-                                } else {
-                                    rtq::Message::Restore(rtq::RestoreMessage {
-                                        resource: resource_ref(&env_qid, &id),
-                                        deployment_id: deployment_id.clone(),
-                                        desired_inputs,
-                                        dependencies,
-                                        source_trace,
-                                    })
-                                };
-                                if !enqueue_message(
-                                    &rtq_publisher,
-                                    &log_publisher,
-                                    &message,
-                                    "UPDATE",
-                                    &id,
-                                )
-                                .await
-                                {
-                                    continue;
-                                }
+        let processor = EffectsProcessor {
+            effects_rx,
+            local_deployment_qid: local_deployment_qid.clone(),
+            unowned_resource_owner_by_id,
+            superseded_deployment_qids,
+            volatile_resource_ids,
+            env_qid: self.environment_qid.clone(),
+            deployment_id,
+            rtq_publisher: self.rtq_publisher.clone(),
+            log_publisher: self.log_publisher.clone(),
+            has_volatile_cross_repo_pins,
+        };
 
-                                tracing::info!(
-                                    resource_type = %id.typ,
-                                    resource_name = %id.name,
-                                    inputs = ?inputs,
-                                    "effect update resource",
-                                );
-                            }
-                            sclc::Effect::TouchResource {
-                                id,
-                                inputs,
-                                dependencies,
-                                source_trace,
-                                owner: _,
-                            } => {
-                                touched_resource_ids.insert(id.clone());
-                                if let Some(from_owner_deployment_qid) =
-                                    unowned_resource_owner_by_id.get(&id).cloned()
-                                {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids
-                                        .contains(&from_owner_deployment_qid)
-                                    {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_deployment_qid,
-                                            "refusing to adopt-touch resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_deployment_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
-                                    had_effect = true;
-                                    let desired_inputs =
-                                        match serialize_inputs(&id, &inputs, "touch") {
-                                            Ok(v) => v,
-                                            Err(error) => {
-                                                tracing::error!("{error:#}");
-                                                log_publisher
-                                                    .error(format!(
-                                                        "Skipping ADOPT {id}: {error}"
-                                                    ))
-                                                    .await;
-                                                continue;
-                                            }
-                                        };
-                                    let from_deployment_id = match extract_deployment_id(
-                                        &from_owner_deployment_qid,
-                                    ) {
-                                        Ok(id) => id,
-                                        Err(error) => {
-                                            tracing::error!(
-                                                from_owner = %from_owner_deployment_qid,
-                                                "{error:#}",
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                    let message = rtq::Message::Adopt(rtq::AdoptMessage {
-                                        resource: resource_ref(&env_qid, &id),
-                                        from_deployment_id,
-                                        to_deployment_id: deployment_id.clone(),
-                                        desired_inputs,
-                                        dependencies: map_dependencies(&env_qid, dependencies),
-                                        source_trace,
-                                    });
-                                    if !enqueue_message(
-                                        &rtq_publisher,
-                                        &log_publisher,
-                                        &message,
-                                        "ADOPT",
-                                        &id,
-                                    )
-                                    .await
-                                    {
-                                        continue;
-                                    }
-
-                                    tracing::info!(
-                                        resource_type = %id.typ,
-                                        resource_name = %id.name,
-                                        inputs = ?inputs,
-                                        "effect touch resource adopt",
-                                    );
-                                } else if volatile_resource_ids.contains(&id) {
-                                    // Volatile checks verify resource health but do not
-                                    // count as effects that block completeness. This
-                                    // allows supersession of prior deployments even when
-                                    // volatile resources are present.
-                                    let message = rtq::Message::Check(rtq::CheckMessage {
-                                        resource: resource_ref(&env_qid, &id),
-                                        deployment_id: deployment_id.clone(),
-                                    });
-                                    if !enqueue_message(
-                                        &rtq_publisher,
-                                        &log_publisher,
-                                        &message,
-                                        "CHECK",
-                                        &id,
-                                    )
-                                    .await
-                                    {
-                                        continue;
-                                    }
-
-                                    tracing::info!(
-                                        resource_type = %id.typ,
-                                        resource_name = %id.name,
-                                        "effect touch resource check",
-                                    );
-                                }
-                            }
-                        }
-                    }
-
-                    EvalOutcome {
-                        completeness: if had_effect {
-                            EvalCompleteness::Partial
-                        } else {
-                            EvalCompleteness::Complete
-                        },
-                        touched_resource_ids,
-                        fully_explored: !had_mutation,
-                        has_volatile_cross_repo_pins,
-                        had_fatal_errors: false,
-                    }
-                }
-            }
-            .instrument(tracing::Span::current()),
-        );
+        let effects_task = task::spawn(processor.run().instrument(tracing::Span::current()));
 
         if let Err(e) = sclc::eval(&asg, eval_ctx) {
             self.log_publisher.error(format!("{e}")).await;
@@ -1331,6 +1069,324 @@ impl Worker {
             local_repo.org.clone(),
             manifest.dependencies,
         ))))
+    }
+}
+
+/// Holds the state needed to drain the effects channel in a spawned task
+/// and dispatch each effect to the appropriate handler.
+struct EffectsProcessor {
+    effects_rx: mpsc::UnboundedReceiver<sclc::Effect>,
+    local_deployment_qid: ids::DeploymentQid,
+    unowned_resource_owner_by_id: HashMap<ids::ResourceId, String>,
+    superseded_deployment_qids: HashSet<String>,
+    volatile_resource_ids: HashSet<ids::ResourceId>,
+    env_qid: ids::EnvironmentQid,
+    deployment_id: ids::DeploymentId,
+    rtq_publisher: rtq::Publisher,
+    log_publisher: ldb::NamespacePublisher,
+    has_volatile_cross_repo_pins: bool,
+}
+
+impl EffectsProcessor {
+    async fn run(mut self) -> EvalOutcome {
+        let mut had_effect = false;
+        let mut had_mutation = false;
+        let mut touched_resource_ids = HashSet::new();
+
+        while let Some(effect) = self.effects_rx.recv().await {
+            // Drop foreign-owned effects. Phase 3 will route
+            // these through remote-state-read logic; for now we
+            // simply log and skip.
+            if effect.owner() != &self.local_deployment_qid {
+                tracing::debug!(
+                    owner = %effect.owner(),
+                    local_owner = %self.local_deployment_qid,
+                    "dropping foreign-owned effect",
+                );
+                continue;
+            }
+            match effect {
+                sclc::Effect::CreateResource {
+                    id,
+                    inputs,
+                    dependencies,
+                    source_trace,
+                    owner: _,
+                } => {
+                    had_effect = true;
+                    had_mutation = true;
+                    touched_resource_ids.insert(id.clone());
+                    self.process_create_effect(id, inputs, dependencies, source_trace)
+                        .await;
+                }
+                sclc::Effect::UpdateResource {
+                    id,
+                    inputs,
+                    dependencies,
+                    source_trace,
+                    owner: _,
+                } => {
+                    had_effect = true;
+                    had_mutation = true;
+                    touched_resource_ids.insert(id.clone());
+                    self.process_update_effect(id, inputs, dependencies, source_trace)
+                        .await;
+                }
+                sclc::Effect::TouchResource {
+                    id,
+                    inputs,
+                    dependencies,
+                    source_trace,
+                    owner: _,
+                } => {
+                    touched_resource_ids.insert(id.clone());
+                    if self
+                        .process_touch_effect(id, inputs, dependencies, source_trace)
+                        .await
+                    {
+                        had_effect = true;
+                    }
+                }
+            }
+        }
+
+        EvalOutcome {
+            completeness: if had_effect {
+                EvalCompleteness::Partial
+            } else {
+                EvalCompleteness::Complete
+            },
+            touched_resource_ids,
+            fully_explored: !had_mutation,
+            has_volatile_cross_repo_pins: self.has_volatile_cross_repo_pins,
+            had_fatal_errors: false,
+        }
+    }
+
+    async fn process_create_effect(
+        &self,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+        dependencies: Vec<ids::ResourceId>,
+        source_trace: ids::SourceTrace,
+    ) {
+        let inputs_value = match serialize_inputs(&id, &inputs, "create") {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::error!("{error:#}");
+                self.log_publisher
+                    .error(format!("Skipping CREATE {id}: {error}"))
+                    .await;
+                return;
+            }
+        };
+        let message = rtq::Message::Create(rtq::CreateMessage {
+            resource: resource_ref(&self.env_qid, &id),
+            deployment_id: self.deployment_id.clone(),
+            inputs: inputs_value,
+            dependencies: map_dependencies(&self.env_qid, dependencies),
+            source_trace,
+        });
+        if !enqueue_message(
+            &self.rtq_publisher,
+            &self.log_publisher,
+            &message,
+            "CREATE",
+            &id,
+        )
+        .await
+        {
+            return;
+        }
+
+        tracing::info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            inputs = ?inputs,
+            "effect create resource",
+        );
+    }
+
+    async fn process_update_effect(
+        &self,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+        dependencies: Vec<ids::ResourceId>,
+        source_trace: ids::SourceTrace,
+    ) {
+        let desired_inputs = match serialize_inputs(&id, &inputs, "update") {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::error!("{error:#}");
+                self.log_publisher
+                    .error(format!("Skipping UPDATE {id}: {error}"))
+                    .await;
+                return;
+            }
+        };
+        let dependencies = map_dependencies(&self.env_qid, dependencies);
+        let message =
+            if let Some(from_owner_qid) = self.unowned_resource_owner_by_id.get(&id).cloned() {
+                let Some(from_deployment_id) =
+                    self.validate_adoption_source(&id, &from_owner_qid).await
+                else {
+                    return;
+                };
+                rtq::Message::Adopt(rtq::AdoptMessage {
+                    resource: resource_ref(&self.env_qid, &id),
+                    from_deployment_id,
+                    to_deployment_id: self.deployment_id.clone(),
+                    desired_inputs,
+                    dependencies,
+                    source_trace,
+                })
+            } else {
+                rtq::Message::Restore(rtq::RestoreMessage {
+                    resource: resource_ref(&self.env_qid, &id),
+                    deployment_id: self.deployment_id.clone(),
+                    desired_inputs,
+                    dependencies,
+                    source_trace,
+                })
+            };
+        if !enqueue_message(
+            &self.rtq_publisher,
+            &self.log_publisher,
+            &message,
+            "UPDATE",
+            &id,
+        )
+        .await
+        {
+            return;
+        }
+
+        tracing::info!(
+            resource_type = %id.typ,
+            resource_name = %id.name,
+            inputs = ?inputs,
+            "effect update resource",
+        );
+    }
+
+    /// Process a touch effect. Returns `true` if this touch produced a
+    /// side-effecting message (adoption), `false` otherwise.
+    async fn process_touch_effect(
+        &self,
+        id: ids::ResourceId,
+        inputs: sclc::Record,
+        dependencies: Vec<ids::ResourceId>,
+        source_trace: ids::SourceTrace,
+    ) -> bool {
+        if let Some(from_owner_deployment_qid) = self.unowned_resource_owner_by_id.get(&id).cloned()
+        {
+            let Some(from_deployment_id) = self
+                .validate_adoption_source(&id, &from_owner_deployment_qid)
+                .await
+            else {
+                return false;
+            };
+            let desired_inputs = match serialize_inputs(&id, &inputs, "touch") {
+                Ok(v) => v,
+                Err(error) => {
+                    tracing::error!("{error:#}");
+                    self.log_publisher
+                        .error(format!("Skipping ADOPT {id}: {error}"))
+                        .await;
+                    return false;
+                }
+            };
+            let message = rtq::Message::Adopt(rtq::AdoptMessage {
+                resource: resource_ref(&self.env_qid, &id),
+                from_deployment_id,
+                to_deployment_id: self.deployment_id.clone(),
+                desired_inputs,
+                dependencies: map_dependencies(&self.env_qid, dependencies),
+                source_trace,
+            });
+            if !enqueue_message(
+                &self.rtq_publisher,
+                &self.log_publisher,
+                &message,
+                "ADOPT",
+                &id,
+            )
+            .await
+            {
+                return false;
+            }
+
+            tracing::info!(
+                resource_type = %id.typ,
+                resource_name = %id.name,
+                inputs = ?inputs,
+                "effect touch resource adopt",
+            );
+            true
+        } else if self.volatile_resource_ids.contains(&id) {
+            // Volatile checks verify resource health but do not
+            // count as effects that block completeness. This
+            // allows supersession of prior deployments even when
+            // volatile resources are present.
+            let message = rtq::Message::Check(rtq::CheckMessage {
+                resource: resource_ref(&self.env_qid, &id),
+                deployment_id: self.deployment_id.clone(),
+            });
+            if !enqueue_message(
+                &self.rtq_publisher,
+                &self.log_publisher,
+                &message,
+                "CHECK",
+                &id,
+            )
+            .await
+            {
+                return false;
+            }
+
+            tracing::info!(
+                resource_type = %id.typ,
+                resource_name = %id.name,
+                "effect touch resource check",
+            );
+            false
+        } else {
+            false
+        }
+    }
+
+    /// Validate that a resource's current owner is a superseded deployment
+    /// and extract its deployment ID. Returns `None` (and logs) if the
+    /// adoption should be refused.
+    async fn validate_adoption_source(
+        &self,
+        id: &ids::ResourceId,
+        from_owner_qid: &str,
+    ) -> Option<ids::DeploymentId> {
+        if !self.superseded_deployment_qids.contains(from_owner_qid) {
+            tracing::warn!(
+                resource_type = %id.typ,
+                resource_name = %id.name,
+                from_owner = %from_owner_qid,
+                "refusing to adopt resource from non-superseded deployment",
+            );
+            self.log_publisher
+                .error(format!(
+                    "Cannot adopt {id}: owner {from_owner_qid} is not a superseded deployment",
+                ))
+                .await;
+            return None;
+        }
+        match extract_deployment_id(from_owner_qid) {
+            Ok(dep_id) => Some(dep_id),
+            Err(error) => {
+                tracing::error!(
+                    from_owner = %from_owner_qid,
+                    "{error:#}",
+                );
+                None
+            }
+        }
     }
 }
 
