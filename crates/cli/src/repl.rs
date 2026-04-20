@@ -14,6 +14,63 @@ use sclc::{Lexer, Token};
 use crate::output::spawn_effect_printer;
 use crate::resolver;
 
+/// Pre-compute which token indices are part of a path expression.
+///
+/// A path starts with:
+///   - Dot Slash (relative: `./...`)
+///   - Dot Dot Slash (relative: `../...`)
+///   - Slash Symbol (absolute: `/foo...`)
+/// and continues with Slash, Symbol, StrSimple, Dot sequences.
+fn detect_path_tokens(tokens: &[sclc::Loc<Token>]) -> Vec<bool> {
+    let mut in_path = vec![false; tokens.len()];
+    let mut i = 0;
+    while i < tokens.len() {
+        let starts_path = match *tokens[i].as_ref() {
+            Token::Dot => {
+                if i + 1 < tokens.len() && matches!(*tokens[i + 1].as_ref(), Token::Slash) {
+                    // ./ — require a segment after
+                    is_path_segment(tokens, i + 2)
+                } else if i + 2 < tokens.len()
+                    && matches!(*tokens[i + 1].as_ref(), Token::Dot)
+                    && matches!(*tokens[i + 2].as_ref(), Token::Slash)
+                {
+                    // ../ — require a segment after
+                    is_path_segment(tokens, i + 3)
+                } else {
+                    false
+                }
+            }
+            Token::Slash => is_path_segment(tokens, i + 1),
+            _ => false,
+        };
+
+        if starts_path {
+            while i < tokens.len() {
+                match *tokens[i].as_ref() {
+                    Token::Dot | Token::Slash | Token::Symbol(_) | Token::StrSimple(_) => {
+                        in_path[i] = true;
+                        i += 1;
+                    }
+                    _ => break,
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    in_path
+}
+
+/// Returns true if `tokens[idx]` exists and is a valid path segment starter
+/// (Symbol or StrSimple).
+fn is_path_segment(tokens: &[sclc::Loc<Token>], idx: usize) -> bool {
+    idx < tokens.len()
+        && matches!(
+            *tokens[idx].as_ref(),
+            Token::Symbol(_) | Token::StrSimple(_)
+        )
+}
+
 struct ReplHelper {
     /// Snapshot of the REPL state used for completions.
     /// Updated before each `readline()` call.
@@ -209,62 +266,7 @@ impl highlight::Highlighter for ReplHelper {
         // Collect tokens into a Vec for lookahead-based path detection.
         let tokens: Vec<_> = Lexer::new(line).collect();
 
-        // Pre-compute which token indices are part of a path expression.
-        // A path starts with:
-        //   - Dot Slash (relative: ./...)
-        //   - Dot Dot Slash (relative: ../...)
-        //   - Slash Symbol (absolute: /foo...)
-        // and continues with Slash, Symbol, StrSimple, Dot sequences.
-        let mut in_path = vec![false; tokens.len()];
-        let mut i = 0;
-        while i < tokens.len() {
-            let starts_path = if matches!(*tokens[i].as_ref(), Token::Dot) {
-                if i + 1 < tokens.len() && matches!(*tokens[i + 1].as_ref(), Token::Slash) {
-                    // ./ — check there's a segment after
-                    i + 2 < tokens.len()
-                        && matches!(
-                            *tokens[i + 2].as_ref(),
-                            Token::Symbol(_) | Token::StrSimple(_)
-                        )
-                } else if i + 2 < tokens.len()
-                    && matches!(*tokens[i + 1].as_ref(), Token::Dot)
-                    && matches!(*tokens[i + 2].as_ref(), Token::Slash)
-                {
-                    // ../ — check there's a segment after
-                    i + 3 < tokens.len()
-                        && matches!(
-                            *tokens[i + 3].as_ref(),
-                            Token::Symbol(_) | Token::StrSimple(_)
-                        )
-                } else {
-                    false
-                }
-            } else if matches!(*tokens[i].as_ref(), Token::Slash) {
-                // /segment — absolute path
-                i + 1 < tokens.len()
-                    && matches!(
-                        *tokens[i + 1].as_ref(),
-                        Token::Symbol(_) | Token::StrSimple(_)
-                    )
-            } else {
-                false
-            };
-
-            if starts_path {
-                // Mark all tokens in this path expression.
-                while i < tokens.len() {
-                    match *tokens[i].as_ref() {
-                        Token::Dot | Token::Slash | Token::Symbol(_) | Token::StrSimple(_) => {
-                            in_path[i] = true;
-                            i += 1;
-                        }
-                        _ => break,
-                    }
-                }
-            } else {
-                i += 1;
-            }
-        }
+        let in_path = detect_path_tokens(&tokens);
 
         for (idx, token) in tokens.iter().enumerate() {
             if in_path[idx] {
