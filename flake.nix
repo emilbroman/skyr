@@ -25,6 +25,7 @@
             wasm-pack
             wasm-bindgen-cli
             typst
+            tlaplus18
           ];
           shellHook = ''
             export RUSTUP_TOOLCHAIN=nightly
