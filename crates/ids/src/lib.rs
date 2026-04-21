@@ -706,8 +706,6 @@ impl TryFrom<String> for DeploymentId {
 ///
 /// ```
 /// use ids::DeploymentNonce;
-/// let nonce = DeploymentNonce::random();
-/// assert_eq!(nonce.to_string().len(), 16);
 ///
 /// let zero = DeploymentNonce::zero();
 /// assert_eq!(zero.to_string(), "0000000000000000");
@@ -722,6 +720,7 @@ impl DeploymentNonce {
     }
 
     /// Generates a random nonce.
+    #[cfg(feature = "rand")]
     pub fn random() -> Self {
         Self(rand::random())
     }
@@ -1203,6 +1202,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "rand")]
     fn deployment_nonce_random_is_16_chars() {
         let nonce = DeploymentNonce::random();
         assert_eq!(nonce.to_string().len(), 16);
