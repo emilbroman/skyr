@@ -139,22 +139,25 @@ impl NetworkInitHandle {
         service_cidr: Option<String>,
         dns_servers: Vec<String>,
     ) -> Result<()> {
-        self.net_state
-            .set(NetworkState {
-                ipam: Mutex::new(ipam),
-                pod_cidr,
-                cluster_cidr,
-                service_cidr,
-                dns_servers,
-            })
-            .ok()
-            .expect("network state already initialized");
-
-        // Drain buffered peers and add them now that the network is ready.
+        // Hold the pending_peers lock while setting net_state so that
+        // add_overlay_peer cannot observe is_none() == true, get preempted,
+        // and then push into the buffer after we have already drained it.
         let peers = {
             let mut pending = self.pending_peers.lock().await;
+            self.net_state
+                .set(NetworkState {
+                    ipam: Mutex::new(ipam),
+                    pod_cidr,
+                    cluster_cidr,
+                    service_cidr,
+                    dns_servers,
+                })
+                .ok()
+                .expect("network state already initialized");
             std::mem::take(&mut *pending)
         };
+
+        // Drain buffered peers and add them now that the network is ready.
         for peer_host in peers {
             let peer_ip = resolve_hostname_to_ip(&peer_host)?;
             net::add_overlay_peer(&peer_ip)?;
@@ -619,15 +622,20 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::AddOverlayPeerRequest,
     ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
-        // If network is not yet initialized, buffer the peer for later processing.
-        if self.net_state.get().is_none() {
-            tracing::info!(
-                peer_host = %request.peer_host_ip,
-                "network not yet initialized, buffering overlay peer"
-            );
+        // Lock pending_peers first, then check net_state under the lock.
+        // This is the other half of the TOCTOU fix: initialize() also holds
+        // this lock while setting net_state and draining, so the check-and-buffer
+        // here is atomic with the set-and-drain there.
+        {
             let mut pending = self.pending_peers.lock().await;
-            pending.push(request.peer_host_ip);
-            return Ok(scop::AddOverlayPeerResponse {});
+            if self.net_state.get().is_none() {
+                tracing::info!(
+                    peer_host = %request.peer_host_ip,
+                    "network not yet initialized, buffering overlay peer"
+                );
+                pending.push(request.peer_host_ip);
+                return Ok(scop::AddOverlayPeerResponse {});
+            }
         }
 
         // Resolve hostname to IP (bridge fdb requires IP address)
