@@ -31,6 +31,9 @@ service Orchestrator {
 
   // UnregisterNode removes a node from the registry.
   rpc UnregisterNode(UnregisterNodeRequest) returns (UnregisterNodeResponse);
+
+  // GetOverlayPeers retrieves the list of overlay peers for a node.
+  rpc GetOverlayPeers(GetOverlayPeersRequest) returns (GetOverlayPeersResponse);
 }
 
 // Request to register a node with the orchestrator.
