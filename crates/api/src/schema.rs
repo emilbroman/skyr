@@ -270,33 +270,36 @@ impl Environment {
         self.qid.to_string()
     }
 
-    async fn deployment(&self, context: &Context, commit: String) -> FieldResult<Deployment> {
-        let deployment_id: ids::DeploymentId = commit
+    async fn deployment(&self, context: &Context, id: String) -> FieldResult<Deployment> {
+        let (hash_part, nonce_part) = id
+            .rsplit_once('.')
+            .ok_or_else(|| field_error("Invalid deployment ID (expected <hash>.<nonce>)"))?;
+        let deployment_id: ids::DeploymentId = hash_part
             .parse()
-            .map_err(|_| field_error("Invalid commit hash"))?;
-        // Find the deployment by commit hash within this environment.
-        // Since nonces make commit hashes non-unique, return the most
-        // recent deployment matching this commit.
+            .map_err(|_| field_error("Invalid deployment ID: bad commit hash"))?;
+        let nonce: ids::DeploymentNonce = nonce_part
+            .parse()
+            .map_err(|_| field_error("Invalid deployment ID: bad nonce"))?;
         let repo_client = context.cdb_client.repo(self.qid.repo.clone());
         let mut stream = repo_client.deployments().await.map_err(|e| {
             tracing::error!("Failed to list deployments in {}: {e}", self.qid);
             internal_error()
         })?;
-        let mut best: Option<cdb::Deployment> = None;
+        let mut found: Option<cdb::Deployment> = None;
         while let Some(dep) = stream.next().await {
             let dep = dep.map_err(|e| {
                 tracing::error!("Failed to load deployment in {}: {e}", self.qid);
                 internal_error()
             })?;
-            if dep.environment == self.qid.environment && dep.deployment == deployment_id {
-                match &best {
-                    None => best = Some(dep),
-                    Some(b) if dep.created_at > b.created_at => best = Some(dep),
-                    _ => {}
-                }
+            if dep.environment == self.qid.environment
+                && dep.deployment == deployment_id
+                && dep.nonce == nonce
+            {
+                found = Some(dep);
+                break;
             }
         }
-        match best {
+        match found {
             Some(deployment) => Ok(Deployment { deployment }),
             None => Err(field_error("Deployment not found")),
         }
