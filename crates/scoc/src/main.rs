@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use ipnet::Ipv4Net;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 use tokio_util::sync::CancellationToken;
 
 mod cri;
@@ -113,6 +113,58 @@ struct PodInfo {
 /// Maps Host VIP → set of (port, protocol) for active service routes.
 type ServiceRouteMap = HashMap<String, HashSet<(i32, String)>>;
 
+/// Network state that becomes available only after orchestrator registration.
+struct NetworkState {
+    ipam: Mutex<net::Ipam>,
+    pod_cidr: Ipv4Net,
+    cluster_cidr: Option<String>,
+    service_cidr: Option<String>,
+    dns_servers: Vec<String>,
+}
+
+/// Handle used by `main()` to initialize the network state after registration
+/// and drain any overlay peers that arrived before initialization.
+struct NetworkInitHandle {
+    net_state: Arc<OnceCell<NetworkState>>,
+    pending_peers: Arc<Mutex<Vec<String>>>,
+}
+
+impl NetworkInitHandle {
+    /// Set the network state and process any buffered overlay peers.
+    async fn initialize(
+        self,
+        ipam: net::Ipam,
+        pod_cidr: Ipv4Net,
+        cluster_cidr: Option<String>,
+        service_cidr: Option<String>,
+        dns_servers: Vec<String>,
+    ) -> Result<()> {
+        self.net_state
+            .set(NetworkState {
+                ipam: Mutex::new(ipam),
+                pod_cidr,
+                cluster_cidr,
+                service_cidr,
+                dns_servers,
+            })
+            .ok()
+            .expect("network state already initialized");
+
+        // Drain buffered peers and add them now that the network is ready.
+        let peers = {
+            let mut pending = self.pending_peers.lock().await;
+            std::mem::take(&mut *pending)
+        };
+        for peer_host in peers {
+            let peer_ip = resolve_hostname_to_ip(&peer_host)?;
+            net::add_overlay_peer(&peer_ip)?;
+            tracing::info!(peer_host = %peer_host, peer_ip = %peer_ip, "added buffered overlay peer");
+        }
+
+        Ok(())
+    }
+}
+
 /// SCOP Conduit implementation backed by CRI, with per-pod networking.
 struct CriConduit {
     cri: Arc<Mutex<CriClient>>,
@@ -120,16 +172,10 @@ struct CriConduit {
     log_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
     /// Pods keyed by pod_name (full resource name with hash).
     pods: Arc<Mutex<HashMap<String, PodInfo>>>,
-    /// Per-node IP address allocator.
-    ipam: Arc<Mutex<net::Ipam>>,
-    /// The node's pod subnet (for network setup).
-    pod_cidr: Ipv4Net,
-    /// The cluster-wide CIDR (for egress rules).
-    cluster_cidr: Option<String>,
-    /// The service CIDR for Host VIPs (for egress rules).
-    service_cidr: Option<String>,
-    /// DNS servers to configure in pods.
-    dns_servers: Vec<String>,
+    /// Network state, set after orchestrator registration via `NetworkInitHandle`.
+    net_state: Arc<OnceCell<NetworkState>>,
+    /// Overlay peers received before network initialization.
+    pending_peers: Arc<Mutex<Vec<String>>>,
     /// Shared DNS records for the internal DNS server.
     dns_records: dns::DnsRecords,
     /// VIP aliases: maps LAN VIP address → Host VIP (destination).
@@ -142,15 +188,10 @@ struct CriConduit {
 }
 
 impl CriConduit {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
+    /// Create a `CriConduit` in pending state (before network initialization).
+    fn new_pending(
         cri: CriClient,
         ldb_publisher: Option<ldb::Publisher>,
-        ipam: net::Ipam,
-        pod_cidr: Ipv4Net,
-        cluster_cidr: Option<String>,
-        service_cidr: Option<String>,
-        dns_servers: Vec<String>,
         dns_records: dns::DnsRecords,
     ) -> Self {
         Self {
@@ -158,15 +199,27 @@ impl CriConduit {
             ldb_publisher,
             log_tasks: Arc::new(Mutex::new(HashMap::new())),
             pods: Arc::new(Mutex::new(HashMap::new())),
-            ipam: Arc::new(Mutex::new(ipam)),
-            pod_cidr,
-            cluster_cidr,
-            service_cidr,
-            dns_servers,
+            net_state: Arc::new(OnceCell::new()),
+            pending_peers: Arc::new(Mutex::new(Vec::new())),
             dns_records,
             vip_aliases: Arc::new(Mutex::new(HashMap::new())),
             service_routes: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// Get a handle for initializing the network state after registration.
+    fn network_init_handle(&self) -> NetworkInitHandle {
+        NetworkInitHandle {
+            net_state: Arc::clone(&self.net_state),
+            pending_peers: Arc::clone(&self.pending_peers),
+        }
+    }
+
+    /// Access network state, returning UNAVAILABLE if not yet initialized.
+    fn net(&self) -> Result<&NetworkState, scop::tonic::Status> {
+        self.net_state.get().ok_or_else(|| {
+            scop::tonic::Status::unavailable("network not yet initialized (registration pending)")
+        })
     }
 
     /// Clean up a partially-created pod on failure.
@@ -175,8 +228,8 @@ impl CriConduit {
     /// pod networking, releases the IPAM allocation, and removes the CRI sandbox.
     /// All errors during cleanup are logged but do not propagate.
     async fn cleanup_failed_pod(
-        &self,
         cri: &mut CriClient,
+        net: &NetworkState,
         cri_pod_id: &str,
         container_ids: &[String],
         network_setup: bool,
@@ -188,15 +241,18 @@ impl CriConduit {
         if network_setup {
             let _ = net::teardown_pod_network(cri_pod_id);
         }
-        let mut ipam = self.ipam.lock().await;
+        let mut ipam = net.ipam.lock().await;
         ipam.release(cri_pod_id);
         let _ = cri.stop_pod_sandbox(cri_pod_id).await;
         let _ = cri.remove_pod_sandbox(cri_pod_id).await;
     }
 
     /// Convert SCOP PodConfig to CRI PodSandboxConfig.
-    fn to_cri_pod_config(&self, config: &scop::PodConfig) -> k8s_cri::v1::PodSandboxConfig {
-        cri::pod_sandbox_config(&config.name, &config.environment_qid, &self.dns_servers)
+    fn to_cri_pod_config(
+        dns_servers: &[String],
+        config: &scop::PodConfig,
+    ) -> k8s_cri::v1::PodSandboxConfig {
+        cri::pod_sandbox_config(&config.name, &config.environment_qid, dns_servers)
     }
 
     /// Convert SCOP ContainerConfig to CRI ContainerConfig by index.
@@ -308,9 +364,10 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::CreatePodRequest,
     ) -> Result<scop::CreatePodResponse, scop::tonic::Status> {
+        let net = self.net()?;
         let config = request.config.unwrap_or_default();
         let pod_name = config.name.clone();
-        let cri_pod_config = self.to_cri_pod_config(&config);
+        let cri_pod_config = Self::to_cri_pod_config(&net.dns_servers, &config);
         let mut cri = self.cri.lock().await;
 
         // Step 1: Create the CRI pod sandbox (gets its own network namespace)
@@ -321,12 +378,11 @@ impl scop::Conduit for CriConduit {
 
         // Step 2: Allocate an IP for this pod
         let ip = {
-            let mut ipam = self.ipam.lock().await;
+            let mut ipam = net.ipam.lock().await;
             match ipam.allocate(&cri_pod_id) {
                 Ok(ip) => ip,
                 Err(e) => {
-                    self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
-                        .await;
+                    Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &[], false).await;
                     return Err(scop::tonic::Status::internal(format!(
                         "IPAM allocation failed: {e}"
                     )));
@@ -338,8 +394,7 @@ impl scop::Conduit for CriConduit {
         let netns_path = match cri.pod_network_namespace(&cri_pod_id).await {
             Ok(path) => path,
             Err(e) => {
-                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
-                    .await;
+                Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &[], false).await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to get network namespace: {e}"
                 )));
@@ -350,13 +405,12 @@ impl scop::Conduit for CriConduit {
         if let Err(e) = net::setup_pod_network(
             &cri_pod_id,
             ip,
-            &self.pod_cidr,
+            &net.pod_cidr,
             &netns_path,
-            self.cluster_cidr.as_deref(),
-            self.service_cidr.as_deref(),
+            net.cluster_cidr.as_deref(),
+            net.service_cidr.as_deref(),
         ) {
-            self.cleanup_failed_pod(&mut cri, &cri_pod_id, &[], false)
-                .await;
+            Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &[], false).await;
             return Err(scop::tonic::Status::internal(format!(
                 "pod network setup failed: {e:#}"
             )));
@@ -379,8 +433,7 @@ impl scop::Conduit for CriConduit {
 
             // Pull the image
             if let Err(e) = cri.pull_image(&container_config.image, None).await {
-                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
-                    .await;
+                Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &container_ids, true).await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to pull image for container {i}: {e}"
                 )));
@@ -393,7 +446,7 @@ impl scop::Conduit for CriConduit {
             {
                 Ok(id) => id,
                 Err(e) => {
-                    self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
+                    Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &container_ids, true)
                         .await;
                     return Err(scop::tonic::Status::internal(format!(
                         "failed to create container {i}: {e}"
@@ -404,8 +457,7 @@ impl scop::Conduit for CriConduit {
             // Start the container
             if let Err(e) = cri.start_container(&container_id).await {
                 let _ = cri.remove_container(&container_id).await;
-                self.cleanup_failed_pod(&mut cri, &cri_pod_id, &container_ids, true)
-                    .await;
+                Self::cleanup_failed_pod(&mut cri, net, &cri_pod_id, &container_ids, true).await;
                 return Err(scop::tonic::Status::internal(format!(
                     "failed to start container {i}: {e}"
                 )));
@@ -506,7 +558,8 @@ impl scop::Conduit for CriConduit {
 
         // Release the pod's IP
         {
-            let mut ipam = self.ipam.lock().await;
+            let net = self.net()?;
+            let mut ipam = net.ipam.lock().await;
             ipam.release(&pod_info.cri_pod_id);
         }
 
@@ -566,6 +619,17 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::AddOverlayPeerRequest,
     ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
+        // If network is not yet initialized, buffer the peer for later processing.
+        if self.net_state.get().is_none() {
+            tracing::info!(
+                peer_host = %request.peer_host_ip,
+                "network not yet initialized, buffering overlay peer"
+            );
+            let mut pending = self.pending_peers.lock().await;
+            pending.push(request.peer_host_ip);
+            return Ok(scop::AddOverlayPeerResponse {});
+        }
+
         // Resolve hostname to IP (bridge fdb requires IP address)
         let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip).map_err(|e| {
             scop::tonic::Status::internal(format!(
@@ -631,7 +695,8 @@ impl scop::Conduit for CriConduit {
         &self,
         request: scop::AddServiceRouteRequest,
     ) -> Result<scop::AddServiceRouteResponse, scop::tonic::Status> {
-        let svc_cidr = self.service_cidr.as_deref().unwrap_or("");
+        let net = self.net()?;
+        let svc_cidr = net.service_cidr.as_deref().unwrap_or("");
         net::add_service_route(
             &request.vip,
             request.port,
@@ -1004,6 +1069,23 @@ async fn main() -> Result<()> {
                 }
             };
 
+            // Create DNS records table early (needed by CriConduit and DNS server)
+            let dns_records = dns::new_records();
+
+            // Create the conduit in pending state (network not yet initialized)
+            let conduit = CriConduit::new_pending(cri, ldb_publisher, dns_records.clone());
+            let init_handle = conduit.network_init_handle();
+
+            // Bind the TCP listener and start the Conduit server BEFORE registering
+            // with the orchestrator. This ensures the server is already accepting
+            // connections when the plugin sends peer notifications in response to
+            // registration.
+            let listener = tokio::net::TcpListener::bind(&bind).await?;
+            tracing::info!("Conduit TCP listener bound on {}", bind);
+            let server_handle = tokio::spawn(async move {
+                scop::serve_conduit_on_tcp_listener(listener, conduit).await
+            });
+
             // Connect to orchestrator and register (with retries)
             tracing::info!("Registering with orchestrator at {}", orchestrator_address);
             let mut retries = 0;
@@ -1122,7 +1204,6 @@ async fn main() -> Result<()> {
             net::setup_services_chain()?;
 
             // Set up the internal DNS server for *.internal resolution
-            let dns_records = dns::new_records();
             let gateway = std::net::Ipv4Addr::from(u32::from(pod_cidr.network()) + 1);
             let dns_bind_addr = std::net::SocketAddr::new(gateway.into(), 53);
             let dns_records_clone = dns_records.clone();
@@ -1141,17 +1222,51 @@ async fn main() -> Result<()> {
             let dns_servers = vec![gateway.to_string()];
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
-            // Create the conduit with networking support
-            let conduit = CriConduit::new(
-                cri,
-                ldb_publisher,
-                ipam,
-                pod_cidr,
-                cluster_cidr,
-                service_cidr,
-                dns_servers,
-                dns_records,
-            );
+            // Initialize network state and drain any buffered overlay peers
+            init_handle
+                .initialize(ipam, pod_cidr, cluster_cidr, service_cidr, dns_servers)
+                .await?;
+
+            // Pull overlay peers from orchestrator now that the Conduit server is running
+            // and the network is initialized.
+            {
+                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
+                    Ok(mut client) => {
+                        match client
+                            .get_overlay_peers(scop::GetOverlayPeersRequest {
+                                node_name: node_name.clone(),
+                            })
+                            .await
+                        {
+                            Ok(response) => {
+                                let peers = response.into_inner().peers;
+                                tracing::info!(
+                                    peer_count = peers.len(),
+                                    "fetched overlay peers from orchestrator"
+                                );
+                                for peer in &peers {
+                                    let peer_ip = match resolve_hostname_to_ip(&peer.peer_host_ip) {
+                                        Ok(ip) => ip,
+                                        Err(e) => {
+                                            tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to resolve overlay peer");
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = net::add_overlay_peer(&peer_ip) {
+                                        tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to add overlay peer");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to fetch overlay peers from orchestrator");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to connect to orchestrator for peer fetch");
+                    }
+                }
+            }
 
             // Spawn heartbeat task with exponential backoff and re-registration
             let node_name_heartbeat = node_name.clone();
@@ -1293,51 +1408,6 @@ async fn main() -> Result<()> {
                     }
                 }
             });
-
-            // Start Conduit server in a separate task
-            let bind_target = format!("http://{}", bind);
-            let server_handle =
-                tokio::spawn(async move { scop::serve_conduit(&bind_target, conduit).await });
-
-            // Pull overlay peers from orchestrator after Conduit server has been spawned
-            {
-                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
-                    Ok(mut client) => {
-                        match client
-                            .get_overlay_peers(scop::GetOverlayPeersRequest {
-                                node_name: node_name.clone(),
-                            })
-                            .await
-                        {
-                            Ok(response) => {
-                                let peers = response.into_inner().peers;
-                                tracing::info!(
-                                    peer_count = peers.len(),
-                                    "fetched overlay peers from orchestrator"
-                                );
-                                for peer in &peers {
-                                    let peer_ip = match resolve_hostname_to_ip(&peer.peer_host_ip) {
-                                        Ok(ip) => ip,
-                                        Err(e) => {
-                                            tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to resolve overlay peer");
-                                            continue;
-                                        }
-                                    };
-                                    if let Err(e) = net::add_overlay_peer(&peer_ip) {
-                                        tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to add overlay peer");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to fetch overlay peers from orchestrator");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to connect to orchestrator for peer fetch");
-                    }
-                }
-            }
 
             // Wait for shutdown signal
             tokio::select! {
