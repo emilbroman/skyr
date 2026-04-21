@@ -113,6 +113,24 @@ message UnregisterNodeResponse {
   bool success = 1;
 }
 
+// Request to retrieve overlay peers for a node.
+message GetOverlayPeersRequest {
+  // Name of the requesting node.
+  string node_name = 1;
+}
+
+// Response containing the list of overlay peers.
+message GetOverlayPeersResponse {
+  // The list of overlay peers (other nodes in the mesh).
+  repeated OverlayPeer peers = 1;
+}
+
+// Information about an overlay peer (another node in the VXLAN mesh).
+message OverlayPeer {
+  // The peer's host IP for VXLAN tunneling.
+  string peer_host_ip = 1;
+}
+
 // ============================================================================
 // Conduit Service (served by SCOC)
 // ============================================================================
