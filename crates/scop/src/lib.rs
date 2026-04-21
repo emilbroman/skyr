@@ -79,8 +79,9 @@ pub mod proto {
 
 // --- Node registration (Orchestrator) ---
 pub use proto::{
-    HeartbeatRequest, HeartbeatResponse, NodeCapacity, NodeUsage, RegisterNodeRequest,
-    RegisterNodeResponse, UnregisterNodeRequest, UnregisterNodeResponse,
+    GetOverlayPeersRequest, GetOverlayPeersResponse, HeartbeatRequest, HeartbeatResponse,
+    NodeCapacity, NodeUsage, OverlayPeer, RegisterNodeRequest, RegisterNodeResponse,
+    UnregisterNodeRequest, UnregisterNodeResponse,
 };
 
 // --- Pod lifecycle (Conduit) ---
@@ -349,6 +350,12 @@ pub trait Orchestrator: Send + Sync + 'static {
         &self,
         request: UnregisterNodeRequest,
     ) -> Result<UnregisterNodeResponse, tonic::Status>;
+
+    /// Get the list of overlay peers for a node.
+    async fn get_overlay_peers(
+        &self,
+        request: GetOverlayPeersRequest,
+    ) -> Result<GetOverlayPeersResponse, tonic::Status>;
 }
 
 #[derive(Clone)]
@@ -384,6 +391,17 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
         let response = self
             .orchestrator
             .unregister_node(request.into_inner())
+            .await?;
+        Ok(tonic::Response::new(response))
+    }
+
+    async fn get_overlay_peers(
+        &self,
+        request: tonic::Request<GetOverlayPeersRequest>,
+    ) -> Result<tonic::Response<GetOverlayPeersResponse>, tonic::Status> {
+        let response = self
+            .orchestrator
+            .get_overlay_peers(request.into_inner())
             .await?;
         Ok(tonic::Response::new(response))
     }
