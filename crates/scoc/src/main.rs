@@ -1153,46 +1153,6 @@ async fn main() -> Result<()> {
                 dns_records,
             );
 
-            // Pull overlay peers from orchestrator now that Conduit is accepting connections
-            {
-                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
-                    Ok(mut client) => {
-                        match client
-                            .get_overlay_peers(scop::GetOverlayPeersRequest {
-                                node_name: node_name.clone(),
-                            })
-                            .await
-                        {
-                            Ok(response) => {
-                                let peers = response.into_inner().peers;
-                                tracing::info!(
-                                    peer_count = peers.len(),
-                                    "fetched overlay peers from orchestrator"
-                                );
-                                for peer in &peers {
-                                    let peer_ip = match resolve_hostname_to_ip(&peer.peer_host_ip) {
-                                        Ok(ip) => ip,
-                                        Err(e) => {
-                                            tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to resolve overlay peer");
-                                            continue;
-                                        }
-                                    };
-                                    if let Err(e) = net::add_overlay_peer(&peer_ip) {
-                                        tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to add overlay peer");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to fetch overlay peers from orchestrator");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to connect to orchestrator for peer fetch");
-                    }
-                }
-            }
-
             // Spawn heartbeat task with exponential backoff and re-registration
             let node_name_heartbeat = node_name.clone();
             let orchestrator_address_heartbeat = orchestrator_address.clone();
@@ -1338,6 +1298,46 @@ async fn main() -> Result<()> {
             let bind_target = format!("http://{}", bind);
             let server_handle =
                 tokio::spawn(async move { scop::serve_conduit(&bind_target, conduit).await });
+
+            // Pull overlay peers from orchestrator after Conduit server has been spawned
+            {
+                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
+                    Ok(mut client) => {
+                        match client
+                            .get_overlay_peers(scop::GetOverlayPeersRequest {
+                                node_name: node_name.clone(),
+                            })
+                            .await
+                        {
+                            Ok(response) => {
+                                let peers = response.into_inner().peers;
+                                tracing::info!(
+                                    peer_count = peers.len(),
+                                    "fetched overlay peers from orchestrator"
+                                );
+                                for peer in &peers {
+                                    let peer_ip = match resolve_hostname_to_ip(&peer.peer_host_ip) {
+                                        Ok(ip) => ip,
+                                        Err(e) => {
+                                            tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to resolve overlay peer");
+                                            continue;
+                                        }
+                                    };
+                                    if let Err(e) = net::add_overlay_peer(&peer_ip) {
+                                        tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to add overlay peer");
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to fetch overlay peers from orchestrator");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to connect to orchestrator for peer fetch");
+                    }
+                }
+            }
 
             // Wait for shutdown signal
             tokio::select! {
