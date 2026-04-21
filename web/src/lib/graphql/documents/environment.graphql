@@ -6,6 +6,7 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
         qid
         deployments {
           id
+          nonce
           ref
           commit {
             hash
@@ -80,6 +81,7 @@ query ResourceDetail(
           markers
           owner {
             id
+            nonce
             ref
             commit {
               hash
@@ -130,12 +132,12 @@ query DeploymentDetail(
   $org: String!
   $repo: String!
   $env: String!
-  $commit: String!
+  $id: String!
 ) {
   organization(name: $org) {
     repository(name: $repo) {
       environment(name: $env) {
-        deployment(commit: $commit) {
+        deployment(id: $id) {
           id
           ref
           commit {

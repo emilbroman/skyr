@@ -43,9 +43,9 @@ export function deploymentHref(
     orgName: string,
     repoName: string,
     envName: string,
-    commitHash: string,
+    deploymentId: string,
 ): string {
-    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d/${encodeURIComponent(commitHash)}`;
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~d/${encodeURIComponent(deploymentId)}`;
 }
 
 export function envDeploymentsHref(orgName: string, repoName: string, envName: string): string {

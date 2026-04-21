@@ -149,7 +149,7 @@ let aRecordFqdn = $derived.by(() => {
                 orgName,
                 repoName,
                 envName,
-                resource.owner.commit.hash,
+                `${resource.owner.commit.hash}.${resource.owner.nonce}`,
               )}
               class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
             >

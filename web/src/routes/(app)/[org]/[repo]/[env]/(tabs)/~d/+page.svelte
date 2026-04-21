@@ -161,7 +161,7 @@ function onDeploy(commitHash: string) {
             </td>
             <td class="py-3 pr-4 truncate max-w-md">
               <a
-                href={deploymentHref(orgName, repoName, envName, deployment.commit.hash)}
+                href={deploymentHref(orgName, repoName, envName, `${deployment.commit.hash}.${deployment.nonce}`)}
                 class="text-orange-600 hover:text-orange-500"
               >
                 {deployment.commit.message.split("\n")[0]}

@@ -17,7 +17,7 @@ import { commitTreeHref, decodeSegment } from "$lib/paths";
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
 let envName = $derived(decodeSegment($page.params.env ?? ""));
-let commitHash = $derived($page.params.deployment ?? "");
+let deploymentId = $derived($page.params.deployment ?? "");
 
 const deploymentDetail = graphqlQuery(() => ({
     document: DeploymentDetailDocument,
@@ -25,7 +25,7 @@ const deploymentDetail = graphqlQuery(() => ({
         org: orgName,
         repo: repoName,
         env: envName,
-        commit: commitHash,
+        id: deploymentId,
     },
     refetchInterval: 10_000,
 }));
@@ -59,18 +59,19 @@ const createDeployment = graphqlMutation(CreateDeploymentDocument, {
 let canRedeploy = $derived(deployment != null && deployment.state !== DeploymentState.Desired);
 
 function onRedeploy() {
+    if (!deployment) return;
     createDeploymentError = null;
     createDeployment.mutate({
         org: orgName,
         repo: repoName,
         env: envName,
-        commitHash,
+        commitHash: deployment.commit.hash,
     });
 }
 </script>
 
 <svelte:head>
-    <title>{commitHash.substring(0, 8)} · {orgName}/{repoName} ({envName}) – Skyr</title>
+    <title>{deployment?.commit.hash.substring(0, 8) ?? deploymentId} · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
 <div>
