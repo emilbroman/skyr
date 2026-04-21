@@ -4,7 +4,7 @@ use juniper::FieldResult;
 
 use crate::challenge;
 use crate::webauthn;
-use crate::{field_error, internal_error, Context, JsonValue};
+use crate::{Context, JsonValue, field_error, internal_error};
 
 /// Dispatch proof verification: SSH (string) or WebAuthn (object).
 /// Returns (openssh_key, credential_id, sign_count).
