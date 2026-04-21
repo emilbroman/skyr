@@ -6,7 +6,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::schema::{Log, Severity};
-use crate::{field_error, internal_error, Context};
+use crate::{Context, field_error, internal_error};
 
 pub(crate) type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
 

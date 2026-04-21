@@ -10,10 +10,7 @@ mod webauthn;
 
 use axum::{
     Json as AxumJson, Router,
-    extract::{
-        Extension,
-        ws::WebSocketUpgrade,
-    },
+    extract::{Extension, ws::WebSocketUpgrade},
     response::{Html, IntoResponse, Response},
     routing::get,
 };
@@ -27,9 +24,7 @@ use sha2::Digest;
 use tower_http::cors::{Any, CorsLayer};
 
 use json_scalar::JsonValue;
-use schema::{
-    AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser,
-};
+use schema::{AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser};
 
 #[derive(Clone)]
 pub(crate) struct Context {
@@ -732,8 +727,7 @@ impl Mutation {
     }
 }
 
-pub(crate) type Schema =
-    RootNode<'static, Query, Mutation, subscriptions::Subscription>;
+pub(crate) type Schema = RootNode<'static, Query, Mutation, subscriptions::Subscription>;
 
 fn schema() -> Schema {
     Schema::new(Query, Mutation, subscriptions::Subscription)

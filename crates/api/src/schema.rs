@@ -4,7 +4,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::json_scalar::JsonValue;
-use crate::{field_error, internal_error, Context};
+use crate::{Context, field_error, internal_error};
 
 pub(crate) struct AuthSuccess {
     pub(crate) user: SignedInUser,
