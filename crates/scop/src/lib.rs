@@ -745,3 +745,24 @@ pub async fn serve_conduit<C: Conduit>(
 
     serve(target, "Conduit", Server::builder().add_service(service)).await
 }
+
+/// Serve the Conduit service on an already-bound TCP listener.
+/// This allows the caller to bind the listener before registering with the orchestrator,
+/// ensuring the Conduit server is already listening when peer notifications arrive.
+pub async fn serve_conduit_on_tcp_listener<C: Conduit>(
+    listener: tokio::net::TcpListener,
+    conduit: C,
+) -> Result<(), ServeError> {
+    info!("starting Conduit server on existing TCP listener");
+
+    let service = proto::conduit_server::ConduitServer::new(ConduitService {
+        conduit: Arc::new(conduit),
+    });
+
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+    Server::builder()
+        .add_service(service)
+        .serve_with_incoming(incoming)
+        .await
+        .map_err(ServeError::Transport)
+}
