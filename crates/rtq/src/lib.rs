@@ -173,6 +173,7 @@ impl ResourceRef {
 pub struct CreateMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub deployment_nonce: ids::DeploymentNonce,
     pub inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -184,6 +185,7 @@ pub struct CreateMessage {
 pub struct RestoreMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub deployment_nonce: ids::DeploymentNonce,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -196,7 +198,9 @@ pub struct RestoreMessage {
 pub struct AdoptMessage {
     pub resource: ResourceRef,
     pub from_deployment_id: ids::DeploymentId,
+    pub from_deployment_nonce: ids::DeploymentNonce,
     pub to_deployment_id: ids::DeploymentId,
+    pub to_deployment_nonce: ids::DeploymentNonce,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -208,6 +212,7 @@ pub struct AdoptMessage {
 pub struct DestroyMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub deployment_nonce: ids::DeploymentNonce,
 }
 
 /// Request to check (verify) the current state of a resource.
@@ -215,6 +220,7 @@ pub struct DestroyMessage {
 pub struct CheckMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub deployment_nonce: ids::DeploymentNonce,
 }
 
 #[derive(Debug, Error)]

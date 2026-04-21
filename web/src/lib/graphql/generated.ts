@@ -60,10 +60,13 @@ export type CommitTreeEntryArgs = {
 
 export type Deployment = {
   __typename?: 'Deployment';
+  bootstrapped: Scalars['Boolean']['output'];
   commit: Commit;
   createdAt: Scalars['String']['output'];
+  failures: Scalars['Int']['output'];
   id: Scalars['String']['output'];
   lastLogs: Array<Log>;
+  nonce: Scalars['String']['output'];
   ref: Scalars['String']['output'];
   resources: Array<Resource>;
   state: DeploymentState;
@@ -77,11 +80,8 @@ export type DeploymentLastLogsArgs = {
 export enum DeploymentState {
   Desired = 'DESIRED',
   Down = 'DOWN',
-  Failed = 'FAILED',
-  Failing = 'FAILING',
   Lingering = 'LINGERING',
-  Undesired = 'UNDESIRED',
-  Up = 'UP'
+  Undesired = 'UNDESIRED'
 }
 
 export type Environment = {

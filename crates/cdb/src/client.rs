@@ -7,10 +7,10 @@ use crate::deployment::{Deployment, InvalidDeploymentState};
 use crate::{DeploymentState, Repository};
 use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
-use futures_util::{Stream, StreamExt, TryStreamExt, pin_mut, stream};
+use futures_util::{Stream, StreamExt, TryStreamExt, stream};
 use gix_hash::ObjectId;
 use gix_object::{Blob, Commit, Kind, Object, Tree, WriteTo};
-use ids::{DeploymentId, EnvironmentId, ParseIdError, RepoQid};
+use ids::{DeploymentId, DeploymentNonce, EnvironmentId, ParseIdError, RepoQid};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
@@ -95,9 +95,12 @@ prepared_statements! {
                 created_at TIMESTAMP,
                 environment_id TEXT,
                 commit_hash BLOB,
+                nonce BIGINT,
                 state TEXT,
-                PRIMARY KEY ((organization, repository), created_at, environment_id, commit_hash)
-            ) WITH CLUSTERING ORDER BY (created_at DESC, environment_id ASC, commit_hash ASC)
+                bootstrapped BOOLEAN,
+                failures INT,
+                PRIMARY KEY ((organization, repository), created_at, environment_id, commit_hash, nonce)
+            ) WITH CLUSTERING ORDER BY (created_at DESC, environment_id ASC, commit_hash ASC, nonce ASC)
         "#,
 
         create_deployments_by_id_table = r#"
@@ -107,8 +110,11 @@ prepared_statements! {
                 repository TEXT,
                 environment_id TEXT,
                 commit_hash BLOB,
+                nonce BIGINT,
                 created_at TIMESTAMP,
                 state TEXT,
+                bootstrapped BOOLEAN,
+                failures INT,
                 PRIMARY KEY ((deployment_qid))
             )
         "#,
@@ -119,8 +125,9 @@ prepared_statements! {
                 repository TEXT,
                 environment_id TEXT,
                 commit_hash BLOB,
+                nonce BIGINT,
                 deployment_qid TEXT,
-                PRIMARY KEY ((organization), repository, environment_id, commit_hash)
+                PRIMARY KEY ((organization), repository, environment_id, commit_hash, nonce)
             )
         "#,
 
@@ -141,8 +148,10 @@ prepared_statements! {
                 repository TEXT,
                 environment_id TEXT,
                 superseding_commit_hash BLOB,
+                superseding_nonce BIGINT,
                 superseded_commit_hash BLOB,
-                PRIMARY KEY ((organization), repository, environment_id, superseded_commit_hash)
+                superseded_nonce BIGINT,
+                PRIMARY KEY ((organization), repository, environment_id, superseded_commit_hash, superseded_nonce)
             )
         "#,
     }
@@ -173,19 +182,19 @@ prepared_statements! {
         "#,
 
         find_deployment_by_qid = r#"
-            SELECT organization, repository, environment_id, commit_hash, created_at, state
+            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped, failures
             FROM cdb.deployments_by_id
             WHERE deployment_qid = ?
         "#,
 
         find_deployments_by_qids = r#"
-            SELECT organization, repository, environment_id, commit_hash, created_at, state
+            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped, failures
             FROM cdb.deployments_by_id
             WHERE deployment_qid IN ?
         "#,
 
         list_deployments_by_repo = r#"
-            SELECT created_at, environment_id, commit_hash, state
+            SELECT created_at, environment_id, commit_hash, nonce, state, bootstrapped, failures
             FROM cdb.deployments
             WHERE organization = ?
             AND repository = ?
@@ -212,8 +221,8 @@ prepared_statements! {
         "#,
 
         set_deployment = r#"
-            INSERT INTO cdb.deployments (organization, repository, created_at, environment_id, commit_hash, state)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO cdb.deployments (organization, repository, created_at, environment_id, commit_hash, nonce, state, bootstrapped, failures)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         set_deployment_by_id = r#"
@@ -223,15 +232,18 @@ prepared_statements! {
                 repository,
                 environment_id,
                 commit_hash,
+                nonce,
                 created_at,
-                state
+                state,
+                bootstrapped,
+                failures
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         set_active_deployment = r#"
-            INSERT INTO cdb.active_deployments (organization, repository, environment_id, commit_hash, deployment_qid)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO cdb.active_deployments (organization, repository, environment_id, commit_hash, nonce, deployment_qid)
+            VALUES (?, ?, ?, ?, ?, ?)
         "#,
 
         unset_active_deployment = r#"
@@ -240,35 +252,40 @@ prepared_statements! {
             AND repository = ?
             AND environment_id = ?
             AND commit_hash = ?
+            AND nonce = ?
         "#,
 
         create_supersession = r#"
             INSERT INTO cdb.supersessions (
                 superseding_commit_hash,
+                superseding_nonce,
                 organization,
                 repository,
                 environment_id,
-                superseded_commit_hash
-            ) VALUES (?, ?, ?, ?, ?)
+                superseded_commit_hash,
+                superseded_nonce
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
         "#,
 
-        get_superseded_commits = r#"
-            SELECT superseded_commit_hash
+        get_superseded_deployments = r#"
+            SELECT superseded_commit_hash, superseded_nonce
             FROM cdb.supersessions
             WHERE organization = ?
             AND repository = ?
             AND environment_id = ?
             AND superseding_commit_hash = ?
+            AND superseding_nonce = ?
             ALLOW FILTERING
         "#,
 
-        get_superseding_commit = r#"
-            SELECT superseding_commit_hash
+        get_superseding_deployment = r#"
+            SELECT superseding_commit_hash, superseding_nonce
             FROM cdb.supersessions
             WHERE organization = ?
             AND repository = ?
             AND environment_id = ?
             AND superseded_commit_hash = ?
+            AND superseded_nonce = ?
         "#,
     }
 }
@@ -340,13 +357,17 @@ impl ClientBuilder {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn deployment_from_row(
     organization: String,
     repository: String,
     environment_id: String,
     commit_hash: Vec<u8>,
+    nonce: i64,
     created_at: DateTime<Utc>,
     state: String,
+    bootstrapped: Option<bool>,
+    failures: Option<i32>,
 ) -> Result<Deployment, DeploymentQueryError> {
     let deploy_id =
         DeploymentId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
@@ -357,8 +378,11 @@ fn deployment_from_row(
         repo: RepoQid::new(org, repo),
         environment,
         deployment: deploy_id,
+        nonce: DeploymentNonce::from_u64(nonce as u64),
         created_at,
         state: state.parse()?,
+        bootstrapped: bootstrapped.unwrap_or(false),
+        failures: failures.unwrap_or(0) as u32,
     })
 }
 
@@ -452,10 +476,11 @@ impl Client {
         repo: &RepoQid,
         environment: &EnvironmentId,
         deployment: &DeploymentId,
+        nonce: &DeploymentNonce,
     ) -> Result<Deployment, DeploymentQueryError> {
         let qid = repo
             .environment(environment.clone())
-            .deployment(deployment.clone())
+            .deployment(deployment.clone(), *nonce)
             .to_string();
         let pager = self
             .session
@@ -463,7 +488,17 @@ impl Client {
             .await?;
 
         match pager
-            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(
+                String,
+                String,
+                String,
+                Vec<u8>,
+                i64,
+                DateTime<Utc>,
+                String,
+                Option<bool>,
+                Option<i32>,
+            )>()?
             .next()
             .await
         {
@@ -474,8 +509,11 @@ impl Client {
                 repository,
                 environment_id,
                 commit_hash,
+                nonce_val,
                 created_at,
                 state,
+                bootstrapped,
+                failures,
             ))) => {
                 if organization != repo.org.as_str() || repository != repo.repo.as_str() {
                     return Err(DeploymentQueryError::NotFound);
@@ -485,8 +523,11 @@ impl Client {
                     repository,
                     environment_id,
                     commit_hash,
+                    nonce_val,
                     created_at,
                     state,
+                    bootstrapped,
+                    failures,
                 )
             }
         }
@@ -499,6 +540,7 @@ impl Client {
         let deployment_qid = deployment.deployment_qid().to_string();
         let repo = &deployment.repo;
         let commit_hash = ObjectId::from_bytes_or_panic(&deployment.deployment.to_bytes());
+        let nonce_val = deployment.nonce.as_u64() as i64;
         let (dep, dep_by_id, active_dep) = futures::join!(
             self.session.execute_unpaged(
                 &self.statements.set_deployment,
@@ -508,7 +550,10 @@ impl Client {
                     deployment.created_at,
                     deployment.environment.as_str(),
                     commit_hash.as_slice(),
+                    nonce_val,
                     deployment.state.to_string(),
+                    deployment.bootstrapped,
+                    deployment.failures as i32,
                 ),
             ),
             self.session.execute_unpaged(
@@ -519,8 +564,11 @@ impl Client {
                     repo.repo.as_str(),
                     deployment.environment.as_str(),
                     commit_hash.as_slice(),
+                    nonce_val,
                     deployment.created_at,
                     deployment.state.to_string(),
+                    deployment.bootstrapped,
+                    deployment.failures as i32,
                 ),
             ),
             async {
@@ -533,6 +581,7 @@ impl Client {
                                 repo.repo.as_str(),
                                 deployment.environment.as_str(),
                                 commit_hash.as_slice(),
+                                nonce_val,
                             ),
                         )
                         .await
@@ -545,6 +594,7 @@ impl Client {
                                 repo.repo.as_str(),
                                 deployment.environment.as_str(),
                                 commit_hash.as_slice(),
+                                nonce_val,
                                 deployment_qid.as_str(),
                             ),
                         )
@@ -585,16 +635,39 @@ impl Client {
             .await?;
 
         Ok(deployments
-            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(
+                String,
+                String,
+                String,
+                Vec<u8>,
+                i64,
+                DateTime<Utc>,
+                String,
+                Option<bool>,
+                Option<i32>,
+            )>()?
             .map(|r| {
-                let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
+                let (
+                    organization,
+                    repository,
+                    environment_id,
+                    commit_hash,
+                    nonce,
+                    created_at,
+                    state,
+                    bootstrapped,
+                    failures,
+                ) = r?;
                 deployment_from_row(
                     organization,
                     repository,
                     environment_id,
                     commit_hash,
+                    nonce,
                     created_at,
                     state,
+                    bootstrapped,
+                    failures,
                 )
             })
             .boxed())
@@ -639,11 +712,13 @@ impl RepositoryClient {
         &self,
         environment: EnvironmentId,
         deployment: DeploymentId,
+        nonce: DeploymentNonce,
     ) -> DeploymentClient {
         DeploymentClient {
             repo: self.clone(),
             environment,
             deployment,
+            nonce,
         }
     }
 
@@ -768,16 +843,39 @@ impl RepositoryClient {
             .await?;
 
         Ok(deployments
-            .rows_stream::<(String, String, String, Vec<u8>, DateTime<Utc>, String)>()?
+            .rows_stream::<(
+                String,
+                String,
+                String,
+                Vec<u8>,
+                i64,
+                DateTime<Utc>,
+                String,
+                Option<bool>,
+                Option<i32>,
+            )>()?
             .map(|r| {
-                let (organization, repository, environment_id, commit_hash, created_at, state) = r?;
+                let (
+                    organization,
+                    repository,
+                    environment_id,
+                    commit_hash,
+                    nonce,
+                    created_at,
+                    state,
+                    bootstrapped,
+                    failures,
+                ) = r?;
                 deployment_from_row(
                     organization,
                     repository,
                     environment_id,
                     commit_hash,
+                    nonce,
                     created_at,
                     state,
+                    bootstrapped,
+                    failures,
                 )
             })
             .boxed())
@@ -797,19 +895,40 @@ impl RepositoryClient {
             .await?;
 
         let repo = self.name.clone();
-        Ok(pager
-            .rows_stream::<(DateTime<Utc>, String, Vec<u8>, String)>()?
-            .map(move |r| {
-                let (created_at, environment_id, commit_hash, state) = r?;
-                deployment_from_row(
-                    repo.org.to_string(),
-                    repo.repo.to_string(),
-                    environment_id,
-                    commit_hash,
-                    created_at,
-                    state,
-                )
-            }))
+        Ok(
+            pager
+                .rows_stream::<(
+                    DateTime<Utc>,
+                    String,
+                    Vec<u8>,
+                    i64,
+                    String,
+                    Option<bool>,
+                    Option<i32>,
+                )>()?
+                .map(move |r| {
+                    let (
+                        created_at,
+                        environment_id,
+                        commit_hash,
+                        nonce,
+                        state,
+                        bootstrapped,
+                        failures,
+                    ) = r?;
+                    deployment_from_row(
+                        repo.org.to_string(),
+                        repo.repo.to_string(),
+                        environment_id,
+                        commit_hash,
+                        nonce,
+                        created_at,
+                        state,
+                        bootstrapped,
+                        failures,
+                    )
+                }),
+        )
     }
 }
 
@@ -822,6 +941,7 @@ pub struct DeploymentClient {
     repo: RepositoryClient,
     environment: EnvironmentId,
     deployment: DeploymentId,
+    nonce: DeploymentNonce,
 }
 
 impl DeploymentClient {
@@ -837,11 +957,15 @@ impl DeploymentClient {
         &self.deployment
     }
 
+    pub fn deployment_nonce(&self) -> &DeploymentNonce {
+        &self.nonce
+    }
+
     pub fn deployment_qid(&self) -> ids::DeploymentQid {
         self.repo
             .name
             .environment(self.environment.clone())
-            .deployment(self.deployment.clone())
+            .deployment(self.deployment.clone(), self.nonce)
     }
 
     pub fn environment_qid(&self) -> ids::EnvironmentQid {
@@ -855,7 +979,12 @@ impl DeploymentClient {
     pub async fn get(&self) -> Result<Deployment, DeploymentQueryError> {
         self.repo
             .client
-            .find_deployment(&self.repo.name, &self.environment, &self.deployment)
+            .find_deployment(
+                &self.repo.name,
+                &self.environment,
+                &self.deployment,
+                &self.nonce,
+            )
             .await
     }
 
@@ -877,11 +1006,33 @@ impl DeploymentClient {
             repo: self.repo.name.clone(),
             environment: self.environment.clone(),
             deployment: self.deployment.clone(),
+            nonce: self.nonce,
             created_at: prev_state
                 .as_ref()
                 .map(|s| s.created_at)
                 .unwrap_or_else(Utc::now),
             state,
+            bootstrapped: prev_state.as_ref().map(|s| s.bootstrapped).unwrap_or(false),
+            failures: prev_state.as_ref().map(|s| s.failures).unwrap_or(0),
+        };
+
+        self.repo.client.set_deployment(deployment).await?;
+
+        Ok(())
+    }
+
+    /// Update the bootstrapped flag and failures counter without changing the state.
+    pub async fn set_progress(
+        &self,
+        bootstrapped: bool,
+        failures: u32,
+    ) -> Result<(), SetDeploymentError> {
+        let prev = self.get().await?;
+
+        let deployment = Deployment {
+            bootstrapped,
+            failures,
+            ..prev
         };
 
         self.repo.client.set_deployment(deployment).await?;
@@ -979,6 +1130,7 @@ impl DeploymentClient {
     pub async fn mark_superseded_by(
         &self,
         superseding_commit: &DeploymentId,
+        superseding_nonce: &DeploymentNonce,
     ) -> Result<(), SetDeploymentError> {
         let superseding_oid = ObjectId::from_bytes_or_panic(&superseding_commit.to_bytes());
         let this_oid = self.commit_hash();
@@ -989,10 +1141,12 @@ impl DeploymentClient {
                 &self.repo.client.statements.create_supersession,
                 (
                     superseding_oid.as_bytes(),
+                    superseding_nonce.as_u64() as i64,
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
+                    self.nonce.as_u64() as i64,
                 ),
             )
             .await?;
@@ -1006,25 +1160,32 @@ impl DeploymentClient {
             .client
             .session
             .execute_iter(
-                self.repo.client.statements.get_superseded_commits.clone(),
+                self.repo
+                    .client
+                    .statements
+                    .get_superseded_deployments
+                    .clone(),
                 (
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
+                    self.nonce.as_u64() as i64,
                 ),
             )
             .await?;
 
         let superseded = pager
-            .rows_stream::<(Vec<u8>,)>()?
+            .rows_stream::<(Vec<u8>, i64)>()?
             .map(|row| {
-                let (commit_hash,) = row?;
+                let (commit_hash, nonce) = row?;
                 let deploy_id = DeploymentId::from_bytes(&commit_hash)
                     .map_err(|_| DeploymentQueryError::NotFound)?;
-                Ok::<_, DeploymentQueryError>(
-                    self.repo.deployment(self.environment.clone(), deploy_id),
-                )
+                Ok::<_, DeploymentQueryError>(self.repo.deployment(
+                    self.environment.clone(),
+                    deploy_id,
+                    DeploymentNonce::from_u64(nonce as u64),
+                ))
             })
             .try_collect::<Vec<_>>()
             .await?;
@@ -1032,78 +1193,13 @@ impl DeploymentClient {
         Ok(superseded)
     }
 
-    /// Pick a suitable deployment to roll back to after this deployment has
-    /// failed fatally.
-    ///
-    /// The primary candidate set is the deployments that this one directly
-    /// superseded (from the supersessions table). If several exist (e.g. a
-    /// racey double-push produced multiple superseded predecessors), the
-    /// most recent by `created_at` wins. Any predecessor that is itself
-    /// `Failing` or `Failed` is skipped.
-    ///
-    /// If no direct predecessor is a viable rollback target, falls back to
-    /// the most recent non-failed deployment in the same environment,
-    /// excluding `self`.
-    ///
-    /// Returns `None` if no suitable candidate exists.
-    pub async fn rollback_target(&self) -> Result<Option<Deployment>, DeploymentQueryError> {
-        // Primary: deployments we superseded directly.
-        let superseded = self.superseded().await?;
-        let mut candidates: Vec<Deployment> = Vec::new();
-        for client in superseded {
-            match client.get().await {
-                Ok(dep) => {
-                    if !matches!(
-                        dep.state,
-                        DeploymentState::Failed | DeploymentState::Failing
-                    ) {
-                        candidates.push(dep);
-                    }
-                }
-                Err(DeploymentQueryError::NotFound) => {}
-                Err(e) => return Err(e),
-            }
-        }
-        if let Some(best) = candidates.into_iter().max_by_key(|d| d.created_at) {
-            return Ok(Some(best));
-        }
-
-        // Fallback: most recent deployment in the same environment that
-        // isn't failing/failed or self.
-        let stream = self.repo.deployments().await?;
-        pin_mut!(stream);
-        let mut best: Option<Deployment> = None;
-        while let Some(dep) = stream.next().await {
-            let dep = dep?;
-            if dep.environment != self.environment {
-                continue;
-            }
-            if dep.deployment == self.deployment {
-                continue;
-            }
-            if matches!(
-                dep.state,
-                DeploymentState::Failed | DeploymentState::Failing
-            ) {
-                continue;
-            }
-            match &best {
-                None => best = Some(dep),
-                Some(b) if dep.created_at > b.created_at => best = Some(dep),
-                _ => {}
-            }
-        }
-        Ok(best)
-    }
-
     /// Transition this deployment into the `Desired` state, taking over
     /// from whatever deployment is currently active in the same
     /// environment.
     ///
-    /// Any currently-active deployment (`Desired`, `Up`, or `Failing`) in
-    /// this environment is transitioned to `Lingering` and a supersession
-    /// row is recorded linking it to this deployment. `Failed` and
-    /// `Lingering`/`Undesired`/`Down` deployments are left untouched.
+    /// Any currently-active (`Desired`) deployment in this environment is
+    /// transitioned to `Lingering` and a supersession row is recorded
+    /// linking it to this deployment.
     pub async fn make_desired(&self) -> Result<(), SetDeploymentError> {
         // Find currently-active deployments in the same environment.
         let mut active: Vec<Deployment> = Vec::new();
@@ -1113,7 +1209,7 @@ impl DeploymentClient {
             if dep.environment != self.environment {
                 continue;
             }
-            if dep.deployment == self.deployment {
+            if dep.deployment == self.deployment && dep.nonce == self.nonce {
                 continue;
             }
             if dep.state.is_active() {
@@ -1123,12 +1219,12 @@ impl DeploymentClient {
 
         // Mark each as Lingering and record the supersession.
         for dep in active {
-            let predecessor = self
-                .repo
-                .deployment(dep.environment.clone(), dep.deployment.clone());
+            let predecessor =
+                self.repo
+                    .deployment(dep.environment.clone(), dep.deployment.clone(), dep.nonce);
             let (r1, r2) = futures::join!(
                 predecessor.set(DeploymentState::Lingering),
-                predecessor.mark_superseded_by(&self.deployment),
+                predecessor.mark_superseded_by(&self.deployment, &self.nonce),
             );
             r1?;
             r2?;
@@ -1145,22 +1241,27 @@ impl DeploymentClient {
             .client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.get_superseding_commit,
+                &self.repo.client.statements.get_superseding_deployment,
                 (
                     self.repo.name.org.as_str(),
                     self.repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
+                    self.nonce.as_u64() as i64,
                 ),
             )
             .await?;
 
         Ok(r.into_rows_result()?
-            .single_row::<(Vec<u8>,)>()
+            .single_row::<(Vec<u8>, i64)>()
             .ok()
-            .and_then(|(superseding,)| {
+            .and_then(|(superseding, nonce)| {
                 let deploy_id = DeploymentId::from_bytes(&superseding).ok()?;
-                Some(self.repo.deployment(self.environment.clone(), deploy_id))
+                Some(self.repo.deployment(
+                    self.environment.clone(),
+                    deploy_id,
+                    DeploymentNonce::from_u64(nonce as u64),
+                ))
             }))
     }
 }

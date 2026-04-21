@@ -13,7 +13,9 @@ use crate::{Effect, EvalCtx, PackageId, Record, Resource, Value, placeholder_dep
 
 fn foreign_qid(suffix: char) -> DeploymentQid {
     let hash: String = std::iter::repeat(suffix).take(40).collect();
-    format!("foreign/repo::main@{hash}").parse().unwrap()
+    format!("foreign/repo::main@{hash}.0000000000000000")
+        .parse()
+        .unwrap()
 }
 
 fn record_with(name: &str, value: Value) -> Record {

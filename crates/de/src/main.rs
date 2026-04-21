@@ -48,13 +48,14 @@ fn serialize_inputs(
     })
 }
 
-/// Returns the deployment ID portion of an owner QID string, validating
-/// that it parses as a well-formed `DeploymentQid`.
-fn extract_deployment_id(owner_qid: &str) -> anyhow::Result<ids::DeploymentId> {
+/// Parses an owner QID string and extracts its deployment ID and nonce.
+fn extract_deployment_identity(
+    owner_qid: &str,
+) -> anyhow::Result<(ids::DeploymentId, ids::DeploymentNonce)> {
     let qid: ids::DeploymentQid = owner_qid
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid owner QID: {owner_qid}"))?;
-    Ok(qid.deployment)
+    Ok((qid.deployment, qid.nonce))
 }
 
 /// Returns a short (up to 8 char) prefix of the deployment ID for log messages.
@@ -250,6 +251,7 @@ async fn process(
                 client: client.repo(deployment.repo.clone()).deployment(
                     deployment.environment.clone(),
                     deployment.deployment.clone(),
+                    deployment.nonce,
                 ),
                 cdb_client: client.clone(),
                 rdb_client: rdb_client.clone(),
@@ -257,7 +259,7 @@ async fn process(
                 namespace: rdb_client.namespace(environment_qid),
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
-                backoff: None,
+                last_failure_at: None,
             };
 
             let span = tracing::info_span!("worker", dep = %deployment_qid);
@@ -283,54 +285,29 @@ struct Worker {
     namespace: rdb::NamespaceClient,
     rtq_publisher: rtq::Publisher,
     log_publisher: ldb::NamespacePublisher,
-    /// In-memory backoff state for `Failing` deployments. Reset whenever
-    /// the deployment transitions out of `Failing` (by recovery or fatal
-    /// escalation). Intentionally not persisted: on worker restart we start
-    /// fresh at attempt 1, which is acceptable since backoff is an
-    /// optimisation to reduce reconciliation pressure, not a correctness
-    /// property.
-    backoff: Option<BackoffState>,
+    /// Tracks when the last failure occurred, used together with the
+    /// persisted `failures` counter to compute exponential backoff.
+    last_failure_at: Option<Instant>,
 }
 
-/// Initial backoff delay after the first transient failure (`Desired` →
-/// `Failing`).
+/// Initial backoff delay after the first failure.
 const BACKOFF_INITIAL: Duration = Duration::from_secs(5);
-/// Maximum backoff delay between reconciliation attempts for a `Failing`
-/// deployment. Long, because a fatal-in-practice failure may require
-/// operator work that is not worth hammering on; the operator can manually
-/// nudge the deployment back to `Desired` once they've addressed the
-/// underlying issue.
+/// Maximum backoff delay between reconciliation attempts.
 const BACKOFF_MAX: Duration = Duration::from_secs(24 * 60 * 60);
-/// Multiplicative growth factor per failed attempt. With a 5s base and 1.1
-/// growth, cumulative retry time reaches roughly a day after ~80 attempts.
+/// Multiplicative growth factor per failed attempt.
 const BACKOFF_FACTOR: f64 = 1.1;
 
-#[derive(Clone, Copy, Debug)]
-struct BackoffState {
-    attempts: u32,
-    next_attempt_at: Instant,
-}
-
-impl BackoffState {
-    /// Compute the next backoff entry given the previous state (if any).
-    fn bump(prev: Option<Self>, now: Instant) -> Self {
-        let attempts = prev.map_or(0, |s| s.attempts).saturating_add(1);
-        let factor = BACKOFF_FACTOR.powi(attempts.saturating_sub(1) as i32);
-        let delay_secs = (BACKOFF_INITIAL.as_secs_f64() * factor).min(BACKOFF_MAX.as_secs_f64());
-        Self {
-            attempts,
-            next_attempt_at: now + Duration::from_secs_f64(delay_secs),
-        }
+/// Compute the backoff duration for the given number of consecutive failures.
+fn backoff_duration(failures: u32) -> Duration {
+    if failures == 0 {
+        return Duration::ZERO;
     }
-}
-
-enum EvalCompleteness {
-    Complete,
-    Partial,
+    let factor = BACKOFF_FACTOR.powi(failures.saturating_sub(1) as i32);
+    let delay_secs = (BACKOFF_INITIAL.as_secs_f64() * factor).min(BACKOFF_MAX.as_secs_f64());
+    Duration::from_secs_f64(delay_secs)
 }
 
 struct EvalOutcome {
-    completeness: EvalCompleteness,
     /// Resource IDs referenced during evaluation. When `fully_explored` is
     /// true, this is the complete set — any owned resource NOT in this set
     /// is no longer desired and should be destroyed.
@@ -339,15 +316,14 @@ struct EvalOutcome {
     /// resource function returned concrete outputs and all code paths
     /// were fully evaluated.
     fully_explored: bool,
+    /// True when at least one effect was emitted (Create, Update, Adopt, etc).
+    had_effect: bool,
     /// Whether the deployment's manifest declares any volatile (branch or
-    /// tag) cross-repo pins. Such deployments stay in `Desired` and keep
-    /// reconciling so the foreign upstream's changes propagate. See
-    /// `CROSS_REPO_IMPORTS.md` §6a.
+    /// tag) cross-repo pins. Preserved for observability.
+    #[allow(dead_code)]
     has_volatile_cross_repo_pins: bool,
     /// True when compilation produced one or more `Error`-severity
-    /// diagnostics. These are treated as *fatal* — retrying will not
-    /// recover without a code change — so the deployment is escalated to
-    /// `Failed` rather than kept in retry.
+    /// diagnostics.
     had_fatal_errors: bool,
 }
 
@@ -399,8 +375,7 @@ impl Worker {
 
     async fn work(&mut self) -> anyhow::Result<()> {
         let deployment = self.client.get().await?;
-        let deployment_id = deployment.deployment.clone();
-        let sid = short_id(deployment_id.as_str()).to_string();
+        let sid = short_id(deployment.deployment.as_str()).to_string();
 
         match deployment.state {
             DeploymentState::Down => {
@@ -408,372 +383,316 @@ impl Worker {
                 Ok(())
             }
 
-            DeploymentState::Failed => {
-                tracing::debug!("{sid} failed; no reconciliation");
-                Ok(())
-            }
+            DeploymentState::Desired => self.run_desired(&deployment).await,
 
-            DeploymentState::Desired => self.run_reconcile_active(&deployment).await,
+            DeploymentState::Lingering => self.run_lingering(&deployment).await,
 
-            DeploymentState::Failing => {
-                // Respect in-memory backoff: if the next attempt isn't due
-                // yet, skip this iteration entirely.
-                if let Some(state) = self.backoff {
-                    let now = Instant::now();
-                    if now < state.next_attempt_at {
-                        tracing::debug!(
-                            "{sid} failing (attempt {}); backoff in {:.0}s",
-                            state.attempts,
-                            (state.next_attempt_at - now).as_secs_f64(),
-                        );
-                        return Ok(());
-                    }
-                }
-                self.run_reconcile_active(&deployment).await
-            }
-
-            DeploymentState::Up => {
-                tracing::debug!("{sid} up; no reconciliation needed");
-                Ok(())
-            }
-
-            DeploymentState::Undesired => {
-                tracing::info!("{sid} tearing down");
-
-                let owner_deployment_qid = deployment.deployment_qid().to_string();
-                let mut all_resources = Vec::new();
-                let mut resources = self.namespace.list_resources().await?;
-                while let Some(resource) = resources.try_next().await? {
-                    all_resources.push(resource);
-                }
-
-                let owned_resources = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                    })
-                    .collect::<Vec<_>>();
-                let mut emitted = 0usize;
-                let mut blocked = 0usize;
-                // Exclude dependencies from sticky resources owned by this
-                // deployment so they don't block teardown of their own deps.
-                let living_dependency_targets = all_resources
-                    .iter()
-                    .filter(|resource| {
-                        !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
-                            && resource.markers.contains(&sclc::Marker::Sticky))
-                    })
-                    .flat_map(|resource| resource.dependencies.iter().cloned())
-                    .collect::<HashSet<_>>();
-
-                for resource in &owned_resources {
-                    let resource_id = resource_id_from(resource);
-
-                    if resource.markers.contains(&sclc::Marker::Sticky) {
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            "sticky resource; skipping destroy",
-                        );
-                        continue;
-                    }
-
-                    if living_dependency_targets.contains(&resource_id) {
-                        blocked += 1;
-                        tracing::info!(
-                            resource_type = %resource.resource_type,
-                            resource_name = %resource.name,
-                            owner = ?resource.owner,
-                            "resource still has living dependents; deferring destroy",
-                        );
-                        continue;
-                    }
-
-                    let message = rtq::Message::Destroy(rtq::DestroyMessage {
-                        resource: resource_ref(&self.environment_qid, &resource_id),
-                        deployment_id: deployment.deployment.clone(),
-                    });
-                    self.rtq_publisher.enqueue(&message).await?;
-                    emitted += 1;
-
-                    tracing::info!(
-                        resource_type = %resource.resource_type,
-                        resource_name = %resource.name,
-                        owner = ?resource.owner,
-                        "queued destroy",
-                    );
-                }
-
-                if emitted > 0 {
-                    tracing::info!("queued {} destroy messages", emitted);
-                    return Ok(());
-                }
-
-                let has_non_sticky = owned_resources
-                    .iter()
-                    .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
-
-                if !has_non_sticky {
-                    for resource in &owned_resources {
-                        self.log_publisher
-                            .info(format!(
-                                "{} will stick around",
-                                ids::ResourceId::new(&resource.resource_type, &resource.name)
-                            ))
-                            .await;
-                    }
-                    tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
-                    self.client.set(DeploymentState::Down).await?;
-                    self.log_publisher
-                        .info(format!("Undesired {sid} is fully torn down"))
-                        .await;
-                    return Ok(());
-                }
-
-                if blocked > 0 {
-                    tracing::info!(
-                        blocked_resources = blocked,
-                        "{sid} teardown waiting on living dependents",
-                    );
-                    self.log_publisher
-                        .info(format!(
-                            "Undesired {sid} still has {blocked} resources with living dependents"
-                        ))
-                        .await;
-                }
-                Ok(())
-            }
-
-            DeploymentState::Lingering => {
-                tracing::info!("{sid} lingering...");
-                let mut cursor = self.client.clone();
-                let mut seen = HashSet::new();
-
-                while let Some(superseding) = cursor.get_superseding().await? {
-                    let superseding_deployment = superseding.get().await?;
-                    let commit_hash = superseding_deployment.deployment.clone();
-
-                    if !seen.insert(commit_hash) {
-                        tracing::warn!("detected supersession cycle while lingering");
-                        break;
-                    }
-
-                    if matches!(
-                        superseding_deployment.state,
-                        DeploymentState::Desired | DeploymentState::Up
-                    ) {
-                        self.client
-                            .mark_superseded_by(&superseding_deployment.deployment)
-                            .await?;
-
-                        // If the superseding deployment is already Up, it won't
-                        // re-check its superseded list, so transition ourselves.
-                        if superseding_deployment.state == DeploymentState::Up {
-                            self.client.set(DeploymentState::Undesired).await?;
-                        }
-
-                        break;
-                    }
-
-                    cursor = superseding;
-                }
-
-                Ok(())
-            }
+            DeploymentState::Undesired => self.run_undesired(&deployment).await,
         }
     }
 
-    /// Dispatch to [`reconcile_active`](Self::reconcile_active) and apply
-    /// the resulting state transition.
+    /// DESIRED state handler.
     ///
-    /// * Ok with fatal errors → transition to `Failed`, clear backoff, and
-    ///   try to make the deployment this one superseded desired again
-    ///   (rollback).
-    /// * Ok without fatal errors → success. If we were previously
-    ///   `Failing`, clear backoff and move back to `Desired` (unless the
-    ///   reconciliation itself promoted us to `Up`).
-    /// * Err → transient failure. Transition to `Failing` if not already,
-    ///   and bump the in-memory backoff so the next attempt is delayed.
-    async fn run_reconcile_active(&mut self, deployment: &Deployment) -> anyhow::Result<()> {
+    /// 1. Check backoff (based on persisted failures counter).
+    /// 2. Check supersession — if superseded, transition to LINGERING.
+    /// 3. Compile and evaluate.
+    /// 4. On success: set bootstrapped, transition superseded deployments.
+    /// 5. On error: increment failures counter.
+    async fn run_desired(&mut self, deployment: &Deployment) -> anyhow::Result<()> {
         let sid = short_id(deployment.deployment.as_str()).to_string();
-        let was_failing = deployment.state == DeploymentState::Failing;
 
-        match self.reconcile_active(deployment).await {
-            Ok(had_fatal_errors) => {
-                if had_fatal_errors {
-                    tracing::error!("{sid} fatal compile errors; marking FAILED");
-                    self.log_publisher
-                        .error(format!("{sid} failed fatally: compile errors"))
-                        .await;
-                    self.client.set(DeploymentState::Failed).await?;
-                    self.backoff = None;
-                    self.attempt_rollback(&sid).await?;
+        // Backoff: if we have failures, check whether enough time has passed.
+        if deployment.failures > 0 {
+            let delay = backoff_duration(deployment.failures);
+            if let Some(last_failure) = self.last_failure_at {
+                let elapsed = last_failure.elapsed();
+                if elapsed < delay {
+                    tracing::debug!(
+                        "{sid} backing off (failures={}, {:.0}s remaining)",
+                        deployment.failures,
+                        (delay - elapsed).as_secs_f64(),
+                    );
                     return Ok(());
                 }
-
-                if was_failing {
-                    self.backoff = None;
-                    // The reconciliation may have already promoted us to
-                    // `Up`; only move back to `Desired` if we're still
-                    // `Failing`.
-                    let current = self.client.get().await?;
-                    if current.state == DeploymentState::Failing {
-                        self.client.set(DeploymentState::Desired).await?;
-                        self.log_publisher
-                            .info(format!("{sid} recovered; resuming as DESIRED"))
-                            .await;
-                    }
-                }
-                Ok(())
             }
-            Err(error) => {
-                tracing::warn!("{sid} transient error: {error:#}");
-                self.log_publisher
-                    .warn(format!("{sid} transient error: {error}"))
-                    .await;
-                if !was_failing {
-                    self.client.set(DeploymentState::Failing).await?;
-                }
-                self.backoff = Some(BackoffState::bump(self.backoff, Instant::now()));
-                Ok(())
-            }
+            // If last_failure_at is None (e.g., after restart), proceed
+            // immediately — the first attempt after restart is free.
         }
-    }
 
-    /// Attempt to roll back to a predecessor deployment after a fatal
-    /// failure. Best-effort: a failure to find or promote a target is
-    /// logged but not propagated, since the failing deployment has
-    /// already been marked `Failed`.
-    async fn attempt_rollback(&self, sid: &str) -> anyhow::Result<()> {
-        match self.client.rollback_target().await? {
-            Some(target) => {
-                let target_sid = short_id(target.deployment.as_str()).to_string();
-                let target_client = self
-                    .cdb_client
-                    .repo(target.repo.clone())
-                    .deployment(target.environment.clone(), target.deployment.clone());
-                target_client.make_desired().await?;
-                tracing::info!("{sid} rolled back to {target_sid}");
-                self.log_publisher
-                    .info(format!("rolled back {sid} to {target_sid}"))
-                    .await;
-            }
-            None => {
-                tracing::warn!("{sid} no rollback target found");
-                self.log_publisher
-                    .error(format!("no rollback target for failed {sid}"))
-                    .await;
-            }
+        // Supersession check: if this deployment has been superseded,
+        // transition to LINGERING immediately.
+        if self.client.get_superseding().await?.is_some() {
+            tracing::info!("{sid} superseded; transitioning to LINGERING");
+            self.log_publisher
+                .info(format!("{sid} superseded; transitioning to LINGERING"))
+                .await;
+            self.client.set(DeploymentState::Lingering).await?;
+            return Ok(());
         }
-        Ok(())
-    }
 
-    /// Perform one iteration of reconciliation for an active deployment
-    /// (`Desired` or `Failing`). Returns `true` if compilation produced
-    /// fatal errors — the caller is responsible for escalating the state.
-    ///
-    /// Any error returned is considered *transient*: the caller will bump
-    /// the backoff and retry later.
-    async fn reconcile_active(&mut self, deployment: &Deployment) -> anyhow::Result<bool> {
-        let deployment_id = deployment.deployment.clone();
-        let sid = short_id(deployment_id.as_str()).to_string();
         tracing::info!("{sid} reconciling");
 
         // If the commit has no Main.scl, there is nothing to evaluate.
-        // Log an info note and transition directly to Up instead of
-        // treating it as a compilation error.
+        // Mark as bootstrapped immediately.
         if self
             .client
             .path_hash(std::path::Path::new("Main.scl"))
             .await?
             .is_none()
         {
-            tracing::info!("{sid} no Main.scl; transitioning to UP");
+            tracing::info!("{sid} no Main.scl; marking bootstrapped");
             self.log_publisher
-                .info(format!("{sid} is up (no Main.scl in commit)"))
+                .info(format!("{sid} bootstrapped (no Main.scl in commit)"))
                 .await;
-            self.client.set(DeploymentState::Up).await?;
-            return Ok(false);
+            self.client.set_progress(true, 0).await?;
+            self.transition_superseded_to_undesired().await?;
+            return Ok(());
         }
 
-        let outcome = self.compile_and_evaluate().await?;
-
-        // Fatal compile errors short-circuit: skip teardown work and
-        // return early so the caller can escalate. We intentionally do
-        // NOT transition volatile or partial-evaluation bookkeeping on a
-        // failed compile, because the evaluation tree is unreliable.
-        if outcome.had_fatal_errors {
-            return Ok(true);
-        }
-
-        let owner_deployment_qid = deployment.deployment_qid().to_string();
-
-        // When the evaluation tree was fully explored (no pending
-        // Create/Update effects), we know the complete set of
-        // referenced resources. Destroy any owned resources that
-        // the evaluation never touched.
-        if outcome.fully_explored {
-            self.destroy_untouched_resources(
-                &owner_deployment_qid,
-                &deployment_id,
-                &outcome.touched_resource_ids,
-            )
-            .await?;
-        }
-
-        match outcome.completeness {
-            EvalCompleteness::Complete => {
-                for superseded in self.client.superseded().await? {
-                    let superseded_deployment = superseded.get().await?;
-                    if superseded_deployment.state == DeploymentState::Lingering {
-                        superseded.set(DeploymentState::Undesired).await?;
-                    }
-                }
-
-                // Check if all owned resources are non-volatile.
-                // If so, transition to Up (no further reconciliation needed).
-                let mut has_volatile = false;
-                let mut resources = self
-                    .namespace
-                    .list_resources_by_owner(&owner_deployment_qid)
-                    .await?;
-                while let Some(resource) = resources.try_next().await? {
-                    if resource.markers.contains(&sclc::Marker::Volatile) {
-                        has_volatile = true;
-                        break;
-                    }
-                }
-                drop(resources);
-
-                if has_volatile {
-                    // Has at least one intrinsically-volatile resource —
-                    // stay in Desired so reconciliation keeps probing.
-                } else if outcome.has_volatile_cross_repo_pins {
-                    tracing::info!("{sid} has volatile cross-repo pins; staying in Desired");
-                } else {
-                    tracing::info!("{sid} all resources non-volatile; transitioning to UP");
-                    self.client.set(DeploymentState::Up).await?;
+        // Compile and evaluate.
+        match self.compile_and_evaluate().await {
+            Ok(outcome) => {
+                if outcome.had_fatal_errors {
+                    // Fatal compile errors: increment failures, stay DESIRED.
+                    let new_failures = deployment.failures.saturating_add(1);
+                    self.last_failure_at = Some(Instant::now());
+                    self.client
+                        .set_progress(deployment.bootstrapped, new_failures)
+                        .await?;
+                    tracing::warn!("{sid} fatal compile errors (failures={})", new_failures,);
                     self.log_publisher
-                        .info(format!("{sid} is up (all resources non-volatile)"))
+                        .error(format!("{sid} compile errors (failures={new_failures})"))
+                        .await;
+                    return Ok(());
+                }
+
+                // Success: reset failures.
+                let owner_deployment_qid = deployment.deployment_qid().to_string();
+                let deployment_id = deployment.deployment.clone();
+                let deployment_nonce = deployment.nonce;
+
+                if outcome.fully_explored {
+                    self.destroy_untouched_resources(
+                        &owner_deployment_qid,
+                        &deployment_id,
+                        deployment_nonce,
+                        &outcome.touched_resource_ids,
+                    )
+                    .await?;
+                }
+
+                if !outcome.had_effect {
+                    // Fully converged — set bootstrapped.
+                    if !deployment.bootstrapped {
+                        tracing::info!("{sid} bootstrapped");
+                        self.log_publisher.info(format!("{sid} bootstrapped")).await;
+                    }
+                    self.client.set_progress(true, 0).await?;
+                    self.transition_superseded_to_undesired().await?;
+                } else {
+                    // Partial evaluation — reset failures but not yet bootstrapped.
+                    if deployment.failures > 0 {
+                        self.client.set_progress(deployment.bootstrapped, 0).await?;
+                    }
+                    self.last_failure_at = None;
+                    tracing::info!(
+                        "{sid} evaluation incomplete; deferring superseded deployment teardown"
+                    );
+                }
+
+                Ok(())
+            }
+            Err(error) => {
+                // Transient error: increment failures, stay DESIRED.
+                let new_failures = deployment.failures.saturating_add(1);
+                self.last_failure_at = Some(Instant::now());
+                self.client
+                    .set_progress(deployment.bootstrapped, new_failures)
+                    .await?;
+                tracing::warn!(
+                    "{sid} transient error (failures={}): {error:#}",
+                    new_failures,
+                );
+                self.log_publisher
+                    .warn(format!("{sid} transient error: {error}"))
+                    .await;
+                Ok(())
+            }
+        }
+    }
+
+    /// Transition all superseded LINGERING deployments to UNDESIRED.
+    /// Called when this deployment becomes bootstrapped.
+    async fn transition_superseded_to_undesired(&self) -> anyhow::Result<()> {
+        for superseded in self.client.superseded().await? {
+            let superseded_deployment = superseded.get().await?;
+            if superseded_deployment.state == DeploymentState::Lingering {
+                superseded.set(DeploymentState::Undesired).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// LINGERING state handler.
+    ///
+    /// Idle until Current (the unsuperseded deployment) is bootstrapped,
+    /// then transition to UNDESIRED.
+    async fn run_lingering(&self, deployment: &Deployment) -> anyhow::Result<()> {
+        let sid = short_id(deployment.deployment.as_str()).to_string();
+        tracing::info!("{sid} lingering...");
+
+        // Follow the supersession chain to find Current.
+        let mut cursor = self.client.clone();
+        let mut seen = HashSet::new();
+
+        while let Some(superseding) = cursor.get_superseding().await? {
+            let superseding_deployment = superseding.get().await?;
+            let commit_hash = superseding_deployment.deployment.clone();
+
+            if !seen.insert((commit_hash.clone(), superseding_deployment.nonce)) {
+                tracing::warn!("detected supersession cycle while lingering");
+                break;
+            }
+
+            // Check if this is Current (unsuperseded).
+            if superseding.get_superseding().await?.is_none() {
+                // This is Current. Check if it's bootstrapped.
+                if superseding_deployment.bootstrapped {
+                    tracing::info!(
+                        "{sid} current deployment is bootstrapped; transitioning to UNDESIRED"
+                    );
+                    self.client.set(DeploymentState::Undesired).await?;
+                    self.log_publisher
+                        .info(format!("{sid} current is bootstrapped; now UNDESIRED"))
                         .await;
                 }
+                break;
             }
-            EvalCompleteness::Partial => {
-                tracing::info!("evaluation incomplete; deferring superseded deployment teardown");
-            }
+
+            cursor = superseding;
         }
 
-        Ok(false)
+        Ok(())
+    }
+
+    /// UNDESIRED state handler.
+    ///
+    /// Destroy resources in Teardown(µ) — resources owned by this deployment
+    /// that are no longer needed by Current. Transition to DOWN when complete.
+    async fn run_undesired(&self, deployment: &Deployment) -> anyhow::Result<()> {
+        let sid = short_id(deployment.deployment.as_str()).to_string();
+        tracing::info!("{sid} tearing down");
+
+        let owner_deployment_qid = deployment.deployment_qid().to_string();
+        let mut all_resources = Vec::new();
+        let mut resources = self.namespace.list_resources().await?;
+        while let Some(resource) = resources.try_next().await? {
+            all_resources.push(resource);
+        }
+
+        let owned_resources = all_resources
+            .iter()
+            .filter(|resource| resource.owner.as_deref() == Some(owner_deployment_qid.as_str()))
+            .collect::<Vec<_>>();
+        let mut emitted = 0usize;
+        let mut blocked = 0usize;
+        // Exclude dependencies from sticky resources owned by this
+        // deployment so they don't block teardown of their own deps.
+        let living_dependency_targets = all_resources
+            .iter()
+            .filter(|resource| {
+                !(resource.owner.as_deref() == Some(owner_deployment_qid.as_str())
+                    && resource.markers.contains(&sclc::Marker::Sticky))
+            })
+            .flat_map(|resource| resource.dependencies.iter().cloned())
+            .collect::<HashSet<_>>();
+
+        for resource in &owned_resources {
+            let resource_id = resource_id_from(resource);
+
+            if resource.markers.contains(&sclc::Marker::Sticky) {
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    "sticky resource; skipping destroy",
+                );
+                continue;
+            }
+
+            if living_dependency_targets.contains(&resource_id) {
+                blocked += 1;
+                tracing::info!(
+                    resource_type = %resource.resource_type,
+                    resource_name = %resource.name,
+                    owner = ?resource.owner,
+                    "resource still has living dependents; deferring destroy",
+                );
+                continue;
+            }
+
+            let message = rtq::Message::Destroy(rtq::DestroyMessage {
+                resource: resource_ref(&self.environment_qid, &resource_id),
+                deployment_id: deployment.deployment.clone(),
+                deployment_nonce: deployment.nonce,
+            });
+            self.rtq_publisher.enqueue(&message).await?;
+            emitted += 1;
+
+            tracing::info!(
+                resource_type = %resource.resource_type,
+                resource_name = %resource.name,
+                owner = ?resource.owner,
+                "queued destroy",
+            );
+        }
+
+        if emitted > 0 {
+            tracing::info!("queued {} destroy messages", emitted);
+            return Ok(());
+        }
+
+        let has_non_sticky = owned_resources
+            .iter()
+            .any(|r| !r.markers.contains(&sclc::Marker::Sticky));
+
+        if !has_non_sticky {
+            for resource in &owned_resources {
+                self.log_publisher
+                    .info(format!(
+                        "{} will stick around",
+                        ids::ResourceId::new(&resource.resource_type, &resource.name)
+                    ))
+                    .await;
+            }
+            tracing::info!("{sid} no more non-sticky resources, setting state to DOWN");
+            self.client.set(DeploymentState::Down).await?;
+            self.log_publisher
+                .info(format!("Undesired {sid} is fully torn down"))
+                .await;
+            return Ok(());
+        }
+
+        if blocked > 0 {
+            tracing::info!(
+                blocked_resources = blocked,
+                "{sid} teardown waiting on living dependents",
+            );
+            self.log_publisher
+                .info(format!(
+                    "Undesired {sid} still has {blocked} resources with living dependents"
+                ))
+                .await;
+        }
+        Ok(())
     }
 
     /// Destroy resources owned by this deployment that were not referenced
-    /// during the latest evaluation. This handles the case where volatile
-    /// resources change in a way that causes previously-created resources
-    /// to disappear from the configuration.
+    /// during the latest evaluation.
     async fn destroy_untouched_resources(
         &self,
         owner_deployment_qid: &str,
         deployment_id: &ids::DeploymentId,
+        deployment_nonce: ids::DeploymentNonce,
         touched_resource_ids: &HashSet<ids::ResourceId>,
     ) -> anyhow::Result<()> {
         let mut all_resources = Vec::new();
@@ -795,14 +714,10 @@ impl Worker {
             return Ok(());
         }
 
-        // Collect dependency targets from all living resources (excluding
-        // untouched resources themselves) to avoid destroying resources
-        // that are still depended upon.
         let living_dependency_targets: HashSet<ids::ResourceId> = all_resources
             .iter()
             .filter(|resource| {
                 let id = resource_id_from(resource);
-                // Don't let untouched owned resources block each other.
                 resource.owner.as_deref() != Some(owner_deployment_qid)
                     || touched_resource_ids.contains(&id)
             })
@@ -833,6 +748,7 @@ impl Worker {
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
                 resource: resource_ref(&self.environment_qid, &resource_id),
                 deployment_id: deployment_id.clone(),
+                deployment_nonce,
             });
             self.rtq_publisher.enqueue(&message).await?;
 
@@ -879,8 +795,6 @@ impl Worker {
         let user_pkg: Arc<dyn sclc::Package> = Arc::new(self.client.clone());
         let repo_qid = self.client.repo_qid().clone();
 
-        // Resolve cross-repo dependencies, if any. Manifest parsing itself
-        // only needs the local package + the standard library.
         let cross_repo_finder = self
             .build_cross_repo_finder(Arc::clone(&user_pkg), &repo_qid)
             .await?;
@@ -900,9 +814,9 @@ impl Worker {
         if diagnosed.diags().has_errors() {
             tracing::info!("compile produced errors; skipping evaluation");
             return Ok(EvalOutcome {
-                completeness: EvalCompleteness::Partial,
                 touched_resource_ids: HashSet::new(),
                 fully_explored: false,
+                had_effect: false,
                 has_volatile_cross_repo_pins: cross_repo_finder
                     .as_ref()
                     .is_some_and(|f| f.has_volatile_pins()),
@@ -914,14 +828,7 @@ impl Worker {
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();
-
-        // Collect the set of superseded deployment QIDs so we can validate
-        // that adoption only happens from deployments we legitimately supersede.
-        let mut superseded_deployment_qids = HashSet::new();
-        for superseded in self.client.superseded().await? {
-            let dep = superseded.get().await?;
-            superseded_deployment_qids.insert(dep.deployment_qid().to_string());
-        }
+        let deployment_nonce = full_deployment_qid.nonce;
 
         let (effects_tx, mut effects_rx) = mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
@@ -932,10 +839,6 @@ impl Worker {
             local_deployment_qid.clone(),
         );
 
-        // Register foreign-package owners so the evaluator stamps the right
-        // owner on effects produced by foreign global expressions, and
-        // pre-load each foreign deployment's resources so remote-state
-        // reads can return concrete outputs.
         if let Some(finder) = &cross_repo_finder {
             for (foreign_repo, foreign_owner) in finder.resolved_owners().await {
                 self.log_publisher
@@ -1017,9 +920,6 @@ impl Worker {
                     let mut had_mutation = false;
                     let mut touched_resource_ids = HashSet::new();
                     while let Some(effect) = effects_rx.recv().await {
-                        // Drop foreign-owned effects. Phase 3 will route
-                        // these through remote-state-read logic; for now we
-                        // simply log and skip.
                         if effect.owner() != &local_deployment_qid_for_drain {
                             tracing::debug!(
                                 owner = %effect.owner(),
@@ -1052,6 +952,7 @@ impl Worker {
                                 let message = rtq::Message::Create(rtq::CreateMessage {
                                     resource: resource_ref(&env_qid, &id),
                                     deployment_id: deployment_id.clone(),
+                                    deployment_nonce,
                                     inputs: inputs_value,
                                     dependencies: map_dependencies(&env_qid, dependencies),
                                     source_trace,
@@ -1085,40 +986,24 @@ impl Worker {
                                 had_effect = true;
                                 had_mutation = true;
                                 touched_resource_ids.insert(id.clone());
-                                let desired_inputs =
-                                    match serialize_inputs(&id, &inputs, "update") {
-                                        Ok(v) => v,
-                                        Err(error) => {
-                                            tracing::error!("{error:#}");
-                                            log_publisher
-                                                .error(format!("Skipping UPDATE {id}: {error}"))
-                                                .await;
-                                            continue;
-                                        }
-                                    };
+                                let desired_inputs = match serialize_inputs(&id, &inputs, "update")
+                                {
+                                    Ok(v) => v,
+                                    Err(error) => {
+                                        tracing::error!("{error:#}");
+                                        log_publisher
+                                            .error(format!("Skipping UPDATE {id}: {error}"))
+                                            .await;
+                                        continue;
+                                    }
+                                };
                                 let dependencies = map_dependencies(&env_qid, dependencies);
                                 let message = if let Some(from_owner_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids.contains(&from_owner_qid) {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_qid,
-                                            "refusing to adopt resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
-                                    let from_deployment_id =
-                                        match extract_deployment_id(&from_owner_qid) {
-                                            Ok(id) => id,
+                                    let (from_deployment_id, from_deployment_nonce) =
+                                        match extract_deployment_identity(&from_owner_qid) {
+                                            Ok(v) => v,
                                             Err(error) => {
                                                 tracing::error!(
                                                     from_owner = %from_owner_qid,
@@ -1130,7 +1015,9 @@ impl Worker {
                                     rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
+                                        from_deployment_nonce,
                                         to_deployment_id: deployment_id.clone(),
+                                        to_deployment_nonce: deployment_nonce,
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -1139,6 +1026,7 @@ impl Worker {
                                     rtq::Message::Restore(rtq::RestoreMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
+                                        deployment_nonce,
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -1174,24 +1062,6 @@ impl Worker {
                                 if let Some(from_owner_deployment_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    // Validate that we are only adopting from a
-                                    // superseded deployment.
-                                    if !superseded_deployment_qids
-                                        .contains(&from_owner_deployment_qid)
-                                    {
-                                        tracing::warn!(
-                                            resource_type = %id.typ,
-                                            resource_name = %id.name,
-                                            from_owner = %from_owner_deployment_qid,
-                                            "refusing to adopt-touch resource from non-superseded deployment",
-                                        );
-                                        log_publisher
-                                            .error(format!(
-                                                "Cannot adopt {id}: owner {from_owner_deployment_qid} is not a superseded deployment",
-                                            ))
-                                            .await;
-                                        continue;
-                                    }
                                     had_effect = true;
                                     let desired_inputs =
                                         match serialize_inputs(&id, &inputs, "touch") {
@@ -1199,29 +1069,30 @@ impl Worker {
                                             Err(error) => {
                                                 tracing::error!("{error:#}");
                                                 log_publisher
-                                                    .error(format!(
-                                                        "Skipping ADOPT {id}: {error}"
-                                                    ))
+                                                    .error(format!("Skipping ADOPT {id}: {error}"))
                                                     .await;
                                                 continue;
                                             }
                                         };
-                                    let from_deployment_id = match extract_deployment_id(
-                                        &from_owner_deployment_qid,
-                                    ) {
-                                        Ok(id) => id,
-                                        Err(error) => {
-                                            tracing::error!(
-                                                from_owner = %from_owner_deployment_qid,
-                                                "{error:#}",
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                    let (from_deployment_id, from_deployment_nonce) =
+                                        match extract_deployment_identity(
+                                            &from_owner_deployment_qid,
+                                        ) {
+                                            Ok(v) => v,
+                                            Err(error) => {
+                                                tracing::error!(
+                                                    from_owner = %from_owner_deployment_qid,
+                                                    "{error:#}",
+                                                );
+                                                continue;
+                                            }
+                                        };
                                     let message = rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
+                                        from_deployment_nonce,
                                         to_deployment_id: deployment_id.clone(),
+                                        to_deployment_nonce: deployment_nonce,
                                         desired_inputs,
                                         dependencies: map_dependencies(&env_qid, dependencies),
                                         source_trace,
@@ -1245,13 +1116,10 @@ impl Worker {
                                         "effect touch resource adopt",
                                     );
                                 } else if volatile_resource_ids.contains(&id) {
-                                    // Volatile checks verify resource health but do not
-                                    // count as effects that block completeness. This
-                                    // allows supersession of prior deployments even when
-                                    // volatile resources are present.
                                     let message = rtq::Message::Check(rtq::CheckMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
+                                        deployment_nonce,
                                     });
                                     if !enqueue_message(
                                         &rtq_publisher,
@@ -1276,13 +1144,9 @@ impl Worker {
                     }
 
                     EvalOutcome {
-                        completeness: if had_effect {
-                            EvalCompleteness::Partial
-                        } else {
-                            EvalCompleteness::Complete
-                        },
                         touched_resource_ids,
                         fully_explored: !had_mutation,
+                        had_effect,
                         has_volatile_cross_repo_pins,
                         had_fatal_errors: false,
                     }
@@ -1306,15 +1170,11 @@ impl Worker {
         user_pkg: Arc<dyn sclc::Package>,
         local_repo: &ids::RepoQid,
     ) -> anyhow::Result<Option<Arc<sclc::CrossRepoPackageFinder>>> {
-        // For manifest parsing only, a (user + std) finder is sufficient —
-        // `Package.scle` is expected to import only `Std/...`.
         let manifest_finder = sclc::build_default_finder(Arc::clone(&user_pkg));
         let manifest = match sclc::load_manifest(Arc::clone(&user_pkg), manifest_finder).await {
             Ok(Some(m)) => m,
             Ok(None) => return Ok(None),
             Err(e) => {
-                // Surface the error as a deployment failure so the operator
-                // can see why the deployment didn't proceed.
                 self.log_publisher
                     .error(format!("failed to load Package.scle: {e}"))
                     .await;
@@ -1336,11 +1196,7 @@ impl Worker {
 
 /// Compose the finder chain used during compile: local user package →
 /// cross-repo finder (if any) → CDB-backed cross-repo fallback for the
-/// local environment → standard library. The CDB fallback preserves the
-/// pre-cross-repo behaviour: a deployment can still resolve `Org/Repo`
-/// imports against active deployments in its own environment without
-/// declaring them in the manifest. (The cross-repo finder takes
-/// precedence when the manifest declares a specifier.)
+/// local environment → standard library.
 fn build_full_finder(
     user_pkg: Arc<dyn sclc::Package>,
     cdb_client: cdb::Client,

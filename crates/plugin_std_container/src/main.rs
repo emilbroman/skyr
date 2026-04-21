@@ -283,16 +283,19 @@ impl ContainerPlugin {
         let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|e| {
             PluginError::InvalidInput(format!("invalid environment QID '{environment_qid}': {e}"))
         })?;
-        let deployment: ids::DeploymentId = deployment_id.parse().map_err(|e| {
-            PluginError::InvalidInput(format!("invalid deployment ID '{deployment_id}': {e}"))
-        })?;
-        let deployment_qid = ids::DeploymentQid::new(env_qid.clone(), deployment);
+        let deployment_qid: ids::DeploymentQid =
+            format!("{env_qid}@{deployment_id}").parse().map_err(|e| {
+                PluginError::InvalidInput(format!(
+                    "invalid deployment QID '{env_qid}@{deployment_id}': {e}"
+                ))
+            })?;
 
         // Create a DeploymentClient for this deployment
         let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
         let deployment_client = repo_client.deployment(
             deployment_qid.environment_qid().environment.clone(),
             deployment_qid.deployment.clone(),
+            deployment_qid.nonce,
         );
 
         // Extract the Git context to a temporary directory

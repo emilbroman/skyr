@@ -65,9 +65,10 @@ async fn current_owner_falls_back_to_local() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn with_owner_pushes_and_pops() {
     let local_owner = placeholder_deployment_qid();
-    let foreign: ids::DeploymentQid = "foreign/repo::main@1111111111111111111111111111111111111111"
-        .parse()
-        .unwrap();
+    let foreign: ids::DeploymentQid =
+        "foreign/repo::main@1111111111111111111111111111111111111111.0000000000000000"
+            .parse()
+            .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let ctx = EvalCtx::new(tx, "test", local_owner.clone());
 
@@ -80,9 +81,10 @@ async fn with_owner_pushes_and_pops() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn package_owner_falls_back_to_local() {
     let local_owner = placeholder_deployment_qid();
-    let foreign: ids::DeploymentQid = "foreign/repo::main@2222222222222222222222222222222222222222"
-        .parse()
-        .unwrap();
+    let foreign: ids::DeploymentQid =
+        "foreign/repo::main@2222222222222222222222222222222222222222.0000000000000000"
+            .parse()
+            .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let mut ctx = EvalCtx::new(tx, "test", local_owner.clone());
 
