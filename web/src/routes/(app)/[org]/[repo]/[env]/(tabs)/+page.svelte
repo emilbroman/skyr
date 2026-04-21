@@ -18,9 +18,7 @@ const envDetail = graphqlQuery(() => ({
 let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 
 let desiredDeployment = $derived(
-    env?.deployments.find(
-        (d) => d.state === DeploymentState.Desired,
-    ) ?? null,
+    env?.deployments.find((d) => d.state === DeploymentState.Desired) ?? null,
 );
 </script>
 

@@ -13,6 +13,8 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
           }
           createdAt
           state
+          bootstrapped
+          failures
           resources {
             type
             name
@@ -85,6 +87,8 @@ query ResourceDetail(
             }
             createdAt
             state
+            bootstrapped
+            failures
           }
           dependencies {
             type
@@ -101,17 +105,17 @@ query ResourceDetail(
   }
 }
 
-mutation MakeDeploymentDesired(
+mutation CreateDeployment(
   $org: String!
   $repo: String!
   $env: String!
-  $commit: String!
+  $commitHash: String!
 ) {
-  makeDeploymentDesired(
+  createDeployment(
     organization: $org
     repository: $repo
     environment: $env
-    deployment: $commit
+    commitHash: $commitHash
   ) {
     id
     state
@@ -136,6 +140,8 @@ query DeploymentDetail(
           }
           createdAt
           state
+          bootstrapped
+          failures
           resources {
             type
             name

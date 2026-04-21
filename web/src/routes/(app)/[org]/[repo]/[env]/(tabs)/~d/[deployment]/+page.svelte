@@ -5,10 +5,11 @@ import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
 import {
+    CreateDeploymentDocument,
     DeploymentDetailDocument,
     DeploymentLogsDocument,
     DeploymentState,
-    MakeDeploymentDesiredDocument,
+    ResourceMarker,
 } from "$lib/graphql/generated";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment } from "$lib/paths";
@@ -39,28 +40,31 @@ const liveStates: DeploymentState[] = [
     DeploymentState.Undesired,
 ];
 let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
+let hasVolatile = $derived(
+    deployment?.resources.some((r) => r.markers.includes(ResourceMarker.Volatile)) ?? false,
+);
 
-let makeDesiredError = $state<string | null>(null);
+let createDeploymentError = $state<string | null>(null);
 
-const makeDesired = graphqlMutation(MakeDeploymentDesiredDocument, {
+const createDeployment = graphqlMutation(CreateDeploymentDocument, {
     onSuccess: () => {
-        makeDesiredError = null;
+        createDeploymentError = null;
         deploymentDetail.refetch();
     },
     onError: (e) => {
-        makeDesiredError = e.message;
+        createDeploymentError = e.message;
     },
 });
 
-let canMakeDesired = $derived(deployment != null && deployment.state !== DeploymentState.Desired);
+let canRedeploy = $derived(deployment != null && deployment.state !== DeploymentState.Desired);
 
-function onMakeDesired() {
-    makeDesiredError = null;
-    makeDesired.mutate({
+function onRedeploy() {
+    createDeploymentError = null;
+    createDeployment.mutate({
         org: orgName,
         repo: repoName,
         env: envName,
-        commit: commitHash,
+        commitHash,
     });
 }
 </script>
@@ -99,7 +103,7 @@ function onMakeDesired() {
         </div>
         <div>
           <dt class="text-gray-400">State</dt>
-          <dd><DeploymentStateBadge state={deployment.state} /></dd>
+          <dd><DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={hasVolatile} /></dd>
         </div>
       </dl>
       <div class="mt-3 flex items-center gap-4">
@@ -109,22 +113,22 @@ function onMakeDesired() {
         >
           View files &rarr;
         </a>
-        {#if canMakeDesired}
+        {#if canRedeploy}
           <button
             type="button"
-            onclick={onMakeDesired}
-            disabled={makeDesired.isPending}
+            onclick={onRedeploy}
+            disabled={createDeployment.isPending}
             class="px-3 py-1 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {makeDesired.isPending ? "Making desired..." : "Make desired"}
+            {createDeployment.isPending ? "Deploying..." : "Deploy"}
           </button>
         {/if}
       </div>
-      {#if makeDesiredError}
+      {#if createDeploymentError}
         <div
           class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-600"
         >
-          {makeDesiredError}
+          {createDeploymentError}
         </div>
       {/if}
     </div>

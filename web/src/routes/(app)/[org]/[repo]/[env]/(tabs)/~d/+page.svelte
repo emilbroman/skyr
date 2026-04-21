@@ -2,9 +2,10 @@
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import {
+    CreateDeploymentDocument,
     DeploymentState,
     EnvironmentDetailDocument,
-    MakeDeploymentDesiredDocument,
+    ResourceMarker,
 } from "$lib/graphql/generated";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { decodeSegment, deploymentHref } from "$lib/paths";
@@ -65,28 +66,28 @@ function sortIndicator(column: SortColumn): string {
 }
 
 let pendingCommit = $state<string | null>(null);
-let makeDesiredError = $state<string | null>(null);
+let createDeploymentError = $state<string | null>(null);
 
-const makeDesired = graphqlMutation(MakeDeploymentDesiredDocument, {
+const createDeployment = graphqlMutation(CreateDeploymentDocument, {
     onSuccess: () => {
         pendingCommit = null;
-        makeDesiredError = null;
+        createDeploymentError = null;
         envDetail.refetch();
     },
     onError: (e) => {
         pendingCommit = null;
-        makeDesiredError = e.message;
+        createDeploymentError = e.message;
     },
 });
 
-function onMakeDesired(commit: string) {
-    pendingCommit = commit;
-    makeDesiredError = null;
-    makeDesired.mutate({
+function onDeploy(commitHash: string) {
+    pendingCommit = commitHash;
+    createDeploymentError = null;
+    createDeployment.mutate({
         org: orgName,
         repo: repoName,
         env: envName,
-        commit,
+        commitHash,
     });
 }
 </script>
@@ -95,9 +96,9 @@ function onMakeDesired(commit: string) {
     <title>Deployments · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
-{#if makeDesiredError}
+{#if createDeploymentError}
   <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600">
-    {makeDesiredError}
+    {createDeploymentError}
   </div>
 {/if}
 
@@ -170,7 +171,7 @@ function onMakeDesired(commit: string) {
               {new Date(deployment.createdAt).toLocaleString()}
             </td>
             <td class="py-3 pr-4">
-              <DeploymentStateBadge state={deployment.state} size="small" />
+              <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
             </td>
             <td class="py-3 pr-4 text-gray-500">
               {deployment.resources.length}
@@ -179,13 +180,13 @@ function onMakeDesired(commit: string) {
               {#if deployment.state !== DeploymentState.Desired}
                 <button
                   type="button"
-                  onclick={() => onMakeDesired(deployment.commit.hash)}
-                  disabled={makeDesired.isPending && pendingCommit === deployment.commit.hash}
+                  onclick={() => onDeploy(deployment.commit.hash)}
+                  disabled={createDeployment.isPending && pendingCommit === deployment.commit.hash}
                   class="px-2 py-1 text-xs bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {makeDesired.isPending && pendingCommit === deployment.commit.hash
-                    ? "Working..."
-                    : "Make desired"}
+                  {createDeployment.isPending && pendingCommit === deployment.commit.hash
+                    ? "Deploying..."
+                    : "Deploy"}
                 </button>
               {/if}
             </td>

@@ -162,7 +162,7 @@ let aRecordFqdn = $derived.by(() => {
         </div>
         <div>
           <dt class="text-gray-400">Deployment State</dt>
-          <dd><DeploymentStateBadge state={resource.owner.state} /></dd>
+          <dd><DeploymentStateBadge state={resource.owner.state} bootstrapped={resource.owner.bootstrapped} failures={resource.owner.failures} /></dd>
         </div>
       {/if}
       {#if resource.sourceTrace.length > 0}

@@ -1,43 +1,61 @@
 <script lang="ts">
 import { DeploymentState } from "$lib/graphql/generated";
 
-let { state, bootstrapped = false, size = "default" }: { state: DeploymentState; bootstrapped?: boolean; size?: "default" | "small" } = $props();
+let {
+    state,
+    bootstrapped = false,
+    failures = 0,
+    volatile = false,
+    size = "default",
+}: {
+    state: DeploymentState;
+    bootstrapped?: boolean;
+    failures?: number;
+    volatile?: boolean;
+    size?: "default" | "small";
+} = $props();
 
-const styles: Record<DeploymentState, { bg: string; text: string }> = {
-    [DeploymentState.Desired]: {
-        bg: "bg-blue-50 border-blue-300",
-        text: "text-blue-700",
-    },
-    [DeploymentState.Down]: {
-        bg: "bg-gray-100 border-gray-300",
-        text: "text-gray-500",
-    },
-    [DeploymentState.Undesired]: {
-        bg: "bg-yellow-50 border-yellow-300",
-        text: "text-yellow-700",
-    },
-    [DeploymentState.Lingering]: {
-        bg: "bg-orange-50 border-orange-300",
-        text: "text-orange-700",
-    },
-};
+const green = { bg: "bg-green-50 border-green-300", text: "text-green-700" };
+const yellow = { bg: "bg-yellow-50 border-yellow-300", text: "text-yellow-700" };
+const gray = { bg: "bg-gray-100 border-gray-300", text: "text-gray-500" };
+const red = { bg: "bg-red-50 border-red-300", text: "text-red-700" };
 
-const bootstrappedStyles = {
-    bg: "bg-green-50 border-green-300",
-    text: "text-green-700",
-};
-
-const style = $derived(
-    state === DeploymentState.Desired && bootstrapped
-        ? bootstrappedStyles
-        : styles[state],
+let isFailing = $derived(failures > 0);
+let isUp = $derived(
+    bootstrapped && (state === DeploymentState.Desired || state === DeploymentState.Lingering),
 );
+
+type Icon = "check" | "spinner-fast" | "spinner-slow" | "spinner-fast-ccw" | "exclamation";
+
+let style = $derived(
+    isFailing ? red : isUp ? green : state === DeploymentState.Down ? gray : yellow,
+);
+let icon: Icon = $derived(
+    isFailing
+        ? "spinner-fast"
+        : isUp
+          ? volatile
+              ? "spinner-slow"
+              : "check"
+          : state === DeploymentState.Down
+            ? "check"
+            : state === DeploymentState.Undesired
+              ? "spinner-fast-ccw"
+              : "spinner-fast",
+);
+let label = $derived(
+    isFailing
+        ? `FAILING (${failures})`
+        : isUp
+          ? "UP"
+          : state === DeploymentState.Down
+            ? "DOWN"
+            : state === DeploymentState.Undesired
+              ? "DESTROYING"
+              : "DEPLOYING",
+);
+
 const iconSize = $derived(size === "small" ? 10 : 12);
-const label = $derived(
-    state === DeploymentState.Desired && bootstrapped
-        ? "BOOTSTRAPPED"
-        : state,
-);
 </script>
 
 <span
@@ -46,7 +64,7 @@ const label = $derived(
         ? 'px-1.5 py-px'
         : 'px-2 py-0.5'}"
 >
-    {#if state === DeploymentState.Desired && bootstrapped}
+    {#if icon === "check"}
         <svg
             width={iconSize}
             height={iconSize}
@@ -59,8 +77,9 @@ const label = $derived(
         >
             <polyline points="3,8.5 6.5,12 13,4" />
         </svg>
-    {:else if state === DeploymentState.Down}
+    {:else if icon === "spinner-fast"}
         <svg
+            class="spinner-fast"
             width={iconSize}
             height={iconSize}
             viewBox="0 0 16 16"
@@ -68,11 +87,10 @@ const label = $derived(
             stroke="currentColor"
             stroke-width="2.5"
             stroke-linecap="round"
-            stroke-linejoin="round"
         >
-            <polyline points="3,8.5 6.5,12 13,4" />
+            <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
         </svg>
-    {:else if state === DeploymentState.Desired}
+    {:else if icon === "spinner-slow"}
         <svg
             class="spinner-slow"
             width={iconSize}
@@ -85,22 +103,9 @@ const label = $derived(
         >
             <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
         </svg>
-    {:else if state === DeploymentState.Undesired}
+    {:else if icon === "spinner-fast-ccw"}
         <svg
             class="spinner-fast-ccw"
-            width={iconSize}
-            height={iconSize}
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2.5"
-            stroke-linecap="round"
-        >
-            <path d="M8 1.5a6.5 6.5 0 1 1-6.5 6.5" />
-        </svg>
-    {:else if state === DeploymentState.Lingering}
-        <svg
-            class="spinner-slow"
             width={iconSize}
             height={iconSize}
             viewBox="0 0 16 16"
@@ -116,8 +121,12 @@ const label = $derived(
 </span>
 
 <style>
+    .spinner-fast {
+        animation: spin 2s linear infinite;
+    }
+
     .spinner-slow {
-        animation: spin 4s linear infinite;
+        animation: spin 12s linear infinite;
     }
 
     .spinner-fast-ccw {
