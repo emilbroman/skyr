@@ -223,6 +223,16 @@ async fn process(
         worker_count,
     );
 
+    // Remove workers whose loop has exited (receiver dropped).
+    workers.retain(|id, tx| {
+        if tx.is_closed() {
+            tracing::debug!(dep = %id, "worker exited; removing from pool");
+            false
+        } else {
+            true
+        }
+    });
+
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
         let deployment = deployment?;
@@ -358,11 +368,11 @@ impl Worker {
 
             match rx.try_recv() {
                 Ok(()) | Err(TryRecvError::Closed) => return,
-                Err(TryRecvError::Empty) => {
-                    if let Err(e) = self.work().await {
-                        tracing::error!("{e}");
-                    }
-                }
+                Err(TryRecvError::Empty) => match self.work().await {
+                    Ok(true) => {}
+                    Ok(false) => return,
+                    Err(e) => tracing::error!("{e}"),
+                },
             }
 
             tracing::debug!(
@@ -373,21 +383,28 @@ impl Worker {
         }
     }
 
-    async fn work(&mut self) -> anyhow::Result<()> {
+    /// Returns `Ok(false)` to signal the loop to stop.
+    async fn work(&mut self) -> anyhow::Result<bool> {
         let deployment = self.client.get().await?;
         let sid = short_id(deployment.deployment.as_str()).to_string();
 
         match deployment.state {
             DeploymentState::Down => {
                 tracing::info!("{sid} down, waiting to be decommissioned...");
-                Ok(())
+                Ok(true)
             }
 
             DeploymentState::Desired => self.run_desired(&deployment).await,
 
-            DeploymentState::Lingering => self.run_lingering(&deployment).await,
+            DeploymentState::Lingering => {
+                self.run_lingering(&deployment).await?;
+                Ok(true)
+            }
 
-            DeploymentState::Undesired => self.run_undesired(&deployment).await,
+            DeploymentState::Undesired => {
+                self.run_undesired(&deployment).await?;
+                Ok(true)
+            }
         }
     }
 
@@ -398,7 +415,10 @@ impl Worker {
     /// 3. Compile and evaluate.
     /// 4. On success: set bootstrapped, transition superseded deployments.
     /// 5. On error: increment failures counter.
-    async fn run_desired(&mut self, deployment: &Deployment) -> anyhow::Result<()> {
+    ///
+    /// Returns `Ok(false)` to signal that the processing loop should stop
+    /// (e.g., when there is no `Main.scl` and thus no volatile resources).
+    async fn run_desired(&mut self, deployment: &Deployment) -> anyhow::Result<bool> {
         let sid = short_id(deployment.deployment.as_str()).to_string();
 
         // Backoff: if we have failures, check whether enough time has passed.
@@ -412,7 +432,7 @@ impl Worker {
                         deployment.failures,
                         (delay - elapsed).as_secs_f64(),
                     );
-                    return Ok(());
+                    return Ok(true);
                 }
             }
             // If last_failure_at is None (e.g., after restart), proceed
@@ -427,13 +447,14 @@ impl Worker {
                 .info(format!("{sid} superseded; transitioning to LINGERING"))
                 .await;
             self.client.set(DeploymentState::Lingering).await?;
-            return Ok(());
+            return Ok(true);
         }
 
         tracing::info!("{sid} reconciling");
 
         // If the commit has no Main.scl, there is nothing to evaluate.
-        // Mark as bootstrapped immediately.
+        // Mark as bootstrapped and stop the processing loop — there are
+        // no volatile resources to re-check.
         if self
             .client
             .path_hash(std::path::Path::new("Main.scl"))
@@ -446,7 +467,7 @@ impl Worker {
                 .await;
             self.client.set_progress(true, 0).await?;
             self.transition_superseded_to_undesired().await?;
-            return Ok(());
+            return Ok(false);
         }
 
         // Compile and evaluate.
@@ -463,7 +484,7 @@ impl Worker {
                     self.log_publisher
                         .error(format!("{sid} compile errors (failures={new_failures})"))
                         .await;
-                    return Ok(());
+                    return Ok(true);
                 }
 
                 // Success: reset failures.
@@ -500,7 +521,7 @@ impl Worker {
                     );
                 }
 
-                Ok(())
+                Ok(true)
             }
             Err(error) => {
                 // Transient error: increment failures, stay DESIRED.
@@ -516,17 +537,23 @@ impl Worker {
                 self.log_publisher
                     .warn(format!("{sid} transient error: {error}"))
                     .await;
-                Ok(())
+                Ok(true)
             }
         }
     }
 
-    /// Transition all superseded LINGERING deployments to UNDESIRED.
+    /// Transition all superseded DESIRED/LINGERING deployments to UNDESIRED.
     /// Called when this deployment becomes bootstrapped.
+    ///
+    /// DESIRED deployments are included because a no-Main.scl deployment
+    /// may have stopped its processing loop while still in DESIRED state.
     async fn transition_superseded_to_undesired(&self) -> anyhow::Result<()> {
         for superseded in self.client.superseded().await? {
             let superseded_deployment = superseded.get().await?;
-            if superseded_deployment.state == DeploymentState::Lingering {
+            if matches!(
+                superseded_deployment.state,
+                DeploymentState::Desired | DeploymentState::Lingering
+            ) {
                 superseded.set(DeploymentState::Undesired).await?;
             }
         }
