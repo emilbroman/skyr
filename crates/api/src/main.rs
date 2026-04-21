@@ -646,22 +646,19 @@ impl Mutation {
         Ok(true)
     }
 
-    /// Manually promote a deployment to `Desired`, superseding whichever
-    /// deployment is currently active in the same environment.
-    ///
-    /// Accepts a deployment in *any* state (including `Failed` or `Down`),
-    /// since this mutation is the escape hatch operators use to roll
-    /// forward or back after a deployment has gotten stuck.
+    /// Create a new deployment for the given commit hash and make it
+    /// `Desired`, superseding whichever deployment is currently active
+    /// in the same environment.
     ///
     /// Requires the caller to be a member of the owning organisation (the
     /// same access level as other repository-scoped operations).
-    #[graphql(name = "makeDeploymentDesired")]
-    async fn make_deployment_desired(
+    #[graphql(name = "createDeployment")]
+    async fn create_deployment(
         context: &Context,
         organization: String,
         repository: String,
         environment: String,
-        deployment: String,
+        commit_hash: String,
     ) -> FieldResult<Deployment> {
         let (_, user) = context.check_auth().await?;
 
@@ -692,13 +689,13 @@ impl Mutation {
         let env: ids::EnvironmentId = environment
             .parse()
             .map_err(|_| field_error("Invalid environment name"))?;
-        let deployment_id: ids::DeploymentId = deployment
+        let deployment_id: ids::DeploymentId = commit_hash
             .parse()
-            .map_err(|_| field_error("Invalid deployment hash"))?;
+            .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_qid = ids::RepoQid { org, repo };
 
-        // Create a new deployment with a fresh nonce — each deployment
-        // lives once, so re-promoting the same commit creates a new identity.
+        // Each deployment gets a fresh nonce so that re-deploying the same
+        // commit creates a distinct deployment identity.
         let nonce = ids::DeploymentNonce::random();
         let client = context
             .cdb_client
@@ -706,12 +703,12 @@ impl Mutation {
             .deployment(env, deployment_id, nonce);
 
         client.make_desired().await.map_err(|e| {
-            tracing::error!("Failed to make deployment desired: {}", e);
+            tracing::error!("Failed to create deployment: {}", e);
             internal_error()
         })?;
 
         let deployment = client.get().await.map_err(|e| {
-            tracing::error!("Failed to load deployment after make_desired: {}", e);
+            tracing::error!("Failed to load deployment after creation: {}", e);
             internal_error()
         })?;
 
