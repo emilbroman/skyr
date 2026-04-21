@@ -20,6 +20,7 @@ use crate::resolver;
 ///   - Dot Slash (relative: `./...`)
 ///   - Dot Dot Slash (relative: `../...`)
 ///   - Slash Symbol (absolute: `/foo...`)
+///
 /// and continues with Slash, Symbol, StrSimple, Dot sequences.
 fn detect_path_tokens(tokens: &[sclc::Loc<Token>]) -> Vec<bool> {
     let mut in_path = vec![false; tokens.len()];
