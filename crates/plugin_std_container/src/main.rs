@@ -2576,6 +2576,29 @@ impl scop::Orchestrator for ContainerPlugin {
             }
         }
     }
+
+    async fn get_overlay_peers(
+        &self,
+        request: scop::GetOverlayPeersRequest,
+    ) -> Result<scop::GetOverlayPeersResponse, scop::tonic::Status> {
+        let nodes = {
+            let mut registry = self.inner.node_registry.write().await;
+            registry
+                .list()
+                .await
+                .map_err(|e| scop::tonic::Status::internal(format!("failed to list nodes: {e}")))?
+        };
+
+        let peers = nodes
+            .into_iter()
+            .filter(|n| n.name != request.node_name && !n.overlay_endpoint.is_empty())
+            .map(|n| scop::OverlayPeer {
+                peer_host_ip: n.overlay_endpoint,
+            })
+            .collect();
+
+        Ok(scop::GetOverlayPeersResponse { peers })
+    }
 }
 
 // =============================================================================
