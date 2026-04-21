@@ -6,7 +6,12 @@ EXTENDS Naturals, FiniteSets
 
 CONSTANTS
     MaxDeployments,  \* Maximum number of deployments (finite for model checking)
-    AllResources     \* Set of all possible resource identifiers
+    AllResources,    \* Set of all possible resource identifiers
+    Deps             \* [AllResources -> SUBSET AllResources] — global dependency relation
+                     \* Deps[r] = set of resources that r depends on (must be acyclic)
+
+ASSUME \A r \in AllResources : Deps[r] \subseteq AllResources
+ASSUME \A r \in AllResources : r \notin Deps[r]
 
 VARIABLES
     state,          \* Lifecycle label per deployment: "none" | "DESIRED" | "LINGERING" | "UNDESIRED" | "DOWN"
@@ -41,6 +46,20 @@ CurrentResources ==
 \* Resources a deployment must destroy during teardown.
 Teardown(d) == res[d] \ CurrentResources
 
+\* Effective dependencies of resource r within deployment d's scope.
+\* D(r, µ) in the design doc — only deps that are in the deployment's resource set.
+EffDeps(r, d) == Deps[r] \cap res[d]
+
+\* Whether resource r can be safely destroyed. A resource is safe to destroy
+\* when no living, non-Current resource (across any active deployment) depends
+\* on it. Resources in CurrentResources are excluded because Current has adopted
+\* them — their dependencies reflect Current's DAG, where r ∉ R(Current).
+CanDestroy(r) ==
+    ~\E d2 \in 1..num :
+        state[d2] \notin {"none", "DOWN"} /\
+        \E r2 \in ((res[d2] \ CurrentResources) \cap (alive \ {r})) :
+            r \in EffDeps(r2, d2)
+
 \* ---------------------------------------------------------------------------
 \* Initial state
 \* ---------------------------------------------------------------------------
@@ -71,11 +90,12 @@ CreateDeployment ==
         /\ num'   = new
         /\ UNCHANGED alive
 
-\* DESIRED: create a resource that should exist but doesn't yet.
+\* DESIRED: create a resource whose dependencies are all alive.
 DesiredCreate(d) ==
     /\ state[d] = "DESIRED"
     /\ ~Superseded(d)
     /\ \E r \in res[d] \ alive :
+        /\ EffDeps(r, d) \subseteq alive
         /\ alive' = alive \cup {r}
         /\ UNCHANGED <<state, boot, res, sup, num>>
 
@@ -102,10 +122,11 @@ LingeringToUndesired(d) ==
     /\ state' = [state EXCEPT ![d] = "UNDESIRED"]
     /\ UNCHANGED <<boot, res, sup, num, alive>>
 
-\* UNDESIRED: destroy a resource no longer desired by Current.
+\* UNDESIRED: destroy a resource with no living dependents.
 UndesiredDestroy(d) ==
     /\ state[d] = "UNDESIRED"
     /\ \E r \in Teardown(d) \cap alive :
+        /\ CanDestroy(r)
         /\ alive' = alive \ {r}
         /\ UNCHANGED <<state, boot, res, sup, num>>
 
