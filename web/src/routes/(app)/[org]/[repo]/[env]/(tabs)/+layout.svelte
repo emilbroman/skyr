@@ -1,9 +1,13 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { page } from "$app/stores";
-import { EnvironmentDetailDocument, RepositoryDetailDocument } from "$lib/graphql/generated";
+import {
+    EnvironmentDetailDocument,
+    RepositoryDetailDocument,
+    TearDownEnvironmentDocument,
+} from "$lib/graphql/generated";
 import Spinner from "$lib/components/Spinner.svelte";
-import { graphqlQuery } from "$lib/graphql/query";
+import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import {
     decodeSegment,
     envArtifactsHref,
@@ -23,6 +27,7 @@ import {
     Download,
     Folder,
     GitBranch,
+    Power,
     RefreshCw,
 } from "lucide-svelte";
 
@@ -40,10 +45,31 @@ function copyCloneUrl() {
     setTimeout(() => (copied = false), 2000);
 }
 
-function handleCloneClickOutside(event: MouseEvent) {
+let tearDownConfirmOpen = $state(false);
+let tearDownConfirmInput = $state("");
+let tearDownError = $state<string | null>(null);
+
+const tearDown = graphqlMutation(TearDownEnvironmentDocument, {
+    onSuccess: () => {
+        tearDownConfirmOpen = false;
+        tearDownConfirmInput = "";
+        tearDownError = null;
+        envDetail.refetch();
+    },
+    onError: (e) => {
+        tearDownError = e.message;
+    },
+});
+
+function handleClickOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
     if (!target.closest(".clone-dropdown")) {
         cloneDropdownOpen = false;
+    }
+    if (!target.closest(".teardown-dropdown")) {
+        tearDownConfirmOpen = false;
+        tearDownConfirmInput = "";
+        tearDownError = null;
     }
 }
 
@@ -100,7 +126,7 @@ function switchEnv(newEnv: string) {
 }
 </script>
 
-<svelte:window onclick={handleCloneClickOutside} />
+<svelte:window onclick={handleClickOutside} />
 
 <div>
   <nav class="mb-2 flex items-center">
@@ -119,7 +145,66 @@ function switchEnv(newEnv: string) {
       <ChevronDown class="w-3.5 h-3.5 text-gray-400 absolute right-2.5 pointer-events-none" />
     </div>
 
-    <div class="clone-dropdown relative inline-block ml-auto">
+    <div class="teardown-dropdown relative inline-block ml-auto">
+      <button
+        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-red-400 hover:text-red-600 transition-colors focus:outline-none focus:border-red-500"
+        onclick={() => {
+            tearDownConfirmOpen = !tearDownConfirmOpen;
+            tearDownConfirmInput = "";
+            tearDownError = null;
+        }}
+      >
+        <Power class="w-4 h-4" />
+        Tear down
+      </button>
+
+      {#if tearDownConfirmOpen}
+        <div
+          class="absolute right-0 mt-1 z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-4 w-80"
+        >
+          <p class="text-sm font-medium text-gray-700 mb-2">Tear down environment?</p>
+          <p class="text-sm text-gray-500 mb-3">
+            This will delete all {env?.resources.length ?? 0} resource{env?.resources.length === 1 ? "" : "s"} currently living in this environment.
+          </p>
+          <label for="teardown-confirm" class="block text-sm text-gray-600 mb-1">
+            Type <code class="bg-gray-100 px-1 py-0.5 rounded text-xs select-all">{env?.qid}</code> to confirm
+          </label>
+          <input
+            id="teardown-confirm"
+            type="text"
+            class="w-full text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 mb-3 focus:outline-none focus:border-red-500"
+            bind:value={tearDownConfirmInput}
+            placeholder={env?.qid}
+          />
+          {#if tearDownError}
+            <div class="mb-3 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-600">
+              {tearDownError}
+            </div>
+          {/if}
+          <div class="flex gap-2 justify-end">
+            <button
+              class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 hover:border-gray-400 transition-colors cursor-pointer"
+              onclick={() => {
+                  tearDownConfirmOpen = false;
+                  tearDownConfirmInput = "";
+                  tearDownError = null;
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              class="px-3 py-1.5 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors cursor-pointer disabled:opacity-50"
+              disabled={tearDown.isPending || tearDownConfirmInput !== env?.qid}
+              onclick={() => tearDown.mutate({ org: orgName, repo: repoName, env: envName })}
+            >
+              {tearDown.isPending ? "Tearing down..." : "Confirm tear down"}
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <div class="clone-dropdown relative inline-block ml-2">
       <button
         class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
         onclick={() => (cloneDropdownOpen = !cloneDropdownOpen)}

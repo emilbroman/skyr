@@ -122,6 +122,10 @@ mutation CreateDeployment(
   }
 }
 
+mutation TearDownEnvironment($org: String!, $repo: String!, $env: String!) {
+  tearDownEnvironment(organization: $org, repository: $repo, environment: $env)
+}
+
 query DeploymentDetail(
   $org: String!
   $repo: String!
