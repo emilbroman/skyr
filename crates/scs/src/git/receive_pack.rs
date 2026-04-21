@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{anyhow, bail};
-use futures::AsyncWriteExt;
+use futures::{AsyncWriteExt, StreamExt};
 use tokio::io::AsyncReadExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
@@ -501,29 +501,33 @@ impl<'a> CommandHandler<'a> {
             if update.new != null_oid {
                 let deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self
-                    .client
-                    .deployment(environment_id.clone(), deployment_id);
-                deployment.set(DeploymentState::Desired).await?;
-            }
-
-            if update.old != null_oid && update.old != update.new {
-                let state = if update.new == null_oid {
-                    DeploymentState::Undesired
-                } else {
-                    DeploymentState::Lingering
-                };
+                let nonce = ids::DeploymentNonce::random();
+                let deployment =
+                    self.client
+                        .deployment(environment_id.clone(), deployment_id, nonce);
+                // make_desired atomically supersedes any active deployment
+                // in the same environment and promotes this one to Desired.
+                deployment.make_desired().await?;
+            } else if update.old != null_oid {
+                // Deleting a ref: find the active deployment for this
+                // environment and transition it to Undesired.
                 let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
                     .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let deployment = self.client.deployment(environment_id, old_deployment_id);
-                let new_deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
-                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
-                let (r1, r2) = futures::join!(
-                    deployment.set(state),
-                    deployment.mark_superseded_by(&new_deployment_id),
-                );
-                r1?;
-                r2?;
+                // Look up the deployment by scanning active deployments
+                // in this environment to find the one with this commit hash.
+                let mut stream = self.client.active_deployments().await?;
+                while let Some(dep) = stream.next().await {
+                    let dep = dep?;
+                    if dep.environment == environment_id && dep.deployment == old_deployment_id {
+                        let dc = self.client.deployment(
+                            dep.environment.clone(),
+                            dep.deployment.clone(),
+                            dep.nonce,
+                        );
+                        dc.set(DeploymentState::Undesired).await?;
+                        break;
+                    }
+                }
             }
 
             results.push(update.name.clone());

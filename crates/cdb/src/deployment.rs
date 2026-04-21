@@ -1,12 +1,15 @@
 use std::{fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use ids::{DeploymentId, DeploymentQid, EnvironmentId, EnvironmentQid, RepoQid};
+use ids::{DeploymentId, DeploymentNonce, DeploymentQid, EnvironmentId, EnvironmentQid, RepoQid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A deployment is a revision of an environment. It represents a specific commit
 /// being applied to a particular environment (Git ref) within a repository.
+///
+/// The deployment identity is the pair `(commit_hash, nonce)`, allowing the same
+/// commit to be deployed multiple times.
 #[derive(Clone, Debug)]
 pub struct Deployment {
     /// The repository this deployment belongs to.
@@ -15,16 +18,24 @@ pub struct Deployment {
     pub environment: EnvironmentId,
     /// The deployment ID (commit hash).
     pub deployment: DeploymentId,
+    /// Random nonce distinguishing deployments of the same commit.
+    pub nonce: DeploymentNonce,
     /// When this deployment was created.
     pub created_at: DateTime<Utc>,
-    /// Current lifecycle state.
+    /// Current lifecycle label.
     pub state: DeploymentState,
+    /// Whether the DAG has been fully explored to stability at least once.
+    pub bootstrapped: bool,
+    /// Consecutive failed iteration count (for exponential backoff).
+    /// Resets to 0 on success. Observational only — does not alter lifecycle transitions.
+    pub failures: u32,
 }
 
 impl Deployment {
     /// Returns the fully qualified deployment identifier.
     pub fn deployment_qid(&self) -> DeploymentQid {
-        self.environment_qid().deployment(self.deployment.clone())
+        self.environment_qid()
+            .deployment(self.deployment.clone(), self.nonce)
     }
 
     /// Returns the fully qualified environment identifier.
@@ -40,24 +51,14 @@ pub enum DeploymentState {
     Undesired,
     Lingering,
     Desired,
-    Up,
-    Failing,
-    Failed,
 }
 
 impl DeploymentState {
     /// Whether a deployment in this state is considered "active" for
     /// supersession purposes — i.e. a new `Desired` deployment arriving in
     /// the same environment should transition it to `Lingering`.
-    ///
-    /// `Failed` is intentionally excluded: once a deployment has failed
-    /// fatally we may have already rolled back to a prior deployment, so it
-    /// is treated as a terminal state that does not get re-lingered.
     pub fn is_active(self) -> bool {
-        matches!(
-            self,
-            DeploymentState::Desired | DeploymentState::Up | DeploymentState::Failing
-        )
+        matches!(self, DeploymentState::Desired)
     }
 }
 
@@ -68,9 +69,6 @@ impl fmt::Display for DeploymentState {
             Self::Undesired => write!(f, "UNDESIRED"),
             Self::Lingering => write!(f, "LINGERING"),
             Self::Desired => write!(f, "DESIRED"),
-            Self::Up => write!(f, "UP"),
-            Self::Failing => write!(f, "FAILING"),
-            Self::Failed => write!(f, "FAILED"),
         }
     }
 }
@@ -88,9 +86,6 @@ impl FromStr for DeploymentState {
             "UNDESIRED" => Ok(DeploymentState::Undesired),
             "LINGERING" => Ok(DeploymentState::Lingering),
             "DESIRED" => Ok(DeploymentState::Desired),
-            "UP" => Ok(DeploymentState::Up),
-            "FAILING" => Ok(DeploymentState::Failing),
-            "FAILED" => Ok(DeploymentState::Failed),
             v => Err(InvalidDeploymentState(v.to_string())),
         }
     }

@@ -9,9 +9,6 @@ enum DeploymentState {
   UNDESIRED
   LINGERING
   DESIRED
-  UP
-  FAILING
-  FAILED
 }
 
 enum ResourceMarker {
@@ -65,6 +62,9 @@ type Deployment {
   commit: Commit!
   createdAt: String!
   state: DeploymentState!
+  bootstrapped: Boolean!
+  failures: Int!
+  nonce: String!
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
 }

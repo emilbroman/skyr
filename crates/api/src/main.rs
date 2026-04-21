@@ -697,21 +697,13 @@ impl Mutation {
             .map_err(|_| field_error("Invalid deployment hash"))?;
         let repo_qid = ids::RepoQid { org, repo };
 
+        // Create a new deployment with a fresh nonce — each deployment
+        // lives once, so re-promoting the same commit creates a new identity.
+        let nonce = ids::DeploymentNonce::random();
         let client = context
             .cdb_client
             .repo(repo_qid)
-            .deployment(env, deployment_id);
-
-        // Verify the deployment exists before mutating anything.
-        if let Err(e) = client.get().await {
-            return Err(match e {
-                cdb::DeploymentQueryError::NotFound => field_error("Deployment not found"),
-                other => {
-                    tracing::error!("Failed to load deployment: {}", other);
-                    internal_error()
-                }
-            });
-        }
+            .deployment(env, deployment_id, nonce);
 
         client.make_desired().await.map_err(|e| {
             tracing::error!("Failed to make deployment desired: {}", e);

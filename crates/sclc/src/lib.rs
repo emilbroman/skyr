@@ -75,7 +75,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// that need to construct an [`EvalCtx`] without a real deployment behind it
 /// (e.g. the REPL, the wasm playground, or in-memory unit tests).
 pub fn placeholder_deployment_qid() -> ids::DeploymentQid {
-    "placeholder/placeholder::main@0000000000000000000000000000000000000000"
+    "placeholder/placeholder::main@0000000000000000000000000000000000000000.0000000000000000"
         .parse()
         .expect("placeholder deployment QID is well-formed")
 }

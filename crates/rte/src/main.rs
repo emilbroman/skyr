@@ -222,9 +222,10 @@ async fn worker_loop_iteration(
 fn deployment_qid(
     environment_qid: &ids::EnvironmentQid,
     deployment_id: &ids::DeploymentId,
+    deployment_nonce: &ids::DeploymentNonce,
 ) -> String {
     environment_qid
-        .deployment(deployment_id.clone())
+        .deployment(deployment_id.clone(), *deployment_nonce)
         .to_string()
 }
 
@@ -379,7 +380,11 @@ async fn handle_create(
     };
 
     let id = resource_id_from_ref(&message.resource);
-    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let dep_qid = deployment_qid(
+        &message.resource.environment_qid,
+        &message.deployment_id,
+        &message.deployment_nonce,
+    );
     let res_qid = resource_qid_string(&message.resource);
     let dep_short = deployment_short(&message.deployment_id);
 
@@ -513,7 +518,11 @@ async fn handle_destroy(
             message.resource.resource_type().to_owned(),
             message.resource.resource_name().to_owned(),
         );
-    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let dep_qid = deployment_qid(
+        &message.resource.environment_qid,
+        &message.deployment_id,
+        &message.deployment_nonce,
+    );
 
     let current = match resource_client.get().await {
         Ok(Some(resource)) => {
@@ -698,6 +707,7 @@ struct UpdateParams<'a> {
     resource: &'a rtq::ResourceRef,
     owner_deployment_qid: &'a str,
     target_deployment_id: &'a ids::DeploymentId,
+    target_deployment_nonce: &'a ids::DeploymentNonce,
     desired_inputs: serde_json::Value,
     dependencies: &'a [rtq::ResourceRef],
     operation: &'a str,
@@ -843,8 +853,11 @@ async fn handle_update_inputs(
             return Ok(None);
         };
 
-        let target_dep_qid_for_log =
-            deployment_qid(&resource.environment_qid, target_deployment_id);
+        let target_dep_qid_for_log = deployment_qid(
+            &resource.environment_qid,
+            target_deployment_id,
+            params.target_deployment_nonce,
+        );
         let verb = match operation {
             "adopt" => "Adopting",
             "restore" => "Restoring",
@@ -935,7 +948,11 @@ async fn handle_update_inputs(
         );
     }
 
-    let target_dep_qid = deployment_qid(&resource.environment_qid, target_deployment_id);
+    let target_dep_qid = deployment_qid(
+        &resource.environment_qid,
+        target_deployment_id,
+        params.target_deployment_nonce,
+    );
 
     let outputs = outputs_to_persist.unwrap_or_default();
     if let Err(error) = persist_resource_state(
@@ -984,12 +1001,14 @@ async fn handle_adopt(
     let from_dep_qid = deployment_qid(
         &message.resource.environment_qid,
         &message.from_deployment_id,
+        &message.from_deployment_nonce,
     );
     let Some(to_dep_qid) = handle_update_inputs(
         UpdateParams {
             resource: &message.resource,
             owner_deployment_qid: &from_dep_qid,
             target_deployment_id: &message.to_deployment_id,
+            target_deployment_nonce: &message.to_deployment_nonce,
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "adopt",
@@ -1042,12 +1061,17 @@ async fn handle_restore(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
-    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let dep_qid = deployment_qid(
+        &message.resource.environment_qid,
+        &message.deployment_id,
+        &message.deployment_nonce,
+    );
     let Some(dep_qid) = handle_update_inputs(
         UpdateParams {
             resource: &message.resource,
             owner_deployment_qid: &dep_qid,
             target_deployment_id: &message.deployment_id,
+            target_deployment_nonce: &message.deployment_nonce,
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "restore",
@@ -1099,7 +1123,11 @@ async fn handle_check(
             message.resource.resource_type().to_owned(),
             message.resource.resource_name().to_owned(),
         );
-    let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
+    let dep_qid = deployment_qid(
+        &message.resource.environment_qid,
+        &message.deployment_id,
+        &message.deployment_nonce,
+    );
 
     let current = match resource_client.get().await {
         Ok(Some(resource)) => {

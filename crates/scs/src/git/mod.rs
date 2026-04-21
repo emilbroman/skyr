@@ -67,19 +67,10 @@ impl<'a> CommandHandler<'a> {
             let deployment = deployment?;
 
             // Filter out deployments that are not the current head of
-            // their environment:
-            //   * Undesired/Lingering — an older deployment being torn
-            //     down or waiting to be.
-            //   * Failed — this deployment is terminal; either there is a
-            //     rollback `Desired` deployment in the same env (which
-            //     would otherwise produce a duplicate ref), or this env
-            //     genuinely has no working HEAD.
-            // `Failing` is kept: it's an actively-reconciled deployment
-            // that still represents the env's latest intent.
-            if matches!(
-                deployment.state,
-                DeploymentState::Undesired | DeploymentState::Lingering | DeploymentState::Failed
-            ) {
+            // their environment: Undesired/Lingering/Down are older
+            // deployments being torn down or already terminated.
+            // Only Desired deployments represent the environment's HEAD.
+            if deployment.state != DeploymentState::Desired {
                 continue;
             }
 

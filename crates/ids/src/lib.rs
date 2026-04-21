@@ -19,7 +19,8 @@
 //!
 //! 4. **Deployment** — a revision of an environment. Deployments own resources temporarily
 //!    (since adoption can change the owner), but all resources belong to the same environment
-//!    during their entire lifecycle. Deployments are identified by commit hash.
+//!    during their entire lifecycle. Deployments are identified by a commit hash and a random
+//!    nonce, allowing the same commit to be deployed multiple times.
 //!
 //! ## IDs vs QIDs
 //!
@@ -31,7 +32,7 @@
 //! | Org | `MyOrg` | N/A (top level) | `MyOrg` |
 //! | Repo | `MyRepo` | `OrgId/RepoId` | `MyOrg/MyRepo` |
 //! | Env | `main` | `RepoQid::EnvironmentId` | `MyOrg/MyRepo::main` |
-//! | Deploy | `2cbec...` | `EnvironmentQid@DeploymentId` | `MyOrg/MyRepo::main@2cbec...` |
+//! | Deploy | `2cbec...` | `EnvironmentQid@DeploymentId.Nonce` | `MyOrg/MyRepo::main@2cbec....a1b2` |
 //! | Resource | `Std/Random.Int:seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
 //!
 //! ## Separators
@@ -97,6 +98,13 @@ fn is_valid_oid_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// Returns `true` if `s` is a valid 16-character lowercase hexadecimal string.
+fn is_valid_nonce_hex(s: &str) -> bool {
+    s.len() == 16
+        && s.bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -122,8 +130,11 @@ pub enum ParseIdError {
     #[error("invalid deployment ID: {0:?} (must be 40-char lowercase hex)")]
     InvalidDeploymentId(String),
 
+    #[error("invalid deployment nonce: {0:?} (must be 16-char lowercase hex)")]
+    InvalidDeploymentNonce(String),
+
     #[error(
-        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@DeploymentId)"
+        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@DeploymentId.Nonce)"
     )]
     InvalidDeploymentQid(String),
 
@@ -521,11 +532,13 @@ impl EnvironmentQid {
         }
     }
 
-    /// Creates a [`DeploymentQid`] by combining this environment QID with a deployment ID.
-    pub fn deployment(&self, deployment: DeploymentId) -> DeploymentQid {
+    /// Creates a [`DeploymentQid`] by combining this environment QID with a deployment ID
+    /// and nonce.
+    pub fn deployment(&self, deployment: DeploymentId, nonce: DeploymentNonce) -> DeploymentQid {
         DeploymentQid {
             environment: self.clone(),
             deployment,
+            nonce,
         }
     }
 }
@@ -677,6 +690,92 @@ impl TryFrom<String> for DeploymentId {
             return Err(ParseIdError::InvalidDeploymentId(s));
         }
         Ok(Self(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeploymentNonce
+// ---------------------------------------------------------------------------
+
+/// Deployment nonce. A random number that distinguishes deployments of the same
+/// commit, allowing the same commit to be deployed multiple times.
+///
+/// Represented as a 16-character zero-padded lowercase hexadecimal string (a `u64`).
+///
+/// # Examples
+///
+/// ```
+/// use ids::DeploymentNonce;
+/// let nonce = DeploymentNonce::random();
+/// assert_eq!(nonce.to_string().len(), 16);
+///
+/// let zero = DeploymentNonce::zero();
+/// assert_eq!(zero.to_string(), "0000000000000000");
+/// ```
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeploymentNonce(u64);
+
+impl DeploymentNonce {
+    /// Creates a nonce with value zero.
+    pub fn zero() -> Self {
+        Self(0)
+    }
+
+    /// Generates a random nonce.
+    pub fn random() -> Self {
+        Self(rand::random())
+    }
+
+    /// Creates a nonce from a raw `u64` value.
+    pub fn from_u64(v: u64) -> Self {
+        Self(v)
+    }
+
+    /// Returns the raw `u64` value.
+    pub fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// Returns the nonce as a 16-character hex string.
+    pub fn as_hex(&self) -> String {
+        format!("{:016x}", self.0)
+    }
+}
+
+impl fmt::Display for DeploymentNonce {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:016x}", self.0)
+    }
+}
+
+impl fmt::Debug for DeploymentNonce {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DeploymentNonce({self})")
+    }
+}
+
+impl FromStr for DeploymentNonce {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !is_valid_nonce_hex(s) {
+            return Err(ParseIdError::InvalidDeploymentNonce(s.to_string()));
+        }
+        let v = u64::from_str_radix(s, 16)
+            .map_err(|_| ParseIdError::InvalidDeploymentNonce(s.to_string()))?;
+        Ok(Self(v))
+    }
+}
+
+impl Serialize for DeploymentNonce {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentNonce {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -890,17 +989,18 @@ impl<'de> Deserialize<'de> for ResourceQid {
 // DeploymentQid
 // ---------------------------------------------------------------------------
 
-/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@DeploymentId`.
+/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@DeploymentId.Nonce`.
 ///
 /// This is the most specific identifier in the hierarchy, uniquely identifying
-/// a single deployment (revision) of an environment.
+/// a single deployment (revision) of an environment. The nonce distinguishes
+/// multiple deployments of the same commit.
 ///
 /// # Examples
 ///
 /// ```
 /// use ids::DeploymentQid;
-/// let qid: DeploymentQid = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
-/// assert_eq!(qid.to_string(), "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
+/// let qid: DeploymentQid = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718".parse().unwrap();
+/// assert_eq!(qid.to_string(), "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718");
 /// assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
 /// assert_eq!(qid.repo_qid().to_string(), "MyOrg/MyRepo");
 /// ```
@@ -908,14 +1008,20 @@ impl<'de> Deserialize<'de> for ResourceQid {
 pub struct DeploymentQid {
     pub environment: EnvironmentQid,
     pub deployment: DeploymentId,
+    pub nonce: DeploymentNonce,
 }
 
 impl DeploymentQid {
     /// Creates a new `DeploymentQid`.
-    pub fn new(environment: EnvironmentQid, deployment: DeploymentId) -> Self {
+    pub fn new(
+        environment: EnvironmentQid,
+        deployment: DeploymentId,
+        nonce: DeploymentNonce,
+    ) -> Self {
         Self {
             environment,
             deployment,
+            nonce,
         }
     }
 
@@ -932,7 +1038,7 @@ impl DeploymentQid {
 
 impl fmt::Display for DeploymentQid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", self.environment, self.deployment)
+        write!(f, "{}@{}.{}", self.environment, self.deployment, self.nonce)
     }
 }
 
@@ -945,8 +1051,12 @@ impl fmt::Debug for DeploymentQid {
 impl FromStr for DeploymentQid {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Split on the last "@" — the deployment ID is always 40 hex chars at the end.
-        let Some((env_part, deploy_part)) = s.rsplit_once('@') else {
+        // Split on the last "@" — everything after is "DeploymentId.Nonce".
+        let Some((env_part, deploy_nonce_part)) = s.rsplit_once('@') else {
+            return Err(ParseIdError::InvalidDeploymentQid(s.to_string()));
+        };
+        // Split the deployment+nonce part on the last ".".
+        let Some((deploy_part, nonce_part)) = deploy_nonce_part.rsplit_once('.') else {
             return Err(ParseIdError::InvalidDeploymentQid(s.to_string()));
         };
         Ok(Self {
@@ -954,6 +1064,9 @@ impl FromStr for DeploymentQid {
                 .parse()
                 .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
             deployment: deploy_part
+                .parse()
+                .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
+            nonce: nonce_part
                 .parse()
                 .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
         })
@@ -1075,8 +1188,36 @@ mod tests {
     }
 
     #[test]
+    fn deployment_nonce_roundtrip() {
+        let nonce = DeploymentNonce::from_u64(0xa1b2c3d4e5f60718);
+        assert_eq!(nonce.to_string(), "a1b2c3d4e5f60718");
+        let parsed: DeploymentNonce = "a1b2c3d4e5f60718".parse().unwrap();
+        assert_eq!(nonce, parsed);
+    }
+
+    #[test]
+    fn deployment_nonce_zero() {
+        let nonce = DeploymentNonce::zero();
+        assert_eq!(nonce.to_string(), "0000000000000000");
+        assert_eq!(nonce.as_u64(), 0);
+    }
+
+    #[test]
+    fn deployment_nonce_random_is_16_chars() {
+        let nonce = DeploymentNonce::random();
+        assert_eq!(nonce.to_string().len(), 16);
+    }
+
+    #[test]
+    fn deployment_nonce_invalid() {
+        assert!("too_short".parse::<DeploymentNonce>().is_err());
+        assert!("A1B2C3D4E5F60718".parse::<DeploymentNonce>().is_err()); // uppercase
+        assert!("zzzzzzzzzzzzzzzz".parse::<DeploymentNonce>().is_err()); // non-hex
+    }
+
+    #[test]
     fn deployment_qid_roundtrip() {
-        let s = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268";
+        let s = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
         let qid: DeploymentQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
@@ -1085,11 +1226,12 @@ mod tests {
             qid.deployment.as_str(),
             "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
         );
+        assert_eq!(qid.nonce.as_u64(), 0xa1b2c3d4e5f60718);
     }
 
     #[test]
     fn deployment_qid_with_slashed_env() {
-        let s = "MyOrg/MyRepo::feature/my-branch@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268";
+        let s = "MyOrg/MyRepo::feature/my-branch@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
         let qid: DeploymentQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(
@@ -1100,7 +1242,7 @@ mod tests {
 
     #[test]
     fn deployment_qid_with_tag_env() {
-        let s = "MyOrg/MyRepo::tag:v1.0@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268";
+        let s = "MyOrg/MyRepo::tag:v1.0@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
         let qid: DeploymentQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert!(qid.environment_qid().environment.is_tag());

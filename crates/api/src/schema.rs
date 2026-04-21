@@ -274,18 +274,32 @@ impl Environment {
         let deployment_id: ids::DeploymentId = commit
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
-        let deployment = context
-            .cdb_client
-            .find_deployment(&self.qid.repo, &self.qid.environment, &deployment_id)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to find deployment {deployment_id} in {}: {e}",
-                    self.qid
-                );
+        // Find the deployment by commit hash within this environment.
+        // Since nonces make commit hashes non-unique, return the most
+        // recent deployment matching this commit.
+        let repo_client = context.cdb_client.repo(self.qid.repo.clone());
+        let mut stream = repo_client.deployments().await.map_err(|e| {
+            tracing::error!("Failed to list deployments in {}: {e}", self.qid);
+            internal_error()
+        })?;
+        let mut best: Option<cdb::Deployment> = None;
+        while let Some(dep) = stream.next().await {
+            let dep = dep.map_err(|e| {
+                tracing::error!("Failed to load deployment in {}: {e}", self.qid);
                 internal_error()
             })?;
-        Ok(Deployment { deployment })
+            if dep.environment == self.qid.environment && dep.deployment == deployment_id {
+                match &best {
+                    None => best = Some(dep),
+                    Some(b) if dep.created_at > b.created_at => best = Some(dep),
+                    _ => {}
+                }
+            }
+        }
+        match best {
+            Some(deployment) => Ok(Deployment { deployment }),
+            None => Err(field_error("Deployment not found")),
+        }
     }
 
     fn deployments(&self) -> Vec<Deployment> {
@@ -610,6 +624,18 @@ impl Deployment {
         self.deployment.state.into()
     }
 
+    fn bootstrapped(&self) -> bool {
+        self.deployment.bootstrapped
+    }
+
+    fn failures(&self) -> i32 {
+        self.deployment.failures as i32
+    }
+
+    fn nonce(&self) -> String {
+        self.deployment.nonce.to_string()
+    }
+
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
         let namespace = self.deployment.environment_qid().to_string();
         let owner = self.deployment.deployment_qid().to_string();
@@ -861,12 +887,6 @@ pub(crate) enum DeploymentState {
     Lingering,
     #[graphql(name = "DESIRED")]
     Desired,
-    #[graphql(name = "UP")]
-    Up,
-    #[graphql(name = "FAILING")]
-    Failing,
-    #[graphql(name = "FAILED")]
-    Failed,
 }
 
 impl From<cdb::DeploymentState> for DeploymentState {
@@ -876,9 +896,6 @@ impl From<cdb::DeploymentState> for DeploymentState {
             cdb::DeploymentState::Undesired => DeploymentState::Undesired,
             cdb::DeploymentState::Lingering => DeploymentState::Lingering,
             cdb::DeploymentState::Desired => DeploymentState::Desired,
-            cdb::DeploymentState::Up => DeploymentState::Up,
-            cdb::DeploymentState::Failing => DeploymentState::Failing,
-            cdb::DeploymentState::Failed => DeploymentState::Failed,
         }
     }
 }

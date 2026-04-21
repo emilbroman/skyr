@@ -136,6 +136,7 @@ impl CrossRepoPackageFinder {
         let dc = self.cdb.repo(repo.clone()).deployment(
             deployment.environment.environment.clone(),
             deployment.deployment.clone(),
+            deployment.nonce,
         );
         let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
 
@@ -196,7 +197,7 @@ impl CrossRepoPackageFinder {
                         return Ok(repo
                             .clone()
                             .environment(deployment.environment)
-                            .deployment(deployment.deployment));
+                            .deployment(deployment.deployment, deployment.nonce));
                     }
                 }
                 Err(CrossRepoError::Unresolved {
@@ -224,7 +225,7 @@ impl CrossRepoPackageFinder {
                 return Ok(repo
                     .clone()
                     .environment(deployment.environment)
-                    .deployment(deployment.deployment));
+                    .deployment(deployment.deployment, deployment.nonce));
             }
         }
         Err(CrossRepoError::Unresolved {

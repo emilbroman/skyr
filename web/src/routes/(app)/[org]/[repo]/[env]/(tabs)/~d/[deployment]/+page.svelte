@@ -37,7 +37,6 @@ const liveStates: DeploymentState[] = [
     DeploymentState.Desired,
     DeploymentState.Lingering,
     DeploymentState.Undesired,
-    DeploymentState.Failing,
 ];
 let isLive = $derived(deployment != null && liveStates.includes(deployment.state));
 
