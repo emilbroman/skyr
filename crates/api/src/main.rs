@@ -714,6 +714,74 @@ impl Mutation {
 
         Ok(Deployment { deployment })
     }
+
+    /// Tear down an environment by transitioning all currently-`Desired`
+    /// deployments to `Undesired` without superseding them.  This mirrors
+    /// the behaviour of deleting a Git ref via SCS.
+    ///
+    /// Requires the caller to be a member of the owning organisation.
+    #[graphql(name = "tearDownEnvironment")]
+    async fn tear_down_environment(
+        context: &Context,
+        organization: String,
+        repository: String,
+        environment: String,
+    ) -> FieldResult<bool> {
+        let (_, user) = context.check_auth().await?;
+
+        if organization != user.username {
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
+        }
+
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let repo_qid = ids::RepoQid { org, repo };
+
+        let repo_client = context.cdb_client.repo(repo_qid);
+        let mut stream = repo_client.active_deployments().await.map_err(|e| {
+            tracing::error!("Failed to list active deployments: {}", e);
+            internal_error()
+        })?;
+
+        while let Some(dep) = stream.next().await {
+            let dep = dep.map_err(|e| {
+                tracing::error!("Failed to read active deployment: {}", e);
+                internal_error()
+            })?;
+            if dep.environment == env && dep.state == cdb::DeploymentState::Desired {
+                let dc = repo_client.deployment(
+                    dep.environment.clone(),
+                    dep.deployment.clone(),
+                    dep.nonce,
+                );
+                dc.set(cdb::DeploymentState::Undesired).await.map_err(|e| {
+                    tracing::error!("Failed to set deployment to Undesired: {}", e);
+                    internal_error()
+                })?;
+            }
+        }
+
+        Ok(true)
+    }
 }
 
 pub(crate) type Schema = RootNode<'static, Query, Mutation, subscriptions::Subscription>;

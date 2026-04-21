@@ -105,6 +105,14 @@ type Mutation {
     same access level as other repository-scoped operations).
   """
   createDeployment(organization: String!, repository: String!, environment: String!, commitHash: String!): Deployment!
+  """
+    Tear down an environment by transitioning all currently-`Desired`
+    deployments to `Undesired` without superseding them.  This mirrors
+    the behaviour of deleting a Git ref via SCS.
+
+    Requires the caller to be a member of the owning organisation.
+  """
+  tearDownEnvironment(organization: String!, repository: String!, environment: String!): Boolean!
 }
 
 type Organization {
