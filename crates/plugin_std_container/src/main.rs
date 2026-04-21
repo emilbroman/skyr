@@ -1558,15 +1558,15 @@ impl ContainerPlugin {
         }
     }
 
-    /// Reconcile a single node by pushing all overlay peers and DNS records to it.
-    /// Called when a node that missed a broadcast sends a heartbeat.
-    async fn reconcile_single_node(&self, node_name: &str) {
+    /// Push the full overlay peer list to a node.
+    /// Used for reconciliation and during heartbeats to ensure mesh convergence.
+    async fn push_overlay_peers_to_node(&self, node_name: &str) {
         let node = {
             let mut registry = self.inner.node_registry.write().await;
             match registry.get(node_name).await {
                 Ok(n) => n,
                 Err(e) => {
-                    warn!(node = %node_name, error = %e, "reconciliation: failed to get node");
+                    warn!(node = %node_name, error = %e, "failed to get node for overlay reconciliation");
                     return;
                 }
             }
@@ -1575,12 +1575,11 @@ impl ContainerPlugin {
         let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
             Ok(c) => c,
             Err(e) => {
-                warn!(node = %node_name, error = %e, "reconciliation: failed to connect");
+                warn!(node = %node_name, error = %e, "failed to connect for overlay reconciliation");
                 return;
             }
         };
 
-        // Push all overlay peers
         let all_nodes = self.list_nodes().await.unwrap_or_default();
         for peer in &all_nodes {
             if peer.name == node.name || peer.overlay_endpoint.is_empty() {
@@ -1596,16 +1595,45 @@ impl ContainerPlugin {
                     node = %node_name,
                     peer = %peer.overlay_endpoint,
                     error = %e,
-                    "reconciliation: failed to push overlay peer"
+                    "failed to push overlay peer"
                 );
             }
         }
 
-        // Push all DNS records
+        debug!(
+            node = %node_name,
+            peers = all_nodes.len().saturating_sub(1),
+            "pushed overlay peers to node"
+        );
+    }
+
+    /// Push all DNS records to a node.
+    /// Used for reconciliation during heartbeats.
+    async fn push_dns_records_to_node(&self, node_name: &str) {
+        let node = {
+            let mut registry = self.inner.node_registry.write().await;
+            match registry.get(node_name).await {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(node = %node_name, error = %e, "failed to get node for DNS reconciliation");
+                    return;
+                }
+            }
+        };
+
+        let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(node = %node_name, error = %e, "failed to connect for DNS reconciliation");
+                return;
+            }
+        };
+
         let vips = {
             let mut registry = self.inner.node_registry.write().await;
             registry.list_vips().await.unwrap_or_default()
         };
+
         for (hostname, vip_str) in &vips {
             if let Err(e) = client
                 .set_dns_record(scop::SetDnsRecordRequest {
@@ -1618,15 +1646,27 @@ impl ContainerPlugin {
                     node = %node_name,
                     hostname = %hostname,
                     error = %e,
-                    "reconciliation: failed to push DNS record"
+                    "failed to push DNS record"
                 );
             }
         }
 
+        debug!(
+            node = %node_name,
+            dns_records = vips.len(),
+            "pushed DNS records to node"
+        );
+    }
+
+    /// Reconcile a single node by pushing all overlay peers and DNS records to it.
+    /// Provided for convenience in test/debug scenarios where full node reconciliation is needed.
+    #[allow(dead_code)]
+    async fn reconcile_single_node(&self, node_name: &str) {
+        self.push_overlay_peers_to_node(node_name).await;
+        self.push_dns_records_to_node(node_name).await;
+
         info!(
             node = %node_name,
-            peers = all_nodes.len().saturating_sub(1),
-            dns_records = vips.len(),
             "reconciled node state"
         );
     }
@@ -2206,6 +2246,62 @@ async fn extract_tree_recursive(
     Ok(())
 }
 
+/// Attempt to add an overlay peer on a target node, with bounded exponential backoff.
+async fn notify_overlay_peer(target_address: String, target_name: String, peer_ip: String) {
+    const MAX_RETRIES: u32 = 4;
+    const BASE_DELAY: Duration = Duration::from_secs(1);
+
+    for attempt in 0..=MAX_RETRIES {
+        match async {
+            let mut client = scop::ConduitClient::connect(target_address.clone())
+                .await
+                .map_err(|e| e.to_string())?;
+            client
+                .add_overlay_peer(scop::AddOverlayPeerRequest {
+                    peer_host_ip: peer_ip.clone(),
+                })
+                .await
+                .map_err(|e| e.to_string())
+        }
+        .await
+        {
+            Ok(_) => {
+                if attempt > 0 {
+                    tracing::info!(
+                        node = %target_name,
+                        peer = %peer_ip,
+                        attempt = attempt + 1,
+                        "peer notification succeeded after retry"
+                    );
+                }
+                return;
+            }
+            Err(e) => {
+                if attempt == MAX_RETRIES {
+                    tracing::warn!(
+                        node = %target_name,
+                        peer = %peer_ip,
+                        attempt = attempt + 1,
+                        error = %e,
+                        "peer notification failed after all retries"
+                    );
+                    return;
+                }
+                let delay = BASE_DELAY * 2u32.pow(attempt);
+                tracing::warn!(
+                    node = %target_name,
+                    peer = %peer_ip,
+                    attempt = attempt + 1,
+                    error = %e,
+                    retry_in = ?delay,
+                    "peer notification failed, retrying"
+                );
+                tokio::time::sleep(delay).await;
+            }
+        }
+    }
+}
+
 #[scop::tonic::async_trait]
 impl scop::Orchestrator for ContainerPlugin {
     async fn register_node(
@@ -2310,62 +2406,24 @@ impl scop::Orchestrator for ContainerPlugin {
                 // Notify existing nodes about the new peer, and the new node
                 // about existing peers (overlay mesh setup)
                 if !overlay_endpoint.is_empty() {
-                    for existing in &existing_nodes {
+                    for existing in existing_nodes {
                         if existing.overlay_endpoint.is_empty() {
                             continue;
                         }
 
-                        // Tell existing node about new peer
-                        match scop::ConduitClient::connect(existing.address.clone()).await {
-                            Ok(mut client) => {
-                                if let Err(e) = client
-                                    .add_overlay_peer(scop::AddOverlayPeerRequest {
-                                        peer_host_ip: overlay_endpoint.clone(),
-                                    })
-                                    .await
-                                {
-                                    warn!(
-                                        node = %existing.name,
-                                        peer = %overlay_endpoint,
-                                        error = %e,
-                                        "failed to notify existing node about new peer"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    node = %existing.name,
-                                    error = %e,
-                                    "failed to connect to existing node for peer notification"
-                                );
-                            }
-                        }
+                        // Tell existing node about new peer (background with retries)
+                        tokio::spawn(notify_overlay_peer(
+                            existing.address.clone(),
+                            existing.name.clone(),
+                            overlay_endpoint.clone(),
+                        ));
 
-                        // Tell new node about existing peer
-                        match scop::ConduitClient::connect(request.conduit_address.clone()).await {
-                            Ok(mut client) => {
-                                if let Err(e) = client
-                                    .add_overlay_peer(scop::AddOverlayPeerRequest {
-                                        peer_host_ip: existing.overlay_endpoint.clone(),
-                                    })
-                                    .await
-                                {
-                                    warn!(
-                                        node = %request.node_name,
-                                        peer = %existing.overlay_endpoint,
-                                        error = %e,
-                                        "failed to notify new node about existing peer"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    node = %request.node_name,
-                                    error = %e,
-                                    "failed to connect to new node for peer notification"
-                                );
-                            }
-                        }
+                        // Tell new node about existing peer (background with retries)
+                        tokio::spawn(notify_overlay_peer(
+                            request.conduit_address.clone(),
+                            request.node_name.clone(),
+                            existing.overlay_endpoint.clone(),
+                        ));
                     }
                 }
 
@@ -2411,17 +2469,20 @@ impl scop::Orchestrator for ContainerPlugin {
             Ok(_) => {
                 drop(registry);
 
-                // Check if this node missed any broadcasts and needs reconciliation
-                let needs_reconciliation = {
+                // Always push overlay peers to ensure mesh convergence within one heartbeat cycle
+                self.push_overlay_peers_to_node(&request.node_name).await;
+
+                // Check if this node missed any broadcasts and needs DNS reconciliation
+                let needs_dns_reconciliation = {
                     let mut set = self.inner.nodes_needing_reconciliation.write().await;
                     set.remove(&request.node_name)
                 };
-                if needs_reconciliation {
+                if needs_dns_reconciliation {
                     info!(
                         node_name = %request.node_name,
-                        "reconciling node that missed previous broadcasts"
+                        "reconciling DNS records for node that missed previous broadcasts"
                     );
-                    self.reconcile_single_node(&request.node_name).await;
+                    self.push_dns_records_to_node(&request.node_name).await;
                 }
 
                 Ok(scop::HeartbeatResponse { acknowledged: true })
