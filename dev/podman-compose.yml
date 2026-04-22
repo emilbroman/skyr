@@ -252,6 +252,10 @@ services:
       [
         "--bind",
         "0.0.0.0:50053",
+        # Canonical hostname for orchestrator-originated overlay gossip.
+        # Matches the compose service name so SCOCs can resolve + attribute it.
+        "--orchestrator-hostname",
+        "plugin-std-container",
         "--rtp-bind",
         "tcp://0.0.0.0:50054",
         "--node-registry-hostname",

@@ -78,6 +78,11 @@ resource "kubernetes_deployment" "plugin_std_container" {
           command = ["/plugin_std_container"]
           args = concat([
             "--bind", "0.0.0.0:50053",
+            # Canonical hostname used as `from_node` / `source` in outbound
+            # overlay-peer gossip. This is the in-cluster Service DNS name
+            # so SCOCs can attribute orchestrator-originated entries and
+            # exclude the orchestrator from reactive fan-out.
+            "--orchestrator-hostname", "plugin-std-container.${local.namespace}.svc.cluster.local",
             "--rtp-bind", "tcp://0.0.0.0:50054",
             "--node-registry-hostname", local.redis_hostname,
             "--cdb-hostnames", "${local.scylladb_hostname}:9042",

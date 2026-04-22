@@ -38,6 +38,27 @@ struct Args {
     #[arg(long, default_value = "0.0.0.0:50053")]
     bind: String,
 
+    /// Canonical, DNS-resolvable hostname the orchestrator uses to identify
+    /// itself when initiating overlay-peer gossip. Carried in `GossipPeers`
+    /// requests as `from_node` / per-entry `source`, so receivers (and later
+    /// hop recipients) can attribute the announcement and exclude us from
+    /// reactive fan-out.
+    #[arg(long)]
+    orchestrator_hostname: String,
+
+    /// How long tombstone records for evicted nodes are retained by the
+    /// orchestrator (seconds). SCOCs enforce their own TTL via
+    /// `--tombstone-ttl`; this controls how long seed lists continue to
+    /// inform newly-joining nodes about recent removals.
+    #[arg(long, default_value = "3600")]
+    tombstone_ttl_secs: u64,
+
+    /// Maximum number of live peers sent in `RegisterNodeResponse.seed_peers`.
+    /// A small sample is enough to bootstrap gossip; anti-entropy fills in
+    /// anything missing.
+    #[arg(long, default_value = "5")]
+    seed_peer_count: usize,
+
     /// Address to bind the RTP server to.
     #[arg(long, default_value = "tcp://0.0.0.0:50054")]
     rtp_bind: String,
@@ -134,11 +155,20 @@ struct ContainerPluginInner {
     service_cidr: String,
     /// Allocates VIPs from the service CIDR for Host resources.
     vip_allocator: RwLock<vip_allocator::VipAllocator>,
-    /// Nodes that missed a broadcast and need reconciliation on next heartbeat.
+    /// Nodes that missed a DNS/service-route broadcast and need reconciliation
+    /// on next heartbeat. Overlay-peer state is no longer tracked here — it
+    /// propagates via the SCOC-to-SCOC gossip protocol.
     nodes_needing_reconciliation: RwLock<HashSet<String>>,
     /// Optional mTLS material used for all conduit RPCs and the orchestrator
     /// listener. `None` means plain gRPC.
     tls: Option<scop::TlsMaterial>,
+    /// Canonical hostname used to identify the orchestrator in outbound
+    /// `GossipPeers` calls.
+    orchestrator_hostname: String,
+    /// How long tombstones are retained before being GC'd from Redis.
+    tombstone_ttl: Duration,
+    /// Maximum number of peers to return in `RegisterNodeResponse.seed_peers`.
+    seed_peer_count: usize,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -163,6 +193,9 @@ impl ContainerPlugin {
         service_cidr: String,
         vip_allocator: vip_allocator::VipAllocator,
         tls: Option<scop::TlsMaterial>,
+        orchestrator_hostname: String,
+        tombstone_ttl: Duration,
+        seed_peer_count: usize,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -178,6 +211,9 @@ impl ContainerPlugin {
                 vip_allocator: RwLock::new(vip_allocator),
                 nodes_needing_reconciliation: RwLock::new(HashSet::new()),
                 tls,
+                orchestrator_hostname,
+                tombstone_ttl,
+                seed_peer_count,
             }),
         }
     }
@@ -1442,81 +1478,43 @@ impl ContainerPlugin {
     // Resilience: network reconciliation and dead-node eviction
     // =========================================================================
 
-    /// Reconcile cluster-wide network state after plugin restart.
-    /// Rebuilds the overlay mesh by notifying each node about all other nodes,
-    /// and re-broadcasts DNS records and service routes from stored VIP data.
+    /// Reconcile cluster-wide DNS / service-route state after plugin restart.
+    ///
+    /// Overlay-peer membership is no longer reconciled from here: that state
+    /// is owned by the SCOCs and healed by the gossip anti-entropy loop, so
+    /// the orchestrator no longer needs to push peer lists at startup.
     async fn reconcile_network_state(&self) {
-        let nodes = match self.list_nodes().await {
-            Ok(nodes) => nodes,
-            Err(e) => {
-                warn!(error = %e, "failed to list nodes for network reconciliation");
-                return;
-            }
-        };
-
-        if nodes.is_empty() {
-            info!("no registered nodes, skipping network reconciliation");
-            return;
-        }
-
-        info!(
-            node_count = nodes.len(),
-            "reconciling network state after startup"
-        );
-
-        // Rebuild overlay mesh: notify each node about every other node's overlay endpoint
-        for node in &nodes {
-            if node.overlay_endpoint.is_empty() {
-                continue;
-            }
-
-            let mut client = match scop::connect_conduit(node.address.clone(), self.tls()).await {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!(
-                        node = %node.name,
-                        error = %e,
-                        "failed to connect to node during reconciliation"
-                    );
-                    continue;
-                }
-            };
-
-            for peer in &nodes {
-                if peer.name == node.name || peer.overlay_endpoint.is_empty() {
-                    continue;
-                }
-                if let Err(e) = client
-                    .add_overlay_peer(scop::AddOverlayPeerRequest {
-                        peer_host_ip: peer.overlay_endpoint.clone(),
-                    })
-                    .await
-                {
-                    warn!(
-                        node = %node.name,
-                        peer = %peer.overlay_endpoint,
-                        error = %e,
-                        "failed to reconcile overlay peer"
-                    );
-                }
-            }
-        }
-
-        // Re-broadcast DNS records and service routes from stored VIP data
         let vips = {
             let mut registry = self.inner.node_registry.write().await;
             registry.list_vips().await.unwrap_or_default()
         };
 
-        for (host_name, vip_str) in &vips {
-            self.broadcast_dns_set(host_name, vip_str).await;
+        if vips.is_empty() {
+            info!("no DNS records to reconcile after startup");
+            return;
         }
 
         info!(
-            overlay_peers = nodes.len(),
             dns_records = vips.len(),
-            "network state reconciliation complete"
+            "reconciling DNS records after startup"
         );
+        for (host_name, vip_str) in &vips {
+            self.broadcast_dns_set(host_name, vip_str).await;
+        }
+    }
+
+    /// Background task that periodically GC's expired tombstone records from
+    /// Redis. `list_tombstones` already filters and deletes expired entries,
+    /// so a no-op call on a cadence is enough to bound storage.
+    async fn run_tombstone_gc(&self) {
+        loop {
+            tokio::time::sleep(Duration::from_secs(EVICTION_SCAN_INTERVAL_SECS)).await;
+
+            let mut registry = self.inner.node_registry.write().await;
+            if let Err(e) = registry.list_tombstones().await {
+                warn!(error = %e, "tombstone GC sweep failed");
+            }
+        }
     }
 
     /// Background task that periodically scans for dead nodes and evicts them.
@@ -1546,17 +1544,13 @@ impl ContainerPlugin {
         }
     }
 
-    /// Evict a dead node: release its subnet, unregister from Redis, notify peers.
+    /// Evict a dead node: release its subnet, unregister from Redis, and
+    /// seed a tombstone into the cluster so gossip can spread the removal.
     async fn evict_node(&self, node_name: &str) {
         // Read departing node info before unregistering
-        let departing_endpoint = {
+        let departing = {
             let mut registry = self.inner.node_registry.write().await;
-            registry
-                .get(node_name)
-                .await
-                .ok()
-                .map(|n| n.overlay_endpoint.clone())
-                .unwrap_or_default()
+            registry.get(node_name).await.ok()
         };
 
         // Release subnet
@@ -1576,69 +1570,75 @@ impl ContainerPlugin {
 
         info!(node = %node_name, "evicted dead node");
 
-        // Notify remaining nodes to remove the departing peer
-        if !departing_endpoint.is_empty() {
-            let departing = departing_endpoint.clone();
-            self.broadcast_to_nodes("remove_overlay_peer (eviction)", |mut client, _| {
-                let peer = departing.clone();
-                async move {
-                    client
-                        .remove_overlay_peer(scop::RemoveOverlayPeerRequest { peer_host_ip: peer })
-                        .await
-                        .map(|_| ())
-                }
-            })
-            .await;
+        // Write and gossip a tombstone so peers drop the node from their
+        // overlay tables and so late re-registrations can be reliably ordered
+        // against this removal.
+        if let Some(node) = departing {
+            self.publish_tombstone(&node.name, &node.overlay_endpoint)
+                .await;
         }
     }
 
-    /// Push the full overlay peer list to a node.
-    /// Used for reconciliation and during heartbeats to ensure mesh convergence.
-    async fn push_overlay_peers_to_node(&self, node_name: &str) {
-        let node = {
+    /// Mint a tombstone for `node_name` (with its last-known overlay endpoint),
+    /// persist it in Redis under the configured TTL, and gossip it to one
+    /// random live peer. The tombstone then spreads epidemically via SCOC-to-
+    /// SCOC gossip.
+    async fn publish_tombstone(&self, node_name: &str, overlay_endpoint: &str) {
+        let now = node_registry::now_micros();
+        let ttl_micros = (self.inner.tombstone_ttl.as_micros() as u64).max(1);
+        let tombstone = node_registry::Tombstone {
+            name: node_name.to_string(),
+            overlay_endpoint: overlay_endpoint.to_string(),
+            last_seen_micros: now,
+            expires_at_micros: now.saturating_add(ttl_micros),
+        };
+
+        {
             let mut registry = self.inner.node_registry.write().await;
-            match registry.get(node_name).await {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!(node = %node_name, error = %e, "failed to get node for overlay reconciliation");
-                    return;
-                }
-            }
-        };
-
-        let mut client = match scop::connect_conduit(node.address.clone(), self.tls()).await {
-            Ok(c) => c,
-            Err(e) => {
-                warn!(node = %node_name, error = %e, "failed to connect for overlay reconciliation");
-                return;
-            }
-        };
-
-        let all_nodes = self.list_nodes().await.unwrap_or_default();
-        for peer in &all_nodes {
-            if peer.name == node.name || peer.overlay_endpoint.is_empty() {
-                continue;
-            }
-            if let Err(e) = client
-                .add_overlay_peer(scop::AddOverlayPeerRequest {
-                    peer_host_ip: peer.overlay_endpoint.clone(),
-                })
-                .await
-            {
+            if let Err(e) = registry.put_tombstone(&tombstone).await {
                 warn!(
                     node = %node_name,
-                    peer = %peer.overlay_endpoint,
                     error = %e,
-                    "failed to push overlay peer"
+                    "failed to persist tombstone; peer-removal gossip may be dropped on plugin restart"
                 );
             }
         }
 
-        debug!(
-            node = %node_name,
-            peers = all_nodes.len().saturating_sub(1),
-            "pushed overlay peers to node"
-        );
+        self.seed_gossip(vec![tombstone_to_peer_entry(
+            &tombstone,
+            &self.inner.orchestrator_hostname,
+        )])
+        .await;
+    }
+
+    /// Push the given gossip entries to a single random live peer, from which
+    /// they spread epidemically. This is the orchestrator's only overlay
+    /// fan-out: it does not loop over all nodes.
+    async fn seed_gossip(&self, entries: Vec<scop::PeerEntry>) {
+        if entries.is_empty() {
+            return;
+        }
+
+        let nodes = match self.list_nodes().await {
+            Ok(nodes) => nodes,
+            Err(e) => {
+                warn!(error = %e, "failed to list nodes for gossip seeding");
+                return;
+            }
+        };
+
+        let Some(target) = pick_gossip_target(&nodes, None) else {
+            debug!("no live peers to seed gossip to; entries will propagate on next registration");
+            return;
+        };
+
+        let address = target.address.clone();
+        let target_name = target.name.clone();
+        let from_node = self.inner.orchestrator_hostname.clone();
+        let tls = self.inner.tls.clone();
+        tokio::spawn(async move {
+            send_gossip(&address, &target_name, from_node, entries, tls).await;
+        });
     }
 
     /// Push all DNS records to a node.
@@ -1692,16 +1692,16 @@ impl ContainerPlugin {
         );
     }
 
-    /// Reconcile a single node by pushing all overlay peers and DNS records to it.
-    /// Provided for convenience in test/debug scenarios where full node reconciliation is needed.
+    /// Reconcile a single node by pushing all DNS records to it.
+    /// Overlay-peer state is healed by gossip anti-entropy and is no longer
+    /// pushed from here.
     #[allow(dead_code)]
     async fn reconcile_single_node(&self, node_name: &str) {
-        self.push_overlay_peers_to_node(node_name).await;
         self.push_dns_records_to_node(node_name).await;
 
         info!(
             node = %node_name,
-            "reconciled node state"
+            "reconciled node DNS state"
         );
     }
 
@@ -2304,64 +2304,116 @@ async fn load_tls(
     }
 }
 
-/// Attempt to add an overlay peer on a target node, with bounded exponential backoff.
-async fn notify_overlay_peer(
-    target_address: String,
-    target_name: String,
-    peer_ip: String,
+/// Send a `GossipPeers` request carrying the given entries to one peer.
+///
+/// The orchestrator uses this as its sole overlay fan-out: a tombstone or a
+/// freshly-registered node's record is handed to one live peer and then
+/// propagates epidemically across the cluster via SCOC-to-SCOC gossip.
+async fn send_gossip(
+    target_address: &str,
+    target_name: &str,
+    from_node: String,
+    entries: Vec<scop::PeerEntry>,
     tls: Option<scop::TlsMaterial>,
 ) {
     const MAX_RETRIES: u32 = 4;
     const BASE_DELAY: Duration = Duration::from_secs(1);
 
     for attempt in 0..=MAX_RETRIES {
-        match async {
-            let mut client = scop::connect_conduit(target_address.clone(), tls.as_ref())
+        let result: Result<(), String> = async {
+            let mut client = scop::connect_conduit(target_address.to_string(), tls.as_ref())
                 .await
                 .map_err(|e| e.to_string())?;
             client
-                .add_overlay_peer(scop::AddOverlayPeerRequest {
-                    peer_host_ip: peer_ip.clone(),
+                .gossip_peers(scop::GossipPeersRequest {
+                    from_node: from_node.clone(),
+                    entries: entries.clone(),
+                    digest: None,
                 })
                 .await
+                .map(|_| ())
                 .map_err(|e| e.to_string())
         }
-        .await
-        {
-            Ok(_) => {
+        .await;
+
+        match result {
+            Ok(()) => {
                 if attempt > 0 {
                     tracing::info!(
-                        node = %target_name,
-                        peer = %peer_ip,
+                        target = %target_name,
                         attempt = attempt + 1,
-                        "peer notification succeeded after retry"
+                        "gossip seed succeeded after retry"
                     );
                 }
                 return;
             }
+            Err(e) if attempt == MAX_RETRIES => {
+                tracing::warn!(
+                    target = %target_name,
+                    attempt = attempt + 1,
+                    error = %e,
+                    "gossip seed failed after all retries"
+                );
+                return;
+            }
             Err(e) => {
-                if attempt == MAX_RETRIES {
-                    tracing::warn!(
-                        node = %target_name,
-                        peer = %peer_ip,
-                        attempt = attempt + 1,
-                        error = %e,
-                        "peer notification failed after all retries"
-                    );
-                    return;
-                }
                 let delay = BASE_DELAY * 2u32.pow(attempt);
                 tracing::warn!(
-                    node = %target_name,
-                    peer = %peer_ip,
+                    target = %target_name,
                     attempt = attempt + 1,
                     error = %e,
                     retry_in = ?delay,
-                    "peer notification failed, retrying"
+                    "gossip seed failed, retrying"
                 );
                 tokio::time::sleep(delay).await;
             }
         }
+    }
+}
+
+/// Pick a single random live peer to seed a gossip message to.
+///
+/// Skips nodes without a usable overlay endpoint/address and, when provided,
+/// the `exclude` hostname (typically the just-registered node itself — we
+/// don't want to round-trip its own announcement back to it).
+fn pick_gossip_target<'a>(
+    nodes: &'a [node_registry::Node],
+    exclude: Option<&str>,
+) -> Option<&'a node_registry::Node> {
+    use rand::seq::SliceRandom;
+
+    let candidates: Vec<&node_registry::Node> = nodes
+        .iter()
+        .filter(|n| {
+            !n.overlay_endpoint.is_empty()
+                && !n.address.is_empty()
+                && exclude.is_none_or(|name| n.name != name)
+        })
+        .collect();
+
+    candidates.choose(&mut rand::thread_rng()).copied()
+}
+
+/// Build a live-node `PeerEntry` for gossip from a stored `Node`, stamped
+/// with `source` = the orchestrator's canonical hostname.
+fn node_to_peer_entry(node: &node_registry::Node, source: &str) -> scop::PeerEntry {
+    scop::PeerEntry {
+        node_name: node.name.clone(),
+        overlay_endpoint: node.overlay_endpoint.clone(),
+        last_seen_micros: node.overlay_version_micros,
+        tombstone: false,
+        source: source.to_string(),
+    }
+}
+
+/// Build a tombstone `PeerEntry` from a stored `Tombstone` record.
+fn tombstone_to_peer_entry(tombstone: &node_registry::Tombstone, source: &str) -> scop::PeerEntry {
+    scop::PeerEntry {
+        node_name: tombstone.name.clone(),
+        overlay_endpoint: tombstone.overlay_endpoint.clone(),
+        last_seen_micros: tombstone.last_seen_micros,
+        tombstone: true,
+        source: source.to_string(),
     }
 }
 
@@ -2422,6 +2474,7 @@ impl scop::Orchestrator for ContainerPlugin {
                         pod_cidr: String::new(),
                         cluster_cidr: String::new(),
                         service_cidr: String::new(),
+                        seed_peers: Vec::new(),
                     });
                 }
             }
@@ -2438,10 +2491,19 @@ impl scop::Orchestrator for ContainerPlugin {
         let overlay_endpoint =
             extract_overlay_endpoint(&request.conduit_address).unwrap_or_default();
 
-        // List existing nodes before registering (for peer notification)
-        let existing_nodes = {
+        // Mint a strictly-fresh overlay version stamp so this registration
+        // supersedes any tombstone carrying the same name.
+        let overlay_version_micros = node_registry::now_micros();
+
+        // List existing nodes and active tombstones before registering. The
+        // new node needs both (live peers for seeding; tombstones so it
+        // doesn't re-add recently-removed peers it might learn about from
+        // stale sources).
+        let (existing_nodes, tombstones) = {
             let mut registry = self.inner.node_registry.write().await;
-            registry.list().await.unwrap_or_default()
+            let nodes = registry.list().await.unwrap_or_default();
+            let tombstones = registry.list_tombstones().await.unwrap_or_default();
+            (nodes, tombstones)
         };
 
         let mut registry = self.inner.node_registry.write().await;
@@ -2453,42 +2515,68 @@ impl scop::Orchestrator for ContainerPlugin {
                 request.labels,
                 &pod_cidr,
                 &overlay_endpoint,
+                overlay_version_micros,
             )
             .await
         {
             Ok(node) => {
+                // Clear any stale tombstone for this name: the fresh registration
+                // supersedes it. SCOCs will drop their local tombstones when the
+                // newer live entry arrives via gossip.
+                if let Err(e) = registry.delete_tombstone(&request.node_name).await {
+                    warn!(
+                        node_name = %request.node_name,
+                        error = %e,
+                        "failed to clear stale tombstone during re-registration"
+                    );
+                }
+
                 info!(
                     node_name = %node.name,
                     pod_cidr = %pod_cidr,
                     overlay_endpoint = %overlay_endpoint,
                     "node registered successfully"
                 );
-                // Drop registry lock before peer notification
+                // Drop registry lock before gossip
                 drop(registry);
 
-                // Notify existing nodes about the new peer, and the new node
-                // about existing peers (overlay mesh setup)
+                // Build the seed list for the new node: a small random sample
+                // of live peers, plus all active tombstones so the new node
+                // can't be tricked into re-adding them.
+                let seed_peers = build_seed_peers(
+                    &existing_nodes,
+                    &tombstones,
+                    &self.inner.orchestrator_hostname,
+                    self.inner.seed_peer_count,
+                );
+
+                // Seed one existing peer with the new node's live entry; from
+                // there gossip spreads the news epidemically.
                 if !overlay_endpoint.is_empty() {
-                    for existing in existing_nodes {
-                        if existing.overlay_endpoint.is_empty() {
-                            continue;
-                        }
+                    let new_entry = scop::PeerEntry {
+                        node_name: request.node_name.clone(),
+                        overlay_endpoint: overlay_endpoint.clone(),
+                        last_seen_micros: overlay_version_micros,
+                        tombstone: false,
+                        source: self.inner.orchestrator_hostname.clone(),
+                    };
 
-                        // Tell existing node about new peer (background with retries)
-                        tokio::spawn(notify_overlay_peer(
-                            existing.address.clone(),
-                            existing.name.clone(),
-                            overlay_endpoint.clone(),
-                            self.inner.tls.clone(),
-                        ));
-
-                        // Tell new node about existing peer (background with retries)
-                        tokio::spawn(notify_overlay_peer(
-                            request.conduit_address.clone(),
-                            request.node_name.clone(),
-                            existing.overlay_endpoint.clone(),
-                            self.inner.tls.clone(),
-                        ));
+                    if let Some(target) =
+                        pick_gossip_target(&existing_nodes, Some(&request.node_name))
+                    {
+                        let address = target.address.clone();
+                        let target_name = target.name.clone();
+                        let from_node = self.inner.orchestrator_hostname.clone();
+                        let tls = self.inner.tls.clone();
+                        tokio::spawn(async move {
+                            send_gossip(&address, &target_name, from_node, vec![new_entry], tls)
+                                .await;
+                        });
+                    } else {
+                        debug!(
+                            node_name = %request.node_name,
+                            "no live peers to seed with the new node; it is the first member of the cluster"
+                        );
                     }
                 }
 
@@ -2498,6 +2586,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     pod_cidr,
                     cluster_cidr: self.inner.cluster_cidr.clone(),
                     service_cidr: self.inner.service_cidr.clone(),
+                    seed_peers,
                 })
             }
             Err(e) => {
@@ -2514,6 +2603,7 @@ impl scop::Orchestrator for ContainerPlugin {
                     pod_cidr: String::new(),
                     cluster_cidr: String::new(),
                     service_cidr: String::new(),
+                    seed_peers: Vec::new(),
                 })
             }
         }
@@ -2534,10 +2624,9 @@ impl scop::Orchestrator for ContainerPlugin {
             Ok(_) => {
                 drop(registry);
 
-                // Always push overlay peers to ensure mesh convergence within one heartbeat cycle
-                self.push_overlay_peers_to_node(&request.node_name).await;
-
-                // Check if this node missed any broadcasts and needs DNS reconciliation
+                // If this node missed any DNS/service-route broadcast, catch
+                // it up now. Overlay-peer state heals via gossip without any
+                // orchestrator involvement.
                 let needs_dns_reconciliation = {
                     let mut set = self.inner.nodes_needing_reconciliation.write().await;
                     set.remove(&request.node_name)
@@ -2572,14 +2661,9 @@ impl scop::Orchestrator for ContainerPlugin {
         info!(node_name = %request.node_name, "unregistering node");
 
         // Read departing node info before unregistering (for overlay endpoint)
-        let departing_endpoint = {
+        let departing = {
             let mut registry = self.inner.node_registry.write().await;
-            registry
-                .get(&request.node_name)
-                .await
-                .ok()
-                .map(|n| n.overlay_endpoint.clone())
-                .unwrap_or_default()
+            registry.get(&request.node_name).await.ok()
         };
 
         // Release the node's subnet allocation
@@ -2592,41 +2676,13 @@ impl scop::Orchestrator for ContainerPlugin {
         match registry.unregister(&request.node_name).await {
             Ok(()) => {
                 info!(node_name = %request.node_name, "node unregistered successfully");
+                drop(registry);
 
-                // Notify remaining nodes to remove the departing peer
-                if !departing_endpoint.is_empty() {
-                    let remaining_nodes = registry.list().await.unwrap_or_default();
-                    drop(registry);
-
-                    for node in &remaining_nodes {
-                        if node.overlay_endpoint.is_empty() {
-                            continue;
-                        }
-                        match scop::connect_conduit(node.address.clone(), self.tls()).await {
-                            Ok(mut client) => {
-                                if let Err(e) = client
-                                    .remove_overlay_peer(scop::RemoveOverlayPeerRequest {
-                                        peer_host_ip: departing_endpoint.clone(),
-                                    })
-                                    .await
-                                {
-                                    warn!(
-                                        node = %node.name,
-                                        peer = %departing_endpoint,
-                                        error = %e,
-                                        "failed to notify node about peer removal"
-                                    );
-                                }
-                            }
-                            Err(e) => {
-                                warn!(
-                                    node = %node.name,
-                                    error = %e,
-                                    "failed to connect to node for peer removal"
-                                );
-                            }
-                        }
-                    }
+                // Mint a tombstone and seed one random peer with it; gossip
+                // spreads the removal from there.
+                if let Some(node) = departing {
+                    self.publish_tombstone(&node.name, &node.overlay_endpoint)
+                        .await;
                 }
 
                 Ok(scop::UnregisterNodeResponse { success: true })
@@ -2641,29 +2697,38 @@ impl scop::Orchestrator for ContainerPlugin {
             }
         }
     }
+}
 
-    async fn get_overlay_peers(
-        &self,
-        request: scop::GetOverlayPeersRequest,
-    ) -> Result<scop::GetOverlayPeersResponse, scop::tonic::Status> {
-        let nodes = {
-            let mut registry = self.inner.node_registry.write().await;
-            registry
-                .list()
-                .await
-                .map_err(|e| scop::tonic::Status::internal(format!("failed to list nodes: {e}")))?
-        };
+/// Build the initial seed peer list handed to a freshly-registering node.
+///
+/// Includes up to `max_live` random live peers and every active tombstone.
+/// Tombstones ship with the seed list so the new node doesn't have a window
+/// during which it would add a stale re-announcement of an evicted peer.
+fn build_seed_peers(
+    nodes: &[node_registry::Node],
+    tombstones: &[node_registry::Tombstone],
+    source: &str,
+    max_live: usize,
+) -> Vec<scop::PeerEntry> {
+    use rand::seq::SliceRandom;
 
-        let peers = nodes
-            .into_iter()
-            .filter(|n| n.name != request.node_name && !n.overlay_endpoint.is_empty())
-            .map(|n| scop::OverlayPeer {
-                peer_host_ip: n.overlay_endpoint,
-            })
-            .collect();
+    let mut live_candidates: Vec<&node_registry::Node> = nodes
+        .iter()
+        .filter(|n| !n.overlay_endpoint.is_empty())
+        .collect();
+    live_candidates.shuffle(&mut rand::thread_rng());
+    live_candidates.truncate(max_live);
 
-        Ok(scop::GetOverlayPeersResponse { peers })
-    }
+    let mut seeds: Vec<scop::PeerEntry> = live_candidates
+        .into_iter()
+        .map(|n| node_to_peer_entry(n, source))
+        .collect();
+    seeds.extend(
+        tombstones
+            .iter()
+            .map(|t| tombstone_to_peer_entry(t, source)),
+    );
+    seeds
 }
 
 // =============================================================================
@@ -2869,6 +2934,7 @@ async fn main() -> Result<()> {
 
     info!("Container plugin starting");
     info!("  orchestrator_bind: {}", args.bind);
+    info!("  orchestrator_hostname: {}", args.orchestrator_hostname);
     info!("  rtp_bind: {}", args.rtp_bind);
     info!("  node_registry_hostname: {}", args.node_registry_hostname);
     info!("  cdb_hostnames: {:?}", args.cdb_hostnames);
@@ -2878,6 +2944,8 @@ async fn main() -> Result<()> {
     info!("  cluster_cidr: {}", args.cluster_cidr);
     info!("  service_cidr: {}", args.service_cidr);
     info!("  insecure_registry: {}", args.insecure_registry);
+    info!("  tombstone_ttl_secs: {}", args.tombstone_ttl_secs);
+    info!("  seed_peer_count: {}", args.seed_peer_count);
 
     // Connect to the node registry
     let node_registry = node_registry::ClientBuilder::new()
@@ -3004,6 +3072,9 @@ async fn main() -> Result<()> {
         service_cidr.to_string(),
         vip_alloc,
         tls,
+        args.orchestrator_hostname.clone(),
+        Duration::from_secs(args.tombstone_ttl_secs),
+        args.seed_peer_count,
     );
 
     // Reconcile network state: rebuild overlay mesh and re-broadcast DNS/routes
@@ -3018,6 +3089,13 @@ async fn main() -> Result<()> {
     let eviction_plugin = plugin.clone();
     tokio::spawn(async move {
         eviction_plugin.run_dead_node_eviction().await;
+    });
+
+    // Spawn tombstone GC task. Each sweep evicts tombstones whose TTL has
+    // elapsed so Redis doesn't grow unbounded over time.
+    let tombstone_plugin = plugin.clone();
+    tokio::spawn(async move {
+        tombstone_plugin.run_tombstone_gc().await;
     });
 
     // Start the Orchestrator server

@@ -16,10 +16,10 @@ Container Plugin → SCOP → SCOC → containerd (CRI, Unix socket)
 1. Connects to containerd via Unix socket (default: `/run/containerd/containerd.sock`).
 2. Connects to LDB for container log streaming.
 3. Registers with the orchestrator (container plugin), reporting node capacity and requesting a pod subnet.
-4. Receives pod CIDR assignment and cluster CIDR from the orchestrator.
-5. Sets up the pod bridge network and VXLAN overlay for cross-node communication.
-6. Spawns a heartbeat task (30-second intervals).
-7. Serves the SCOP Conduit service on a TCP port.
+4. Receives pod CIDR assignment, cluster CIDR, and an initial seed of overlay peers in `RegisterNodeResponse`.
+5. Sets up the pod bridge network and VXLAN overlay, seeding the FDB from the seed peer list.
+6. Serves the SCOP Conduit service, including `gossip_peers` (see below).
+7. Runs three background loops: periodic anti-entropy digest gossip, tombstone GC, and orchestrator heartbeats (30-second intervals).
 8. On shutdown, tears down networking and unregisters from the orchestrator.
 
 ## Operations
@@ -28,7 +28,35 @@ Container Plugin → SCOP → SCOC → containerd (CRI, Unix socket)
 |----------|------------|
 | Pod | `create_pod`, `remove_pod` |
 | Container | `create_container`, `start_container`, `stop_container`, `remove_container` |
-| Networking | `add_overlay_peer`, `remove_overlay_peer`, `open_port`, `close_port` |
+| Networking | `gossip_peers`, `open_port`, `close_port` |
+
+## Overlay peer gossip
+
+SCOC no longer learns about overlay peers by receiving per-event broadcasts from the orchestrator. Instead, each node keeps an in-memory `KnownPeers` table and exchanges deltas with other nodes via the SCOP `gossip_peers` RPC. The orchestrator only seeds the cluster: it hands a new node its initial peer list in `RegisterNodeResponse.seed_peers` and sends one gossip call to one live peer announcing the newcomer. Knowledge then spreads epidemically.
+
+**State** (`crates/scoc/src/gossip.rs`): each entry is keyed by the peer's canonical hostname (`node_name`) and carries `overlay_endpoint`, `last_seen_micros`, `tombstone`, and `source`. Ordering is by `last_seen_micros`, which originates only at the orchestrator (at register or eviction time) and is preserved verbatim through gossip hops — no clock synchronization between SCOCs is required.
+
+**Merge rules**:
+
+- Unknown name, live entry: insert, install FDB entry.
+- Stale timestamp (`<= existing`): drop.
+- Live → tombstone: remove FDB entry, keep the tombstone until `--tombstone-ttl` expires.
+- Tombstone → live (strictly newer stamp): install FDB entry (supersedes tombstone).
+- Live → live with endpoint change: remove old FDB, install new.
+
+Tombstones are minted **only** by the orchestrator — a SCOC never infers eviction from a peer becoming unreachable. This avoids split-brain removal.
+
+**Fan-out**: when a merge produces net-new information, the node pushes the changed entries to `--gossip-fanout` random live peers (excluding self and the sender). Every `--gossip-interval-secs` the node additionally sends a compact digest to one random live peer for anti-entropy; any entries the peer returns in its delta are merged locally and participate in fan-out.
+
+**CLI flags** (new):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--gossip-fanout` | `3` | Random live peers pushed to on a reactive fan-out |
+| `--gossip-interval-secs` | `30` | Period of the anti-entropy digest exchange |
+| `--tombstone-ttl-secs` | `3600` | How long tombstones live locally before GC |
+
+The old `get_overlay_peers`, `add_overlay_peer`, and `remove_overlay_peer` RPCs are gone — they have been replaced entirely by `gossip_peers` plus the seed-list field on `RegisterNodeResponse`.
 
 ## Networking
 
@@ -157,7 +185,10 @@ cargo run -p scoc -- daemon \
   --cpu-millis 4000 \
   --memory-bytes 8589934592 \
   --max-pods 100 \
-  --pod-netmask 24
+  --pod-netmask 24 \
+  --gossip-fanout 3 \
+  --gossip-interval-secs 30 \
+  --tombstone-ttl-secs 3600
 ```
 
 ### Enabling mTLS

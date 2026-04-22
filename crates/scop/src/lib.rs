@@ -83,9 +83,8 @@ pub mod proto {
 
 // --- Node registration (Orchestrator) ---
 pub use proto::{
-    GetOverlayPeersRequest, GetOverlayPeersResponse, HeartbeatRequest, HeartbeatResponse,
-    NodeCapacity, NodeUsage, OverlayPeer, RegisterNodeRequest, RegisterNodeResponse,
-    UnregisterNodeRequest, UnregisterNodeResponse,
+    HeartbeatRequest, HeartbeatResponse, NodeCapacity, NodeUsage, RegisterNodeRequest,
+    RegisterNodeResponse, UnregisterNodeRequest, UnregisterNodeResponse,
 };
 
 // --- Pod lifecycle (Conduit) ---
@@ -100,11 +99,8 @@ pub use proto::{
     OpenPortRequest, OpenPortResponse, RemoveAttachmentRequest, RemoveAttachmentResponse,
 };
 
-// --- Overlay networking ---
-pub use proto::{
-    AddOverlayPeerRequest, AddOverlayPeerResponse, RemoveOverlayPeerRequest,
-    RemoveOverlayPeerResponse,
-};
+// --- Overlay networking (gossip-based peer discovery) ---
+pub use proto::{DigestEntry, GossipPeersRequest, GossipPeersResponse, PeerDigest, PeerEntry};
 
 // --- Service routing & DNS ---
 pub use proto::{
@@ -463,12 +459,6 @@ pub trait Orchestrator: Send + Sync + 'static {
         &self,
         request: UnregisterNodeRequest,
     ) -> Result<UnregisterNodeResponse, tonic::Status>;
-
-    /// Get the list of overlay peers for a node.
-    async fn get_overlay_peers(
-        &self,
-        request: GetOverlayPeersRequest,
-    ) -> Result<GetOverlayPeersResponse, tonic::Status>;
 }
 
 #[derive(Clone)]
@@ -504,17 +494,6 @@ impl<O: Orchestrator> proto::orchestrator_server::Orchestrator for OrchestratorS
         let response = self
             .orchestrator
             .unregister_node(request.into_inner())
-            .await?;
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn get_overlay_peers(
-        &self,
-        request: tonic::Request<GetOverlayPeersRequest>,
-    ) -> Result<tonic::Response<GetOverlayPeersResponse>, tonic::Status> {
-        let response = self
-            .orchestrator
-            .get_overlay_peers(request.into_inner())
             .await?;
         Ok(tonic::Response::new(response))
     }
@@ -633,17 +612,16 @@ pub trait Conduit: Send + Sync + 'static {
         request: RemoveAttachmentRequest,
     ) -> Result<RemoveAttachmentResponse, tonic::Status>;
 
-    /// Add a VXLAN overlay peer for cross-node pod communication.
-    async fn add_overlay_peer(
+    /// Exchange overlay peer membership information.
+    ///
+    /// The caller may push reactive deltas (`entries`) and/or an anti-entropy
+    /// `digest`. The implementation merges incoming entries into its known
+    /// peers, adjusts VXLAN FDB state accordingly, and returns any entries
+    /// the caller is missing or has staler versions of.
+    async fn gossip_peers(
         &self,
-        request: AddOverlayPeerRequest,
-    ) -> Result<AddOverlayPeerResponse, tonic::Status>;
-
-    /// Remove a VXLAN overlay peer.
-    async fn remove_overlay_peer(
-        &self,
-        request: RemoveOverlayPeerRequest,
-    ) -> Result<RemoveOverlayPeerResponse, tonic::Status>;
+        request: GossipPeersRequest,
+    ) -> Result<GossipPeersResponse, tonic::Status>;
 
     /// Open an ingress firewall port on a pod.
     async fn open_port(&self, request: OpenPortRequest) -> Result<OpenPortResponse, tonic::Status>;
@@ -748,22 +726,11 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
         Ok(tonic::Response::new(response))
     }
 
-    async fn add_overlay_peer(
+    async fn gossip_peers(
         &self,
-        request: tonic::Request<AddOverlayPeerRequest>,
-    ) -> Result<tonic::Response<AddOverlayPeerResponse>, tonic::Status> {
-        let response = self.conduit.add_overlay_peer(request.into_inner()).await?;
-        Ok(tonic::Response::new(response))
-    }
-
-    async fn remove_overlay_peer(
-        &self,
-        request: tonic::Request<RemoveOverlayPeerRequest>,
-    ) -> Result<tonic::Response<RemoveOverlayPeerResponse>, tonic::Status> {
-        let response = self
-            .conduit
-            .remove_overlay_peer(request.into_inner())
-            .await?;
+        request: tonic::Request<GossipPeersRequest>,
+    ) -> Result<tonic::Response<GossipPeersResponse>, tonic::Status> {
+        let response = self.conduit.gossip_peers(request.into_inner()).await?;
         Ok(tonic::Response::new(response))
     }
 

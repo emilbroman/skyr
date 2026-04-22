@@ -54,11 +54,31 @@ Ports are immutable — any input change triggers recreation.
 
 The plugin serves as the SCOP Orchestrator. [SCOC](../scoc/) conduit nodes register on startup, reporting their capacity and receiving a pod CIDR assignment. The plugin tracks registered nodes and schedules pods to nodes when no specific node is requested.
 
+## Overlay peer gossip
+
+Overlay membership no longer fans out from the orchestrator to every node on every topology change. Instead:
+
+- On `register_node`, the plugin returns an initial random sample of live peers (and any active tombstones) in `RegisterNodeResponse.seed_peers`, and makes **one** `gossip_peers` call to a single random existing peer announcing the newcomer. Knowledge spreads epidemically from there.
+- On `unregister_node` or dead-node eviction, the plugin mints a tombstone in Redis and makes **one** `gossip_peers` call to a single random live peer with it.
+- The old heartbeat-driven reconciliation (`push_overlay_peers_to_node`) is gone. DNS records and service routes are still reconciled on heartbeat for nodes that missed a broadcast; overlay state heals via SCOC-to-SCOC gossip anti-entropy.
+- The `get_overlay_peers`, `add_overlay_peer`, and `remove_overlay_peer` RPCs have been removed from SCOP.
+
+Tombstones are persisted as `ts:{name}` keys + a `tombstones` set in Redis. Expired tombstones (older than `--tombstone-ttl-secs`) are GC'd by a background task so the seed list stays bounded.
+
+### New CLI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--orchestrator-hostname` | *required* | Canonical, DNS-resolvable hostname the orchestrator uses to identify itself in `from_node` / `source` fields of outbound gossip. |
+| `--tombstone-ttl-secs` | `3600` | How long tombstones are retained in Redis before GC. |
+| `--seed-peer-count` | `5` | Maximum number of live peers included in `RegisterNodeResponse.seed_peers`. |
+
 ## Running
 
 ```sh
 cargo run -p plugin_std_container -- \
   --bind 0.0.0.0:50053 \
+  --orchestrator-hostname orchestrator.local \
   --rtp-bind tcp://0.0.0.0:50054 \
   --node-registry-hostname localhost \
   --cdb-hostnames localhost \

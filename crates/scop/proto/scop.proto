@@ -31,9 +31,6 @@ service Orchestrator {
 
   // UnregisterNode removes a node from the registry.
   rpc UnregisterNode(UnregisterNodeRequest) returns (UnregisterNodeResponse);
-
-  // GetOverlayPeers retrieves the list of overlay peers for a node.
-  rpc GetOverlayPeers(GetOverlayPeersRequest) returns (GetOverlayPeersResponse);
 }
 
 // Request to register a node with the orchestrator.
@@ -78,6 +75,13 @@ message RegisterNodeResponse {
   // Traffic to this range is allowed through pod egress rules and handled
   // via DNAT rules installed by AddServiceRoute.
   string service_cidr = 5;
+  // Initial overlay peer seed set. The new node seeds its known-peers table
+  // from this list (adding FDB entries immediately) and then continues to
+  // exchange membership via Conduit.GossipPeers. Typically contains a small
+  // random sample of live peers; the orchestrator separately informs one
+  // existing node about the newcomer via GossipPeers, from which knowledge
+  // spreads epidemically.
+  repeated PeerEntry seed_peers = 6;
 }
 
 // Heartbeat request to keep registration alive.
@@ -116,24 +120,6 @@ message UnregisterNodeResponse {
   bool success = 1;
 }
 
-// Request to retrieve overlay peers for a node.
-message GetOverlayPeersRequest {
-  // Name of the requesting node.
-  string node_name = 1;
-}
-
-// Response containing the list of overlay peers.
-message GetOverlayPeersResponse {
-  // The list of overlay peers (other nodes in the mesh).
-  repeated OverlayPeer peers = 1;
-}
-
-// Information about an overlay peer (another node in the VXLAN mesh).
-message OverlayPeer {
-  // The peer's host IP for VXLAN tunneling.
-  string peer_host_ip = 1;
-}
-
 // ============================================================================
 // Conduit Service (served by SCOC)
 // ============================================================================
@@ -153,11 +139,15 @@ service Conduit {
   // RemoveAttachment closes an egress port on a pod's firewall.
   rpc RemoveAttachment(RemoveAttachmentRequest) returns (RemoveAttachmentResponse);
 
-  // AddOverlayPeer adds a VXLAN overlay peer for cross-node pod communication.
-  rpc AddOverlayPeer(AddOverlayPeerRequest) returns (AddOverlayPeerResponse);
-
-  // RemoveOverlayPeer removes a VXLAN overlay peer.
-  rpc RemoveOverlayPeer(RemoveOverlayPeerRequest) returns (RemoveOverlayPeerResponse);
+  // GossipPeers exchanges overlay peer membership information between nodes
+  // (and between the orchestrator and a seed node). The caller can push a
+  // batch of add/remove deltas in `entries`, and/or provide a `digest` for
+  // anti-entropy; the receiver merges incoming entries into its known-peers
+  // table (adjusting VXLAN FDB state accordingly) and returns entries the
+  // caller appears to be missing or to have stale versions of.
+  //
+  // See the PeerEntry comment for identity and merge semantics.
+  rpc GossipPeers(GossipPeersRequest) returns (GossipPeersResponse);
 
   // OpenPort opens an ingress firewall port on a pod.
   rpc OpenPort(OpenPortRequest) returns (OpenPortResponse);
@@ -293,26 +283,67 @@ message KeyValue {
 }
 
 // ============================================================================
-// Overlay Network Messages
+// Overlay Network Messages (gossip-based peer discovery)
 // ============================================================================
 
-// Request to add a VXLAN overlay peer.
-message AddOverlayPeerRequest {
-  // The remote node's underlay IP address for VXLAN tunneling.
-  string peer_host_ip = 1;
+// A single entry in the overlay peer membership set.
+//
+// Identity is keyed by `node_name` — a canonical, DNS-resolvable hostname that
+// the orchestrator assigns at register time. All ordering is driven by
+// `last_seen_micros`, which originates from the orchestrator (at registration
+// or at tombstone creation) and is preserved verbatim as entries are gossiped
+// between nodes. Because timestamps are only minted by the orchestrator, nodes
+// never need to agree on a global clock.
+message PeerEntry {
+  // Canonical hostname of the peer (the `node_name` from RegisterNodeRequest).
+  string node_name = 1;
+  // VXLAN underlay endpoint (host IP) for this peer.
+  string overlay_endpoint = 2;
+  // Microseconds since the Unix epoch at which the orchestrator minted this
+  // record. For tombstones, this is the eviction time. Higher values supersede
+  // lower values on merge.
+  uint64 last_seen_micros = 3;
+  // If true, this is a removal marker (tombstone). The receiver should drop
+  // the corresponding FDB entry and keep the tombstone around for the
+  // configured TTL so that late gossip cannot resurrect the peer.
+  bool tombstone = 4;
+  // The hostname of the participant that sent this entry — a SCOC node_name
+  // or the orchestrator's own canonical hostname. Used for logging, loop
+  // damping, and excluding the sender from reactive fan-out.
+  string source = 5;
 }
 
-// Response from adding an overlay peer.
-message AddOverlayPeerResponse {}
-
-// Request to remove a VXLAN overlay peer.
-message RemoveOverlayPeerRequest {
-  // The remote node's underlay IP address.
-  string peer_host_ip = 1;
+// Compact digest of a peer's known membership set, used for anti-entropy.
+// One entry per known peer (including tombstones that have not yet been GC'd).
+message PeerDigest {
+  repeated DigestEntry entries = 1;
 }
 
-// Response from removing an overlay peer.
-message RemoveOverlayPeerResponse {}
+// A (node_name, last_seen_micros) pair summarizing one known peer.
+message DigestEntry {
+  string node_name = 1;
+  uint64 last_seen_micros = 2;
+}
+
+// Request message for Conduit.GossipPeers.
+message GossipPeersRequest {
+  // Canonical hostname of the sender (SCOC node_name or orchestrator hostname).
+  string from_node = 1;
+  // Reactive deltas the sender is pushing. May be empty for pure anti-entropy.
+  repeated PeerEntry entries = 2;
+  // If set, the sender's view of membership. The receiver computes the
+  // entries it has that the sender is missing or has staler versions of,
+  // and returns them in the response.
+  PeerDigest digest = 3;
+}
+
+// Response message for Conduit.GossipPeers.
+message GossipPeersResponse {
+  // Entries the receiver has that the sender appears to be missing or to
+  // have staler versions of (empty when no digest was provided, or when
+  // the receiver's view is a subset of the sender's).
+  repeated PeerEntry delta = 1;
+}
 
 // Request to open an ingress firewall port on a pod.
 message OpenPortRequest {
