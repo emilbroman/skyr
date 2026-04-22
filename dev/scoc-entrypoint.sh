@@ -50,6 +50,8 @@ done
 echo "containerd is ready"
 
 # Start SCOC conduit server
+# TLS flags are forwarded only when all three env vars are set; otherwise SCOC
+# runs plain gRPC. Validated both at the shell layer and inside SCOC.
 exec /usr/local/bin/scoc daemon \
   --node-name "${SCOC_NODE_NAME}" \
   --bind "${SCOC_BIND:-0.0.0.0:50054}" \
@@ -59,4 +61,7 @@ exec /usr/local/bin/scoc daemon \
   --cpu-millis "${SCOC_CPU_MILLIS:-4000}" \
   --memory-bytes "${SCOC_MEMORY_BYTES:-8589934592}" \
   --max-pods "${SCOC_MAX_PODS:-100}" \
-  --ldb-brokers "${SCOC_LDB_BROKERS:-127.0.0.1:9092}"
+  --ldb-brokers "${SCOC_LDB_BROKERS:-127.0.0.1:9092}" \
+  ${SCOC_TLS_CA:+--tls-ca "$SCOC_TLS_CA"} \
+  ${SCOC_TLS_CERT:+--tls-cert "$SCOC_TLS_CERT"} \
+  ${SCOC_TLS_KEY:+--tls-key "$SCOC_TLS_KEY"}

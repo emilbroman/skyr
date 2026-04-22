@@ -77,6 +77,21 @@ struct Args {
     /// Default is false (HTTPS required).
     #[arg(long, default_value_t = false)]
     insecure_registry: bool,
+
+    /// Path to the PEM-encoded CA certificate used to verify SCOC conduits
+    /// and incoming orchestrator clients. When set together with `--tls-cert`
+    /// and `--tls-key`, the orchestrator listener and all conduit RPCs use
+    /// mTLS. All three flags must be provided together; omit all three to run
+    /// plain gRPC.
+    #[arg(long)]
+    tls_ca: Option<std::path::PathBuf>,
+    /// Path to the PEM-encoded leaf certificate for the plugin. The cert
+    /// must carry both `serverAuth` and `clientAuth` Extended Key Usages.
+    #[arg(long)]
+    tls_cert: Option<std::path::PathBuf>,
+    /// Path to the PEM-encoded private key matching `--tls-cert`.
+    #[arg(long)]
+    tls_key: Option<std::path::PathBuf>,
 }
 
 // Resource type constants
@@ -121,6 +136,9 @@ struct ContainerPluginInner {
     vip_allocator: RwLock<vip_allocator::VipAllocator>,
     /// Nodes that missed a broadcast and need reconciliation on next heartbeat.
     nodes_needing_reconciliation: RwLock<HashSet<String>>,
+    /// Optional mTLS material used for all conduit RPCs and the orchestrator
+    /// listener. `None` means plain gRPC.
+    tls: Option<scop::TlsMaterial>,
 }
 
 /// The container plugin manages connections to worker nodes.
@@ -144,6 +162,7 @@ impl ContainerPlugin {
         cluster_cidr: String,
         service_cidr: String,
         vip_allocator: vip_allocator::VipAllocator,
+        tls: Option<scop::TlsMaterial>,
     ) -> Self {
         Self {
             inner: Arc::new(ContainerPluginInner {
@@ -158,8 +177,14 @@ impl ContainerPlugin {
                 service_cidr,
                 vip_allocator: RwLock::new(vip_allocator),
                 nodes_needing_reconciliation: RwLock::new(HashSet::new()),
+                tls,
             }),
         }
+    }
+
+    /// Borrow the loaded mTLS material, if any, for use by client RPCs.
+    fn tls(&self) -> Option<&scop::TlsMaterial> {
+        self.inner.tls.as_ref()
     }
 
     /// Get a conduit client to a node by name.
@@ -181,7 +206,7 @@ impl ContainerPlugin {
 
         // Connect to the node's conduit service
         info!(node_name = %node_name, address = %node.address, "connecting to conduit");
-        let client = scop::ConduitClient::connect(node.address.clone())
+        let client = scop::connect_conduit(node.address.clone(), self.tls())
             .await
             .map_err(|e| PluginError::Connect(e.to_string()))?;
 
@@ -1436,7 +1461,7 @@ impl ContainerPlugin {
                 continue;
             }
 
-            let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+            let mut client = match scop::connect_conduit(node.address.clone(), self.tls()).await {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(
@@ -1572,7 +1597,7 @@ impl ContainerPlugin {
             }
         };
 
-        let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+        let mut client = match scop::connect_conduit(node.address.clone(), self.tls()).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(node = %node_name, error = %e, "failed to connect for overlay reconciliation");
@@ -1621,7 +1646,7 @@ impl ContainerPlugin {
             }
         };
 
-        let mut client = match scop::ConduitClient::connect(node.address.clone()).await {
+        let mut client = match scop::connect_conduit(node.address.clone(), self.tls()).await {
             Ok(c) => c,
             Err(e) => {
                 warn!(node = %node_name, error = %e, "failed to connect for DNS reconciliation");
@@ -1714,10 +1739,11 @@ impl ContainerPlugin {
             let address = node.address.clone();
             let node_name = node.name.clone();
             let operation = operation.to_string();
+            let tls = self.inner.tls.clone();
 
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore.acquire().await;
-                match scop::ConduitClient::connect(address).await {
+                match scop::connect_conduit(address, tls.as_ref()).await {
                     Ok(client) => (node_name, Ok(client)),
                     Err(e) => {
                         warn!(
@@ -2246,14 +2272,42 @@ async fn extract_tree_recursive(
     Ok(())
 }
 
+/// Resolve the three optional `--tls-*` flags into `Option<TlsMaterial>`.
+///
+/// Either all three are provided (mTLS enabled) or none (plain gRPC). Any
+/// other combination is a startup error.
+async fn load_tls(
+    ca: Option<std::path::PathBuf>,
+    cert: Option<std::path::PathBuf>,
+    key: Option<std::path::PathBuf>,
+) -> Result<Option<scop::TlsMaterial>> {
+    match (ca, cert, key) {
+        (Some(ca), Some(cert), Some(key)) => {
+            let material = scop::TlsPaths { ca, cert, key }.load().await?;
+            Ok(Some(material))
+        }
+        (None, None, None) => Ok(None),
+        _ => {
+            anyhow::bail!(
+                "--tls-ca, --tls-cert, and --tls-key must all be provided together, or all omitted"
+            )
+        }
+    }
+}
+
 /// Attempt to add an overlay peer on a target node, with bounded exponential backoff.
-async fn notify_overlay_peer(target_address: String, target_name: String, peer_ip: String) {
+async fn notify_overlay_peer(
+    target_address: String,
+    target_name: String,
+    peer_ip: String,
+    tls: Option<scop::TlsMaterial>,
+) {
     const MAX_RETRIES: u32 = 4;
     const BASE_DELAY: Duration = Duration::from_secs(1);
 
     for attempt in 0..=MAX_RETRIES {
         match async {
-            let mut client = scop::ConduitClient::connect(target_address.clone())
+            let mut client = scop::connect_conduit(target_address.clone(), tls.as_ref())
                 .await
                 .map_err(|e| e.to_string())?;
             client
@@ -2416,6 +2470,7 @@ impl scop::Orchestrator for ContainerPlugin {
                             existing.address.clone(),
                             existing.name.clone(),
                             overlay_endpoint.clone(),
+                            self.inner.tls.clone(),
                         ));
 
                         // Tell new node about existing peer (background with retries)
@@ -2423,6 +2478,7 @@ impl scop::Orchestrator for ContainerPlugin {
                             request.conduit_address.clone(),
                             request.node_name.clone(),
                             existing.overlay_endpoint.clone(),
+                            self.inner.tls.clone(),
                         ));
                     }
                 }
@@ -2537,7 +2593,7 @@ impl scop::Orchestrator for ContainerPlugin {
                         if node.overlay_endpoint.is_empty() {
                             continue;
                         }
-                        match scop::ConduitClient::connect(node.address.clone()).await {
+                        match scop::connect_conduit(node.address.clone(), self.tls()).await {
                             Ok(mut client) => {
                                 if let Err(e) = client
                                     .remove_overlay_peer(scop::RemoveOverlayPeerRequest {
@@ -2922,6 +2978,10 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Load optional mTLS material for orchestrator ↔ conduit RPCs
+    let tls = load_tls(args.tls_ca, args.tls_cert, args.tls_key).await?;
+    info!("  mtls: {}", tls.is_some());
+
     // Create the plugin (shared between both servers)
     let plugin = ContainerPlugin::new(
         node_registry,
@@ -2934,6 +2994,7 @@ async fn main() -> Result<()> {
         cluster_cidr.to_string(),
         service_cidr.to_string(),
         vip_alloc,
+        tls,
     );
 
     // Reconcile network state: rebuild overlay mesh and re-broadcast DNS/routes
@@ -2958,8 +3019,9 @@ async fn main() -> Result<()> {
     info!("Starting RTP server on {}", args.rtp_bind);
 
     // Run both servers concurrently
+    let orchestrator_tls = plugin.inner.tls.clone();
     tokio::select! {
-        result = scop::serve_orchestrator(&orchestrator_target, plugin) => {
+        result = scop::serve_orchestrator(&orchestrator_target, plugin, orchestrator_tls.as_ref()) => {
             error!("Orchestrator server exited");
             result?;
         }

@@ -68,6 +68,25 @@ cargo run -p plugin_std_container -- \
   --cluster-cidr 10.42.0.0/16
 ```
 
+### Enabling mTLS
+
+Both directions of SCOP traffic (orchestrator RPCs from SCOC → plugin, conduit
+RPCs from plugin → SCOC) can optionally run over mutual TLS. All three flags
+are required together; omit all three to run plain gRPC.
+
+```sh
+cargo run -p plugin_std_container -- \
+  ... \
+  --tls-ca /etc/skyr/tls/ca.pem \
+  --tls-cert /etc/skyr/tls/plugin.pem \
+  --tls-key /etc/skyr/tls/plugin.key
+```
+
+The leaf certificate must carry both `serverAuth` and `clientAuth` Extended
+Key Usages so one cert works for the orchestrator listener and for outbound
+conduit connections. Use the same CA for the plugin and every SCOC node; see
+[SCOC's README](../scoc/README.md#enabling-mtls) for an `openssl` recipe.
+
 ## Related Crates
 
 - [IDs](../ids/) — parses deployment QIDs from resource namespaces

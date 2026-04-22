@@ -60,6 +60,20 @@ enum Command {
         /// a smaller subnet (fewer pods). Default /24 = 254 pods.
         #[arg(long, default_value = "24")]
         pod_netmask: String,
+        /// Path to the PEM-encoded CA certificate used to verify the
+        /// orchestrator and incoming conduit clients. When set together with
+        /// `--tls-cert` and `--tls-key`, the conduit listener and all
+        /// orchestrator RPCs use mTLS. All three flags must be provided
+        /// together; omit all three to run plain gRPC.
+        #[arg(long)]
+        tls_ca: Option<PathBuf>,
+        /// Path to the PEM-encoded leaf certificate for this node. The cert
+        /// must carry both `serverAuth` and `clientAuth` Extended Key Usages.
+        #[arg(long)]
+        tls_cert: Option<PathBuf>,
+        /// Path to the PEM-encoded private key matching `--tls-cert`.
+        #[arg(long)]
+        tls_key: Option<PathBuf>,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -1029,6 +1043,9 @@ async fn main() -> Result<()> {
             max_pods,
             ldb_brokers,
             pod_netmask,
+            tls_ca,
+            tls_cert,
+            tls_key,
         } => {
             // Parse --pod-netmask, stripping optional leading slash
             let pod_netmask: u32 = pod_netmask
@@ -1041,6 +1058,8 @@ async fn main() -> Result<()> {
                 "--pod-netmask must be between 1 and 30"
             );
 
+            let tls = load_tls(tls_ca, tls_cert, tls_key).await?.map(Arc::new);
+
             tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
             tracing::info!("  bind: {}", bind);
@@ -1049,6 +1068,7 @@ async fn main() -> Result<()> {
             tracing::info!("  containerd_socket: {}", containerd_socket);
             tracing::info!("  ldb_brokers: {}", ldb_brokers);
             tracing::info!("  pod_netmask: /{}", pod_netmask);
+            tracing::info!("  mtls: {}", tls.is_some());
 
             // Verify CRI connectivity at startup
             let cri = {
@@ -1090,8 +1110,9 @@ async fn main() -> Result<()> {
             // registration.
             let listener = tokio::net::TcpListener::bind(&bind).await?;
             tracing::info!("Conduit TCP listener bound on {}", bind);
+            let server_tls = tls.clone();
             let server_handle = tokio::spawn(async move {
-                scop::serve_conduit_on_tcp_listener(listener, conduit).await
+                scop::serve_conduit_on_tcp_listener(listener, conduit, server_tls.as_deref()).await
             });
 
             // Connect to orchestrator and register (with retries)
@@ -1099,7 +1120,8 @@ async fn main() -> Result<()> {
             let mut retries = 0;
             let max_retries = 30;
             let register_response = loop {
-                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
+                match scop::connect_orchestrator(orchestrator_address.clone(), tls.as_deref()).await
+                {
                     Ok(mut orchestrator) => {
                         match orchestrator
                             .register_node(scop::RegisterNodeRequest {
@@ -1238,7 +1260,8 @@ async fn main() -> Result<()> {
             // Pull overlay peers from orchestrator now that the Conduit server is running
             // and the network is initialized.
             {
-                match scop::OrchestratorClient::connect(orchestrator_address.clone()).await {
+                match scop::connect_orchestrator(orchestrator_address.clone(), tls.as_deref()).await
+                {
                     Ok(mut client) => {
                         match client
                             .get_overlay_peers(scop::GetOverlayPeersRequest {
@@ -1281,6 +1304,7 @@ async fn main() -> Result<()> {
             let orchestrator_address_heartbeat = orchestrator_address.clone();
             let conduit_address_heartbeat = conduit_address.clone();
             let pod_cidr_heartbeat = pod_cidr;
+            let tls_heartbeat = tls.clone();
             let heartbeat_handle = tokio::spawn(async move {
                 const BASE_INTERVAL_SECS: u64 = 30;
                 const MAX_BACKOFF_SECS: u64 = 300;
@@ -1318,8 +1342,9 @@ async fn main() -> Result<()> {
                             "heartbeat failures exceeded threshold, attempting re-registration"
                         );
 
-                        match scop::OrchestratorClient::connect(
+                        match scop::connect_orchestrator(
                             orchestrator_address_heartbeat.clone(),
+                            tls_heartbeat.as_deref(),
                         )
                         .await
                         {
@@ -1373,8 +1398,11 @@ async fn main() -> Result<()> {
                     }
 
                     // Normal heartbeat
-                    match scop::OrchestratorClient::connect(orchestrator_address_heartbeat.clone())
-                        .await
+                    match scop::connect_orchestrator(
+                        orchestrator_address_heartbeat.clone(),
+                        tls_heartbeat.as_deref(),
+                    )
+                    .await
                     {
                         Ok(mut client) => {
                             match client
@@ -1445,7 +1473,8 @@ async fn main() -> Result<()> {
 
             // Unregister from orchestrator
             tracing::info!("Unregistering from orchestrator");
-            if let Ok(mut client) = scop::OrchestratorClient::connect(orchestrator_address).await
+            if let Ok(mut client) =
+                scop::connect_orchestrator(orchestrator_address, tls.as_deref()).await
                 && let Err(e) = client
                     .unregister_node(scop::UnregisterNodeRequest {
                         node_name: node_name.clone(),
@@ -1488,6 +1517,29 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve the three optional `--tls-*` flags into `Option<TlsMaterial>`.
+///
+/// Either all three are provided (mTLS enabled) or none (plain gRPC). Any
+/// other combination is a startup error.
+async fn load_tls(
+    ca: Option<PathBuf>,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
+) -> Result<Option<scop::TlsMaterial>> {
+    match (ca, cert, key) {
+        (Some(ca), Some(cert), Some(key)) => {
+            let material = scop::TlsPaths { ca, cert, key }.load().await?;
+            Ok(Some(material))
+        }
+        (None, None, None) => Ok(None),
+        _ => {
+            anyhow::bail!(
+                "--tls-ca, --tls-cert, and --tls-key must all be provided together, or all omitted"
+            )
+        }
+    }
 }
 
 /// Extract the host from a conduit address like "http://192.168.1.10:50054" or "http://scoc-1:50054".

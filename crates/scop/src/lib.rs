@@ -53,11 +53,15 @@
 //!
 //! ## Transport Security
 //!
-//! SCOP does not enforce TLS at the protocol level. In production deployments,
-//! transport encryption **must** be provided by the infrastructure layer (e.g.,
-//! a service mesh, encrypted overlay network, or Unix domain sockets). TCP
-//! listeners should never be exposed on untrusted networks without TLS
-//! termination in front.
+//! SCOP supports optional mutual TLS (mTLS) on both the Orchestrator and
+//! Conduit services. Callers that want mTLS load a [`TlsMaterial`] from
+//! [`TlsPaths`] (CA, leaf cert, private key) and pass it to the
+//! `serve_*`/`connect_*` helpers. Leaf certificates are expected to carry both
+//! the `serverAuth` and `clientAuth` Extended Key Usages, so a single identity
+//! cert per node works in both directions. When no material is supplied, the
+//! transport is plain gRPC over HTTP/2 — suitable for trusted networks
+//! (service mesh, Unix sockets, podman-compose) but never expose a plaintext
+//! TCP listener on an untrusted network.
 
 use std::{net::SocketAddr, path::PathBuf, str::FromStr, sync::Arc};
 
@@ -300,7 +304,7 @@ impl FromStr for Target {
                 }
                 Ok(Target::Unix(PathBuf::from(path)))
             }
-            "tcp" | "http" => {
+            "tcp" | "http" | "https" => {
                 let Some(authority) = uri.authority() else {
                     return Err(TargetParseError::InvalidTcpAddress(s.to_owned()));
                 };
@@ -324,6 +328,115 @@ pub enum ServeError {
 
     #[error("invalid tcp bind address: {0}")]
     InvalidTcpBindAddress(String),
+
+    #[error("tls error: {0}")]
+    Tls(#[from] TlsError),
+}
+
+#[derive(Debug, Error)]
+pub enum ConnectError {
+    #[error("invalid target: {0}")]
+    Target(#[from] TargetParseError),
+
+    #[error("transport error: {0}")]
+    Transport(#[from] tonic::transport::Error),
+
+    #[error("tls error: {0}")]
+    Tls(#[from] TlsError),
+}
+
+// ============================================================================
+// Mutual TLS
+// ============================================================================
+
+/// Filesystem paths to the PEM-encoded TLS material for a single peer.
+///
+/// The same cert is used both as the server identity (Orchestrator or Conduit
+/// listener) and as the client identity (when connecting to the other side).
+/// This requires the leaf certificate to carry both the `serverAuth` and
+/// `clientAuth` Extended Key Usages. `ca` is the CA used to verify the peer.
+#[derive(Debug, Clone)]
+pub struct TlsPaths {
+    pub ca: PathBuf,
+    pub cert: PathBuf,
+    pub key: PathBuf,
+}
+
+/// Loaded TLS material, built once at startup and reused for all RPCs.
+#[derive(Debug, Clone)]
+pub struct TlsMaterial {
+    pub ca: tonic::transport::Certificate,
+    pub identity: tonic::transport::Identity,
+}
+
+#[derive(Debug, Error)]
+pub enum TlsError {
+    #[error("failed to read {path}: {source}")]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+impl TlsPaths {
+    /// Read the CA, certificate, and private key PEM files from disk.
+    pub async fn load(&self) -> Result<TlsMaterial, TlsError> {
+        let ca_pem = tokio::fs::read(&self.ca)
+            .await
+            .map_err(|e| TlsError::Read {
+                path: self.ca.clone(),
+                source: e,
+            })?;
+        let cert_pem = tokio::fs::read(&self.cert)
+            .await
+            .map_err(|e| TlsError::Read {
+                path: self.cert.clone(),
+                source: e,
+            })?;
+        let key_pem = tokio::fs::read(&self.key)
+            .await
+            .map_err(|e| TlsError::Read {
+                path: self.key.clone(),
+                source: e,
+            })?;
+
+        Ok(TlsMaterial {
+            ca: tonic::transport::Certificate::from_pem(ca_pem),
+            identity: tonic::transport::Identity::from_pem(cert_pem, key_pem),
+        })
+    }
+}
+
+impl TlsMaterial {
+    fn server_config(&self) -> tonic::transport::ServerTlsConfig {
+        tonic::transport::ServerTlsConfig::new()
+            .identity(self.identity.clone())
+            .client_ca_root(self.ca.clone())
+    }
+
+    fn client_config(&self, domain: &str) -> tonic::transport::ClientTlsConfig {
+        tonic::transport::ClientTlsConfig::new()
+            .ca_certificate(self.ca.clone())
+            .identity(self.identity.clone())
+            .domain_name(domain)
+    }
+}
+
+/// Extract the host portion of a `tcp://`, `http://`, `https://`, or bare
+/// `host:port` target for use as the TLS SNI/domain name.
+fn domain_for(target: &str) -> String {
+    if let Ok(uri) = target.parse::<http::Uri>()
+        && let Some(host) = uri.host()
+    {
+        return host.to_owned();
+    }
+    // Fall back to stripping a trailing `:port` from a bare authority.
+    target
+        .rsplit_once(':')
+        .map(|(host, _)| host)
+        .unwrap_or(target)
+        .to_owned()
 }
 
 // ============================================================================
@@ -455,13 +568,27 @@ async fn serve(target: Target, name: &str, router: Router) -> Result<(), ServeEr
     Ok(())
 }
 
+/// Build a [`Server`] with optional mTLS configured.
+fn tls_server(tls: Option<&TlsMaterial>) -> Result<Server, ServeError> {
+    let mut builder = Server::builder();
+    if let Some(material) = tls {
+        builder = builder.tls_config(material.server_config())?;
+    }
+    Ok(builder)
+}
+
 /// Serve the Orchestrator service (container plugin side).
+///
+/// When `tls` is `Some`, the listener terminates mTLS using the supplied
+/// material and requires each client to present a certificate signed by the
+/// CA in `material.ca`. When `None`, the listener speaks plain gRPC.
 pub async fn serve_orchestrator<O: Orchestrator>(
     target: impl AsRef<str>,
     orchestrator: O,
+    tls: Option<&TlsMaterial>,
 ) -> Result<(), ServeError> {
     let target: Target = target.as_ref().parse()?;
-    info!(target = ?target, "starting Orchestrator server");
+    info!(target = ?target, tls = tls.is_some(), "starting Orchestrator server");
 
     let service = proto::orchestrator_server::OrchestratorServer::new(OrchestratorService {
         orchestrator: Arc::new(orchestrator),
@@ -470,7 +597,7 @@ pub async fn serve_orchestrator<O: Orchestrator>(
     serve(
         target,
         "Orchestrator",
-        Server::builder().add_service(service),
+        tls_server(tls)?.add_service(service),
     )
     .await
 }
@@ -735,15 +862,16 @@ impl<C: Conduit> proto::conduit_server::Conduit for ConduitService<C> {
 pub async fn serve_conduit<C: Conduit>(
     target: impl AsRef<str>,
     conduit: C,
+    tls: Option<&TlsMaterial>,
 ) -> Result<(), ServeError> {
     let target: Target = target.as_ref().parse()?;
-    info!(target = ?target, "starting Conduit server");
+    info!(target = ?target, tls = tls.is_some(), "starting Conduit server");
 
     let service = proto::conduit_server::ConduitServer::new(ConduitService {
         conduit: Arc::new(conduit),
     });
 
-    serve(target, "Conduit", Server::builder().add_service(service)).await
+    serve(target, "Conduit", tls_server(tls)?.add_service(service)).await
 }
 
 /// Serve the Conduit service on an already-bound TCP listener.
@@ -752,17 +880,57 @@ pub async fn serve_conduit<C: Conduit>(
 pub async fn serve_conduit_on_tcp_listener<C: Conduit>(
     listener: tokio::net::TcpListener,
     conduit: C,
+    tls: Option<&TlsMaterial>,
 ) -> Result<(), ServeError> {
-    info!("starting Conduit server on existing TCP listener");
+    info!(
+        tls = tls.is_some(),
+        "starting Conduit server on existing TCP listener"
+    );
 
     let service = proto::conduit_server::ConduitServer::new(ConduitService {
         conduit: Arc::new(conduit),
     });
 
     let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
-    Server::builder()
+    tls_server(tls)?
         .add_service(service)
         .serve_with_incoming(incoming)
         .await
         .map_err(ServeError::Transport)
+}
+
+// ============================================================================
+// Client connect helpers
+// ============================================================================
+
+/// Build a tonic [`Endpoint`](tonic::transport::Endpoint) from a target URI,
+/// optionally applying mTLS configuration.
+async fn connect_channel(
+    target: &str,
+    tls: Option<&TlsMaterial>,
+) -> Result<tonic::transport::Channel, ConnectError> {
+    let mut endpoint = tonic::transport::Endpoint::from_shared(target.to_owned())?;
+    if let Some(material) = tls {
+        let domain = domain_for(target);
+        endpoint = endpoint.tls_config(material.client_config(&domain))?;
+    }
+    Ok(endpoint.connect().await?)
+}
+
+/// Connect to the Orchestrator service, optionally using mTLS.
+pub async fn connect_orchestrator(
+    target: impl AsRef<str>,
+    tls: Option<&TlsMaterial>,
+) -> Result<OrchestratorClient<tonic::transport::Channel>, ConnectError> {
+    let channel = connect_channel(target.as_ref(), tls).await?;
+    Ok(OrchestratorClient::new(channel))
+}
+
+/// Connect to a Conduit service, optionally using mTLS.
+pub async fn connect_conduit(
+    target: impl AsRef<str>,
+    tls: Option<&TlsMaterial>,
+) -> Result<ConduitClient<tonic::transport::Channel>, ConnectError> {
+    let channel = connect_channel(target.as_ref(), tls).await?;
+    Ok(ConduitClient::new(channel))
 }
