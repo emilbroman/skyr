@@ -12,10 +12,12 @@ use tokio_util::sync::CancellationToken;
 
 mod cri;
 mod dns;
+mod gossip;
 mod log_stream;
 mod net;
 
 use cri::CriClient;
+use gossip::{KnownPeers, MergeEffect};
 
 #[derive(Parser)]
 #[command(name = "scoc")]
@@ -74,6 +76,18 @@ enum Command {
         /// Path to the PEM-encoded private key matching `--tls-cert`.
         #[arg(long)]
         tls_key: Option<PathBuf>,
+        /// Number of random live peers to push to when a merge produces
+        /// net-new information (reactive gossip fan-out).
+        #[arg(long, default_value = "3")]
+        gossip_fanout: usize,
+        /// Interval at which this node initiates an anti-entropy digest
+        /// exchange with one random live peer (seconds).
+        #[arg(long, default_value = "30")]
+        gossip_interval_secs: u64,
+        /// How long tombstone records are retained locally after their
+        /// `last_seen_micros` before being garbage collected (seconds).
+        #[arg(long, default_value = "3600")]
+        tombstone_ttl_secs: u64,
     },
     /// Check CRI connectivity and version.
     Version {
@@ -137,14 +151,16 @@ struct NetworkState {
 }
 
 /// Handle used by `main()` to initialize the network state after registration
-/// and drain any overlay peers that arrived before initialization.
+/// and drain any gossip entries that arrived before initialization.
 struct NetworkInitHandle {
     net_state: Arc<OnceCell<NetworkState>>,
-    pending_peers: Arc<Mutex<Vec<String>>>,
+    pending_entries: Arc<Mutex<Vec<scop::PeerEntry>>>,
+    known_peers: Arc<Mutex<KnownPeers>>,
+    self_name: String,
 }
 
 impl NetworkInitHandle {
-    /// Set the network state and process any buffered overlay peers.
+    /// Set the network state and process any buffered overlay gossip.
     async fn initialize(
         self,
         ipam: net::Ipam,
@@ -153,11 +169,11 @@ impl NetworkInitHandle {
         service_cidr: Option<String>,
         dns_servers: Vec<String>,
     ) -> Result<()> {
-        // Hold the pending_peers lock while setting net_state so that
-        // add_overlay_peer cannot observe is_none() == true, get preempted,
+        // Hold the pending_entries lock while setting net_state so that
+        // gossip_peers cannot observe is_none() == true, get preempted,
         // and then push into the buffer after we have already drained it.
-        let peers = {
-            let mut pending = self.pending_peers.lock().await;
+        let entries = {
+            let mut pending = self.pending_entries.lock().await;
             self.net_state
                 .set(NetworkState {
                     ipam: Mutex::new(ipam),
@@ -171,15 +187,242 @@ impl NetworkInitHandle {
             std::mem::take(&mut *pending)
         };
 
-        // Drain buffered peers and add them now that the network is ready.
-        for peer_host in peers {
-            let peer_ip = resolve_hostname_to_ip(&peer_host)?;
-            net::add_overlay_peer(&peer_ip)?;
-            tracing::info!(peer_host = %peer_host, peer_ip = %peer_ip, "added buffered overlay peer");
+        // Drain buffered gossip entries now that the network is ready.
+        let mut known = self.known_peers.lock().await;
+        for entry in entries {
+            apply_merge_effect(&self.self_name, &mut known, entry)?;
         }
 
         Ok(())
     }
+}
+
+/// Handles passed to background gossip tasks. Small & cheap to clone.
+#[derive(Clone)]
+struct GossipHandles {
+    known_peers: Arc<Mutex<KnownPeers>>,
+    self_name: Arc<String>,
+    /// Optional TLS material reused across all outbound gossip connections.
+    /// Must match the material the peer was started with; `None` means plain
+    /// gRPC.
+    tls: Option<Arc<scop::TlsMaterial>>,
+}
+
+/// Reactive fan-out: pick `fanout` random live peers (excluding self and the
+/// sender) and push the just-changed entries to each.
+async fn reactive_fanout(handles: GossipHandles, from_node: String, entries: Vec<scop::PeerEntry>) {
+    use rand::seq::SliceRandom;
+
+    const DEFAULT_FANOUT: usize = 3;
+    let fanout = GOSSIP_FANOUT.load(std::sync::atomic::Ordering::Relaxed);
+    let fanout = if fanout == 0 { DEFAULT_FANOUT } else { fanout };
+
+    let targets: Vec<(String, String)> = {
+        let known = handles.known_peers.lock().await;
+        let mut live = known.live_peers();
+        live.retain(|(name, _)| name != handles.self_name.as_str() && name != &from_node);
+        live.shuffle(&mut rand::thread_rng());
+        live.into_iter().take(fanout).collect()
+    };
+
+    for (name, endpoint) in targets {
+        let target_name = name.clone();
+        let conduit_addr = format!("http://{}:50054", endpoint);
+        let from_node = handles.self_name.as_ref().clone();
+        let entries = entries.clone();
+        let tls = handles.tls.clone();
+        tokio::spawn(async move {
+            send_gossip_to(
+                &conduit_addr,
+                &target_name,
+                from_node,
+                entries,
+                None,
+                tls.as_deref(),
+            )
+            .await;
+        });
+    }
+}
+
+/// Background task: periodically pick a random live peer and exchange a
+/// digest with them. The response `delta` is merged locally; any newly-
+/// accepted entries are reactively fanned out in the merge path itself.
+async fn periodic_digest_gossip(
+    handles: GossipHandles,
+    interval: Duration,
+    tls: Option<Arc<scop::TlsMaterial>>,
+) {
+    use rand::seq::SliceRandom;
+    loop {
+        tokio::time::sleep(interval).await;
+
+        let (target, digest) = {
+            let known = handles.known_peers.lock().await;
+            let mut live = known.live_peers();
+            live.retain(|(name, _)| name != handles.self_name.as_str());
+            let Some(target) = live.choose(&mut rand::thread_rng()).cloned() else {
+                continue;
+            };
+            (target, known.digest())
+        };
+
+        let (name, endpoint) = target;
+        let conduit_addr = format!("http://{}:50054", endpoint);
+        let from_node = handles.self_name.as_ref().clone();
+
+        let result: Result<scop::GossipPeersResponse, String> = async {
+            let mut client = scop::connect_conduit(conduit_addr.clone(), tls.as_deref())
+                .await
+                .map_err(|e| e.to_string())?;
+            client
+                .gossip_peers(scop::GossipPeersRequest {
+                    from_node: from_node.clone(),
+                    entries: Vec::new(),
+                    digest: Some(digest),
+                })
+                .await
+                .map(|r| r.into_inner())
+                .map_err(|e| e.to_string())
+        }
+        .await;
+
+        let delta = match result {
+            Ok(resp) => resp.delta,
+            Err(e) => {
+                tracing::debug!(peer = %name, error = %e, "digest gossip failed");
+                continue;
+            }
+        };
+
+        if delta.is_empty() {
+            continue;
+        }
+
+        let self_name = handles.self_name.as_str().to_string();
+        let mut known = handles.known_peers.lock().await;
+        let mut changed: Vec<scop::PeerEntry> = Vec::new();
+        for entry in delta {
+            let snapshot = entry.clone();
+            if apply_merge_effect(&self_name, &mut known, entry).is_ok()
+                && known.iter().any(|(n, s)| {
+                    n == &snapshot.node_name
+                        && s.last_seen_micros == snapshot.last_seen_micros
+                        && s.tombstone == snapshot.tombstone
+                })
+            {
+                changed.push(snapshot);
+            }
+        }
+        drop(known);
+
+        if !changed.is_empty() {
+            let handles = handles.clone();
+            tokio::spawn(async move {
+                reactive_fanout(handles, name, changed).await;
+            });
+        }
+    }
+}
+
+/// Background task: periodically GC tombstones whose age exceeds the TTL.
+async fn tombstone_gc_task(known_peers: Arc<Mutex<KnownPeers>>, ttl: Duration) {
+    // Sweep at half the TTL so tombstones disappear within ~1.5x the TTL on average.
+    let interval = std::cmp::max(ttl / 2, Duration::from_secs(60));
+    loop {
+        tokio::time::sleep(interval).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+        let ttl_micros = ttl.as_micros() as u64;
+        let pruned = {
+            let mut known = known_peers.lock().await;
+            known.gc_tombstones(now, ttl_micros)
+        };
+        if pruned > 0 {
+            tracing::debug!(pruned = pruned, "GC'd expired tombstones");
+        }
+    }
+}
+
+async fn send_gossip_to(
+    target_address: &str,
+    target_name: &str,
+    from_node: String,
+    entries: Vec<scop::PeerEntry>,
+    digest: Option<scop::PeerDigest>,
+    tls: Option<&scop::TlsMaterial>,
+) {
+    match scop::connect_conduit(target_address.to_string(), tls).await {
+        Ok(mut client) => {
+            if let Err(e) = client
+                .gossip_peers(scop::GossipPeersRequest {
+                    from_node,
+                    entries,
+                    digest,
+                })
+                .await
+            {
+                tracing::debug!(target = %target_name, error = %e, "gossip push failed");
+            }
+        }
+        Err(e) => {
+            tracing::debug!(target = %target_name, error = %e, "failed to connect for gossip");
+        }
+    }
+}
+
+/// Fan-out size configured at startup. Stored as an atomic so background
+/// gossip tasks can read it without plumbing it through every call site.
+static GOSSIP_FANOUT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Merge one entry and apply the resulting FDB change. Hostname resolution
+/// is performed on endpoints that aren't already literal IPs; failures are
+/// logged but non-fatal to the merge (the in-memory state still advances so
+/// that anti-entropy can re-apply the effect once the name resolves).
+fn apply_merge_effect(
+    self_name: &str,
+    known: &mut KnownPeers,
+    entry: scop::PeerEntry,
+) -> Result<()> {
+    let prior_endpoint = known.existing_endpoint(&entry.node_name);
+    let Some(effect) = known.merge_entry(self_name, entry) else {
+        return Ok(());
+    };
+    match effect {
+        MergeEffect::AddFdb { overlay_endpoint } => {
+            // Endpoint rotation: drop the stale FDB before installing the new one.
+            if let Some(old) = prior_endpoint
+                && old != overlay_endpoint
+                && let Ok(old_ip) = resolve_hostname_to_ip(&old)
+            {
+                let _ = net::remove_overlay_peer(&old_ip);
+            }
+            match resolve_hostname_to_ip(&overlay_endpoint)
+                .and_then(|ip| net::add_overlay_peer(&ip))
+            {
+                Ok(()) => tracing::info!(peer = %overlay_endpoint, "added overlay peer via gossip"),
+                Err(e) => {
+                    tracing::warn!(peer = %overlay_endpoint, error = %e, "failed to add overlay peer")
+                }
+            }
+        }
+        MergeEffect::RemoveFdb { overlay_endpoint } => {
+            match resolve_hostname_to_ip(&overlay_endpoint)
+                .and_then(|ip| net::remove_overlay_peer(&ip))
+            {
+                Ok(()) => {
+                    tracing::info!(peer = %overlay_endpoint, "removed overlay peer via gossip")
+                }
+                Err(e) => {
+                    tracing::warn!(peer = %overlay_endpoint, error = %e, "failed to remove overlay peer")
+                }
+            }
+        }
+        MergeEffect::MetadataOnly => {}
+    }
+    Ok(())
 }
 
 /// SCOP Conduit implementation backed by CRI, with per-pod networking.
@@ -191,8 +434,18 @@ struct CriConduit {
     pods: Arc<Mutex<HashMap<String, PodInfo>>>,
     /// Network state, set after orchestrator registration via `NetworkInitHandle`.
     net_state: Arc<OnceCell<NetworkState>>,
-    /// Overlay peers received before network initialization.
-    pending_peers: Arc<Mutex<Vec<String>>>,
+    /// Gossip entries received before network initialization, buffered so
+    /// that FDB updates can be applied once `vxlan1` is ready.
+    pending_entries: Arc<Mutex<Vec<scop::PeerEntry>>>,
+    /// In-memory membership view driven by Conduit.GossipPeers.
+    known_peers: Arc<Mutex<KnownPeers>>,
+    /// Canonical hostname of this node (used as `from_node` / `source` in
+    /// outbound gossip and to reject entries that name this node).
+    self_name: Arc<String>,
+    /// Optional TLS material for outbound gossip connections to other
+    /// conduits. Matches whatever `--tls-*` flags this node was started
+    /// with; `None` means plain gRPC.
+    tls: Option<Arc<scop::TlsMaterial>>,
     /// Shared DNS records for the internal DNS server.
     dns_records: dns::DnsRecords,
     /// VIP aliases: maps LAN VIP address → Host VIP (destination).
@@ -210,6 +463,8 @@ impl CriConduit {
         cri: CriClient,
         ldb_publisher: Option<ldb::Publisher>,
         dns_records: dns::DnsRecords,
+        self_name: String,
+        tls: Option<Arc<scop::TlsMaterial>>,
     ) -> Self {
         Self {
             cri: Arc::new(Mutex::new(cri)),
@@ -217,7 +472,10 @@ impl CriConduit {
             log_tasks: Arc::new(Mutex::new(HashMap::new())),
             pods: Arc::new(Mutex::new(HashMap::new())),
             net_state: Arc::new(OnceCell::new()),
-            pending_peers: Arc::new(Mutex::new(Vec::new())),
+            pending_entries: Arc::new(Mutex::new(Vec::new())),
+            known_peers: Arc::new(Mutex::new(KnownPeers::new())),
+            self_name: Arc::new(self_name),
+            tls,
             dns_records,
             vip_aliases: Arc::new(Mutex::new(HashMap::new())),
             service_routes: Arc::new(Mutex::new(HashMap::new())),
@@ -228,7 +486,18 @@ impl CriConduit {
     fn network_init_handle(&self) -> NetworkInitHandle {
         NetworkInitHandle {
             net_state: Arc::clone(&self.net_state),
-            pending_peers: Arc::clone(&self.pending_peers),
+            pending_entries: Arc::clone(&self.pending_entries),
+            known_peers: Arc::clone(&self.known_peers),
+            self_name: (*self.self_name).clone(),
+        }
+    }
+
+    /// Handles used by the periodic gossip task.
+    fn gossip_handles(&self) -> GossipHandles {
+        GossipHandles {
+            known_peers: Arc::clone(&self.known_peers),
+            self_name: Arc::clone(&self.self_name),
+            tls: self.tls.clone(),
         }
     }
 
@@ -632,54 +901,73 @@ impl scop::Conduit for CriConduit {
         Ok(scop::RemoveAttachmentResponse {})
     }
 
-    async fn add_overlay_peer(
+    async fn gossip_peers(
         &self,
-        request: scop::AddOverlayPeerRequest,
-    ) -> Result<scop::AddOverlayPeerResponse, scop::tonic::Status> {
-        // Lock pending_peers first, then check net_state under the lock.
-        // This is the other half of the TOCTOU fix: initialize() also holds
-        // this lock while setting net_state and draining, so the check-and-buffer
-        // here is atomic with the set-and-drain there.
+        request: scop::GossipPeersRequest,
+    ) -> Result<scop::GossipPeersResponse, scop::tonic::Status> {
+        // If the network isn't ready yet, buffer the entries and return an
+        // empty delta. The init handle drains the buffer during `initialize`.
+        // Locking order matches NetworkInitHandle::initialize so the TOCTOU
+        // between buffer-and-drain is atomic.
         {
-            let mut pending = self.pending_peers.lock().await;
+            let mut pending = self.pending_entries.lock().await;
             if self.net_state.get().is_none() {
                 tracing::info!(
-                    peer_host = %request.peer_host_ip,
-                    "network not yet initialized, buffering overlay peer"
+                    from = %request.from_node,
+                    count = request.entries.len(),
+                    "network not yet initialized, buffering gossip entries"
                 );
-                pending.push(request.peer_host_ip);
-                return Ok(scop::AddOverlayPeerResponse {});
+                pending.extend(request.entries);
+                return Ok(scop::GossipPeersResponse { delta: Vec::new() });
             }
         }
 
-        // Resolve hostname to IP (bridge fdb requires IP address)
-        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip).map_err(|e| {
-            scop::tonic::Status::internal(format!(
-                "failed to resolve peer {}: {e:#}",
-                request.peer_host_ip
-            ))
-        })?;
-        net::add_overlay_peer(&peer_ip).map_err(|e| {
-            scop::tonic::Status::internal(format!("add overlay peer failed: {e:#}"))
-        })?;
-        Ok(scop::AddOverlayPeerResponse {})
-    }
+        let self_name = self.self_name.as_str();
+        let mut known = self.known_peers.lock().await;
 
-    async fn remove_overlay_peer(
-        &self,
-        request: scop::RemoveOverlayPeerRequest,
-    ) -> Result<scop::RemoveOverlayPeerResponse, scop::tonic::Status> {
-        // Resolve hostname to IP (bridge fdb requires IP address)
-        let peer_ip = resolve_hostname_to_ip(&request.peer_host_ip).map_err(|e| {
-            scop::tonic::Status::internal(format!(
-                "failed to resolve peer {}: {e:#}",
-                request.peer_host_ip
-            ))
-        })?;
-        net::remove_overlay_peer(&peer_ip).map_err(|e| {
-            scop::tonic::Status::internal(format!("remove overlay peer failed: {e:#}"))
-        })?;
-        Ok(scop::RemoveOverlayPeerResponse {})
+        // Merge incoming entries and track which ones produced net-new info.
+        let mut changed: Vec<scop::PeerEntry> = Vec::new();
+        for entry in request.entries {
+            let snapshot = entry.clone();
+            if let Err(e) = apply_merge_effect(self_name, &mut known, entry) {
+                tracing::warn!(error = %e, "merge failed, dropping entry");
+                continue;
+            }
+            // Re-merge was a no-op indicator only when entry changed the table.
+            // `merge_entry` returns None on stale/duplicate entries; we can't
+            // distinguish those from metadata-only merges without inspecting
+            // the table. For fan-out we prefer correctness over precision: if
+            // the entry survived (i.e. is present at the stamp we sent), we
+            // forward it. A stale input won't be in the table at its claimed
+            // stamp, so it will be filtered out.
+            if known.iter().any(|(name, state)| {
+                name == &snapshot.node_name
+                    && state.last_seen_micros == snapshot.last_seen_micros
+                    && state.tombstone == snapshot.tombstone
+            }) {
+                changed.push(snapshot);
+            }
+        }
+
+        // Compute delta for the caller from their digest (if any).
+        let delta = match request.digest {
+            Some(digest) => known.delta_for(&digest, self_name),
+            None => Vec::new(),
+        };
+
+        drop(known);
+
+        // Schedule reactive fan-out of the changes we accepted. We spawn so
+        // the response isn't held up waiting on outbound RPCs.
+        if !changed.is_empty() {
+            let handles = self.gossip_handles();
+            let from_node = request.from_node;
+            tokio::spawn(async move {
+                reactive_fanout(handles, from_node, changed).await;
+            });
+        }
+
+        Ok(scop::GossipPeersResponse { delta })
     }
 
     async fn open_port(
@@ -1046,6 +1334,9 @@ async fn main() -> Result<()> {
             tls_ca,
             tls_cert,
             tls_key,
+            gossip_fanout,
+            gossip_interval_secs,
+            tombstone_ttl_secs,
         } => {
             // Parse --pod-netmask, stripping optional leading slash
             let pod_netmask: u32 = pod_netmask
@@ -1069,6 +1360,11 @@ async fn main() -> Result<()> {
             tracing::info!("  ldb_brokers: {}", ldb_brokers);
             tracing::info!("  pod_netmask: /{}", pod_netmask);
             tracing::info!("  mtls: {}", tls.is_some());
+            tracing::info!("  gossip_fanout: {}", gossip_fanout);
+            tracing::info!("  gossip_interval_secs: {}", gossip_interval_secs);
+            tracing::info!("  tombstone_ttl_secs: {}", tombstone_ttl_secs);
+
+            GOSSIP_FANOUT.store(gossip_fanout, std::sync::atomic::Ordering::Relaxed);
 
             // Verify CRI connectivity at startup
             let cri = {
@@ -1101,8 +1397,15 @@ async fn main() -> Result<()> {
             let dns_records = dns::new_records();
 
             // Create the conduit in pending state (network not yet initialized)
-            let conduit = CriConduit::new_pending(cri, ldb_publisher, dns_records.clone());
+            let conduit = CriConduit::new_pending(
+                cri,
+                ldb_publisher,
+                dns_records.clone(),
+                node_name.clone(),
+                tls.clone(),
+            );
             let init_handle = conduit.network_init_handle();
+            let gossip_handles = conduit.gossip_handles();
 
             // Bind the TCP listener and start the Conduit server BEFORE registering
             // with the orchestrator. This ensures the server is already accepting
@@ -1252,51 +1555,45 @@ async fn main() -> Result<()> {
             let dns_servers = vec![gateway.to_string()];
             tracing::info!("DNS servers for pods: {:?}", dns_servers);
 
-            // Initialize network state and drain any buffered overlay peers
+            // Inject the orchestrator-supplied seed peers into the buffered
+            // gossip entries so `initialize` below merges them in the same
+            // drain as any gossip that raced registration. Seeds include live
+            // peers and any active tombstones.
+            {
+                let seed_count = register_response.seed_peers.len();
+                tracing::info!(
+                    seed_peers = seed_count,
+                    "seeding known-peers table from RegisterNodeResponse"
+                );
+                let mut pending = init_handle.pending_entries.lock().await;
+                pending.extend(register_response.seed_peers);
+            }
+
+            // Initialize network state and drain the seed peers + any gossip
+            // entries that arrived while we were setting up the bridge.
             init_handle
                 .initialize(ipam, pod_cidr, cluster_cidr, service_cidr, dns_servers)
                 .await?;
 
-            // Pull overlay peers from orchestrator now that the Conduit server is running
-            // and the network is initialized.
+            // Spawn the periodic anti-entropy digest task. It exchanges a
+            // digest with one random live peer every `gossip_interval_secs`
+            // and merges any delta the peer returns.
             {
-                match scop::connect_orchestrator(orchestrator_address.clone(), tls.as_deref()).await
-                {
-                    Ok(mut client) => {
-                        match client
-                            .get_overlay_peers(scop::GetOverlayPeersRequest {
-                                node_name: node_name.clone(),
-                            })
-                            .await
-                        {
-                            Ok(response) => {
-                                let peers = response.into_inner().peers;
-                                tracing::info!(
-                                    peer_count = peers.len(),
-                                    "fetched overlay peers from orchestrator"
-                                );
-                                for peer in &peers {
-                                    let peer_ip = match resolve_hostname_to_ip(&peer.peer_host_ip) {
-                                        Ok(ip) => ip,
-                                        Err(e) => {
-                                            tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to resolve overlay peer");
-                                            continue;
-                                        }
-                                    };
-                                    if let Err(e) = net::add_overlay_peer(&peer_ip) {
-                                        tracing::warn!(peer = %peer.peer_host_ip, error = %e, "failed to add overlay peer");
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                tracing::warn!(error = %e, "failed to fetch overlay peers from orchestrator");
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "failed to connect to orchestrator for peer fetch");
-                    }
-                }
+                let handles = gossip_handles.clone();
+                let interval = Duration::from_secs(gossip_interval_secs);
+                let tls_for_gossip = tls.clone();
+                tokio::spawn(async move {
+                    periodic_digest_gossip(handles, interval, tls_for_gossip).await;
+                });
+            }
+
+            // Spawn the tombstone GC task.
+            {
+                let known = Arc::clone(&gossip_handles.known_peers);
+                let ttl = Duration::from_secs(tombstone_ttl_secs);
+                tokio::spawn(async move {
+                    tombstone_gc_task(known, ttl).await;
+                });
             }
 
             // Spawn heartbeat task with exponential backoff and re-registration
