@@ -160,6 +160,54 @@ cargo run -p scoc -- daemon \
   --pod-netmask 24
 ```
 
+### Enabling mTLS
+
+SCOC and the container plugin can optionally authenticate each other with
+mutual TLS. All three flags are required together; omit all three to run
+plain gRPC.
+
+```sh
+cargo run -p scoc -- daemon \
+  ... \
+  --tls-ca /etc/scoc/tls/ca.pem \
+  --tls-cert /etc/scoc/tls/node.pem \
+  --tls-key /etc/scoc/tls/node.key
+```
+
+The leaf certificate must carry both `serverAuth` and `clientAuth` Extended
+Key Usages because SCOC acts as a gRPC server (for conduit RPCs from the
+plugin) and as a gRPC client (for `register_node`/`heartbeat`/`unregister_node`
+calls to the orchestrator). Use the same CA on both sides and issue a leaf
+cert per node with the node hostname in a SAN that matches the conduit
+address passed via `--conduit-address`.
+
+Example issuance with `openssl` (simplified — production deployments should
+use an automated PKI):
+
+```sh
+# 1. Self-signed CA
+openssl req -x509 -newkey rsa:4096 -nodes -days 3650 \
+  -subj "/CN=Skyr SCOP CA" -keyout ca.key -out ca.pem
+
+# 2. Leaf key + CSR
+openssl req -newkey rsa:4096 -nodes \
+  -subj "/CN=scoc-1" \
+  -addext "subjectAltName=DNS:scoc-1" \
+  -addext "extendedKeyUsage=serverAuth,clientAuth" \
+  -keyout node.key -out node.csr
+
+# 3. Sign with CA, preserving EKUs
+openssl x509 -req -days 365 -in node.csr -CA ca.pem -CAkey ca.key \
+  -CAcreateserial -out node.pem \
+  -copy_extensions copyall
+```
+
+The container plugin takes the same three flags (`--tls-ca`, `--tls-cert`,
+`--tls-key`) — see `plugin_std_container`'s README.
+
+In container deployments the matching env vars `SCOC_TLS_CA`, `SCOC_TLS_CERT`,
+`SCOC_TLS_KEY` are forwarded by `dev/scoc-entrypoint.sh`.
+
 ## Related Crates
 
 - [SCOP](../scop/) — the protocol SCOC serves
