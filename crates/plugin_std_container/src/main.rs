@@ -290,6 +290,15 @@ impl ContainerPlugin {
                 ))
             })?;
 
+        // Qualify the image name with <orgname>/<reponame>/<name> so that images
+        // from different repos don't collide in the registry.
+        let qualified_name = format!(
+            "{}/{}/{}",
+            env_qid.repo.org.as_str(),
+            env_qid.repo.repo.as_str(),
+            name,
+        );
+
         // Create a DeploymentClient for this deployment
         let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
         let deployment_client = repo_client.deployment(
@@ -335,7 +344,7 @@ impl ContainerPlugin {
             &self.inner.buildkit_addr,
             temp_dir.path(),
             &containerfile,
-            &name,
+            &qualified_name,
             &self.inner.registry_url,
             self.inner.insecure_registry,
             &log_publisher,
