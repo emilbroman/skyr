@@ -782,112 +782,58 @@ pub trait ValueAssertions {
     fn assert_path_ref(&self) -> Result<&PathValue, EvalError>;
 }
 
-impl ValueAssertions for Value {
-    fn assert_int(self) -> Result<i64, EvalError> {
-        match self {
-            Value::Int(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
+macro_rules! impl_value_assertions {
+    ($(
+        ($variant:ident,
+         $owned_fn:ident -> $owned_ret:ty { $ov:ident => $owned_expr:expr },
+         $ref_fn:ident -> $ref_ret:ty { $rv:ident => $ref_expr:expr })
+    ),* $(,)?) => {
+        impl ValueAssertions for Value {
+            $(
+                fn $owned_fn(self) -> Result<$owned_ret, EvalError> {
+                    match self {
+                        Value::$variant($ov) => Ok($owned_expr),
+                        other => Err(EvalErrorKind::UnexpectedValue(other).into()),
+                    }
+                }
+                fn $ref_fn(&self) -> Result<$ref_ret, EvalError> {
+                    match self {
+                        Value::$variant($rv) => Ok($ref_expr),
+                        other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+                    }
+                }
+            )*
         }
-    }
-
-    fn assert_str(self) -> Result<String, EvalError> {
-        match self {
-            Value::Str(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
+        impl ValueAssertions for Option<Value> {
+            $(
+                fn $owned_fn(self) -> Result<$owned_ret, EvalError> {
+                    self.unwrap_or(Value::Nil).$owned_fn()
+                }
+                fn $ref_fn(&self) -> Result<$ref_ret, EvalError> {
+                    match self {
+                        Some(Value::$variant($rv)) => Ok($ref_expr),
+                        Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
+                        None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
+                    }
+                }
+            )*
         }
-    }
-
-    fn assert_record(self) -> Result<Record, EvalError> {
-        match self {
-            Value::Record(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
-        }
-    }
-
-    fn assert_path(self) -> Result<PathValue, EvalError> {
-        match self {
-            Value::Path(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other).into()),
-        }
-    }
-
-    fn assert_int_ref(&self) -> Result<&i64, EvalError> {
-        match self {
-            Value::Int(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-        }
-    }
-
-    fn assert_str_ref(&self) -> Result<&str, EvalError> {
-        match self {
-            Value::Str(value) => Ok(value.as_str()),
-            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-        }
-    }
-
-    fn assert_record_ref(&self) -> Result<&Record, EvalError> {
-        match self {
-            Value::Record(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-        }
-    }
-
-    fn assert_path_ref(&self) -> Result<&PathValue, EvalError> {
-        match self {
-            Value::Path(value) => Ok(value),
-            other => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-        }
-    }
+    };
 }
 
-impl ValueAssertions for Option<Value> {
-    fn assert_int(self) -> Result<i64, EvalError> {
-        self.unwrap_or(Value::Nil).assert_int()
-    }
-
-    fn assert_str(self) -> Result<String, EvalError> {
-        self.unwrap_or(Value::Nil).assert_str()
-    }
-
-    fn assert_record(self) -> Result<Record, EvalError> {
-        self.unwrap_or(Value::Nil).assert_record()
-    }
-
-    fn assert_path(self) -> Result<PathValue, EvalError> {
-        self.unwrap_or(Value::Nil).assert_path()
-    }
-
-    fn assert_int_ref(&self) -> Result<&i64, EvalError> {
-        match self {
-            Some(Value::Int(value)) => Ok(value),
-            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
-        }
-    }
-
-    fn assert_str_ref(&self) -> Result<&str, EvalError> {
-        match self {
-            Some(Value::Str(value)) => Ok(value.as_str()),
-            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
-        }
-    }
-
-    fn assert_record_ref(&self) -> Result<&Record, EvalError> {
-        match self {
-            Some(Value::Record(value)) => Ok(value),
-            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
-        }
-    }
-
-    fn assert_path_ref(&self) -> Result<&PathValue, EvalError> {
-        match self {
-            Some(Value::Path(value)) => Ok(value),
-            Some(other) => Err(EvalErrorKind::UnexpectedValue(other.clone()).into()),
-            None => Err(EvalErrorKind::UnexpectedValue(Value::Nil).into()),
-        }
-    }
+impl_value_assertions! {
+    (Int,
+     assert_int -> i64 { v => v },
+     assert_int_ref -> &i64 { v => v }),
+    (Str,
+     assert_str -> String { v => v },
+     assert_str_ref -> &str { v => v.as_str() }),
+    (Record,
+     assert_record -> Record { v => v },
+     assert_record_ref -> &Record { v => v }),
+    (Path,
+     assert_path -> PathValue { v => v },
+     assert_path_ref -> &PathValue { v => v }),
 }
 
 pub(crate) fn tracked(value: Value) -> TrackedValue {
