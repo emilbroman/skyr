@@ -33,6 +33,8 @@ pub(crate) struct Context {
     pub(crate) rdb_client: rdb::Client,
     pub(crate) adb_client: adb::Client,
     pub(crate) ldb_consumer: ldb::Consumer,
+    pub(crate) ldb_publisher: ldb::Publisher,
+    pub(crate) rtq_publisher: rtq::Publisher,
     pub(crate) challenger: Arc<challenge::Challenger>,
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
@@ -782,6 +784,121 @@ impl Mutation {
 
         Ok(true)
     }
+
+    /// Manually request the deletion of a single resource.  Publishes a
+    /// `Destroy` message to RTQ that the RTE worker pool will consume and
+    /// forward to the resource's plugin.  The RDB row is cleared on the
+    /// plugin's success; on failure the row remains and the failure is
+    /// visible in the resource's log stream.
+    ///
+    /// This is an imperative action intended as an escape hatch.  The
+    /// declarative model still applies: if the owning deployment is still
+    /// `Desired` and the resource is part of its current evaluation, the
+    /// deployment engine will recreate the resource on its next tick.
+    ///
+    /// Requires the caller to be a member of the owning organisation (the
+    /// same access level as other repository-scoped mutations).
+    #[graphql(name = "deleteResource")]
+    async fn delete_resource(
+        context: &Context,
+        organization: String,
+        repository: String,
+        environment: String,
+        resource: String,
+    ) -> FieldResult<bool> {
+        let (_, user) = context.check_auth().await?;
+
+        if organization != user.username {
+            let is_member = context
+                .udb_client
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
+        }
+
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let resource_id: ids::ResourceId = resource
+            .parse()
+            .map_err(|_| field_error("Invalid resource ID"))?;
+
+        let env_qid = ids::EnvironmentQid::new(ids::RepoQid { org, repo }, env);
+        let namespace = env_qid.to_string();
+
+        let row = context
+            .rdb_client
+            .namespace(namespace.clone())
+            .resource(
+                resource_id.resource_type().to_string(),
+                resource_id.resource_name().to_string(),
+            )
+            .get()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to read resource {resource_id} in namespace {namespace}: {e}"
+                );
+                internal_error()
+            })?
+            .ok_or_else(|| field_error("Resource not found"))?;
+
+        let owner_str = row
+            .owner
+            .as_deref()
+            .ok_or_else(|| field_error("Resource has no owner; cannot request deletion"))?;
+        let owner_qid: ids::DeploymentQid = owner_str.parse().map_err(|_| {
+            tracing::error!("Invalid owner deployment QID on resource row: {owner_str}");
+            internal_error()
+        })?;
+
+        let resource_ref = rtq::ResourceRef {
+            environment_qid: env_qid,
+            resource_id,
+        };
+
+        // Emit an audit log into the resource's log namespace (deployment
+        // QID) before enqueueing, so the action is visible in the resource
+        // detail page regardless of how the plugin-side delete resolves.
+        let log_namespace = owner_qid.to_string();
+        if let Ok(publisher) = context.ldb_publisher.namespace(log_namespace.clone()).await {
+            publisher
+                .info(format!(
+                    "Manual deletion of {}:{} requested by {}",
+                    resource_ref.resource_type(),
+                    resource_ref.resource_name(),
+                    user.username,
+                ))
+                .await;
+        }
+
+        let message = rtq::Message::Destroy(rtq::DestroyMessage {
+            resource: resource_ref,
+            deployment_id: owner_qid.deployment,
+            deployment_nonce: owner_qid.nonce,
+        });
+
+        context.rtq_publisher.enqueue(&message).await.map_err(|e| {
+            tracing::error!("Failed to publish destroy message: {e}");
+            internal_error()
+        })?;
+
+        Ok(true)
+    }
 }
 
 pub(crate) type Schema = RootNode<'static, Query, Mutation, subscriptions::Subscription>;
@@ -812,6 +929,8 @@ struct Cli {
     udb_hostname: String,
     #[arg(long, default_value = "localhost")]
     ldb_hostname: String,
+    #[arg(long, default_value = "amqp://127.0.0.1:5672/%2f")]
+    rtq_uri: String,
     #[arg(long, default_value = "http://127.0.0.1:9000")]
     adb_endpoint_url: String,
     #[arg(long)]
@@ -881,8 +1000,16 @@ async fn main() -> anyhow::Result<()> {
     let adb_client = adb_builder.build().await?;
     let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
     let ldb_consumer = ldb::ClientBuilder::new()
-        .brokers(ldb_brokers)
+        .brokers(ldb_brokers.clone())
         .build_consumer()
+        .await?;
+    let ldb_publisher = ldb::ClientBuilder::new()
+        .brokers(ldb_brokers)
+        .build_publisher()
+        .await?;
+    let rtq_publisher = rtq::ClientBuilder::new()
+        .uri(cli.rtq_uri)
+        .build_publisher()
         .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
     let rp_id = Arc::new(cli.rp_id);
@@ -907,6 +1034,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
         .layer(Extension(ldb_consumer))
+        .layer(Extension(ldb_publisher))
+        .layer(Extension(rtq_publisher))
         .layer(Extension(udb_client));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
@@ -932,6 +1061,8 @@ async fn graphql_handler(
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
+    Extension(ldb_publisher): Extension<ldb::Publisher>,
+    Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
@@ -961,6 +1092,8 @@ async fn graphql_handler(
                     rdb_client,
                     adb_client,
                     ldb_consumer,
+                    ldb_publisher,
+                    rtq_publisher,
                     challenger,
                     rp_id,
                     rp_name,
@@ -977,6 +1110,8 @@ async fn graphql_handler(
         rdb_client,
         adb_client,
         ldb_consumer,
+        ldb_publisher,
+        rtq_publisher,
         challenger,
         rp_id,
         rp_name,
@@ -1004,6 +1139,8 @@ async fn graphql_ws_handler(
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
+    Extension(ldb_publisher): Extension<ldb::Publisher>,
+    Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(udb_client): Extension<udb::Client>,
     headers: http::header::HeaderMap,
 ) -> Response {
@@ -1032,6 +1169,8 @@ async fn graphql_ws_handler(
         rdb_client,
         adb_client,
         ldb_consumer,
+        ldb_publisher,
+        rtq_publisher,
         challenger,
         rp_id,
         rp_name,

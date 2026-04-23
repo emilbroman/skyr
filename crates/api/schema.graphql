@@ -113,6 +113,22 @@ type Mutation {
     Requires the caller to be a member of the owning organisation.
   """
   tearDownEnvironment(organization: String!, repository: String!, environment: String!): Boolean!
+  """
+    Manually request the deletion of a single resource.  Publishes a
+    `Destroy` message to RTQ that the RTE worker pool will consume and
+    forward to the resource's plugin.  The RDB row is cleared on the
+    plugin's success; on failure the row remains and the failure is
+    visible in the resource's log stream.
+
+    This is an imperative action intended as an escape hatch.  The
+    declarative model still applies: if the owning deployment is still
+    `Desired` and the resource is part of its current evaluation, the
+    deployment engine will recreate the resource on its next tick.
+
+    Requires the caller to be a member of the owning organisation (the
+    same access level as other repository-scoped mutations).
+  """
+  deleteResource(organization: String!, repository: String!, environment: String!, resource: String!): Boolean!
 }
 
 type Organization {
