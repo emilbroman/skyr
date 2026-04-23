@@ -291,8 +291,7 @@ impl ContainerPlugin {
     /// - `digest`: Image digest (e.g., "sha256:...")
     async fn create_image(
         &self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -335,21 +334,14 @@ impl ContainerPlugin {
             image_name = %name,
             context = %context,
             containerfile = %containerfile,
-            environment_qid = %environment_qid,
-            deployment_id = %deployment_id,
+            deployment_qid = %deployment_qid,
             "creating image"
         );
 
-        // Parse environment QID to get repository info and construct deployment QID
-        let env_qid: ids::EnvironmentQid = environment_qid.parse().map_err(|e| {
-            PluginError::InvalidInput(format!("invalid environment QID '{environment_qid}': {e}"))
+        let deployment_qid: ids::DeploymentQid = deployment_qid.parse().map_err(|e| {
+            PluginError::InvalidInput(format!("invalid deployment QID '{deployment_qid}': {e}"))
         })?;
-        let deployment_qid: ids::DeploymentQid =
-            format!("{env_qid}@{deployment_id}").parse().map_err(|e| {
-                PluginError::InvalidInput(format!(
-                    "invalid deployment QID '{env_qid}@{deployment_id}': {e}"
-                ))
-            })?;
+        let env_qid = deployment_qid.environment_qid();
 
         // Qualify the image name with <orgname>/<reponame>/<name> so that images
         // from different repos don't collide in the registry.
@@ -390,7 +382,7 @@ impl ContainerPlugin {
             .map_err(|e| PluginError::Internal(format!("failed to create log publisher: {e}")))?;
 
         // Create an LDB namespace publisher for this resource
-        let resource_qid = ids::ResourceQid::new(env_qid, id.clone());
+        let resource_qid = ids::ResourceQid::new(env_qid.clone(), id.clone());
         let resource_log_publisher = self
             .inner
             .ldb_publisher
@@ -437,8 +429,7 @@ impl ContainerPlugin {
     /// Update an image (rebuild if inputs changed).
     async fn update_image(
         &self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -451,9 +442,7 @@ impl ContainerPlugin {
                 resource_name = %id.name,
                 "image inputs changed, rebuilding"
             );
-            return self
-                .create_image(environment_qid, deployment_id, id, inputs)
-                .await;
+            return self.create_image(deployment_qid, id, inputs).await;
         }
 
         // No changes - return existing outputs
@@ -2113,6 +2102,13 @@ fn inputs_changed(prev: &sclc::Record, curr: &sclc::Record) -> bool {
     prev_json != curr_json
 }
 
+fn parse_env_qid_string(deployment_qid: &str) -> Result<String, PluginError> {
+    let parsed: ids::DeploymentQid = deployment_qid.parse().map_err(|e| {
+        PluginError::InvalidInput(format!("invalid deployment QID '{deployment_qid}': {e}"))
+    })?;
+    Ok(parsed.environment_qid().to_string())
+}
+
 /// Extract a directory from the Git tree to the filesystem.
 async fn extract_context(
     client: &cdb::DeploymentClient,
@@ -2753,16 +2749,14 @@ macro_rules! log_on_error {
 impl rtp::Plugin for ContainerPlugin {
     async fn create_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        let environment_qid = parse_env_qid_string(deployment_qid)?;
+        let environment_qid = environment_qid.as_str();
         let result = match id.typ.as_str() {
-            IMAGE_RESOURCE_TYPE => {
-                self.create_image(environment_qid, deployment_id, id.clone(), inputs)
-                    .await
-            }
+            IMAGE_RESOURCE_TYPE => self.create_image(deployment_qid, id.clone(), inputs).await,
             POD_RESOURCE_TYPE => self.create_pod(environment_qid, id.clone(), inputs).await,
             PORT_RESOURCE_TYPE => self.create_port(environment_qid, id.clone(), inputs).await,
             ATTACHMENT_RESOURCE_TYPE => {
@@ -2785,18 +2779,18 @@ impl rtp::Plugin for ContainerPlugin {
 
     async fn update_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
+        let environment_qid = parse_env_qid_string(deployment_qid)?;
+        let environment_qid = environment_qid.as_str();
         let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => {
                 self.update_image(
-                    environment_qid,
-                    deployment_id,
+                    deployment_qid,
                     id.clone(),
                     prev_inputs,
                     prev_outputs,
@@ -2871,13 +2865,11 @@ impl rtp::Plugin for ContainerPlugin {
 
     async fn delete_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        let _ = (environment_qid, deployment_id);
         let result = match id.typ.as_str() {
             IMAGE_RESOURCE_TYPE => self.delete_image(id.clone(), inputs, outputs).await,
             POD_RESOURCE_TYPE => self.delete_pod(id.clone(), inputs, outputs).await,
