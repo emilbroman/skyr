@@ -866,16 +866,29 @@ impl Mutation {
             internal_error()
         })?;
 
+        let resource_qid = ids::ResourceQid::new(env_qid.clone(), resource_id.clone());
         let resource_ref = rtq::ResourceRef {
             environment_qid: env_qid,
             resource_id,
         };
 
-        // Emit an audit log into the resource's log namespace (deployment
-        // QID) before enqueueing, so the action is visible in the resource
-        // detail page regardless of how the plugin-side delete resolves.
-        let log_namespace = owner_qid.to_string();
-        if let Ok(publisher) = context.ldb_publisher.namespace(log_namespace.clone()).await {
+        // Emit an audit log before enqueueing so the action is visible
+        // regardless of how the plugin-side delete resolves.  Published to
+        // both the resource-QID and deployment-QID log topics with the
+        // phrasing tailored to each: the resource topic already knows
+        // which resource it is, so naming it would be redundant; the
+        // deployment topic multiplexes many resources, so the line needs
+        // to name the resource explicitly.
+        if let Ok(publisher) = context
+            .ldb_publisher
+            .namespace(resource_qid.to_string())
+            .await
+        {
+            publisher
+                .info(format!("Manual deletion requested by {}", user.username))
+                .await;
+        }
+        if let Ok(publisher) = context.ldb_publisher.namespace(owner_qid.to_string()).await {
             publisher
                 .info(format!(
                     "Manual deletion of {}:{} requested by {}",
