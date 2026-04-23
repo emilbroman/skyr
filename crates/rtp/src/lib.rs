@@ -31,16 +31,14 @@ const MAX_JSON_FIELD_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
 pub trait Plugin: Send + Sync + 'static {
     async fn create_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource>;
 
     async fn update_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -49,24 +47,22 @@ pub trait Plugin: Send + Sync + 'static {
 
     async fn delete_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
     ) -> anyhow::Result<()> {
-        let _ = (environment_qid, deployment_id, id, inputs, outputs);
+        let _ = (deployment_qid, id, inputs, outputs);
         Ok(())
     }
 
     async fn check(
         &self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
-        let _ = (environment_qid, deployment_id, id);
+        let _ = (deployment_qid, id);
         Ok(resource)
     }
 }
@@ -309,8 +305,7 @@ where
         info!(
             resource_type = request.resource_type.as_str(),
             resource_name = request.resource_name.as_str(),
-            environment_qid = request.environment_qid.as_str(),
-            deployment_id = request.deployment_id.as_str(),
+            deployment_qid = request.deployment_qid.as_str(),
             "received create_resource RPC"
         );
         let inputs: sclc::Record = parse_json_field(
@@ -325,12 +320,7 @@ where
         let resource = {
             let mut plugin = self.plugin.write().await;
             plugin
-                .create_resource(
-                    &request.environment_qid,
-                    &request.deployment_id,
-                    resource_id.clone(),
-                    inputs,
-                )
+                .create_resource(&request.deployment_qid, resource_id.clone(), inputs)
                 .await
                 .map_err(|error| {
                     error!(
@@ -366,8 +356,7 @@ where
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
-            environment_qid = request.environment_qid.as_str(),
-            deployment_id = request.deployment_id.as_str(),
+            deployment_qid = request.deployment_qid.as_str(),
             "received update_resource RPC"
         );
         let prev_inputs: sclc::Record = parse_json_field(
@@ -396,8 +385,7 @@ where
             let mut plugin = self.plugin.write().await;
             plugin
                 .update_resource(
-                    &request.environment_qid,
-                    &request.deployment_id,
+                    &request.deployment_qid,
                     resource_id.clone(),
                     prev_inputs,
                     prev_outputs,
@@ -438,8 +426,7 @@ where
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
-            environment_qid = request.environment_qid.as_str(),
-            deployment_id = request.deployment_id.as_str(),
+            deployment_qid = request.deployment_qid.as_str(),
             "received delete_resource RPC"
         );
         let inputs: sclc::Record = parse_json_field(
@@ -461,8 +448,7 @@ where
             let mut plugin = self.plugin.write().await;
             plugin
                 .delete_resource(
-                    &request.environment_qid,
-                    &request.deployment_id,
+                    &request.deployment_qid,
                     resource_id.clone(),
                     inputs,
                     outputs,
@@ -502,12 +488,7 @@ where
 
         let plugin = self.plugin.read().await;
         let checked = plugin
-            .check(
-                &request.environment_qid,
-                &request.deployment_id,
-                id.clone(),
-                parsed,
-            )
+            .check(&request.deployment_qid, id.clone(), parsed)
             .await
             .map_err(|error| {
                 error!(
@@ -550,16 +531,14 @@ pub struct PluginClient {
 impl PluginClient {
     pub async fn create_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(
             resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
-            environment_qid,
-            deployment_id,
+            deployment_qid,
             "sending create_resource RPC"
         );
         let resource_inputs_json = serde_json::to_string(&inputs)?;
@@ -569,8 +548,7 @@ impl PluginClient {
                 resource_type: id.typ,
                 resource_name: id.name,
                 resource_inputs_json,
-                environment_qid: environment_qid.to_string(),
-                deployment_id: deployment_id.to_string(),
+                deployment_qid: deployment_qid.to_string(),
             })
             .await
             .map_err(|error| {
@@ -585,8 +563,7 @@ impl PluginClient {
 
     pub async fn update_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         prev_inputs: sclc::Record,
         prev_outputs: sclc::Record,
@@ -595,8 +572,7 @@ impl PluginClient {
         debug!(
             resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
-            environment_qid,
-            deployment_id,
+            deployment_qid,
             "sending update_resource RPC"
         );
         let current_inputs_json = serde_json::to_string(&prev_inputs)?;
@@ -613,8 +589,7 @@ impl PluginClient {
                     markers: vec![],
                 }),
                 inputs_json,
-                environment_qid: environment_qid.to_string(),
-                deployment_id: deployment_id.to_string(),
+                deployment_qid: deployment_qid.to_string(),
             })
             .await
             .map_err(|error| {
@@ -629,8 +604,7 @@ impl PluginClient {
 
     pub async fn delete_resource(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
         outputs: sclc::Record,
@@ -638,8 +612,7 @@ impl PluginClient {
         debug!(
             resource_type = id.typ.as_str(),
             resource_name = id.name.as_str(),
-            environment_qid,
-            deployment_id,
+            deployment_qid,
             "sending delete_resource RPC"
         );
         let inputs_json = serde_json::to_string(&inputs)?;
@@ -653,8 +626,7 @@ impl PluginClient {
                     outputs_json,
                     markers: vec![],
                 }),
-                environment_qid: environment_qid.to_string(),
-                deployment_id: deployment_id.to_string(),
+                deployment_qid: deployment_qid.to_string(),
             })
             .await
             .map_err(|error| {
@@ -666,8 +638,7 @@ impl PluginClient {
 
     pub async fn check(
         &mut self,
-        environment_qid: &str,
-        deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
@@ -675,8 +646,7 @@ impl PluginClient {
             .inner
             .check(CheckRequest {
                 resource: Some(encode_resource(id, resource)?),
-                environment_qid: environment_qid.to_string(),
-                deployment_id: deployment_id.to_string(),
+                deployment_qid: deployment_qid.to_string(),
             })
             .await?
             .into_inner();
