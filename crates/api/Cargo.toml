@@ -33,6 +33,7 @@ sclc = { path = "../sclc" }
 udb = { path = "../udb" }
 ldb = { path = "../ldb" }
 adb = { path = "../adb" }
+rtq = { path = "../rtq" }
 
 [lints]
 workspace = true
