@@ -125,53 +125,51 @@ impl DnsPlugin {
 impl rtp::Plugin for DnsPlugin {
     async fn create_resource(
         &mut self,
-        environment_qid: &str,
-        _deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(resource_type = %id.typ, "creating DNS resource");
-        let env_qid: ids::EnvironmentQid = environment_qid
+        let dep_qid: ids::DeploymentQid = deployment_qid
             .parse()
-            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
-        self.dispatch(&env_qid, &id, inputs).await
+            .map_err(|e| anyhow::anyhow!("invalid deployment QID '{deployment_qid}': {e}"))?;
+        self.dispatch(dep_qid.environment_qid(), &id, inputs).await
     }
 
     async fn update_resource(
         &mut self,
-        environment_qid: &str,
-        _deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
         debug!(resource_type = %id.typ, "updating DNS resource");
-        let env_qid: ids::EnvironmentQid = environment_qid
+        let dep_qid: ids::DeploymentQid = deployment_qid
             .parse()
-            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
-        self.dispatch(&env_qid, &id, inputs).await
+            .map_err(|e| anyhow::anyhow!("invalid deployment QID '{deployment_qid}': {e}"))?;
+        self.dispatch(dep_qid.environment_qid(), &id, inputs).await
     }
 
     async fn delete_resource(
         &mut self,
-        environment_qid: &str,
-        _deployment_id: &str,
+        deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
         _outputs: sclc::Record,
     ) -> anyhow::Result<()> {
         debug!(resource_type = %id.typ, "deleting DNS resource");
-        let env_qid: ids::EnvironmentQid = environment_qid
+        let dep_qid: ids::DeploymentQid = deployment_qid
             .parse()
-            .map_err(|e| anyhow::anyhow!("invalid environment QID '{environment_qid}': {e}"))?;
+            .map_err(|e| anyhow::anyhow!("invalid deployment QID '{deployment_qid}': {e}"))?;
+        let env_qid = dep_qid.environment_qid();
         match id.typ.as_str() {
             A_RECORD_RESOURCE_TYPE => {
                 let name = match inputs.get("name") {
                     sclc::Value::Str(s) => s.clone(),
                     _ => anyhow::bail!("missing or invalid 'name' input"),
                 };
-                let fqdn = self.fqdn(&name, &env_qid);
+                let fqdn = self.fqdn(&name, env_qid);
                 self.inner.store.delete_a_record(&fqdn).await?;
                 Ok(())
             }

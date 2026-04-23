@@ -68,8 +68,7 @@ impl RandomPlugin {
 impl rtp::Plugin for RandomPlugin {
     async fn create_resource(
         &mut self,
-        _environment_qid: &str,
-        _deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -79,8 +78,7 @@ impl rtp::Plugin for RandomPlugin {
 
     async fn update_resource(
         &mut self,
-        _environment_qid: &str,
-        _deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,

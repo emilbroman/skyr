@@ -131,8 +131,7 @@ fn truncate_to_boundary(
 impl rtp::Plugin for TimePlugin {
     async fn create_resource(
         &mut self,
-        _environment_qid: &str,
-        _deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         inputs: sclc::Record,
     ) -> anyhow::Result<sclc::Resource> {
@@ -144,8 +143,7 @@ impl rtp::Plugin for TimePlugin {
 
     async fn update_resource(
         &mut self,
-        _environment_qid: &str,
-        _deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         _prev_inputs: sclc::Record,
         _prev_outputs: sclc::Record,
@@ -159,8 +157,7 @@ impl rtp::Plugin for TimePlugin {
 
     async fn check(
         &self,
-        _environment_qid: &str,
-        _deployment_id: &str,
+        _deployment_qid: &str,
         id: ids::ResourceId,
         resource: sclc::Resource,
     ) -> anyhow::Result<sclc::Resource> {
