@@ -51,11 +51,15 @@ impl Worker {
             None => BTreeMap::new(),
         };
 
-        let asg: Arc<sclc::Asg> = if let Some(cached) = &self.cached_compile
-            && cached.key == resolved_key
-        {
+        let cached_asg = self
+            .cached_compile
+            .as_ref()
+            .filter(|c| c.key == resolved_key)
+            .map(|c| Arc::clone(&c.asg));
+        let cache_hit = cached_asg.is_some();
+        let asg: Arc<sclc::Asg> = if let Some(asg) = cached_asg {
             tracing::debug!("compile cache hit");
-            Arc::clone(&cached.asg)
+            asg
         } else {
             tracing::debug!("compile cache miss; recompiling");
             let finder = build_full_finder(
@@ -107,11 +111,11 @@ impl Worker {
 
         if let Some(finder) = &cross_repo_finder {
             for (foreign_repo, foreign_owner) in finder.resolved_owners().await {
-                self.log_publisher
-                    .info(format!(
-                        "loaded foreign package {foreign_repo} -> {foreign_owner}"
-                    ))
-                    .await;
+                if !cache_hit {
+                    self.log_publisher
+                        .info(format!("Resolved package {foreign_owner}"))
+                        .await;
+                }
                 let pkg_id = sclc::package_id_for_repo(&foreign_repo);
                 eval_ctx.set_package_owner(pkg_id, foreign_owner.clone());
 
