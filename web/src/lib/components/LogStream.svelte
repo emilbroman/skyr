@@ -3,6 +3,7 @@ import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { onDestroy, onMount, tick } from "svelte";
 import { type Log, Severity } from "$lib/graphql/generated";
 import { subscribe as wsSubscribe } from "$lib/graphql/ws";
+import { formatLogTimestamp } from "$lib/timestamps";
 
 type Props = {
     document: TypedDocumentNode<any, any>;
@@ -41,14 +42,6 @@ function severityColor(severity: Severity): string {
             return "text-yellow-400";
         default:
             return "text-gray-300";
-    }
-}
-
-function formatTimestamp(ts: string): string {
-    try {
-        return new Date(ts).toLocaleTimeString();
-    } catch {
-        return ts;
     }
 }
 
@@ -114,7 +107,7 @@ onDestroy(() => {
     {#each logs as log}
       <div class="flex gap-2 leading-5 hover:bg-gray-800 px-1 rounded">
         <span class="text-gray-500 shrink-0 select-none"
-          >{formatTimestamp(log.timestamp)}</span
+          >{formatLogTimestamp(log.timestamp)}</span
         >
         <span
           class="{severityColor(log.severity)} whitespace-pre-wrap break-all"

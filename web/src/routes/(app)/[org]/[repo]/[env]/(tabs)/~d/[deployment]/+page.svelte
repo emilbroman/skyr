@@ -13,6 +13,7 @@ import {
 } from "$lib/graphql/generated";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment } from "$lib/paths";
+import { formatLogTimestamp } from "$lib/timestamps";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -154,7 +155,7 @@ function onRedeploy() {
           {#each deployment.lastLogs as log}
             <div class="flex gap-2 leading-5">
               <span class="text-gray-500 shrink-0"
-                >{new Date(log.timestamp).toLocaleTimeString()}</span
+                >{formatLogTimestamp(log.timestamp)}</span
               >
               <span
                 class={log.severity === "ERROR"
