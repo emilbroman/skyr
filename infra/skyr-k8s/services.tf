@@ -102,6 +102,7 @@ resource "kubernetes_deployment" "api" {
             "--rdb-hostname", local.scylladb_hostname,
             "--udb-hostname", local.redis_hostname,
             "--ldb-hostname", local.redpanda_hostname,
+            "--rtq-hostname", local.rabbitmq_hostname,
             "--adb-endpoint-url", local.minio_endpoint,
             "--adb-bucket", var.minio_bucket,
             "--adb-access-key-id", "$(MINIO_ACCESS_KEY)",

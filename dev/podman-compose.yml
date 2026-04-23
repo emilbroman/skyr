@@ -103,6 +103,8 @@ services:
         "redis",
         "--ldb-hostname",
         "redpanda",
+        "--rtq-hostname",
+        "rabbitmq",
         "--adb-endpoint-url",
         "http://minio:9000",
         "--adb-presign-endpoint-url",
