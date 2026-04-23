@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -7,7 +7,7 @@ use futures_util::TryStreamExt;
 use tokio::task;
 use tracing::Instrument;
 
-use super::Worker;
+use super::{CachedCompile, Worker};
 use crate::finder::build_full_finder;
 use crate::util::{
     enqueue_message, extract_deployment_identity, map_dependencies, resource_id_from, resource_ref,
@@ -43,32 +43,54 @@ impl Worker {
             .build_cross_repo_finder(Arc::clone(&user_pkg), &repo_qid)
             .await?;
 
-        let finder = build_full_finder(
-            Arc::clone(&user_pkg),
-            self.cdb_client.clone(),
-            self.environment_qid.environment.clone(),
-            cross_repo_finder.clone(),
-        );
+        // Eagerly resolve every declared cross-repo dep so we can use the
+        // resolved map as a cache key. This also populates the finder's
+        // internal `resolved` table, which `resolved_owners()` reads below.
+        let resolved_key: BTreeMap<ids::RepoQid, ids::DeploymentQid> = match &cross_repo_finder {
+            Some(f) => f.resolve_all().await?,
+            None => BTreeMap::new(),
+        };
 
-        let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
+        let asg: Arc<sclc::Asg> = if let Some(cached) = &self.cached_compile
+            && cached.key == resolved_key
+        {
+            tracing::debug!("compile cache hit");
+            Arc::clone(&cached.asg)
+        } else {
+            tracing::debug!("compile cache miss; recompiling");
+            let finder = build_full_finder(
+                Arc::clone(&user_pkg),
+                self.cdb_client.clone(),
+                self.environment_qid.environment.clone(),
+                cross_repo_finder.clone(),
+            );
 
-        let diagnosed = sclc::compile(finder, &entry).await?;
-        self.publish_diagnostics(diagnosed.diags()).await;
+            let entry = [repo_qid.org.as_str(), repo_qid.repo.as_str(), "Main"];
 
-        if diagnosed.diags().has_errors() {
-            tracing::info!("compile produced errors; skipping evaluation");
-            return Ok(EvalOutcome {
-                touched_resource_ids: HashSet::new(),
-                fully_explored: false,
-                had_effect: false,
-                has_volatile_cross_repo_pins: cross_repo_finder
-                    .as_ref()
-                    .is_some_and(|f| f.has_volatile_pins()),
-                had_fatal_errors: true,
+            let diagnosed = sclc::compile(finder, &entry).await?;
+            self.publish_diagnostics(diagnosed.diags()).await;
+
+            if diagnosed.diags().has_errors() {
+                self.cached_compile = None;
+                tracing::info!("compile produced errors; skipping evaluation");
+                return Ok(EvalOutcome {
+                    touched_resource_ids: HashSet::new(),
+                    fully_explored: false,
+                    had_effect: false,
+                    has_volatile_cross_repo_pins: cross_repo_finder
+                        .as_ref()
+                        .is_some_and(|f| f.has_volatile_pins()),
+                    had_fatal_errors: true,
+                });
+            }
+
+            let asg = Arc::new(diagnosed.into_inner());
+            self.cached_compile = Some(CachedCompile {
+                key: resolved_key,
+                asg: Arc::clone(&asg),
             });
-        }
-
-        let asg = diagnosed.into_inner();
+            asg
+        };
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();

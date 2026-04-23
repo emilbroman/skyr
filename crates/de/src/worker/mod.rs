@@ -1,6 +1,10 @@
 pub(crate) mod eval;
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use cdb::{Deployment, DeploymentClient, DeploymentState};
 use futures_util::TryStreamExt;
@@ -11,6 +15,11 @@ use tokio::{
 
 use crate::backoff::backoff_duration;
 use crate::util::{resource_id_from, resource_ref, short_id};
+
+pub(crate) struct CachedCompile {
+    pub(crate) key: BTreeMap<ids::RepoQid, ids::DeploymentQid>,
+    pub(crate) asg: Arc<sclc::Asg>,
+}
 
 pub(crate) struct Worker {
     pub(crate) client: DeploymentClient,
@@ -23,6 +32,10 @@ pub(crate) struct Worker {
     /// Tracks when the last failure occurred, used together with the
     /// persisted `failures` counter to compute exponential backoff.
     pub(crate) last_failure_at: Option<Instant>,
+    /// Cached compiled ASG from the previous iteration, keyed by the
+    /// resolved cross-repo dependency map. Reused when the resolved map
+    /// is unchanged; cleared on compile error or when the key differs.
+    pub(crate) cached_compile: Option<CachedCompile>,
 }
 
 impl Worker {

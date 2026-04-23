@@ -210,6 +210,7 @@ async fn process(
                 rtq_publisher: rtq_publisher.clone(),
                 log_publisher,
                 last_failure_at: None,
+                cached_compile: None,
             };
 
             let span = tracing::info_span!("worker", dep = %deployment_qid);
