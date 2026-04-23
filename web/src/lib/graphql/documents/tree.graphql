@@ -9,6 +9,9 @@ query CommitTreeEntry(
       commit(hash: $commit) {
         hash
         message
+        parents {
+          hash
+        }
         treeEntry(path: $path) {
           ... on Tree {
             __typename
@@ -47,6 +50,9 @@ query CommitRootTree($org: String!, $repo: String!, $commit: String!) {
       commit(hash: $commit) {
         hash
         message
+        parents {
+          hash
+        }
         tree {
           hash
           entries {
@@ -63,6 +69,16 @@ query CommitRootTree($org: String!, $repo: String!, $commit: String!) {
             }
           }
         }
+      }
+    }
+  }
+}
+
+query CommitPageEnvironments($org: String!, $repo: String!) {
+  organization(name: $org) {
+    repository(name: $repo) {
+      environments {
+        name
       }
     }
   }
