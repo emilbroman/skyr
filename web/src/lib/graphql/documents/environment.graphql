@@ -128,6 +128,20 @@ mutation TearDownEnvironment($org: String!, $repo: String!, $env: String!) {
   tearDownEnvironment(organization: $org, repository: $repo, environment: $env)
 }
 
+mutation DeleteResource(
+  $org: String!
+  $repo: String!
+  $env: String!
+  $resource: String!
+) {
+  deleteResource(
+    organization: $org
+    repository: $repo
+    environment: $env
+    resource: $resource
+  )
+}
+
 query DeploymentDetail(
   $org: String!
   $repo: String!

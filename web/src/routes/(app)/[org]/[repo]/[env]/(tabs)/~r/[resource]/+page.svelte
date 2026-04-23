@@ -4,9 +4,14 @@ import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import { Copy, ExternalLink } from "lucide-svelte";
-import { ResourceDetailDocument, ResourceLogsDocument } from "$lib/graphql/generated";
-import { graphqlQuery } from "$lib/graphql/query";
+import { Copy, ExternalLink, Loader2, Trash2 } from "lucide-svelte";
+import {
+    DeleteResourceDocument,
+    ResourceDetailDocument,
+    ResourceLogsDocument,
+    ResourceMarker,
+} from "$lib/graphql/generated";
+import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
 import { commitTreeHref, decodeSegment, deploymentHref, resourceHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
@@ -19,6 +24,49 @@ const resourceDetail = graphqlQuery(() => ({
     variables: { org: orgName, repo: repoName, env: envName, resourceId },
     refetchInterval: 10_000,
 }));
+
+const DESTROYING_TIMEOUT_MS = 10 * 60 * 1000;
+let destroyingSince = $state<number | null>(null);
+let destroyingTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let deleteConfirmOpen = $state(false);
+let deleteConfirmInput = $state("");
+let deleteError = $state<string | null>(null);
+
+function clearDestroyingTimeout() {
+    if (destroyingTimeoutId !== null) {
+        clearTimeout(destroyingTimeoutId);
+        destroyingTimeoutId = null;
+    }
+}
+
+const deleteResource = graphqlMutation(DeleteResourceDocument, {
+    onSuccess: () => {
+        deleteConfirmOpen = false;
+        deleteConfirmInput = "";
+        deleteError = null;
+        destroyingSince = Date.now();
+        clearDestroyingTimeout();
+        destroyingTimeoutId = setTimeout(() => {
+            destroyingSince = null;
+            destroyingTimeoutId = null;
+        }, DESTROYING_TIMEOUT_MS);
+        resourceDetail.refetch();
+    },
+    onError: (e) => {
+        deleteError = e.message;
+    },
+});
+
+let isDestroying = $derived(destroyingSince !== null);
+
+function handleDeleteClickOutside(event: MouseEvent) {
+    const target = event.target as HTMLElement;
+    if (!target.closest(".delete-dropdown")) {
+        deleteConfirmOpen = false;
+        deleteConfirmInput = "";
+        deleteError = null;
+    }
+}
 
 let envQid = $derived(resourceDetail.data?.organization.repository.environment.qid ?? "");
 let resource = $derived(resourceDetail.data?.organization.repository.environment.resource ?? null);
@@ -90,6 +138,8 @@ let aRecordFqdn = $derived.by(() => {
     <title>{resourceId} · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
+<svelte:window onclick={handleDeleteClickOutside} />
+
 {#if resourceDetail.isPending}
   <Spinner />
 {:else if resourceDetail.error}
@@ -98,27 +148,116 @@ let aRecordFqdn = $derived.by(() => {
   </div>
 {:else if resource}
   <!-- Header -->
-  <div class="mb-6">
-    <div class="mb-1">
-      {#if typeParts.length > 1}
-        <span class="text-orange-500/70"
-          >{typeParts.slice(0, -1).join(".")}.</span
-        >
-      {/if}
-      <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
+  <div class="mb-6 flex items-start gap-4">
+    <div class="flex-1">
+      <div class="mb-1">
+        {#if typeParts.length > 1}
+          <span class="text-orange-500/70"
+            >{typeParts.slice(0, -1).join(".")}.</span
+          >
+        {/if}
+        <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
+      </div>
+      <h2 class="font-bold text-gray-900 flex items-center gap-2">
+        {resource.name}
+        {#each resource.markers as marker}
+          <span
+            class="px-1.5 py-px rounded border {marker === 'VOLATILE'
+              ? 'border-yellow-300 text-yellow-700'
+              : 'border-blue-300 text-blue-700'}"
+          >
+            {marker}
+          </span>
+        {/each}
+        {#if isDestroying}
+          <span
+            class="px-1.5 py-px rounded border border-red-300 text-red-700 inline-flex items-center gap-1"
+            title="Destroy message enqueued; waiting for plugin confirmation"
+          >
+            <Loader2 class="w-3 h-3 animate-spin" />
+            Destroying…
+          </span>
+        {/if}
+      </h2>
     </div>
-    <h2 class="font-bold text-gray-900 flex items-center gap-2">
-      {resource.name}
-      {#each resource.markers as marker}
-        <span
-          class="px-1.5 py-px rounded border {marker === 'VOLATILE'
-            ? 'border-yellow-300 text-yellow-700'
-            : 'border-blue-300 text-blue-700'}"
+
+    <div class="delete-dropdown relative inline-block">
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-red-400 hover:text-red-600 transition-colors focus:outline-none focus:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+        disabled={isDestroying}
+        onclick={() => {
+            deleteConfirmOpen = !deleteConfirmOpen;
+            deleteConfirmInput = "";
+            deleteError = null;
+        }}
+      >
+        <Trash2 class="w-4 h-4" />
+        Delete
+      </button>
+
+      {#if deleteConfirmOpen}
+        <div
+          class="absolute right-0 mt-1 z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-4 w-96"
         >
-          {marker}
-        </span>
-      {/each}
-    </h2>
+          <p class="text-sm font-medium text-gray-700 mb-2">Delete resource?</p>
+          <p class="text-sm text-gray-500 mb-3">
+            This will ask the resource's plugin to destroy
+            <code class="bg-gray-100 px-1 py-0.5 rounded text-xs">{resource.type}:{resource.name}</code>.
+            If the owning deployment is still
+            <span class="font-medium">Desired</span>, the next evaluation tick
+            may recreate the resource.
+          </p>
+          {#if resource.markers.includes(ResourceMarker.Sticky)}
+            <p class="text-sm text-blue-700 mb-3">
+              This resource is marked <code class="bg-blue-50 px-1 py-0.5 rounded text-xs">STICKY</code>
+              — it will not be recreated automatically.
+            </p>
+          {/if}
+          <label for="delete-confirm" class="block text-sm text-gray-600 mb-1">
+            Type <code class="bg-gray-100 px-1 py-0.5 rounded text-xs select-all">{resource.name}</code> to confirm
+          </label>
+          <input
+            id="delete-confirm"
+            type="text"
+            class="w-full text-sm border border-gray-200 rounded-lg px-2.5 py-1.5 mb-3 focus:outline-none focus:border-red-500"
+            bind:value={deleteConfirmInput}
+            placeholder={resource.name}
+          />
+          {#if deleteError}
+            <div class="mb-3 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-600">
+              {deleteError}
+            </div>
+          {/if}
+          <div class="flex gap-2 justify-end">
+            <button
+              type="button"
+              class="px-3 py-1.5 text-sm rounded-lg border border-gray-200 text-gray-600 hover:border-gray-400 transition-colors cursor-pointer"
+              onclick={() => {
+                  deleteConfirmOpen = false;
+                  deleteConfirmInput = "";
+                  deleteError = null;
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1.5 text-sm rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors cursor-pointer disabled:opacity-50"
+              disabled={deleteResource.isPending || deleteConfirmInput !== resource.name}
+              onclick={() => deleteResource.mutate({
+                  org: orgName,
+                  repo: repoName,
+                  env: envName,
+                  resource: resourceId,
+              })}
+            >
+              {deleteResource.isPending ? "Requesting delete..." : "Confirm delete"}
+            </button>
+          </div>
+        </div>
+      {/if}
+    </div>
   </div>
 
   <!-- Metadata -->
