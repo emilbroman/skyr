@@ -412,6 +412,23 @@ impl Commit {
         String::from_utf8_lossy(&self.commit.message).into_owned()
     }
 
+    async fn parents(&self, context: &Context) -> FieldResult<Vec<Commit>> {
+        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let mut parents = Vec::with_capacity(self.commit.parents.len());
+        for parent_oid in self.commit.parents.iter().copied() {
+            let parent_commit = repo_client.read_commit(parent_oid).await.map_err(|e| {
+                tracing::error!("Failed to read parent commit {parent_oid}: {e}");
+                internal_error()
+            })?;
+            parents.push(Commit {
+                repo: self.repo.clone(),
+                hash: parent_oid,
+                commit: parent_commit,
+            });
+        }
+        Ok(parents)
+    }
+
     async fn tree(&self, context: &Context) -> FieldResult<Tree> {
         let repo_client = context.cdb_client.repo(self.repo.clone());
         let tree = repo_client.read_tree(self.commit.tree).await.map_err(|e| {

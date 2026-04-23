@@ -52,6 +52,7 @@ type Blob {
 type Commit {
   hash: String!
   message: String!
+  parents: [Commit!]!
   tree: Tree!
   treeEntry(path: String!): TreeEntry
 }
