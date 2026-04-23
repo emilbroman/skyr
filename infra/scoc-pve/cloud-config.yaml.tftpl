@@ -98,6 +98,22 @@ write_files:
       output_log="/dev/console"
       error_log="/dev/console"
 
+%{ if tls_enabled ~}
+  # mTLS material for SCOC <-> container plugin (600 perms, root-owned).
+  - path: /etc/scoc/tls/ca.pem
+    permissions: "0600"
+    content: |
+      ${indent(6, tls_ca_pem)}
+  - path: /etc/scoc/tls/cert.pem
+    permissions: "0600"
+    content: |
+      ${indent(6, tls_cert_pem)}
+  - path: /etc/scoc/tls/key.pem
+    permissions: "0600"
+    content: |
+      ${indent(6, tls_key_pem)}
+%{ endif ~}
+
   # OpenRC init script for SCOC
   - path: /etc/init.d/scoc
     permissions: "0755"
@@ -115,7 +131,10 @@ write_files:
         --cpu-millis ${cpu_millis} \
         --memory-bytes ${memory_bytes} \
         --max-pods ${max_pods} \
-        --ldb-brokers ${ldb_brokers}"
+        --ldb-brokers ${ldb_brokers}%{ if tls_enabled ~} \
+        --tls-ca /etc/scoc/tls/ca.pem \
+        --tls-cert /etc/scoc/tls/cert.pem \
+        --tls-key /etc/scoc/tls/key.pem%{ endif ~}"
       command_background=true
       pidfile="/run/$${RC_SVCNAME}.pid"
       output_log="/dev/console"

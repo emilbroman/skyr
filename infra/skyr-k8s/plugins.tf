@@ -7,6 +7,24 @@
 # their own infrastructure dependencies.
 # =============================================================================
 
+resource "kubernetes_secret" "plugin_std_container_tls" {
+  count = local.scop_tls_enabled ? 1 : 0
+
+  metadata {
+    name      = "plugin-std-container-tls"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "plugin-std-container" })
+  }
+
+  type = "kubernetes.io/tls"
+
+  data = {
+    "ca.pem"  = var.scop_tls_ca_pem
+    "tls.crt" = var.scop_tls_cert_pem
+    "tls.key" = var.scop_tls_key_pem
+  }
+}
+
 resource "kubernetes_deployment" "plugin_std_container" {
   metadata {
     name      = "plugin-std-container"
@@ -42,6 +60,16 @@ resource "kubernetes_deployment" "plugin_std_container" {
           }
         }
 
+        dynamic "volume" {
+          for_each = local.scop_tls_enabled ? [1] : []
+          content {
+            name = "scop-tls"
+            secret {
+              secret_name = kubernetes_secret.plugin_std_container_tls[0].metadata[0].name
+            }
+          }
+        }
+
         container {
           name              = "plugin-std-container"
           image             = "ghcr.io/emilbroman/skyr-plugin_std_container:latest"
@@ -57,7 +85,14 @@ resource "kubernetes_deployment" "plugin_std_container" {
             "--registry-url", local.oci_registry_url,
             "--ldb-hostname", local.redpanda_hostname,
             "--cluster-cidr", var.cluster_cidr,
-          ], var.oci_registry_insecure ? ["--insecure-registry"] : [])
+            ],
+            var.oci_registry_insecure ? ["--insecure-registry"] : [],
+            local.scop_tls_enabled ? [
+              "--tls-ca", "/etc/skyr/tls/ca.pem",
+              "--tls-cert", "/etc/skyr/tls/tls.crt",
+              "--tls-key", "/etc/skyr/tls/tls.key",
+            ] : [],
+          )
 
           dynamic "env" {
             for_each = local.oci_registry_has_auth ? [1] : []
@@ -89,6 +124,15 @@ resource "kubernetes_deployment" "plugin_std_container" {
             content {
               name       = "registry-auth"
               mount_path = "/root/.docker"
+              read_only  = true
+            }
+          }
+
+          dynamic "volume_mount" {
+            for_each = local.scop_tls_enabled ? [1] : []
+            content {
+              name       = "scop-tls"
+              mount_path = "/etc/skyr/tls"
               read_only  = true
             }
           }

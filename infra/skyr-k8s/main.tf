@@ -34,4 +34,21 @@ locals {
     "app.kubernetes.io/managed-by" = "opentofu"
     "app.kubernetes.io/part-of"    = "skyr"
   }
+
+  # mTLS between the container plugin orchestrator and SCOC conduits is
+  # enabled when all three PEM variables are provided. The tls_validation
+  # check rejects any partial combination.
+  scop_tls_parts_present = length(compact([
+    var.scop_tls_ca_pem != null ? "1" : "",
+    var.scop_tls_cert_pem != null ? "1" : "",
+    var.scop_tls_key_pem != null ? "1" : "",
+  ]))
+  scop_tls_enabled = local.scop_tls_parts_present == 3
+}
+
+check "scop_tls_validation" {
+  assert {
+    condition     = local.scop_tls_parts_present == 0 || local.scop_tls_parts_present == 3
+    error_message = "scop_tls_ca_pem, scop_tls_cert_pem, and scop_tls_key_pem must all be provided together, or all omitted."
+  }
 }

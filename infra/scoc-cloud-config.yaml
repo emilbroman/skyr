@@ -83,7 +83,10 @@ write_files:
         --cpu-millis ${SCOC_CPU_MILLIS:-4000} \
         --memory-bytes ${SCOC_MEMORY_BYTES:-8589934592} \
         --max-pods ${SCOC_MAX_PODS:-100} \
-        --ldb-brokers ${SCOC_LDB_BROKERS:-127.0.0.1:9092}"
+        --ldb-brokers ${SCOC_LDB_BROKERS:-127.0.0.1:9092} \
+        ${SCOC_TLS_CA:+--tls-ca ${SCOC_TLS_CA}} \
+        ${SCOC_TLS_CERT:+--tls-cert ${SCOC_TLS_CERT}} \
+        ${SCOC_TLS_KEY:+--tls-key ${SCOC_TLS_KEY}}"
       command_background=true
       pidfile="/run/${RC_SVCNAME}.pid"
 
@@ -122,6 +125,11 @@ write_files:
       }
 
   # SCOC environment variables
+  #
+  # SCOC_TLS_CA / SCOC_TLS_CERT / SCOC_TLS_KEY are optional paths to PEM files
+  # enabling mTLS against the container plugin orchestrator. All three must be
+  # set together; leave all three empty to run plain gRPC. The operator is
+  # responsible for provisioning the cert files on disk out-of-band.
   - path: /etc/conf.d/scoc
     content: |
       SCOC_NODE_NAME="${SCOC_NODE_NAME}"
@@ -132,6 +140,9 @@ write_files:
       SCOC_MEMORY_BYTES="${SCOC_MEMORY_BYTES}"
       SCOC_MAX_PODS="${SCOC_MAX_PODS}"
       SCOC_LDB_BROKERS="${SCOC_LDB_BROKERS}"
+      SCOC_TLS_CA="${SCOC_TLS_CA}"
+      SCOC_TLS_CERT="${SCOC_TLS_CERT}"
+      SCOC_TLS_KEY="${SCOC_TLS_KEY}"
 
 runcmd:
   # Download SCOC binary from latest GitHub release

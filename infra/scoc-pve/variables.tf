@@ -170,3 +170,31 @@ variable "scoc_binary_url" {
   description = "URL to download the SCOC binary from."
   default     = "https://github.com/emilbroman/skyr/releases/latest/download/scoc-x86_64-unknown-linux-musl"
 }
+
+# --- mTLS ---
+#
+# Optional PEM-encoded material for mutual TLS against the container plugin
+# orchestrator. All three must be provided together; leave all three null to
+# run plain gRPC. The leaf certificate must carry both `serverAuth` and
+# `clientAuth` Extended Key Usages.
+
+variable "tls_ca_pem" {
+  type        = string
+  description = "PEM-encoded CA certificate used to verify the orchestrator and incoming clients."
+  default     = null
+  sensitive   = true
+}
+
+variable "tls_cert_pem" {
+  type        = string
+  description = "PEM-encoded leaf certificate for this SCOC node."
+  default     = null
+  sensitive   = true
+}
+
+variable "tls_key_pem" {
+  type        = string
+  description = "PEM-encoded private key matching tls_cert_pem."
+  default     = null
+  sensitive   = true
+}

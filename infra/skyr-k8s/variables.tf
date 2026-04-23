@@ -207,3 +207,31 @@ variable "dns_service_type" {
   description = "Kubernetes Service type for the DNS plugin (ClusterIP, LoadBalancer, or NodePort)."
   default     = "ClusterIP"
 }
+
+# --- Container plugin <-> SCOC mTLS ---
+#
+# Optional PEM material for mutual TLS between the container plugin
+# orchestrator and SCOC conduits. All three must be provided together; leave
+# all three null to run plain gRPC. The leaf certificate must carry both
+# `serverAuth` and `clientAuth` Extended Key Usages.
+
+variable "scop_tls_ca_pem" {
+  type        = string
+  description = "PEM-encoded CA certificate used to verify SCOC conduits and incoming orchestrator clients."
+  default     = null
+  sensitive   = true
+}
+
+variable "scop_tls_cert_pem" {
+  type        = string
+  description = "PEM-encoded leaf certificate for the container plugin orchestrator."
+  default     = null
+  sensitive   = true
+}
+
+variable "scop_tls_key_pem" {
+  type        = string
+  description = "PEM-encoded private key matching scop_tls_cert_pem."
+  default     = null
+  sensitive   = true
+}
