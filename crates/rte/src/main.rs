@@ -405,11 +405,7 @@ async fn handle_create(
     )
     .await;
 
-    let env_qid_str = message.resource.environment_qid.to_string();
-    let resource = match plugin
-        .create_resource(&env_qid_str, message.deployment_id.as_str(), id, inputs)
-        .await
-    {
+    let resource = match plugin.create_resource(&dep_qid, id, inputs).await {
         Ok(resource) => resource,
         Err(error) => {
             tracing::warn!(
@@ -623,17 +619,7 @@ async fn handle_destroy(
     )
     .await;
 
-    let env_qid_str = message.resource.environment_qid.to_string();
-    if let Err(error) = plugin
-        .delete_resource(
-            &env_qid_str,
-            message.deployment_id.as_str(),
-            id,
-            inputs,
-            outputs,
-        )
-        .await
-    {
+    if let Err(error) = plugin.delete_resource(&dep_qid, id, inputs, outputs).await {
         tracing::warn!(
             environment_qid = %message.resource.environment_qid,
             resource_type = %message.resource.resource_type(),
@@ -881,11 +867,9 @@ async fn handle_update_inputs(
         )
         .await;
 
-        let env_qid_str = resource.environment_qid.to_string();
         let updated = match plugin
             .update_resource(
-                &env_qid_str,
-                target_deployment_id.as_str(),
+                &target_dep_qid_for_log,
                 id,
                 prev_inputs,
                 prev_outputs,
@@ -1231,16 +1215,7 @@ async fn handle_check(
         resource_name = %message.resource.resource_name(),
         "calling plugin check",
     );
-    let env_qid_str = message.resource.environment_qid.to_string();
-    let checked = match plugin
-        .check(
-            &env_qid_str,
-            message.deployment_id.as_str(),
-            id.clone(),
-            resource,
-        )
-        .await
-    {
+    let checked = match plugin.check(&dep_qid, id.clone(), resource).await {
         Ok(resource) => resource,
         Err(error) => {
             tracing::warn!(
