@@ -111,6 +111,21 @@ impl CrossRepoPackageFinder {
         Ok(self.resolved.read().await.get(repo).cloned())
     }
 
+    /// Eagerly resolve every declared dependency to its current
+    /// [`DeploymentQid`]. Used by the DE to compute a cache key for the
+    /// compiled ASG before deciding whether to recompile.
+    pub async fn resolve_all(&self) -> Result<BTreeMap<RepoQid, DeploymentQid>, CrossRepoError> {
+        let repos: Vec<RepoQid> = self.dependencies.keys().cloned().collect();
+        let mut out = BTreeMap::new();
+        for repo in repos {
+            let _ = self.resolve_internal(&repo).await?;
+            if let Some(qid) = self.resolved.read().await.get(&repo).cloned() {
+                out.insert(repo, qid);
+            }
+        }
+        Ok(out)
+    }
+
     /// Internal: resolve a foreign repo to a cached package, performing the
     /// CDB lookup once and caching the result.
     async fn resolve_internal(
