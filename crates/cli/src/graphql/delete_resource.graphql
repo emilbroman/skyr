@@ -1,0 +1,13 @@
+mutation DeleteResource(
+  $organization: String!
+  $repository: String!
+  $environment: String!
+  $resource: String!
+) {
+  deleteResource(
+    organization: $organization
+    repository: $repository
+    environment: $environment
+    resource: $resource
+  )
+}

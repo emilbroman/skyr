@@ -37,6 +37,18 @@ enum ResourcesCommand {
         #[arg(short = 'n', long, default_value = "200")]
         latest: i64,
     },
+    /// Request deletion of a single resource.  The server enqueues a
+    /// Destroy message for the RTE worker pool and returns immediately;
+    /// the plugin-side delete runs asynchronously.
+    Delete {
+        /// Repository path, `<organization>/<repository>`
+        repository: String,
+        /// Environment name
+        #[arg(long)]
+        environment: String,
+        /// Resource ID in `Type:name` form (e.g. `Std/Random.Int:seed`)
+        resource: String,
+    },
 }
 
 #[derive(GraphQLQuery)]
@@ -54,6 +66,14 @@ struct ListRepositoryResources;
     response_derives = "Debug"
 )]
 struct ResourceLastLogs;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/delete_resource.graphql",
+    response_derives = "Debug"
+)]
+struct DeleteResource;
 
 pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
@@ -93,6 +113,75 @@ pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow:
                 )
                 .await?;
             }
+        }
+        ResourcesCommand::Delete {
+            repository,
+            environment,
+            resource,
+        } => {
+            delete_resource(
+                &client,
+                &endpoint,
+                &token,
+                &repository,
+                &environment,
+                &resource,
+                format,
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn delete_resource(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+    repository: &str,
+    environment: &str,
+    resource: &str,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let (organization, repository_name) = repo::parse_repository_path(repository)?;
+
+    auth::graphql_query::<DeleteResource>(
+        client,
+        endpoint,
+        token,
+        delete_resource::Variables {
+            organization: organization.to_owned(),
+            repository: repository_name.to_owned(),
+            environment: environment.to_owned(),
+            resource: resource.to_owned(),
+        },
+        "resource delete",
+    )
+    .await?;
+
+    #[derive(Serialize)]
+    struct DeleteResourceOutput {
+        organization: String,
+        repository: String,
+        environment: String,
+        resource: String,
+    }
+
+    let output = DeleteResourceOutput {
+        organization: organization.to_owned(),
+        repository: repository_name.to_owned(),
+        environment: environment.to_owned(),
+        resource: resource.to_owned(),
+    };
+
+    match format {
+        OutputFormat::Json => output::print_json(&output)?,
+        OutputFormat::Text => {
+            println!(
+                "delete requested for {}/{}::{}::{}",
+                output.organization, output.repository, output.environment, output.resource
+            );
         }
     }
 
