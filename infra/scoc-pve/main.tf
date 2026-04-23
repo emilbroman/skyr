@@ -5,6 +5,22 @@
 locals {
   # Strip CIDR suffix to get the bare IP for the conduit address
   vm_ip_bare = split("/", var.vm_ip)[0]
+
+  # mTLS is enabled when all three PEM variables are provided. The
+  # `tls_validation` check below rejects any partial combination.
+  tls_parts_present = length(compact([
+    var.tls_ca_pem != null ? "1" : "",
+    var.tls_cert_pem != null ? "1" : "",
+    var.tls_key_pem != null ? "1" : "",
+  ]))
+  tls_enabled = local.tls_parts_present == 3
+}
+
+check "tls_validation" {
+  assert {
+    condition     = local.tls_parts_present == 0 || local.tls_parts_present == 3
+    error_message = "tls_ca_pem, tls_cert_pem, and tls_key_pem must all be provided together, or all omitted."
+  }
 }
 
 # --- Download Alpine cloud image ---
@@ -41,6 +57,10 @@ resource "proxmox_virtual_environment_file" "cloud_config" {
       nameserver           = var.nameserver
       root_password        = var.root_password
       ssh_authorized_keys  = var.ssh_authorized_keys
+      tls_enabled          = local.tls_enabled
+      tls_ca_pem           = var.tls_ca_pem
+      tls_cert_pem         = var.tls_cert_pem
+      tls_key_pem          = var.tls_key_pem
     })
     file_name = "${var.vm_name}-cloud-config.yaml"
   }
