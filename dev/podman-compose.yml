@@ -238,7 +238,7 @@ services:
         "--dns-port", "5353",
       ]
     ports:
-      - 5353:5353/udp
+      - 15353:5353/udp
     restart: always
 
   plugin-std-time:
