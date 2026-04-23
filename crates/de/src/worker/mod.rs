@@ -138,12 +138,11 @@ impl Worker {
             .await?
             .is_none()
         {
-            tracing::info!("{sid} no Main.scl; marking bootstrapped");
-            self.log_publisher
-                .info(format!("{sid} bootstrapped (no Main.scl in commit)"))
-                .await;
-            self.client.set_progress(true, 0).await?;
-            self.transition_superseded_to_undesired().await?;
+            if !deployment.bootstrapped {
+                tracing::info!("{sid} no Main.scl; marking bootstrapped");
+                self.client.set_progress(true, 0).await?;
+                self.transition_superseded_to_undesired().await?;
+            }
             return Ok(false);
         }
 

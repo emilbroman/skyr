@@ -142,7 +142,11 @@ async fn process(
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
     ldb_publisher: ldb::Publisher,
-    workers: &mut BTreeMap<String, oneshot::Sender<()>>,
+    // `Some(sender)` = worker is running. `None` = the worker's loop has
+    // exited (e.g. a no-Main.scl deployment that's already bootstrapped)
+    // and is idle; we only respawn it when a supersession appears, since
+    // that's the only external event that can require it to do more work.
+    workers: &mut BTreeMap<String, Option<oneshot::Sender<()>>>,
     worker_index: u16,
     worker_count: u16,
 ) -> anyhow::Result<()> {
@@ -163,61 +167,80 @@ async fn process(
         worker_count,
     );
 
-    // Remove workers whose loop has exited (receiver dropped).
-    workers.retain(|id, tx| {
-        if tx.is_closed() {
-            tracing::debug!(dep = %id, "worker exited; removing from pool");
-            false
-        } else {
-            true
+    // Flip workers whose loop has exited to idle.
+    for (id, slot) in workers.iter_mut() {
+        if let Some(sender) = slot
+            && sender.is_closed()
+        {
+            tracing::debug!(dep = %id, "worker exited; marking idle");
+            *slot = None;
         }
-    });
+    }
 
     let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
     for deployment in deployments {
         let deployment = deployment?;
         let deployment_qid = deployment.deployment_qid().to_string();
-        if !untouched.remove(&deployment_qid) {
-            tracing::debug!(dep = %deployment_qid, "new deployment to process");
+        untouched.remove(&deployment_qid);
 
-            let (tx, rx) = oneshot::channel();
-            // Resources are namespaced by environment QID.
-            let environment_qid = deployment.environment_qid().to_string();
-
-            let log_publisher = match ldb_publisher.namespace(deployment_qid.clone()).await {
-                Ok(log_publisher) => log_publisher,
-                Err(error) => {
-                    tracing::error!(
-                        dep = %deployment_qid,
-                        error = %error,
-                        "failed to create deployment log publisher topic",
-                    );
-                    continue;
-                }
-            };
-
-            let env_qid = deployment.environment_qid();
-            let worker = Worker {
-                client: client.repo(deployment.repo.clone()).deployment(
+        let should_spawn = match workers.get(&deployment_qid) {
+            Some(Some(_)) => false,
+            Some(None) => {
+                // Idle. Respawn only if the deployment has been superseded,
+                // which is the only external trigger for further work.
+                let deployment_client = client.repo(deployment.repo.clone()).deployment(
                     deployment.environment.clone(),
                     deployment.deployment.clone(),
                     deployment.nonce,
-                ),
-                cdb_client: client.clone(),
-                rdb_client: rdb_client.clone(),
-                environment_qid: env_qid.clone(),
-                namespace: rdb_client.namespace(environment_qid),
-                rtq_publisher: rtq_publisher.clone(),
-                log_publisher,
-                last_failure_at: None,
-                cached_compile: None,
-            };
+                );
+                deployment_client.get_superseding().await?.is_some()
+            }
+            None => true,
+        };
 
-            let span = tracing::info_span!("worker", dep = %deployment_qid);
-            task::spawn(worker.run_loop(rx).instrument(span));
-
-            workers.insert(deployment_qid, tx);
+        if !should_spawn {
+            continue;
         }
+
+        tracing::debug!(dep = %deployment_qid, "spawning worker");
+
+        let (tx, rx) = oneshot::channel();
+        // Resources are namespaced by environment QID.
+        let environment_qid = deployment.environment_qid().to_string();
+
+        let log_publisher = match ldb_publisher.namespace(deployment_qid.clone()).await {
+            Ok(log_publisher) => log_publisher,
+            Err(error) => {
+                tracing::error!(
+                    dep = %deployment_qid,
+                    error = %error,
+                    "failed to create deployment log publisher topic",
+                );
+                continue;
+            }
+        };
+
+        let env_qid = deployment.environment_qid();
+        let worker = Worker {
+            client: client.repo(deployment.repo.clone()).deployment(
+                deployment.environment.clone(),
+                deployment.deployment.clone(),
+                deployment.nonce,
+            ),
+            cdb_client: client.clone(),
+            rdb_client: rdb_client.clone(),
+            environment_qid: env_qid.clone(),
+            namespace: rdb_client.namespace(environment_qid),
+            rtq_publisher: rtq_publisher.clone(),
+            log_publisher,
+            last_failure_at: None,
+            cached_compile: None,
+        };
+
+        let span = tracing::info_span!("worker", dep = %deployment_qid);
+        task::spawn(worker.run_loop(rx).instrument(span));
+
+        workers.insert(deployment_qid, Some(tx));
     }
 
     for id in untouched {
