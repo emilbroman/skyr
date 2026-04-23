@@ -929,8 +929,8 @@ struct Cli {
     udb_hostname: String,
     #[arg(long, default_value = "localhost")]
     ldb_hostname: String,
-    #[arg(long, default_value = "amqp://127.0.0.1:5672/%2f")]
-    rtq_uri: String,
+    #[arg(long, default_value = "localhost")]
+    rtq_hostname: String,
     #[arg(long, default_value = "http://127.0.0.1:9000")]
     adb_endpoint_url: String,
     #[arg(long)]
@@ -1008,7 +1008,7 @@ async fn main() -> anyhow::Result<()> {
         .build_publisher()
         .await?;
     let rtq_publisher = rtq::ClientBuilder::new()
-        .uri(cli.rtq_uri)
+        .uri(format!("amqp://{}:5672/%2f", cli.rtq_hostname))
         .build_publisher()
         .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
