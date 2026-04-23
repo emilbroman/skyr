@@ -16,6 +16,7 @@
 
 mod bb3_addr;
 mod buildkit;
+mod image_name;
 mod node_registry;
 mod subnet_allocator;
 mod vip_allocator;
@@ -343,14 +344,12 @@ impl ContainerPlugin {
         })?;
         let env_qid = deployment_qid.environment_qid();
 
-        // Qualify the image name with <orgname>/<reponame>/<name> so that images
-        // from different repos don't collide in the registry.
-        let qualified_name = format!(
-            "{}/{}/{}",
-            env_qid.repo.org.as_str(),
-            env_qid.repo.repo.as_str(),
-            name,
-        );
+        // Qualify the image name with <hash>/<org>/<repo>/<name>, each path
+        // segment in kebab-case (OCI requires lowercase with [a-z0-9._-]).
+        // The leading hash of the original proper name disambiguates inputs
+        // whose kebab forms would otherwise collide (e.g. `MyOrg` vs. `my_org`).
+        let qualified_name =
+            image_name::qualify(env_qid.repo.org.as_str(), env_qid.repo.repo.as_str(), &name);
 
         // Create a DeploymentClient for this deployment
         let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
