@@ -22,7 +22,7 @@ locals {
     join("\n", concat(
       ["-----BEGIN OPENSSH PRIVATE KEY-----"],
       [for i in range(ceil(length(local._scs_key_b64) / 70)) :
-        substr(local._scs_key_b64, i * 70, min(70, length(local._scs_key_b64) - i * 70))],
+      substr(local._scs_key_b64, i * 70, min(70, length(local._scs_key_b64) - i * 70))],
       ["-----END OPENSSH PRIVATE KEY-----", ""]
     ))
   )
