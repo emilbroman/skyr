@@ -1,0 +1,4 @@
+import Std/Str
+export let a = Str.endsWith("hello", "lo")
+export let b = Str.endsWith("hello", "he")
+export let c = Str.endsWith("hello", "")

@@ -1,0 +1,3 @@
+import Std/Str
+export let a = Str.toLower("HELLO")
+export let b = Str.toLower("Hello, World!")

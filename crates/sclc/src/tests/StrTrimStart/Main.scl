@@ -1,0 +1,3 @@
+import Std/Str
+export let a = Str.trimStart("  hello  ")
+export let b = Str.trimStart("\t\nhi")

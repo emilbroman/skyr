@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.contains("hello world", "world")
+export let b = Str.contains("hello", "x")
+export let c = Str.contains("hello", "")
+export let d = Str.contains("", "")

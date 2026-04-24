@@ -1,0 +1,4 @@
+import Std/Str
+export let a = Str.startsWith("hello", "he")
+export let b = Str.startsWith("hello", "lo")
+export let c = Str.startsWith("hello", "")

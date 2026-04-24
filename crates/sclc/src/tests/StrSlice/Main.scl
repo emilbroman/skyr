@@ -1,0 +1,8 @@
+import Std/Str
+export let a = Str.slice("hello", 0, 5)
+export let b = Str.slice("hello", 1, 4)
+export let c = Str.slice("hello", 2, nil)
+export let d = Str.slice("hello", 0, 100)
+export let e = Str.slice("hello", 10, nil)
+export let f = Str.slice("hello", 3, 2)
+export let g = Str.slice("héllo", 0, 3)

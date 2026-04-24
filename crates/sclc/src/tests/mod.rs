@@ -425,6 +425,26 @@ test_case!(ListMapEmpty);
 // Std/Num
 test_case!(NumToHex);
 
+// Std/Str
+test_case!(StrLength);
+test_case!(StrIsEmpty);
+test_case!(StrToUpper);
+test_case!(StrToLower);
+test_case!(StrTrim);
+test_case!(StrTrimStart);
+test_case!(StrTrimEnd);
+test_case!(StrSplit);
+test_case!(StrJoin);
+test_case!(StrContains);
+test_case!(StrStartsWith);
+test_case!(StrEndsWith);
+test_case!(StrReplace);
+test_case!(StrSlice);
+test_case!(StrIndexOf);
+test_case!(StrRepeat);
+test_case!(StrPadStart);
+test_case!(StrPadEnd);
+
 // Nil
 test_case!(NilOptionalCheck);
 test_case!(NilUnwrapInfer);

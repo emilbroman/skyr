@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.padEnd("7", 3, "0")
+export let b = Str.padEnd("12", 5, nil)
+export let c = Str.padEnd("already", 3, "0")
+export let d = Str.padEnd("x", 6, "ab")

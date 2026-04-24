@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.length("")
+export let b = Str.length("hello")
+export let c = Str.length("héllo")
+export let d = Str.length("日本語")

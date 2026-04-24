@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.join(["a", "b", "c"], ",")
+export let b = Str.join([], ",")
+export let c = Str.join(["lone"], "|")
+export let d = Str.join(["a", "b"], "")

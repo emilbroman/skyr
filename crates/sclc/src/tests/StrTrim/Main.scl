@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.trim("  hello  ")
+export let b = Str.trim("\t\nhi\r\n")
+export let c = Str.trim("nospace")
+export let d = Str.trim("")
