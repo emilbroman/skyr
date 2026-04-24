@@ -250,4 +250,148 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
 
         Ok(crate::TrackedValue::new(crate::Value::Record(out)).with_dependency(resource_id))
     });
+
+    eval.add_extern_fn("Std/Crypto.sha1", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+        first.try_map(|value| {
+            let input = value.assert_str()?;
+            use sha1::Digest;
+            let mut hasher = sha1::Sha1::new();
+            hasher.update(input.as_bytes());
+            let digest = hasher.finalize();
+            Ok(crate::Value::Str(hex::encode(digest)))
+        })
+    });
+
+    eval.add_extern_fn("Std/Crypto.sha256", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+        first.try_map(|value| {
+            let input = value.assert_str()?;
+            use sha2::Digest;
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(input.as_bytes());
+            let digest = hasher.finalize();
+            Ok(crate::Value::Str(hex::encode(digest)))
+        })
+    });
+
+    eval.add_extern_fn("Std/Crypto.sha512", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+        first.try_map(|value| {
+            let input = value.assert_str()?;
+            use sha2::Digest;
+            let mut hasher = sha2::Sha512::new();
+            hasher.update(input.as_bytes());
+            let digest = hasher.finalize();
+            Ok(crate::Value::Str(hex::encode(digest)))
+        })
+    });
+
+    eval.add_extern_fn("Std/Crypto.md5", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() {
+            return Ok(crate::TrackedValue::pending().with_dependencies(first.dependencies));
+        }
+        first.try_map(|value| {
+            let input = value.assert_str()?;
+            use md5::Digest;
+            let mut hasher = md5::Md5::new();
+            hasher.update(input.as_bytes());
+            let digest = hasher.finalize();
+            Ok(crate::Value::Str(hex::encode(digest)))
+        })
+    });
+
+    eval.add_extern_fn("Std/Crypto.hmacSha256", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        let second = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() || second.value.has_pending() {
+            let deps: std::collections::BTreeSet<_> = first
+                .dependencies
+                .union(&second.dependencies)
+                .cloned()
+                .collect();
+            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
+        }
+        let deps: std::collections::BTreeSet<_> = first
+            .dependencies
+            .union(&second.dependencies)
+            .cloned()
+            .collect();
+        let key = first.value.assert_str()?;
+        let message = second.value.assert_str()?;
+        use hmac::{Hmac, Mac};
+        type HmacSha256 = Hmac<sha2::Sha256>;
+        let mut mac = HmacSha256::new_from_slice(key.as_bytes()).map_err(|err| {
+            crate::EvalErrorKind::Custom(format!("Std/Crypto.hmacSha256: invalid key: {err}"))
+        })?;
+        mac.update(message.as_bytes());
+        let digest = mac.finalize().into_bytes();
+        Ok(crate::TrackedValue::new(crate::Value::Str(hex::encode(digest))).with_dependencies(deps))
+    });
+
+    eval.add_extern_fn("Std/Crypto.hmacSha512", |args, _ctx| {
+        use crate::ValueAssertions;
+        let mut args = args.into_iter();
+        let first = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        let second = args
+            .next()
+            .unwrap_or_else(|| crate::TrackedValue::new(crate::Value::Nil));
+        if first.value.has_pending() || second.value.has_pending() {
+            let deps: std::collections::BTreeSet<_> = first
+                .dependencies
+                .union(&second.dependencies)
+                .cloned()
+                .collect();
+            return Ok(crate::TrackedValue::pending().with_dependencies(deps));
+        }
+        let deps: std::collections::BTreeSet<_> = first
+            .dependencies
+            .union(&second.dependencies)
+            .cloned()
+            .collect();
+        let key = first.value.assert_str()?;
+        let message = second.value.assert_str()?;
+        use hmac::{Hmac, Mac};
+        type HmacSha512 = Hmac<sha2::Sha512>;
+        let mut mac = HmacSha512::new_from_slice(key.as_bytes()).map_err(|err| {
+            crate::EvalErrorKind::Custom(format!("Std/Crypto.hmacSha512: invalid key: {err}"))
+        })?;
+        mac.update(message.as_bytes());
+        let digest = mac.finalize().into_bytes();
+        Ok(crate::TrackedValue::new(crate::Value::Str(hex::encode(digest))).with_dependencies(deps))
+    });
 }

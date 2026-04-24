@@ -495,6 +495,12 @@ test_case!(CryptoRSA);
 test_case!(CryptoRSAWithSize);
 test_case!(CryptoCertReq);
 test_case!(CryptoCertSign);
+test_case!(CryptoSha1);
+test_case!(CryptoSha256);
+test_case!(CryptoSha512);
+test_case!(CryptoMd5);
+test_case!(CryptoHmacSha256);
+test_case!(CryptoHmacSha512);
 
 // Type cast tests
 test_case!(TypeCast);
