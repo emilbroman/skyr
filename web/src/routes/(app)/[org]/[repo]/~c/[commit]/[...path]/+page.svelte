@@ -156,7 +156,12 @@ async function onDeploy(envName: string) {
     }
 }
 
-function handleDeployClickOutside(event: MouseEvent) {
+// Use mousedown (not click) so the check runs before any inside-click
+// handler mutates state and re-renders. Otherwise, clicking a menu item
+// can detach its button from the DOM before this handler sees it, making
+// `target.closest(".deploy-dropdown")` return null and incorrectly close
+// the dropdown.
+function handleDeployMousedownOutside(event: MouseEvent) {
     const target = event.target as HTMLElement;
     if (!target.closest(".deploy-dropdown")) {
         deployMenuOpen = false;
@@ -167,11 +172,14 @@ function handleDeployClickOutside(event: MouseEvent) {
 
 let parents = $derived(view.kind === "directory" || view.kind === "file" ? view.parents : []);
 
-// Load data when path changes.
+// Load data when org/repo/commit/path changes.
 // Uses untrack for the load calls so that setting `view` doesn't
 // re-subscribe this effect to anything new.
 $effect(() => {
-    // Subscribe to the path-derived reactives:
+    // Subscribe to the reactives that should trigger a reload:
+    orgName;
+    repoName;
+    commitHash;
     const root = isRoot;
     const segments = pathSegments;
     untrack(() => {
@@ -214,7 +222,7 @@ let highlightLine = $derived.by(() => {
     <title>{pathParam || "/"} · {commitHash.substring(0, 8)} · {orgName}/{repoName} – Skyr</title>
 </svelte:head>
 
-<svelte:window onclick={handleDeployClickOutside} />
+<svelte:window onmousedown={handleDeployMousedownOutside} />
 
 <div>
   <!-- Commit message -->
