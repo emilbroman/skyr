@@ -1,0 +1,6 @@
+import Std/Str
+export let a = Str.split("a,b,c", ",")
+export let b = Str.split("", ",")
+export let c = Str.split("no-sep", ",")
+export let d = Str.split("a,,b", ",")
+export let e = Str.split("a::b::c", "::")

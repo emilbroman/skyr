@@ -1,0 +1,74 @@
+/// Number of Unicode scalar values (codepoints) in a string.
+///
+/// ```scl
+/// import Std/Str
+///
+/// let n = Str.length("hello")   // 5
+/// ```
+export let length = extern "Std/Str.length": fn(Str) Int
+
+/// Whether a string is empty (`length == 0`).
+export let isEmpty = fn(s: Str) length(s) == 0
+
+/// Convert a string to uppercase using full Unicode case mapping.
+export let toUpper = extern "Std/Str.toUpper": fn(Str) Str
+
+/// Convert a string to lowercase using full Unicode case mapping.
+export let toLower = extern "Std/Str.toLower": fn(Str) Str
+
+/// Strip leading and trailing Unicode whitespace.
+export let trim = extern "Std/Str.trim": fn(Str) Str
+
+/// Strip leading Unicode whitespace.
+export let trimStart = extern "Std/Str.trimStart": fn(Str) Str
+
+/// Strip trailing Unicode whitespace.
+export let trimEnd = extern "Std/Str.trimEnd": fn(Str) Str
+
+/// Split on a literal separator. Raises an error if `separator` is empty.
+///
+/// ```scl
+/// Str.split("a,b,,c", ",")   // ["a", "b", "", "c"]
+/// ```
+export let split = extern "Std/Str.split": fn(Str, Str) [Str]
+
+/// Concatenate a list of strings with `separator` between each.
+export let join = extern "Std/Str.join": fn([Str], Str) Str
+
+/// Whether `needle` occurs anywhere in the string.
+export let contains = extern "Std/Str.contains": fn(Str, Str) Bool
+
+/// Whether the string starts with `prefix`.
+export let startsWith = extern "Std/Str.startsWith": fn(Str, Str) Bool
+
+/// Whether the string ends with `suffix`.
+export let endsWith = extern "Std/Str.endsWith": fn(Str, Str) Bool
+
+/// Replace every occurrence of `from` with `to`.
+export let replace = extern "Std/Str.replace": fn(Str, Str, Str) Str
+
+/// Substring by Unicode scalar index. Pass `nil` for `end` to mean the string's length.
+///
+/// Indices are clamped to `[0, length]`. If `end <= start`, returns `""`.
+/// Raises an error if `start` or `end` is negative.
+export let slice = extern "Std/Str.slice": fn(Str, Int, Int?) Str
+
+/// Scalar index of the first occurrence of `needle`, or `nil` if absent.
+///
+/// An empty `needle` returns `0`.
+export let indexOf = extern "Std/Str.indexOf": fn(Str, Str) Int?
+
+/// Repeat the string `times` times. Raises an error if `times` is negative.
+export let repeat = extern "Std/Str.repeat": fn(Str, Int) Str
+
+/// Left-pad the string to `width` Unicode scalars with `fill` (default `" "`).
+///
+/// If the string is already at least `width` long, returns the original.
+/// The last copy of `fill` is truncated if needed. Raises an error if `fill`
+/// is empty or `width` is negative.
+export let padStart = extern "Std/Str.padStart": fn(Str, Int, Str?) Str
+
+/// Right-pad the string to `width` Unicode scalars with `fill` (default `" "`).
+///
+/// Same semantics as `padStart` but appends instead of prepends.
+export let padEnd = extern "Std/Str.padEnd": fn(Str, Int, Str?) Str

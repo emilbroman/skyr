@@ -1,0 +1,3 @@
+import Std/Str
+export let a = Str.trimEnd("  hello  ")
+export let b = Str.trimEnd("hi\t\n")

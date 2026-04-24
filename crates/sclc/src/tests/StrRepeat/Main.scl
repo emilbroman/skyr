@@ -1,0 +1,4 @@
+import Std/Str
+export let a = Str.repeat("ab", 3)
+export let b = Str.repeat("x", 0)
+export let c = Str.repeat("", 5)

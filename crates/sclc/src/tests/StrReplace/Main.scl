@@ -1,0 +1,4 @@
+import Std/Str
+export let a = Str.replace("foo bar foo", "foo", "baz")
+export let b = Str.replace("abc", "x", "y")
+export let c = Str.replace("aaa", "a", "bb")

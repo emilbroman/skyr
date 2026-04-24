@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.padStart("7", 3, "0")
+export let b = Str.padStart("12", 5, nil)
+export let c = Str.padStart("already", 3, "0")
+export let d = Str.padStart("x", 5, "ab")

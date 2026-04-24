@@ -1,0 +1,5 @@
+import Std/Str
+export let a = Str.indexOf("hello", "ll")
+export let b = Str.indexOf("hello", "x")
+export let c = Str.indexOf("hello", "")
+export let d = Str.indexOf("héllo", "llo")

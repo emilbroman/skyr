@@ -1,0 +1,4 @@
+import Std/Str
+export let a = Str.toUpper("hello")
+export let b = Str.toUpper("Hello, World!")
+export let c = Str.toUpper("")
