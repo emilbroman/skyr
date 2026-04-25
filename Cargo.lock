@@ -212,6 +212,7 @@ dependencies = [
  "regex",
  "rtq",
  "sclc",
+ "sdb",
  "serde_json",
  "sha2 0.10.9",
  "ssh-key",

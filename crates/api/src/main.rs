@@ -32,6 +32,7 @@ pub(crate) struct Context {
     pub(crate) cdb_client: cdb::Client,
     pub(crate) rdb_client: rdb::Client,
     pub(crate) adb_client: adb::Client,
+    pub(crate) sdb_client: sdb::Client,
     pub(crate) ldb_consumer: ldb::Consumer,
     pub(crate) ldb_publisher: ldb::Publisher,
     pub(crate) rtq_publisher: rtq::Publisher,
@@ -939,6 +940,8 @@ struct Cli {
     #[arg(long, default_value = "localhost")]
     rdb_hostname: String,
     #[arg(long, default_value = "localhost")]
+    sdb_hostname: String,
+    #[arg(long, default_value = "localhost")]
     udb_hostname: String,
     #[arg(long, default_value = "localhost")]
     ldb_hostname: String,
@@ -1000,6 +1003,10 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.rdb_hostname)
         .build()
         .await?;
+    let sdb_client = sdb::ClientBuilder::new()
+        .known_node(cli.sdb_hostname)
+        .build()
+        .await?;
     let mut adb_builder = adb::ClientBuilder::new()
         .bucket(cli.adb_bucket)
         .endpoint_url(cli.adb_endpoint_url)
@@ -1046,6 +1053,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(cdb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
+        .layer(Extension(sdb_client))
         .layer(Extension(ldb_consumer))
         .layer(Extension(ldb_publisher))
         .layer(Extension(rtq_publisher))
@@ -1073,6 +1081,7 @@ async fn graphql_handler(
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
+    Extension(sdb_client): Extension<sdb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
@@ -1104,6 +1113,7 @@ async fn graphql_handler(
                     cdb_client,
                     rdb_client,
                     adb_client,
+                    sdb_client,
                     ldb_consumer,
                     ldb_publisher,
                     rtq_publisher,
@@ -1122,6 +1132,7 @@ async fn graphql_handler(
         cdb_client,
         rdb_client,
         adb_client,
+        sdb_client,
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,
@@ -1151,6 +1162,7 @@ async fn graphql_ws_handler(
     Extension(cdb_client): Extension<cdb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
+    Extension(sdb_client): Extension<sdb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
@@ -1181,6 +1193,7 @@ async fn graphql_ws_handler(
         cdb_client,
         rdb_client,
         adb_client,
+        sdb_client,
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,

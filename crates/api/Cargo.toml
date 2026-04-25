@@ -30,6 +30,7 @@ ids = { path = "../ids", features = ["rand"] }
 cdb = { path = "../cdb" }
 rdb = { path = "../rdb" }
 sclc = { path = "../sclc" }
+sdb = { path = "../sdb" }
 udb = { path = "../udb" }
 ldb = { path = "../ldb" }
 adb = { path = "../adb" }
