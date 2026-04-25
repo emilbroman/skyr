@@ -12,7 +12,7 @@ Skyr is a Git-native infrastructure orchestrator. You define your infrastructure
 
 **Self-healing.** Skyr continuously monitors your resources and restores them if they drift from the desired state.
 
-See [Deployments](deployments.md) to learn how deployments roll out, supersede each other, and clean up resources. See [Cross-Repo Imports](cross-repo-imports.md) for sharing modules and reading remote state across repositories.
+See [Deployments](deployments.md) to learn how deployments roll out, supersede each other, and clean up resources. See [Status and Incidents](status.md) for how Skyr surfaces health and notifies you when things go wrong. See [Cross-Repo Imports](cross-repo-imports.md) for sharing modules and reading remote state across repositories.
 
 ## SCL: Skyr Configuration Language
 
