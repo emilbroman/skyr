@@ -1,0 +1,27 @@
+[package]
+name = "sdb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.43", features = ["serde"] }
+futures = "0.3.31"
+futures-util = "0.3.31"
+ids = { path = "../ids" }
+scylla = { version = "1.5.0", features = ["chrono-04"] }
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.18"
+uuid = { version = "1.22.0", features = ["v4", "serde"] }
+
+[features]
+# Enables integration tests that require a live ScyllaDB instance reachable at
+# `SDB_TEST_NODE` (default `127.0.0.1:9042`). These tests are also gated behind
+# `#[ignore]` so they are skipped by default; run them with
+# `cargo test -p sdb --features scylla-tests -- --ignored`.
+scylla-tests = []
+
+[dev-dependencies]
+tokio = { version = "1.50.0", features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true
