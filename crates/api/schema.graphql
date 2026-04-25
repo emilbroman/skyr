@@ -11,6 +11,32 @@ enum DeploymentState {
   DESIRED
 }
 
+"""
+  UI-friendly rolled-up health enum, computed from the underlying counters
+  in [`StatusSummary`]:
+
+  - `Healthy` iff `openIncidentCount == 0`
+  - `Down` iff `worstOpenCategory == Crash`
+  - `Degraded` otherwise
+"""
+enum HealthStatus {
+  HEALTHY
+  DEGRADED
+  DOWN
+}
+
+"""
+  Producer-classified failure category. Mirrors [`sdb::Category`] /
+  [`rq::IncidentCategory`].
+"""
+enum IncidentCategory {
+  BAD_CONFIGURATION
+  CANNOT_PROGRESS
+  INCONSISTENT_STATE
+  SYSTEM_ERROR
+  CRASH
+}
+
 enum ResourceMarker {
   VOLATILE
   STICKY
@@ -66,6 +92,14 @@ type Deployment {
   bootstrapped: Boolean!
   failures: Int!
   nonce: String!
+  """
+    Per-deployment health rollup. **Self-only** — does not aggregate child
+    resource health. Resource statuses are reached via
+    `Deployment.resources -> Resource.status`.
+  """
+  status: StatusSummary!
+  "Incidents scoped to this deployment (newest first)."
+  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
 }
@@ -79,6 +113,46 @@ type Environment {
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
   artifacts: [Artifact!]!
+  "Incidents scoped to this environment (newest first)."
+  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
+}
+
+type Incident {
+  id: ID!
+  entityQid: String!
+  category: IncidentCategory!
+  openedAt: String!
+  closedAt: String
+  lastReportAt: String!
+  reportCount: Int!
+  lastErrorMessage: String
+  triggeringReportSummary: String
+  "Back-edge to the owning organization. Always populated."
+  organization: Organization
+  """
+    Back-edge to the owning repository. Always populated when the entity
+    QID is parseable.
+  """
+  repository: Repository
+  """
+    Back-edge to the owning environment. Always populated when the entity
+    QID is parseable. Note that the environment object is constructed from
+    the deployments currently in CDB; if there are no deployments left the
+    returned `Environment` will have an empty `deployments` list.
+  """
+  environment: Environment
+  """
+    Back-edge to the owning deployment. Populated only for incidents about
+    deployments. `null` for resource-scoped incidents.
+  """
+  deployment: Deployment
+  """
+    Back-edge to the owning resource. Populated only for incidents about
+    resources. `null` for deployment-scoped incidents. The resource may
+    have been destroyed since the incident was opened, in which case this
+    resolves to `null`.
+  """
+  resource: Resource
 }
 
 type Log {
@@ -137,6 +211,14 @@ type Organization {
   members: [User!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
+  "Incidents scoped to this organization (newest first)."
+  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
+  """
+    Look up a single incident by id, scoped to this organization. Returns
+    `None` if no such incident exists, or if it exists but does not belong
+    to this organization (ACL via scope traversal).
+  """
+  incident(id: ID!): Incident
 }
 
 type Query {
@@ -155,6 +237,8 @@ type Repository {
   environment(name: String!): Environment!
   commit(hash: String!): Commit!
   environments: [Environment!]!
+  "Incidents scoped to this repository (newest first)."
+  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
 }
 
 type Resource {
@@ -167,6 +251,10 @@ type Resource {
   markers: [ResourceMarker!]!
   sourceTrace: [SourceFrame!]!
   lastLogs(amount: Int): [Log!]!
+  "Per-resource health rollup."
+  status: StatusSummary!
+  "Incidents scoped to this resource (newest first)."
+  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
 }
 
 type SignedInUser {
@@ -180,6 +268,16 @@ type SourceFrame {
   moduleId: String!
   span: String!
   name: String!
+}
+
+type StatusSummary {
+  "UI-friendly rolled-up health enum."
+  health: HealthStatus!
+  lastReportAt: String!
+  lastReportSucceeded: Boolean!
+  openIncidentCount: Int!
+  worstOpenCategory: IncidentCategory
+  consecutiveFailureCount: Int!
 }
 
 type Subscription {

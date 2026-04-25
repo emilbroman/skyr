@@ -146,6 +146,63 @@ impl Organization {
                 internal_error()
             })
     }
+
+    /// Incidents scoped to this organization (newest first).
+    #[allow(clippy::too_many_arguments)]
+    async fn incidents(
+        &self,
+        context: &Context,
+        #[graphql(name = "entityQid")] entity_qid: Option<String>,
+        category: Option<IncidentCategory>,
+        #[graphql(name = "openOnly")] open_only: Option<bool>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<Vec<Incident>> {
+        let scope = self.name.to_string();
+        list_incidents(
+            context,
+            IncidentScope::Org(scope),
+            entity_qid,
+            category,
+            open_only,
+            since,
+            until,
+            limit,
+            offset,
+        )
+        .await
+    }
+
+    /// Look up a single incident by id, scoped to this organization. Returns
+    /// `None` if no such incident exists, or if it exists but does not belong
+    /// to this organization (ACL via scope traversal).
+    async fn incident(&self, context: &Context, id: juniper::ID) -> FieldResult<Option<Incident>> {
+        let incident_id: sdb::IncidentId = (*id)
+            .parse()
+            .map_err(|_| field_error("Invalid incident id"))?;
+
+        let incident = context
+            .sdb_client
+            .get_incident(incident_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch incident {incident_id}: {e}");
+                internal_error()
+            })?;
+
+        let Some(incident) = incident else {
+            return Ok(None);
+        };
+
+        // ACL: only return the incident if it belongs to this organization.
+        if !incident_belongs_to_org(&incident, &self.name) {
+            return Ok(None);
+        }
+
+        Ok(Some(Incident { inner: incident }))
+    }
 }
 
 pub(crate) struct Repository {
@@ -252,6 +309,34 @@ impl Repository {
                 Environment { qid, deployments }
             })
             .collect())
+    }
+
+    /// Incidents scoped to this repository (newest first).
+    #[allow(clippy::too_many_arguments)]
+    async fn incidents(
+        &self,
+        context: &Context,
+        #[graphql(name = "entityQid")] entity_qid: Option<String>,
+        category: Option<IncidentCategory>,
+        #[graphql(name = "openOnly")] open_only: Option<bool>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<Vec<Incident>> {
+        let scope = self.repository.name.to_string();
+        list_incidents(
+            context,
+            IncidentScope::Repo(scope),
+            entity_qid,
+            category,
+            open_only,
+            since,
+            until,
+            limit,
+            offset,
+        )
+        .await
     }
 }
 
@@ -393,6 +478,34 @@ impl Environment {
             .into_iter()
             .map(|header| Artifact { header })
             .collect())
+    }
+
+    /// Incidents scoped to this environment (newest first).
+    #[allow(clippy::too_many_arguments)]
+    async fn incidents(
+        &self,
+        context: &Context,
+        #[graphql(name = "entityQid")] entity_qid: Option<String>,
+        category: Option<IncidentCategory>,
+        #[graphql(name = "openOnly")] open_only: Option<bool>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<Vec<Incident>> {
+        let scope = self.qid.to_string();
+        list_incidents(
+            context,
+            IncidentScope::Env(scope),
+            entity_qid,
+            category,
+            open_only,
+            since,
+            until,
+            limit,
+            offset,
+        )
+        .await
     }
 }
 
@@ -656,6 +769,42 @@ impl Deployment {
         self.deployment.nonce.to_string()
     }
 
+    /// Per-deployment health rollup. **Self-only** — does not aggregate child
+    /// resource health. Resource statuses are reached via
+    /// `Deployment.resources -> Resource.status`.
+    async fn status(&self, context: &Context) -> FieldResult<StatusSummary> {
+        let entity_qid = self.deployment.deployment_qid().to_string();
+        load_status_summary(context, &entity_qid).await
+    }
+
+    /// Incidents scoped to this deployment (newest first).
+    #[allow(clippy::too_many_arguments)]
+    async fn incidents(
+        &self,
+        context: &Context,
+        #[graphql(name = "entityQid")] entity_qid: Option<String>,
+        category: Option<IncidentCategory>,
+        #[graphql(name = "openOnly")] open_only: Option<bool>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<Vec<Incident>> {
+        let scope_qid = self.deployment.deployment_qid().to_string();
+        list_incidents(
+            context,
+            IncidentScope::Entity(scope_qid),
+            entity_qid,
+            category,
+            open_only,
+            since,
+            until,
+            limit,
+            offset,
+        )
+        .await
+    }
+
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
         let namespace = self.deployment.environment_qid().to_string();
         let owner = self.deployment.deployment_qid().to_string();
@@ -895,6 +1044,40 @@ impl Resource {
                 internal_error()
             })
     }
+
+    /// Per-resource health rollup.
+    async fn status(&self, context: &Context) -> FieldResult<StatusSummary> {
+        let entity_qid = self.resource_qid()?.to_string();
+        load_status_summary(context, &entity_qid).await
+    }
+
+    /// Incidents scoped to this resource (newest first).
+    #[allow(clippy::too_many_arguments)]
+    async fn incidents(
+        &self,
+        context: &Context,
+        #[graphql(name = "entityQid")] entity_qid: Option<String>,
+        category: Option<IncidentCategory>,
+        #[graphql(name = "openOnly")] open_only: Option<bool>,
+        since: Option<String>,
+        until: Option<String>,
+        limit: Option<i32>,
+        offset: Option<i32>,
+    ) -> FieldResult<Vec<Incident>> {
+        let scope_qid = self.resource_qid()?.to_string();
+        list_incidents(
+            context,
+            IncidentScope::Entity(scope_qid),
+            entity_qid,
+            category,
+            open_only,
+            since,
+            until,
+            limit,
+            offset,
+        )
+        .await
+    }
 }
 
 #[derive(Clone, Copy, juniper::GraphQLEnum)]
@@ -1005,4 +1188,464 @@ impl AuthChallenge {
     fn passkey_signin(&self) -> Option<&JsonValue> {
         self.passkey_signin.as_ref()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Status reporting and incident management surface
+// ---------------------------------------------------------------------------
+
+/// UI-friendly rolled-up health enum, computed from the underlying counters
+/// in [`StatusSummary`]:
+///
+/// - `Healthy` iff `openIncidentCount == 0`
+/// - `Down` iff `worstOpenCategory == Crash`
+/// - `Degraded` otherwise
+#[derive(Clone, Copy, juniper::GraphQLEnum)]
+pub(crate) enum HealthStatus {
+    #[graphql(name = "HEALTHY")]
+    Healthy,
+    #[graphql(name = "DEGRADED")]
+    Degraded,
+    #[graphql(name = "DOWN")]
+    Down,
+}
+
+/// Producer-classified failure category. Mirrors [`sdb::Category`] /
+/// [`rq::IncidentCategory`].
+#[derive(Clone, Copy, juniper::GraphQLEnum)]
+pub(crate) enum IncidentCategory {
+    #[graphql(name = "BAD_CONFIGURATION")]
+    BadConfiguration,
+    #[graphql(name = "CANNOT_PROGRESS")]
+    CannotProgress,
+    #[graphql(name = "INCONSISTENT_STATE")]
+    InconsistentState,
+    #[graphql(name = "SYSTEM_ERROR")]
+    SystemError,
+    #[graphql(name = "CRASH")]
+    Crash,
+}
+
+impl From<sdb::Category> for IncidentCategory {
+    fn from(c: sdb::Category) -> Self {
+        match c {
+            sdb::Category::BadConfiguration => IncidentCategory::BadConfiguration,
+            sdb::Category::CannotProgress => IncidentCategory::CannotProgress,
+            sdb::Category::InconsistentState => IncidentCategory::InconsistentState,
+            sdb::Category::SystemError => IncidentCategory::SystemError,
+            sdb::Category::Crash => IncidentCategory::Crash,
+        }
+    }
+}
+
+impl From<IncidentCategory> for sdb::Category {
+    fn from(c: IncidentCategory) -> Self {
+        match c {
+            IncidentCategory::BadConfiguration => sdb::Category::BadConfiguration,
+            IncidentCategory::CannotProgress => sdb::Category::CannotProgress,
+            IncidentCategory::InconsistentState => sdb::Category::InconsistentState,
+            IncidentCategory::SystemError => sdb::Category::SystemError,
+            IncidentCategory::Crash => sdb::Category::Crash,
+        }
+    }
+}
+
+/// Per-entity rollup surfaced on `Deployment.status` and `Resource.status`.
+/// Backed by `sdb::StatusSummary`. All datetime fields are formatted as
+/// RFC3339 strings to match the existing `String!` convention used elsewhere
+/// in this schema (`createdAt`, `Log.timestamp`, etc.).
+pub(crate) struct StatusSummary {
+    inner: sdb::StatusSummary,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl StatusSummary {
+    /// UI-friendly rolled-up health enum.
+    fn health(&self) -> HealthStatus {
+        match (
+            self.inner.open_incident_count,
+            self.inner.worst_open_category,
+        ) {
+            (0, _) => HealthStatus::Healthy,
+            (_, Some(sdb::Category::Crash)) => HealthStatus::Down,
+            _ => HealthStatus::Degraded,
+        }
+    }
+
+    #[graphql(name = "lastReportAt")]
+    fn last_report_at(&self) -> String {
+        self.inner.last_report_at.to_rfc3339()
+    }
+
+    #[graphql(name = "lastReportSucceeded")]
+    fn last_report_succeeded(&self) -> bool {
+        self.inner.last_report_succeeded
+    }
+
+    #[graphql(name = "openIncidentCount")]
+    fn open_incident_count(&self) -> i32 {
+        self.inner.open_incident_count.min(i32::MAX as u32) as i32
+    }
+
+    #[graphql(name = "worstOpenCategory")]
+    fn worst_open_category(&self) -> Option<IncidentCategory> {
+        self.inner.worst_open_category.map(IncidentCategory::from)
+    }
+
+    #[graphql(name = "consecutiveFailureCount")]
+    fn consecutive_failure_count(&self) -> i32 {
+        self.inner.consecutive_failure_count.min(i32::MAX as u32) as i32
+    }
+}
+
+/// Durable, RE-owned record of a sustained failure.
+pub(crate) struct Incident {
+    inner: sdb::Incident,
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Incident {
+    fn id(&self) -> juniper::ID {
+        juniper::ID::new(self.inner.id.to_string())
+    }
+
+    #[graphql(name = "entityQid")]
+    fn entity_qid(&self) -> &str {
+        &self.inner.entity_qid
+    }
+
+    fn category(&self) -> IncidentCategory {
+        self.inner.category.into()
+    }
+
+    #[graphql(name = "openedAt")]
+    fn opened_at(&self) -> String {
+        self.inner.opened_at.to_rfc3339()
+    }
+
+    #[graphql(name = "closedAt")]
+    fn closed_at(&self) -> Option<String> {
+        self.inner.closed_at.map(|t| t.to_rfc3339())
+    }
+
+    #[graphql(name = "lastReportAt")]
+    fn last_report_at(&self) -> String {
+        self.inner.last_report_at.to_rfc3339()
+    }
+
+    #[graphql(name = "reportCount")]
+    fn report_count(&self) -> i32 {
+        let n = self.inner.report_count;
+        if n > i32::MAX as u64 {
+            i32::MAX
+        } else {
+            n as i32
+        }
+    }
+
+    #[graphql(name = "lastErrorMessage")]
+    fn last_error_message(&self) -> Option<&str> {
+        if self.inner.last_error_message.is_empty() {
+            None
+        } else {
+            Some(self.inner.last_error_message.as_str())
+        }
+    }
+
+    #[graphql(name = "triggeringReportSummary")]
+    fn triggering_report_summary(&self) -> Option<&str> {
+        self.inner.triggering_report_summary.as_deref()
+    }
+
+    /// Back-edge to the owning organization. Always populated.
+    fn organization(&self) -> Option<Organization> {
+        let qid = self.inner.entity_qid.parse::<ids::DeploymentQid>().ok();
+        if let Some(qid) = qid {
+            return Some(Organization {
+                name: qid.environment.repo.org,
+            });
+        }
+        let qid = self.inner.entity_qid.parse::<ids::ResourceQid>().ok()?;
+        Some(Organization {
+            name: qid.environment.repo.org,
+        })
+    }
+
+    /// Back-edge to the owning repository. Always populated when the entity
+    /// QID is parseable.
+    async fn repository(&self, context: &Context) -> FieldResult<Option<Repository>> {
+        let repo_qid = match incident_repo_qid(&self.inner) {
+            Some(qid) => qid,
+            None => return Ok(None),
+        };
+        let repository = context
+            .cdb_client
+            .repository(&repo_qid)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to load incident repository {repo_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(Some(Repository { repository }))
+    }
+
+    /// Back-edge to the owning environment. Always populated when the entity
+    /// QID is parseable. Note that the environment object is constructed from
+    /// the deployments currently in CDB; if there are no deployments left the
+    /// returned `Environment` will have an empty `deployments` list.
+    async fn environment(&self, context: &Context) -> FieldResult<Option<Environment>> {
+        let env_qid = match incident_env_qid(&self.inner) {
+            Some(qid) => qid,
+            None => return Ok(None),
+        };
+
+        let deployments = context
+            .cdb_client
+            .repo(env_qid.repo.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list deployments for incident env {env_qid}: {e}");
+                internal_error()
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read deployments for incident env {env_qid}: {e}");
+                internal_error()
+            })?;
+
+        let deployments: Vec<_> = deployments
+            .into_iter()
+            .filter(|d| d.environment_qid() == env_qid)
+            .collect();
+
+        Ok(Some(Environment {
+            qid: env_qid,
+            deployments,
+        }))
+    }
+
+    /// Back-edge to the owning deployment. Populated only for incidents about
+    /// deployments. `null` for resource-scoped incidents.
+    async fn deployment(&self, context: &Context) -> FieldResult<Option<Deployment>> {
+        let Ok(deployment_qid) = self.inner.entity_qid.parse::<ids::DeploymentQid>() else {
+            return Ok(None);
+        };
+
+        let repo_client = context.cdb_client.repo(deployment_qid.repo_qid().clone());
+        let mut stream = repo_client.deployments().await.map_err(|e| {
+            tracing::error!(
+                "Failed to list deployments for incident deployment {deployment_qid}: {e}"
+            );
+            internal_error()
+        })?;
+        while let Some(dep) = stream.next().await {
+            let dep = dep.map_err(|e| {
+                tracing::error!("Failed to read deployment for incident {deployment_qid}: {e}");
+                internal_error()
+            })?;
+            if dep.deployment_qid() == deployment_qid {
+                return Ok(Some(Deployment { deployment: dep }));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Back-edge to the owning resource. Populated only for incidents about
+    /// resources. `null` for deployment-scoped incidents. The resource may
+    /// have been destroyed since the incident was opened, in which case this
+    /// resolves to `null`.
+    async fn resource(&self, context: &Context) -> FieldResult<Option<Resource>> {
+        let Ok(resource_qid) = self.inner.entity_qid.parse::<ids::ResourceQid>() else {
+            return Ok(None);
+        };
+
+        let namespace = resource_qid.environment.to_string();
+        let resource = context
+            .rdb_client
+            .namespace(namespace.clone())
+            .resource(
+                resource_qid.resource.resource_type().to_string(),
+                resource_qid.resource.resource_name().to_string(),
+            )
+            .get()
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    "Failed to fetch incident resource {resource_qid} in namespace {namespace}: {e}"
+                );
+                internal_error()
+            })?;
+
+        Ok(resource.map(|resource| Resource { resource }))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Status / incident helpers
+// ---------------------------------------------------------------------------
+
+async fn load_status_summary(context: &Context, entity_qid: &str) -> FieldResult<StatusSummary> {
+    let summary = context
+        .sdb_client
+        .status_summary(entity_qid)
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to load status summary for {entity_qid}: {e}");
+            internal_error()
+        })?;
+
+    // If the entity has never been reported on (or has been terminated),
+    // synthesize a default "healthy / no signal yet" summary so the GraphQL
+    // contract (`status: StatusSummary!`) holds. `last_report_at` falls back
+    // to UNIX epoch as a sentinel; clients should display "no data yet" when
+    // `lastReportAt` predates the entity's `createdAt`.
+    let inner = summary.unwrap_or_else(|| sdb::StatusSummary {
+        entity_qid: entity_qid.to_string(),
+        last_report_at: chrono::DateTime::<chrono::Utc>::from_timestamp(0, 0)
+            .unwrap_or_else(chrono::Utc::now),
+        last_report_succeeded: true,
+        open_incident_count: 0,
+        worst_open_category: None,
+        consecutive_failure_count: 0,
+        operational_state: None,
+    });
+
+    Ok(StatusSummary { inner })
+}
+
+#[derive(Clone)]
+enum IncidentScope {
+    Org(String),
+    Repo(String),
+    Env(String),
+    Entity(String),
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn list_incidents(
+    context: &Context,
+    scope: IncidentScope,
+    entity_qid_filter: Option<String>,
+    category: Option<IncidentCategory>,
+    open_only: Option<bool>,
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<i32>,
+    offset: Option<i32>,
+) -> FieldResult<Vec<Incident>> {
+    let since = match since {
+        Some(s) => Some(parse_rfc3339(&s, "since")?),
+        None => None,
+    };
+    let until = match until {
+        Some(s) => Some(parse_rfc3339(&s, "until")?),
+        None => None,
+    };
+
+    let filter = sdb::IncidentFilter {
+        category: category.map(sdb::Category::from),
+        open_only: open_only.unwrap_or(false),
+        since,
+        until,
+    };
+
+    let pagination = sdb::Pagination {
+        offset: offset.unwrap_or(0).max(0) as usize,
+        limit: limit.map(|l| l.max(0) as usize),
+    };
+
+    let incidents = match scope {
+        IncidentScope::Org(scope) => context
+            .sdb_client
+            .incidents_by_org(&scope, &filter, pagination)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list incidents for org scope {scope}: {e}");
+                internal_error()
+            })?,
+        IncidentScope::Repo(scope) => context
+            .sdb_client
+            .incidents_by_repo(&scope, &filter, pagination)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list incidents for repo scope {scope}: {e}");
+                internal_error()
+            })?,
+        IncidentScope::Env(scope) => context
+            .sdb_client
+            .incidents_by_env(&scope, &filter, pagination)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list incidents for env scope {scope}: {e}");
+                internal_error()
+            })?,
+        IncidentScope::Entity(scope) => context
+            .sdb_client
+            .incidents_by_entity(&scope, &filter, pagination)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list incidents for entity scope {scope}: {e}");
+                internal_error()
+            })?,
+    };
+
+    let result = if let Some(needle) = entity_qid_filter {
+        incidents
+            .into_iter()
+            .filter(|i| i.entity_qid == needle)
+            .map(|inner| Incident { inner })
+            .collect()
+    } else {
+        incidents
+            .into_iter()
+            .map(|inner| Incident { inner })
+            .collect()
+    };
+
+    Ok(result)
+}
+
+fn parse_rfc3339(value: &str, arg_name: &str) -> FieldResult<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .map_err(|_| field_error(&format!("Invalid RFC3339 timestamp for `{arg_name}`")))
+}
+
+/// Determine the org QID owning an incident, given its entity QID. Tries
+/// deployment-QID parsing first (the more specific form) and falls back to
+/// resource-QID parsing.
+fn incident_org_id(incident: &sdb::Incident) -> Option<ids::OrgId> {
+    if let Ok(qid) = incident.entity_qid.parse::<ids::DeploymentQid>() {
+        return Some(qid.environment.repo.org);
+    }
+    if let Ok(qid) = incident.entity_qid.parse::<ids::ResourceQid>() {
+        return Some(qid.environment.repo.org);
+    }
+    None
+}
+
+fn incident_belongs_to_org(incident: &sdb::Incident, org: &ids::OrgId) -> bool {
+    incident_org_id(incident).as_ref() == Some(org)
+}
+
+fn incident_repo_qid(incident: &sdb::Incident) -> Option<ids::RepoQid> {
+    if let Ok(qid) = incident.entity_qid.parse::<ids::DeploymentQid>() {
+        return Some(qid.environment.repo);
+    }
+    if let Ok(qid) = incident.entity_qid.parse::<ids::ResourceQid>() {
+        return Some(qid.environment.repo);
+    }
+    None
+}
+
+fn incident_env_qid(incident: &sdb::Incident) -> Option<ids::EnvironmentQid> {
+    if let Ok(qid) = incident.entity_qid.parse::<ids::DeploymentQid>() {
+        return Some(qid.environment);
+    }
+    if let Ok(qid) = incident.entity_qid.parse::<ids::ResourceQid>() {
+        return Some(qid.environment);
+    }
+    None
 }
