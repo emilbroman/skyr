@@ -5080,6 +5080,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rq"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "ids",
+ "lapin",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
