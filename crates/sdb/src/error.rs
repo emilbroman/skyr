@@ -4,7 +4,7 @@ use scylla::errors::{
 };
 use thiserror::Error;
 
-use crate::category::InvalidCategory;
+use rq::InvalidCategory;
 
 /// Error returned when establishing a connection or initializing the SDB
 /// schema.

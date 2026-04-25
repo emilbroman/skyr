@@ -121,6 +121,54 @@ pub enum IncidentCategory {
     Crash,
 }
 
+impl IncidentCategory {
+    /// All five categories in declaration (severity) order, least-severe first.
+    pub const ALL: [IncidentCategory; 5] = [
+        IncidentCategory::BadConfiguration,
+        IncidentCategory::CannotProgress,
+        IncidentCategory::InconsistentState,
+        IncidentCategory::SystemError,
+        IncidentCategory::Crash,
+    ];
+
+    /// The canonical SCREAMING_SNAKE_CASE name used on the wire and in the SDB.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IncidentCategory::BadConfiguration => "BAD_CONFIGURATION",
+            IncidentCategory::CannotProgress => "CANNOT_PROGRESS",
+            IncidentCategory::InconsistentState => "INCONSISTENT_STATE",
+            IncidentCategory::SystemError => "SYSTEM_ERROR",
+            IncidentCategory::Crash => "CRASH",
+        }
+    }
+}
+
+impl std::fmt::Display for IncidentCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Error returned when a string cannot be parsed as an [`IncidentCategory`].
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[error("invalid incident category: {0:?}")]
+pub struct InvalidCategory(pub String);
+
+impl std::str::FromStr for IncidentCategory {
+    type Err = InvalidCategory;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "BAD_CONFIGURATION" => Ok(IncidentCategory::BadConfiguration),
+            "CANNOT_PROGRESS" => Ok(IncidentCategory::CannotProgress),
+            "INCONSISTENT_STATE" => Ok(IncidentCategory::InconsistentState),
+            "SYSTEM_ERROR" => Ok(IncidentCategory::SystemError),
+            "CRASH" => Ok(IncidentCategory::Crash),
+            other => Err(InvalidCategory(other.to_string())),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entity QID
 // ---------------------------------------------------------------------------

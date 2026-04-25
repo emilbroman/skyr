@@ -72,30 +72,9 @@ const DURABLE: bool = true;
 
 /// Severity category attached to an incident.
 ///
-/// **Reconciliation note (Wave 1 integration):** The same five-variant enum is
-/// being defined in the parallel `rq` task. This local definition exists so the
-/// `nq` crate can compile and be tested in isolation; the engineering manager
-/// is expected to consolidate this with `rq`'s enum at integration time so all
-/// of `rq`, `nq`, `re`, `ne`, and `sdb` agree on a single type. When that
-/// happens, this enum should be replaced by a re-export from whichever crate
-/// ends up owning it (likely `rq`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum SeverityCategory {
-    /// A failure in Skyr's own infrastructure (broker, DB, plugin host, etc.).
-    SystemError,
-    /// The system is refusing to roll out configuration it deems invalid.
-    BadConfiguration,
-    /// The entity itself is stable, but a derived/dependent configuration could
-    /// not be applied.
-    CannotProgress,
-    /// The configuration DAG has drifted from reality and reconciliation failed
-    /// due to an irreconcilable inconsistency.
-    InconsistentState,
-    /// The entity is not behaving as intended, resulting in user-visible
-    /// downtime.
-    Crash,
-}
+/// Re-exported from [`rq`] so the entire status-reporting subsystem agrees on
+/// one type. The on-the-wire encoding stays SCREAMING_SNAKE_CASE.
+pub use rq::IncidentCategory as SeverityCategory;
 
 /// The kind of incident lifecycle event a notification request describes.
 ///
