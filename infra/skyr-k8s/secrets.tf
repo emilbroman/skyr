@@ -70,3 +70,18 @@ resource "kubernetes_secret" "skyr" {
     "minio-secret-key"    = local.minio_secret_key
   }
 }
+
+# --- NE SMTP Credentials ---
+
+resource "kubernetes_secret" "ne_smtp" {
+  metadata {
+    name      = "ne-smtp"
+    namespace = local.namespace
+    labels    = local.labels
+  }
+
+  data = {
+    username = var.ne_smtp_username
+    password = var.ne_smtp_password
+  }
+}

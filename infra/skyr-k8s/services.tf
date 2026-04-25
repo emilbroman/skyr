@@ -100,6 +100,7 @@ resource "kubernetes_deployment" "api" {
             "--port", "8080",
             "--cdb-hostname", local.scylladb_hostname,
             "--rdb-hostname", local.scylladb_hostname,
+            "--sdb-hostname", local.scylladb_hostname,
             "--udb-hostname", local.redis_hostname,
             "--ldb-hostname", local.redpanda_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
@@ -301,6 +302,8 @@ resource "kubernetes_deployment" "de" {
             "--cdb-hostname", local.scylladb_hostname,
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
+            "--rq-hostname", local.rabbitmq_hostname,
+            "--sdb-hostname", local.scylladb_hostname,
             "--ldb-hostname", local.redpanda_hostname,
             "--worker-index", tostring(count.index),
             "--worker-count", tostring(var.de_worker_count),
@@ -357,6 +360,7 @@ resource "kubernetes_deployment" "rte" {
             "daemon",
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
+            "--rq-hostname", local.rabbitmq_hostname,
             "--ldb-hostname", local.redpanda_hostname,
             "--plugin", "Std/Random@unix://_/var/run/plugins/random.sock",
             "--plugin", "Std/Artifact@unix://_/var/run/plugins/artifact.sock",
@@ -458,6 +462,127 @@ resource "kubernetes_deployment" "rte" {
           volume_mount {
             name       = "plugin-sockets"
             mount_path = "/var/run/plugins"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [spec[0].template[0].spec[0].container[0].image]
+  }
+}
+
+# =============================================================================
+# RE — Reporting Engine (multiple workers, no port)
+# =============================================================================
+
+resource "kubernetes_deployment" "re" {
+  count = var.re_worker_count
+
+  metadata {
+    name      = "re-${count.index}"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "re", "skyr/worker-index" = tostring(count.index) })
+  }
+
+  spec {
+    replicas = 1
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "re", "skyr/worker-index" = tostring(count.index) }
+    }
+
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "re", "skyr/worker-index" = tostring(count.index) })
+      }
+
+      spec {
+        container {
+          name              = "re"
+          image             = "ghcr.io/emilbroman/skyr-re:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/re"]
+          args = [
+            "daemon",
+            "--rq-hostname", local.rabbitmq_hostname,
+            "--sdb-hostname", local.scylladb_hostname,
+            "--nq-hostname", local.rabbitmq_hostname,
+            "--worker-index", tostring(count.index),
+            "--worker-count", tostring(var.re_worker_count),
+            "--local-workers", tostring(var.re_local_workers),
+          ]
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [spec[0].template[0].spec[0].container[0].image]
+  }
+}
+
+# =============================================================================
+# NE — Notification Engine (competing consumers; SMTP credentials)
+# =============================================================================
+
+resource "kubernetes_deployment" "ne" {
+  metadata {
+    name      = "ne"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "ne" })
+  }
+
+  spec {
+    replicas = var.ne_worker_count
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "ne" }
+    }
+
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "ne" })
+      }
+
+      spec {
+        container {
+          name              = "ne"
+          image             = "ghcr.io/emilbroman/skyr-ne:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/ne"]
+          args = [
+            "daemon",
+            "--nq-hostname", local.rabbitmq_hostname,
+            "--udb-hostname", local.redis_hostname,
+            "--dedup-hostname", local.redis_hostname,
+            "--smtp-host", var.ne_smtp_host,
+            "--smtp-port", tostring(var.ne_smtp_port),
+            "--smtp-tls", var.ne_smtp_tls,
+            "--smtp-from", var.ne_smtp_from,
+          ]
+
+          env {
+            name = "NE_SMTP_USERNAME"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.ne_smtp.metadata[0].name
+                key  = "username"
+              }
+            }
+          }
+
+          env {
+            name = "NE_SMTP_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret.ne_smtp.metadata[0].name
+                key  = "password"
+              }
+            }
           }
         }
       }
