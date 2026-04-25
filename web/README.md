@@ -71,14 +71,17 @@ web/
 
 ## Pages
 
-| Route                             | Description                                                |
-| --------------------------------- | ---------------------------------------------------------- |
-| `~signin`                         | SSH challenge-response sign-in                             |
-| `/`                               | Organizations dashboard                                    |
-| `[org]`                           | Repositories for an organization                           |
-| `[org]/[repo]`                    | Environments for a repository                              |
-| `[org]/[repo]/[env]`              | Deployments and resources for an environment               |
-| `[org]/[repo]/[env]/[deployment]` | Deployment detail: resources, logs, source tree, artifacts |
+| Route                                | Description                                                                  |
+| ------------------------------------ | ---------------------------------------------------------------------------- |
+| `~signin`                            | SSH challenge-response sign-in                                               |
+| `/`                                  | Organizations dashboard                                                      |
+| `[org]`                              | Repositories for an organization                                             |
+| `[org]/~i`                           | Incidents view: all incidents in the org, filterable by category and status  |
+| `[org]/~i/[id]`                      | Incident detail with links back to the owning deployment / resource          |
+| `[org]/[repo]`                       | Environments for a repository                                                |
+| `[org]/[repo]/[env]`                 | Environment shell with tabbed sub-pages (deployments / resources / logs / artifacts) |
+| `[org]/[repo]/[env]/~d/[deployment]` | Deployment detail: status, resources, logs, source tree, artifacts           |
+| `[org]/[repo]/[env]/~r/[resource]`   | Resource detail: status, inputs, outputs, dependencies, incidents            |
 
 ## Authentication
 
@@ -99,7 +102,8 @@ GraphQL operations are defined as `.graphql` files in `src/lib/graphql/documents
 | `auth.graphql`          | Challenge, sign-in, token refresh  |
 | `organizations.graphql` | Organization listing and detail    |
 | `repositories.graphql`  | Repository listing and detail      |
-| `environment.graphql`   | Environment and deployment queries |
+| `environment.graphql`   | Environment and deployment queries (including `status` and `incidents` for deployments and resources) |
+| `incidents.graphql`     | Org-scoped incident listing and single-incident detail |
 | `logs.graphql`          | Log subscriptions (WebSocket)      |
 | `tree.graphql`          | File tree and blob content         |
 
@@ -148,6 +152,7 @@ Environment and ref names may contain slashes. Since some reverse proxies (e.g. 
 | Component         | Description                                                                   |
 | ----------------- | ----------------------------------------------------------------------------- |
 | `DeploymentState` | Colored badge for deployment states (DESIRED, LINGERING, UNDESIRED, DOWN)     |
+| `HealthBadge`     | Colored badge for `StatusSummary.health` (HEALTHY, DEGRADED, DOWN) on deployments and resources |
 | `FileBrowser`     | Recursive tree/blob display for browsing a deployment's source files          |
 | `LogStream`       | Real-time log viewer via WebSocket subscription with auto-scroll              |
 | `ResourceCard`    | Collapsible card showing a resource's type, inputs, outputs, and dependencies |
