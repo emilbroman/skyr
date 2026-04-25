@@ -1002,6 +1002,17 @@ impl DeploymentClient {
             return Ok(());
         }
 
+        // Reset the failure counter on every state change so that the
+        // exponential backoff window doesn't carry over across transitions.
+        // If the new state matches the previous state (no-op transition),
+        // preserve the existing count.
+        let state_changed = prev_state.as_ref().is_none_or(|s| s.state != state);
+        let failures = if state_changed {
+            0
+        } else {
+            prev_state.as_ref().map(|s| s.failures).unwrap_or(0)
+        };
+
         let deployment = Deployment {
             repo: self.repo.name.clone(),
             environment: self.environment.clone(),
@@ -1013,7 +1024,7 @@ impl DeploymentClient {
                 .unwrap_or_else(Utc::now),
             state,
             bootstrapped: prev_state.as_ref().map(|s| s.bootstrapped).unwrap_or(false),
-            failures: prev_state.as_ref().map(|s| s.failures).unwrap_or(0),
+            failures,
         };
 
         self.repo.client.set_deployment(deployment).await?;
