@@ -153,7 +153,7 @@ function onRedeploy() {
           class="bg-gray-900 border border-gray-800 rounded-lg p-3 font-mono text-xs space-y-0.5 max-h-60 overflow-y-auto"
         >
           {#each deployment.lastLogs as log}
-            <div class="flex gap-2 leading-5">
+            <div class="flex flex-col sm:flex-row sm:gap-2 leading-5">
               <span class="text-gray-500 shrink-0"
                 >{formatLogTimestamp(log.timestamp)}</span
               >
