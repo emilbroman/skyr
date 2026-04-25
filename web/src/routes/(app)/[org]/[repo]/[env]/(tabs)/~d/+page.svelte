@@ -102,7 +102,7 @@ function toggleMenu(id: string) {
 function onWindowClick(event: MouseEvent) {
     if (openMenuId === null) return;
     const target = event.target as Element | null;
-    if (target && target.closest(`[data-menu-root="${openMenuId}"]`)) return;
+    if (target?.closest(`[data-menu-root="${openMenuId}"]`)) return;
     openMenuId = null;
 }
 </script>
