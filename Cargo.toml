@@ -15,6 +15,7 @@ members = [
   "crates/plugin_std_random",
   "crates/plugin_std_time",
   "crates/rdb",
+  "crates/re",
   "crates/rq",
   "crates/rtp",
   "crates/rte",

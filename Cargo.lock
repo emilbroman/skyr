@@ -4927,6 +4927,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "re"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "ids",
+ "nq",
+ "rq",
+ "sdb",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "reactor-trait"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
