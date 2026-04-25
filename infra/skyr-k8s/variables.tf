@@ -164,40 +164,35 @@ variable "ne_worker_count" {
 
 # --- NE SMTP ---
 
-variable "ne_smtp_host" {
-  type        = string
-  description = "SMTP host the NE relays through."
-}
+variable "ne_smtp" {
+  description = <<-EOT
+    Upstream SMTP configuration the Notification Engine relays
+    through. When `null` (the default), the module provisions an
+    in-cluster MailHog instance and points NE at it — useful for
+    development, staging, or any deployment where you do not need
+    real email delivery. MailHog captures every message and exposes
+    a web UI at `mailhog:8025` inside the cluster (port-forward to
+    inspect).
 
-variable "ne_smtp_port" {
-  type        = number
-  description = "SMTP port."
-  default     = 587
-}
+    For production-style deployments, supply this object with the
+    upstream relay's host / port / TLS mode / envelope-from address,
+    plus the SASL username and password. The credentials are stored
+    in the `ne-smtp` Kubernetes Secret and injected into the NE pod
+    as `NE_SMTP_USERNAME` / `NE_SMTP_PASSWORD`.
 
-variable "ne_smtp_tls" {
-  type        = string
-  description = "SMTP TLS mode (starttls, implicit, or none)."
-  default     = "starttls"
-}
-
-variable "ne_smtp_from" {
-  type        = string
-  description = "SMTP envelope-from address."
-}
-
-variable "ne_smtp_username" {
-  type        = string
-  description = "SMTP username for NE."
-  sensitive   = true
-  default     = ""
-}
-
-variable "ne_smtp_password" {
-  type        = string
-  description = "SMTP password for NE."
-  sensitive   = true
-  default     = ""
+    `tls` accepts `starttls`, `implicit`, or `none` and matches the
+    `--smtp-tls` flag on the NE binary.
+  EOT
+  type = object({
+    host     = string
+    port     = number
+    tls      = string
+    from     = string
+    username = string
+    password = string
+  })
+  sensitive = true
+  default   = null
 }
 
 # --- Secrets ---

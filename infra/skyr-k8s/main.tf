@@ -15,6 +15,7 @@ locals {
   deploy_minio        = var.minio_endpoint_url == null
   deploy_oci_registry = var.oci_registry_url == null
   deploy_buildkit     = var.buildkit_addr == null
+  deploy_mailhog      = var.ne_smtp == null
 
   # Resolved hostnames/URLs — internal services use K8s DNS
   scylladb_hostname = coalesce(var.scylladb_hostname, "scylladb.${local.namespace}.svc.cluster.local")
@@ -28,6 +29,17 @@ locals {
   # MinIO credentials: use provided or generated
   minio_access_key = coalesce(var.minio_access_key_id, one(random_password.minio_access_key[*].result))
   minio_secret_key = coalesce(var.minio_secret_access_key, one(random_password.minio_secret_key[*].result))
+
+  # NE SMTP: when no upstream is configured, point at the in-cluster
+  # MailHog instance. MailHog accepts plain SMTP on port 1025 with no
+  # auth, captures every message, and exposes a web UI on 8025 — fine
+  # for development and staging, not a production relay.
+  ne_smtp_host     = var.ne_smtp == null ? "mailhog.${local.namespace}.svc.cluster.local" : var.ne_smtp.host
+  ne_smtp_port     = var.ne_smtp == null ? 1025 : var.ne_smtp.port
+  ne_smtp_tls      = var.ne_smtp == null ? "none" : var.ne_smtp.tls
+  ne_smtp_from     = var.ne_smtp == null ? "skyr@${local.namespace}.local" : var.ne_smtp.from
+  ne_smtp_username = var.ne_smtp == null ? "" : var.ne_smtp.username
+  ne_smtp_password = var.ne_smtp == null ? "" : var.ne_smtp.password
 
   # Common labels
   labels = {

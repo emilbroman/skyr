@@ -72,6 +72,11 @@ resource "kubernetes_secret" "skyr" {
 }
 
 # --- NE SMTP Credentials ---
+#
+# Always created so the NE Deployment can mount the secret unconditionally.
+# When `var.ne_smtp` is null the values resolve to empty strings — MailHog
+# does not require auth, and the NE binary skips the SASL handshake when
+# both fields are empty.
 
 resource "kubernetes_secret" "ne_smtp" {
   metadata {
@@ -81,7 +86,7 @@ resource "kubernetes_secret" "ne_smtp" {
   }
 
   data = {
-    username = var.ne_smtp_username
-    password = var.ne_smtp_password
+    username = local.ne_smtp_username
+    password = local.ne_smtp_password
   }
 }
