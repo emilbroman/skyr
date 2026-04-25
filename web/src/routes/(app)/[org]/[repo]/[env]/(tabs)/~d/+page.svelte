@@ -2,6 +2,7 @@
 import { page } from "$app/stores";
 import { MoreVertical } from "lucide-svelte";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
+import HealthBadge from "$lib/components/HealthBadge.svelte";
 import {
     CreateDeploymentDocument,
     DeploymentState,
@@ -187,7 +188,10 @@ function onWindowClick(event: MouseEvent) {
               {new Date(deployment.createdAt).toLocaleString()}
             </td>
             <td class="py-3 pr-4">
-              <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
+              <div class="flex items-center gap-1.5">
+                <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
+                <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} worstOpenCategory={deployment.status.worstOpenCategory} size="small" showLabel={false} />
+              </div>
             </td>
             <td class="py-3 pr-4 text-gray-500">
               {deployment.resources.length}
@@ -229,6 +233,7 @@ function onWindowClick(event: MouseEvent) {
           </div>
           <div class="mt-3 flex items-center gap-3">
             <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
+            <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} worstOpenCategory={deployment.status.worstOpenCategory} size="small" showLabel={false} />
             <span class="text-sm text-gray-500">{deployment.resources.length} resources</span>
             {#if deployment.state !== DeploymentState.Desired}
               <div class="ml-auto" data-menu-root={deployment.id}>

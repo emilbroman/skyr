@@ -16,6 +16,14 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
           state
           bootstrapped
           failures
+          status {
+            health
+            lastReportAt
+            lastReportSucceeded
+            openIncidentCount
+            worstOpenCategory
+            consecutiveFailureCount
+          }
           resources {
             type
             name
@@ -56,6 +64,14 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
             moduleId
             span
             name
+          }
+          status {
+            health
+            lastReportAt
+            lastReportSucceeded
+            openIncidentCount
+            worstOpenCategory
+            consecutiveFailureCount
           }
         }
       }
@@ -100,6 +116,23 @@ query ResourceDetail(
             moduleId
             span
             name
+          }
+          status {
+            health
+            lastReportAt
+            lastReportSucceeded
+            openIncidentCount
+            worstOpenCategory
+            consecutiveFailureCount
+          }
+          incidents(limit: 50) {
+            id
+            category
+            openedAt
+            closedAt
+            lastReportAt
+            reportCount
+            lastErrorMessage
           }
         }
       }
@@ -162,6 +195,23 @@ query DeploymentDetail(
           state
           bootstrapped
           failures
+          status {
+            health
+            lastReportAt
+            lastReportSucceeded
+            openIncidentCount
+            worstOpenCategory
+            consecutiveFailureCount
+          }
+          incidents(limit: 50) {
+            id
+            category
+            openedAt
+            closedAt
+            lastReportAt
+            reportCount
+            lastErrorMessage
+          }
           resources {
             type
             name
@@ -179,6 +229,11 @@ query DeploymentDetail(
               moduleId
               span
               name
+            }
+            status {
+              health
+              openIncidentCount
+              worstOpenCategory
             }
           }
           lastLogs(amount: 20) {

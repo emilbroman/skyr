@@ -1,5 +1,6 @@
 <script lang="ts">
 import { page } from "$app/stores";
+import HealthBadge from "$lib/components/HealthBadge.svelte";
 import ResourceCardCompact from "$lib/components/ResourceCardCompact.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
 import { EnvironmentDetailDocument, ResourceMarker } from "$lib/graphql/generated";
@@ -110,6 +111,7 @@ function typeParts(type: string): { prefix: string; tail: string } {
           <tr class="border-b border-gray-200 text-gray-500">
             <th class="pb-3 pt-3 pl-4 pr-4 font-medium">Type</th>
             <th class="pb-3 pt-3 pr-4 font-medium">Name</th>
+            <th class="pb-3 pt-3 pr-4 font-medium">Health</th>
             <th class="pb-3 pt-3 pr-4 font-medium">Markers</th>
           </tr>
         </thead>
@@ -134,6 +136,14 @@ function typeParts(type: string): { prefix: string; tail: string } {
                 >
                   {resource.name}
                 </a>
+              </td>
+              <td class="py-3 pr-4">
+                <HealthBadge
+                  health={resource.status.health}
+                  openIncidentCount={resource.status.openIncidentCount}
+                  worstOpenCategory={resource.status.worstOpenCategory}
+                  size="small"
+                />
               </td>
               <td class="py-3 pr-4">
                 <div class="flex items-center gap-1.5 flex-wrap">

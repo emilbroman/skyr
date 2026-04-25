@@ -1,6 +1,7 @@
 <script lang="ts">
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
+import HealthBadge from "$lib/components/HealthBadge.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
@@ -12,7 +13,13 @@ import {
     ResourceMarker,
 } from "$lib/graphql/generated";
 import { graphqlMutation, graphqlQuery } from "$lib/graphql/query";
-import { commitTreeHref, decodeSegment, deploymentHref, resourceHref } from "$lib/paths";
+import {
+    commitTreeHref,
+    decodeSegment,
+    deploymentHref,
+    orgIncidentHref,
+    resourceHref,
+} from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -304,6 +311,24 @@ let aRecordFqdn = $derived.by(() => {
           <dd><DeploymentStateBadge state={resource.owner.state} bootstrapped={resource.owner.bootstrapped} failures={resource.owner.failures} /></dd>
         </div>
       {/if}
+      <div>
+        <dt class="text-gray-400">Health</dt>
+        <dd>
+          <HealthBadge
+            health={resource.status.health}
+            openIncidentCount={resource.status.openIncidentCount}
+            worstOpenCategory={resource.status.worstOpenCategory}
+          />
+        </dd>
+      </div>
+      <div>
+        <dt class="text-gray-400">Last report</dt>
+        <dd class="text-gray-700">
+          {new Date(resource.status.lastReportAt).getTime() === 0
+            ? "Never"
+            : new Date(resource.status.lastReportAt).toLocaleString()}
+        </dd>
+      </div>
       {#if resource.sourceTrace.length > 0}
         {@const frame = resource.sourceTrace[0]}
         {@const filePath = moduleIdToLocalPath(frame.moduleId) + ".scl"}
@@ -326,6 +351,26 @@ let aRecordFqdn = $derived.by(() => {
         </div>
       {/if}
     </dl>
+    {#if resource.incidents.length > 0}
+      <div class="mt-4">
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Incidents</h3>
+        <ul class="space-y-1 text-sm">
+          {#each resource.incidents as incident}
+            <li>
+              <a
+                href={orgIncidentHref(orgName, incident.id)}
+                class="text-orange-600 hover:text-orange-500"
+              >
+                {incident.category} · opened {new Date(incident.openedAt).toLocaleString()}
+                {incident.closedAt
+                  ? ` · closed ${new Date(incident.closedAt).toLocaleString()}`
+                  : " · OPEN"}
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
   </div>
 
   <!-- Resource Widgets -->
