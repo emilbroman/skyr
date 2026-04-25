@@ -26,9 +26,6 @@ pub struct Deployment {
     pub state: DeploymentState,
     /// Whether the DAG has been fully explored to stability at least once.
     pub bootstrapped: bool,
-    /// Consecutive failed iteration count (for exponential backoff).
-    /// Resets to 0 on success. Observational only — does not alter lifecycle transitions.
-    pub failures: u32,
 }
 
 impl Deployment {

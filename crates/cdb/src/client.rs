@@ -98,7 +98,6 @@ prepared_statements! {
                 nonce BIGINT,
                 state TEXT,
                 bootstrapped BOOLEAN,
-                failures INT,
                 PRIMARY KEY ((organization, repository), created_at, environment_id, commit_hash, nonce)
             ) WITH CLUSTERING ORDER BY (created_at DESC, environment_id ASC, commit_hash ASC, nonce ASC)
         "#,
@@ -114,7 +113,6 @@ prepared_statements! {
                 created_at TIMESTAMP,
                 state TEXT,
                 bootstrapped BOOLEAN,
-                failures INT,
                 PRIMARY KEY ((deployment_qid))
             )
         "#,
@@ -182,19 +180,19 @@ prepared_statements! {
         "#,
 
         find_deployment_by_qid = r#"
-            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped, failures
+            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped
             FROM cdb.deployments_by_id
             WHERE deployment_qid = ?
         "#,
 
         find_deployments_by_qids = r#"
-            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped, failures
+            SELECT organization, repository, environment_id, commit_hash, nonce, created_at, state, bootstrapped
             FROM cdb.deployments_by_id
             WHERE deployment_qid IN ?
         "#,
 
         list_deployments_by_repo = r#"
-            SELECT created_at, environment_id, commit_hash, nonce, state, bootstrapped, failures
+            SELECT created_at, environment_id, commit_hash, nonce, state, bootstrapped
             FROM cdb.deployments
             WHERE organization = ?
             AND repository = ?
@@ -221,8 +219,8 @@ prepared_statements! {
         "#,
 
         set_deployment = r#"
-            INSERT INTO cdb.deployments (organization, repository, created_at, environment_id, commit_hash, nonce, state, bootstrapped, failures)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO cdb.deployments (organization, repository, created_at, environment_id, commit_hash, nonce, state, bootstrapped)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         set_deployment_by_id = r#"
@@ -235,10 +233,9 @@ prepared_statements! {
                 nonce,
                 created_at,
                 state,
-                bootstrapped,
-                failures
+                bootstrapped
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         set_active_deployment = r#"
@@ -367,7 +364,6 @@ fn deployment_from_row(
     created_at: DateTime<Utc>,
     state: String,
     bootstrapped: Option<bool>,
-    failures: Option<i32>,
 ) -> Result<Deployment, DeploymentQueryError> {
     let deploy_id =
         DeploymentId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
@@ -382,7 +378,6 @@ fn deployment_from_row(
         created_at,
         state: state.parse()?,
         bootstrapped: bootstrapped.unwrap_or(false),
-        failures: failures.unwrap_or(0) as u32,
     })
 }
 
@@ -497,7 +492,6 @@ impl Client {
                 DateTime<Utc>,
                 String,
                 Option<bool>,
-                Option<i32>,
             )>()?
             .next()
             .await
@@ -513,7 +507,6 @@ impl Client {
                 created_at,
                 state,
                 bootstrapped,
-                failures,
             ))) => {
                 if organization != repo.org.as_str() || repository != repo.repo.as_str() {
                     return Err(DeploymentQueryError::NotFound);
@@ -527,7 +520,6 @@ impl Client {
                     created_at,
                     state,
                     bootstrapped,
-                    failures,
                 )
             }
         }
@@ -553,7 +545,6 @@ impl Client {
                     nonce_val,
                     deployment.state.to_string(),
                     deployment.bootstrapped,
-                    deployment.failures as i32,
                 ),
             ),
             self.session.execute_unpaged(
@@ -568,7 +559,6 @@ impl Client {
                     deployment.created_at,
                     deployment.state.to_string(),
                     deployment.bootstrapped,
-                    deployment.failures as i32,
                 ),
             ),
             async {
@@ -644,7 +634,6 @@ impl Client {
                 DateTime<Utc>,
                 String,
                 Option<bool>,
-                Option<i32>,
             )>()?
             .map(|r| {
                 let (
@@ -656,7 +645,6 @@ impl Client {
                     created_at,
                     state,
                     bootstrapped,
-                    failures,
                 ) = r?;
                 deployment_from_row(
                     organization,
@@ -667,7 +655,6 @@ impl Client {
                     created_at,
                     state,
                     bootstrapped,
-                    failures,
                 )
             })
             .boxed())
@@ -852,7 +839,6 @@ impl RepositoryClient {
                 DateTime<Utc>,
                 String,
                 Option<bool>,
-                Option<i32>,
             )>()?
             .map(|r| {
                 let (
@@ -864,7 +850,6 @@ impl RepositoryClient {
                     created_at,
                     state,
                     bootstrapped,
-                    failures,
                 ) = r?;
                 deployment_from_row(
                     organization,
@@ -875,7 +860,6 @@ impl RepositoryClient {
                     created_at,
                     state,
                     bootstrapped,
-                    failures,
                 )
             })
             .boxed())
@@ -904,7 +888,6 @@ impl RepositoryClient {
                     i64,
                     String,
                     Option<bool>,
-                    Option<i32>,
                 )>()?
                 .map(move |r| {
                     let (
@@ -914,7 +897,6 @@ impl RepositoryClient {
                         nonce,
                         state,
                         bootstrapped,
-                        failures,
                     ) = r?;
                     deployment_from_row(
                         repo.org.to_string(),
@@ -925,7 +907,6 @@ impl RepositoryClient {
                         created_at,
                         state,
                         bootstrapped,
-                        failures,
                     )
                 }),
         )
@@ -1002,17 +983,6 @@ impl DeploymentClient {
             return Ok(());
         }
 
-        // Reset the failure counter on every state change so that the
-        // exponential backoff window doesn't carry over across transitions.
-        // If the new state matches the previous state (no-op transition),
-        // preserve the existing count.
-        let state_changed = prev_state.as_ref().is_none_or(|s| s.state != state);
-        let failures = if state_changed {
-            0
-        } else {
-            prev_state.as_ref().map(|s| s.failures).unwrap_or(0)
-        };
-
         let deployment = Deployment {
             repo: self.repo.name.clone(),
             environment: self.environment.clone(),
@@ -1024,7 +994,6 @@ impl DeploymentClient {
                 .unwrap_or_else(Utc::now),
             state,
             bootstrapped: prev_state.as_ref().map(|s| s.bootstrapped).unwrap_or(false),
-            failures,
         };
 
         self.repo.client.set_deployment(deployment).await?;
@@ -1032,17 +1001,12 @@ impl DeploymentClient {
         Ok(())
     }
 
-    /// Update the bootstrapped flag and failures counter without changing the state.
-    pub async fn set_progress(
-        &self,
-        bootstrapped: bool,
-        failures: u32,
-    ) -> Result<(), SetDeploymentError> {
+    /// Update the bootstrapped flag without changing the state.
+    pub async fn set_progress(&self, bootstrapped: bool) -> Result<(), SetDeploymentError> {
         let prev = self.get().await?;
 
         let deployment = Deployment {
             bootstrapped,
-            failures,
             ..prev
         };
 

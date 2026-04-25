@@ -761,10 +761,6 @@ impl Deployment {
         self.deployment.bootstrapped
     }
 
-    fn failures(&self) -> i32 {
-        self.deployment.failures as i32
-    }
-
     fn nonce(&self) -> String {
         self.deployment.nonce.to_string()
     }
