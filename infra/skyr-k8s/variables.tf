@@ -140,6 +140,66 @@ variable "rte_local_workers" {
   default     = 1
 }
 
+# --- RE Scaling ---
+
+variable "re_worker_count" {
+  type        = number
+  description = "Number of RE worker pods. Each gets a distinct worker index for RQ shard assignment."
+  default     = 2
+}
+
+variable "re_local_workers" {
+  type        = number
+  description = "Number of local async workers per RE pod."
+  default     = 1
+}
+
+# --- NE Scaling ---
+
+variable "ne_worker_count" {
+  type        = number
+  description = "Number of NE replicas (competing consumers on NQ)."
+  default     = 1
+}
+
+# --- NE SMTP ---
+
+variable "ne_smtp_host" {
+  type        = string
+  description = "SMTP host the NE relays through."
+}
+
+variable "ne_smtp_port" {
+  type        = number
+  description = "SMTP port."
+  default     = 587
+}
+
+variable "ne_smtp_tls" {
+  type        = string
+  description = "SMTP TLS mode (starttls, implicit, or none)."
+  default     = "starttls"
+}
+
+variable "ne_smtp_from" {
+  type        = string
+  description = "SMTP envelope-from address."
+}
+
+variable "ne_smtp_username" {
+  type        = string
+  description = "SMTP username for NE."
+  sensitive   = true
+  default     = ""
+}
+
+variable "ne_smtp_password" {
+  type        = string
+  description = "SMTP password for NE."
+  sensitive   = true
+  default     = ""
+}
+
 # --- Secrets ---
 
 variable "scs_host_key" {

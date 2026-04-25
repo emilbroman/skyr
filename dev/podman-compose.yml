@@ -86,6 +86,13 @@ services:
     volumes:
       - ./buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
 
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - 1025:1025
+      - 8025:8025
+    restart: always
+
   api:
     image: skyr:latest
     entrypoint: ["/api"]
@@ -98,6 +105,8 @@ services:
         "--cdb-hostname",
         "scylla",
         "--rdb-hostname",
+        "scylla",
+        "--sdb-hostname",
         "scylla",
         "--udb-hostname",
         "redis",
@@ -167,6 +176,10 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--rq-hostname",
+        "rabbitmq",
+        "--sdb-hostname",
+        "scylla",
         "--ldb-hostname",
         "redpanda",
         "--worker-index",
@@ -188,6 +201,10 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--rq-hostname",
+        "rabbitmq",
+        "--sdb-hostname",
+        "scylla",
         "--ldb-hostname",
         "redpanda",
         "--worker-index",
@@ -286,6 +303,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--rq-hostname",
+        "rabbitmq",
         "--ldb-hostname",
         "redpanda",
         "--plugin",
@@ -316,6 +335,8 @@ services:
         "--rdb-hostname",
         "scylla",
         "--rtq-hostname",
+        "rabbitmq",
+        "--rq-hostname",
         "rabbitmq",
         "--ldb-hostname",
         "redpanda",
@@ -348,6 +369,8 @@ services:
         "scylla",
         "--rtq-hostname",
         "rabbitmq",
+        "--rq-hostname",
+        "rabbitmq",
         "--ldb-hostname",
         "redpanda",
         "--plugin",
@@ -366,6 +389,67 @@ services:
         "2",
         "--worker-count",
         "3",
+      ]
+    restart: always
+
+  re-0:
+    image: skyr:latest
+    entrypoint: ["/re"]
+    command:
+      [
+        "daemon",
+        "--rq-hostname",
+        "rabbitmq",
+        "--sdb-hostname",
+        "scylla",
+        "--nq-hostname",
+        "rabbitmq",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "2",
+      ]
+    restart: always
+
+  re-1:
+    image: skyr:latest
+    entrypoint: ["/re"]
+    command:
+      [
+        "daemon",
+        "--rq-hostname",
+        "rabbitmq",
+        "--sdb-hostname",
+        "scylla",
+        "--nq-hostname",
+        "rabbitmq",
+        "--worker-index",
+        "1",
+        "--worker-count",
+        "2",
+      ]
+    restart: always
+
+  ne:
+    image: skyr:latest
+    entrypoint: ["/ne"]
+    command:
+      [
+        "daemon",
+        "--nq-hostname",
+        "rabbitmq",
+        "--udb-hostname",
+        "redis",
+        "--dedup-hostname",
+        "redis",
+        "--smtp-host",
+        "mailhog",
+        "--smtp-port",
+        "1025",
+        "--smtp-tls",
+        "none",
+        "--smtp-from",
+        "skyr@localhost",
       ]
     restart: always
 

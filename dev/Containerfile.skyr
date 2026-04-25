@@ -10,15 +10,20 @@ COPY crates/cdb/Cargo.toml crates/cdb/Cargo.toml
 COPY crates/de/Cargo.toml crates/de/Cargo.toml
 COPY crates/ids/Cargo.toml crates/ids/Cargo.toml
 COPY crates/ldb/Cargo.toml crates/ldb/Cargo.toml
+COPY crates/ne/Cargo.toml crates/ne/Cargo.toml
+COPY crates/nq/Cargo.toml crates/nq/Cargo.toml
 COPY crates/plugin_std_artifact/Cargo.toml crates/plugin_std_artifact/Cargo.toml
 COPY crates/plugin_std_crypto/Cargo.toml crates/plugin_std_crypto/Cargo.toml
 COPY crates/plugin_std_dns/Cargo.toml crates/plugin_std_dns/Cargo.toml
 COPY crates/plugin_std_random/Cargo.toml crates/plugin_std_random/Cargo.toml
 COPY crates/plugin_std_time/Cargo.toml crates/plugin_std_time/Cargo.toml
 COPY crates/rdb/Cargo.toml crates/rdb/Cargo.toml
+COPY crates/re/Cargo.toml crates/re/Cargo.toml
+COPY crates/rq/Cargo.toml crates/rq/Cargo.toml
 COPY crates/rtp/Cargo.toml crates/rtp/Cargo.toml
 COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
 COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
+COPY crates/sdb/Cargo.toml crates/sdb/Cargo.toml
 COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
 COPY crates/scs/Cargo.toml crates/scs/Cargo.toml
@@ -29,22 +34,28 @@ COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 RUN sed -i '/"crates\/sclc-wasm",/d; /"crates\/sclc-docgen",/d' Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_dns/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
+    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_dns/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/re/src crates/rq/src crates/rtp/src crates/rte/src crates/rtq/src crates/sdb/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/de/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/ids/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/ldb/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/ne/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ne/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/nq/src/lib.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_artifact/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_crypto/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_dns/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_random/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_time/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rdb/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/re/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/rq/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/rtp/src/lib.rs; \
     printf 'fn main() {}\n' > crates/rte/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/sdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/cli/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
     printf 'fn main() {}\n' > crates/scs/src/main.rs; \
@@ -69,9 +80,9 @@ RUN rm -rf crates/sclc-wasm crates/sclc-docgen
 RUN --mount=type=cache,target=/opt/cargo/registry \
     --mount=type=cache,target=/src/target \
     set -eu; \
-    cargo build --release -p scs -p de -p rte -p plugin_std_random -p plugin_std_time -p plugin_std_artifact -p plugin_std_crypto -p plugin_std_dns -p plugin_std_container -p scoc -p api; \
+    cargo build --release -p scs -p de -p rte -p re -p ne -p plugin_std_random -p plugin_std_time -p plugin_std_artifact -p plugin_std_crypto -p plugin_std_dns -p plugin_std_container -p scoc -p api; \
     mkdir -p /artifacts; \
-    for bin in scs de rte plugin_std_random plugin_std_time plugin_std_artifact plugin_std_crypto plugin_std_dns plugin_std_container scoc api; do \
+    for bin in scs de rte re ne plugin_std_random plugin_std_time plugin_std_artifact plugin_std_crypto plugin_std_dns plugin_std_container scoc api; do \
       cp "/src/target/${CARGO_BUILD_TARGET}/release/${bin}" "/artifacts/${bin}"; \
     done
 
@@ -82,6 +93,8 @@ COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifica
 COPY --from=build /artifacts/scs /scs
 COPY --from=build /artifacts/de /de
 COPY --from=build /artifacts/rte /rte
+COPY --from=build /artifacts/re /re
+COPY --from=build /artifacts/ne /ne
 COPY --from=build /artifacts/plugin_std_random /plugin_std_random
 COPY --from=build /artifacts/plugin_std_time /plugin_std_time
 COPY --from=build /artifacts/plugin_std_artifact /plugin_std_artifact
