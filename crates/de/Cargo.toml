@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.101"
 async-trait = "0.1"
+chrono = { version = "0.4.43", features = ["clock", "serde"] }
 clap = { version = "4.5.57", features = ["derive"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
@@ -15,6 +16,8 @@ rdb = { path = "../rdb" }
 ids = { path = "../ids" }
 sclc = { path = "../sclc" }
 rtq = { path = "../rtq" }
+rq = { path = "../rq" }
+sdb = { path = "../sdb" }
 futures-util = "0.3.31"
 serde_json = "1.0.149"
 ldb = { path = "../ldb" }

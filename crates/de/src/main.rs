@@ -1,5 +1,6 @@
 mod backoff;
 mod finder;
+mod reporter;
 mod util;
 mod worker;
 
@@ -28,6 +29,12 @@ enum Program {
 
         #[clap(long = "rtq-hostname", default_value = "localhost")]
         rtq_hostname: String,
+
+        #[clap(long = "rq-hostname", default_value = "localhost")]
+        rq_hostname: String,
+
+        #[clap(long = "sdb-hostname", default_value = "localhost")]
+        sdb_hostname: String,
 
         #[clap(long = "ldb-hostname", default_value = "localhost")]
         ldb_hostname: String,
@@ -72,6 +79,8 @@ async fn main() -> anyhow::Result<()> {
             cdb_hostname,
             rdb_hostname,
             rtq_hostname,
+            rq_hostname,
+            sdb_hostname,
             ldb_hostname,
             worker_index,
             worker_count,
@@ -103,6 +112,14 @@ async fn main() -> anyhow::Result<()> {
                 .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
                 .build_publisher()
                 .await?;
+            let rq_publisher = rq::ClientBuilder::new()
+                .uri(format!("amqp://{}:5672/%2f", rq_hostname))
+                .build_publisher()
+                .await?;
+            let sdb_client = sdb::ClientBuilder::new()
+                .known_node(&sdb_hostname)
+                .build()
+                .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
                 .brokers(format!("{}:9092", ldb_hostname))
                 .build_publisher()
@@ -117,6 +134,8 @@ async fn main() -> anyhow::Result<()> {
                     cdb_client.clone(),
                     rdb_client.clone(),
                     rtq_publisher.clone(),
+                    rq_publisher.clone(),
+                    sdb_client.clone(),
                     ldb_publisher.clone(),
                     &mut workers,
                     worker_index,
@@ -137,10 +156,13 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process(
     client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
+    rq_publisher: rq::Publisher,
+    sdb_client: sdb::Client,
     ldb_publisher: ldb::Publisher,
     // `Some(sender)` = worker is running. `None` = the worker's loop has
     // exited (e.g. a no-Main.scl deployment that's already bootstrapped)
@@ -232,9 +254,12 @@ async fn process(
             environment_qid: env_qid.clone(),
             namespace: rdb_client.namespace(environment_qid),
             rtq_publisher: rtq_publisher.clone(),
+            rq_publisher: rq_publisher.clone(),
+            sdb_client: sdb_client.clone(),
             log_publisher,
             last_failure_at: None,
             cached_compile: None,
+            terminal_reported: false,
         };
 
         let span = tracing::info_span!("worker", dep = %deployment_qid);
