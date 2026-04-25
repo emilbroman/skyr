@@ -2,6 +2,7 @@ use clap::Parser;
 use ldb::Severity;
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::time::Instant;
 use tokio::task;
 use tracing::Instrument;
 
@@ -21,6 +22,9 @@ enum Program {
 
         #[clap(long = "rtq-hostname", default_value = "localhost")]
         rtq_hostname: String,
+
+        #[clap(long = "rq-hostname", default_value = "localhost")]
+        rq_hostname: String,
 
         #[clap(long = "ldb-hostname", default_value = "localhost")]
         ldb_hostname: String,
@@ -78,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             rdb_hostname,
             rtq_hostname,
+            rq_hostname,
             ldb_hostname,
             worker_index,
             worker_count,
@@ -100,12 +105,17 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let uri = format!("amqp://{}:5672/%2f", rtq_hostname);
+            let rq_uri = format!("amqp://{}:5672/%2f", rq_hostname);
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(&rdb_hostname)
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
                 .brokers(format!("{}:9092", ldb_hostname))
+                .build_publisher()
+                .await?;
+            let rq_publisher = rq::ClientBuilder::new()
+                .uri(rq_uri)
                 .build_publisher()
                 .await?;
             let plugins = dial_plugins(&plugin).await?;
@@ -134,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
                 let ctx = WorkerContext {
                     rdb_client: rdb_client.clone(),
                     ldb_publisher: ldb_publisher.clone(),
+                    rq_publisher: rq_publisher.clone(),
                     plugins: plugins.clone(),
                 };
                 handles.push(task::spawn(worker_loop(consumer, ctx).instrument(span)));
@@ -151,6 +162,7 @@ async fn main() -> anyhow::Result<()> {
 struct WorkerContext {
     rdb_client: rdb::Client,
     ldb_publisher: ldb::Publisher,
+    rq_publisher: rq::Publisher,
     plugins: HashMap<sclc::ModuleId, rtp::PluginClient>,
 }
 
@@ -242,11 +254,14 @@ fn check_json_size(value: &serde_json::Value, limit: usize) -> bool {
 }
 
 fn resource_qid_string(resource: &rtq::ResourceRef) -> String {
+    resource_qid_typed(resource).to_string()
+}
+
+fn resource_qid_typed(resource: &rtq::ResourceRef) -> ids::ResourceQid {
     ids::ResourceQid::new(
         resource.environment_qid.clone(),
         resource.resource_id.clone(),
     )
-    .to_string()
 }
 
 /// Parse a module ID string like "Std/Random" into a `ModuleId`.
@@ -308,6 +323,8 @@ async fn handle_create(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
         .namespace(message.resource.environment_qid.to_string())
@@ -317,6 +334,7 @@ async fn handle_create(
         );
     match resource_client.get().await {
         Ok(Some(_)) => {
+            // Idempotent drop — no transition was processed, no report.
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
                 resource_type = %message.resource.resource_type(),
@@ -335,6 +353,15 @@ async fn handle_create(
                 error = %error,
                 "failed to read resource state before create",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::SystemError, error),
+                rq::ResourceOperationalState::Pending,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -348,6 +375,21 @@ async fn handle_create(
             resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on create",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::SystemError,
+                format!(
+                    "no plugin available for resource type {}",
+                    message.resource.resource_type()
+                ),
+            ),
+            rq::ResourceOperationalState::Pending,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     };
@@ -360,6 +402,18 @@ async fn handle_create(
             resource_name = %message.resource.resource_name(),
             "create inputs exceed size limit",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::BadConfiguration,
+                "create inputs exceed size limit",
+            ),
+            rq::ResourceOperationalState::Pending,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -374,6 +428,15 @@ async fn handle_create(
                 error = %error,
                 "invalid create inputs json",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::BadConfiguration, error),
+                rq::ResourceOperationalState::Pending,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -427,6 +490,15 @@ async fn handle_create(
                 format!("{}: Failed to create: {}", dep_short, error),
             )
             .await;
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::Crash, error),
+                rq::ResourceOperationalState::Pending,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -442,6 +514,18 @@ async fn handle_create(
             resource_name = %message.resource.resource_name(),
             "plugin create output exceeds size limit",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::SystemError,
+                "plugin create output exceeds size limit",
+            ),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -476,6 +560,15 @@ async fn handle_create(
             format!("{}: Failed to create: {}", dep_short, error),
         )
         .await;
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(rq::IncidentCategory::SystemError, error),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -499,6 +592,15 @@ async fn handle_create(
         format!("{}: Created", dep_short),
     )
     .await;
+    publish_report(
+        &ctx.rq_publisher,
+        res_qid_typed,
+        start.elapsed().as_millis() as u64,
+        outcome_success(),
+        rq::ResourceOperationalState::Live,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -507,6 +609,8 @@ async fn handle_destroy(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
         .namespace(message.resource.environment_qid.to_string())
@@ -523,6 +627,7 @@ async fn handle_destroy(
     let current = match resource_client.get().await {
         Ok(Some(resource)) => {
             if resource.owner.as_deref() != Some(dep_qid.as_str()) {
+                // Idempotent drop — different deployment owns this resource.
                 tracing::info!(
                     environment_qid = %message.resource.environment_qid,
                     resource_type = %message.resource.resource_type(),
@@ -537,6 +642,8 @@ async fn handle_destroy(
             resource
         }
         Ok(None) => {
+            // Idempotent drop — resource already gone; some prior delivery
+            // already reported its terminal state.
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
                 resource_type = %message.resource.resource_type(),
@@ -554,6 +661,15 @@ async fn handle_destroy(
                 error = %error,
                 "failed to read resource state before delete",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::SystemError, error),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -568,6 +684,18 @@ async fn handle_destroy(
                 resource_name = %message.resource.resource_name(),
                 "missing current inputs for delete",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current inputs for delete",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -581,6 +709,18 @@ async fn handle_destroy(
                 resource_name = %message.resource.resource_name(),
                 "missing current outputs for delete",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current outputs for delete",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -594,6 +734,21 @@ async fn handle_destroy(
             resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on delete",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::SystemError,
+                format!(
+                    "no plugin available for resource type {}",
+                    message.resource.resource_type()
+                ),
+            ),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     };
@@ -639,6 +794,15 @@ async fn handle_destroy(
             format!("{}: Failed to destroy: {}", dep_short, error),
         )
         .await;
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(rq::IncidentCategory::Crash, error),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -661,6 +825,19 @@ async fn handle_destroy(
                 dep_short, message.resource.resource_id, error,
             ),
             format!("{}: Failed to destroy: {}", dep_short, error),
+        )
+        .await;
+        // The plugin reported success but RDB cleanup failed; the provider-side
+        // resource is gone, so we report Destroyed but classify it as a Skyr
+        // infrastructure problem (not terminal, since the next delivery will
+        // hit the idempotent-missing path or retry).
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(rq::IncidentCategory::SystemError, error),
+            rq::ResourceOperationalState::Destroyed,
+            false,
         )
         .await;
         delivery.nack(false).await?;
@@ -686,6 +863,16 @@ async fn handle_destroy(
         format!("{}: Destroyed", dep_short),
     )
     .await;
+    // Successful destroy is the terminal report for this resource.
+    publish_report(
+        &ctx.rq_publisher,
+        res_qid_typed,
+        start.elapsed().as_millis() as u64,
+        outcome_success(),
+        rq::ResourceOperationalState::Destroyed,
+        true,
+    )
+    .await;
     Ok(())
 }
 
@@ -704,6 +891,7 @@ async fn handle_update_inputs(
     params: UpdateParams<'_>,
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
+    start: Instant,
 ) -> anyhow::Result<Option<String>> {
     let resource = params.resource;
     let owner_deployment_qid = params.owner_deployment_qid;
@@ -711,6 +899,7 @@ async fn handle_update_inputs(
     let desired_inputs = params.desired_inputs;
     let dependencies = params.dependencies;
     let operation = params.operation;
+    let res_qid_typed = resource_qid_typed(resource);
     let resource_client = ctx
         .rdb_client
         .namespace(resource.environment_qid.to_string())
@@ -721,6 +910,7 @@ async fn handle_update_inputs(
     let current = match resource_client.get().await {
         Ok(Some(r)) => r,
         Ok(None) => {
+            // Idempotent drop — no resource to act on.
             tracing::info!(
                 environment_qid = %resource.environment_qid,
                 resource_type = %resource.resource_type(),
@@ -740,12 +930,22 @@ async fn handle_update_inputs(
                 error = %error,
                 "failed to read resource state before operation",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::SystemError, error),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
     };
 
     if current.owner.as_deref() != Some(owner_deployment_qid) {
+        // Idempotent drop — different deployment owns this resource.
         tracing::info!(
             environment_qid = %resource.environment_qid,
             resource_type = %resource.resource_type(),
@@ -769,6 +969,18 @@ async fn handle_update_inputs(
                 operation,
                 "missing current inputs for operation",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current inputs for operation",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
@@ -783,6 +995,18 @@ async fn handle_update_inputs(
                 operation,
                 "missing current outputs for operation",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current outputs for operation",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
@@ -797,6 +1021,18 @@ async fn handle_update_inputs(
             operation,
             "desired inputs exceed size limit",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::BadConfiguration,
+                "desired inputs exceed size limit",
+            ),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(None);
     }
@@ -812,6 +1048,15 @@ async fn handle_update_inputs(
                 error = %error,
                 "invalid desired_inputs json",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::BadConfiguration, error),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
@@ -835,6 +1080,21 @@ async fn handle_update_inputs(
                 operation,
                 "no plugin available for resource type",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::SystemError,
+                    format!(
+                        "no plugin available for resource type {}",
+                        resource.resource_type()
+                    ),
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         };
@@ -899,6 +1159,15 @@ async fn handle_update_inputs(
                     format!("{}: Failed to update: {}", dep_short, error),
                 )
                 .await;
+                publish_report(
+                    &ctx.rq_publisher,
+                    res_qid_typed,
+                    start.elapsed().as_millis() as u64,
+                    outcome_failure(rq::IncidentCategory::Crash, error),
+                    rq::ResourceOperationalState::Live,
+                    false,
+                )
+                .await;
                 delivery.nack(false).await?;
                 return Ok(None);
             }
@@ -915,6 +1184,18 @@ async fn handle_update_inputs(
                 operation,
                 "plugin update output exceeds size limit",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::SystemError,
+                    "plugin update output exceeds size limit",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
@@ -970,6 +1251,15 @@ async fn handle_update_inputs(
             format!("{}: Failed to update: {}", dep_short, error),
         )
         .await;
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(rq::IncidentCategory::SystemError, error),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(None);
     }
@@ -982,6 +1272,8 @@ async fn handle_adopt(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let res_qid_typed = resource_qid_typed(&message.resource);
     let from_dep_qid = deployment_qid(
         &message.resource.environment_qid,
         &message.from_deployment_id,
@@ -1000,6 +1292,7 @@ async fn handle_adopt(
         },
         delivery,
         ctx,
+        start,
     )
     .await?
     else {
@@ -1037,6 +1330,15 @@ async fn handle_adopt(
         format!("Adopted from {}", from_short),
     )
     .await;
+    publish_report(
+        &ctx.rq_publisher,
+        res_qid_typed,
+        start.elapsed().as_millis() as u64,
+        outcome_success(),
+        rq::ResourceOperationalState::Live,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -1045,6 +1347,8 @@ async fn handle_restore(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let res_qid_typed = resource_qid_typed(&message.resource);
     let dep_qid = deployment_qid(
         &message.resource.environment_qid,
         &message.deployment_id,
@@ -1063,6 +1367,7 @@ async fn handle_restore(
         },
         delivery,
         ctx,
+        start,
     )
     .await?
     else {
@@ -1092,6 +1397,15 @@ async fn handle_restore(
         format!("{}: Restored", dep_short),
     )
     .await;
+    publish_report(
+        &ctx.rq_publisher,
+        res_qid_typed,
+        start.elapsed().as_millis() as u64,
+        outcome_success(),
+        rq::ResourceOperationalState::Live,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -1100,6 +1414,8 @@ async fn handle_check(
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
+    let start = Instant::now();
+    let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
         .namespace(message.resource.environment_qid.to_string())
@@ -1116,6 +1432,7 @@ async fn handle_check(
     let current = match resource_client.get().await {
         Ok(Some(resource)) => {
             if resource.owner.as_deref() != Some(dep_qid.as_str()) {
+                // Idempotent drop — different deployment owns this resource.
                 tracing::info!(
                     environment_qid = %message.resource.environment_qid,
                     resource_type = %message.resource.resource_type(),
@@ -1130,6 +1447,8 @@ async fn handle_check(
             resource
         }
         Ok(None) => {
+            // Idempotent drop — resource missing; some prior delivery already
+            // reported its terminal state.
             tracing::info!(
                 environment_qid = %message.resource.environment_qid,
                 resource_type = %message.resource.resource_type(),
@@ -1147,6 +1466,15 @@ async fn handle_check(
                 error = %error,
                 "failed to read resource state before check",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::SystemError, error),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -1161,6 +1489,18 @@ async fn handle_check(
                 resource_name = %message.resource.resource_name(),
                 "missing current inputs for check",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current inputs for check",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -1174,6 +1514,18 @@ async fn handle_check(
                 resource_name = %message.resource.resource_name(),
                 "missing current outputs for check",
             );
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(
+                    rq::IncidentCategory::InconsistentState,
+                    "missing current outputs for check",
+                ),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -1187,6 +1539,21 @@ async fn handle_check(
             resource_type = %message.resource.resource_type(),
             "no plugin available for resource type on check",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::SystemError,
+                format!(
+                    "no plugin available for resource type {}",
+                    message.resource.resource_type()
+                ),
+            ),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     };
@@ -1234,6 +1601,15 @@ async fn handle_check(
                 format!("{}: Failed to check: {}", dep_short, error),
             )
             .await;
+            publish_report(
+                &ctx.rq_publisher,
+                res_qid_typed,
+                start.elapsed().as_millis() as u64,
+                outcome_failure(rq::IncidentCategory::SystemError, error),
+                rq::ResourceOperationalState::Live,
+                false,
+            )
+            .await;
             delivery.nack(false).await?;
             return Ok(());
         }
@@ -1249,6 +1625,18 @@ async fn handle_check(
             resource_name = %message.resource.resource_name(),
             "plugin check output exceeds size limit",
         );
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(
+                rq::IncidentCategory::SystemError,
+                "plugin check output exceeds size limit",
+            ),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -1270,6 +1658,15 @@ async fn handle_check(
             format!("{}: Failed to check: {}", dep_short, error),
         )
         .await;
+        publish_report(
+            &ctx.rq_publisher,
+            res_qid_typed,
+            start.elapsed().as_millis() as u64,
+            outcome_failure(rq::IncidentCategory::SystemError, error),
+            rq::ResourceOperationalState::Live,
+            false,
+        )
+        .await;
         delivery.nack(false).await?;
         return Ok(());
     }
@@ -1280,6 +1677,15 @@ async fn handle_check(
         resource_name = %message.resource.resource_name(),
         "checked resource",
     );
+    publish_report(
+        &ctx.rq_publisher,
+        res_qid_typed,
+        start.elapsed().as_millis() as u64,
+        outcome_success(),
+        rq::ResourceOperationalState::Live,
+        false,
+    )
+    .await;
     Ok(())
 }
 
@@ -1382,4 +1788,49 @@ async fn log_event(
 ) {
     log_deployment_event(publisher, deployment_qid, severity, deployment_message).await;
     log_resource_event(publisher, resource_qid, severity, resource_message).await;
+}
+
+/// Publish a [`rq::Report`] for a processed resource transition.
+///
+/// Reporting failures are logged at warn-level and otherwise swallowed —
+/// reporting is best-effort from the producer's perspective and must never
+/// affect the transition outcome itself.
+async fn publish_report(
+    publisher: &rq::Publisher,
+    resource_qid: ids::ResourceQid,
+    elapsed_ms: u64,
+    outcome: rq::Outcome,
+    operational_state: rq::ResourceOperationalState,
+    terminal: bool,
+) {
+    let report = rq::Report {
+        entity_qid: rq::EntityQid::Resource(resource_qid.clone()),
+        timestamp: chrono::Utc::now(),
+        outcome,
+        metrics: rq::Metrics::wall_time(elapsed_ms),
+        extension: rq::EntityExtension::Resource(rq::ResourceExtension {
+            operational_state,
+            terminal,
+        }),
+    };
+    if let Err(error) = publisher.enqueue(&report).await {
+        tracing::warn!(
+            resource_qid = %resource_qid,
+            error = %error,
+            "failed to publish rq report",
+        );
+    }
+}
+
+/// Build a successful [`rq::Outcome`].
+fn outcome_success() -> rq::Outcome {
+    rq::Outcome::Success
+}
+
+/// Build a failure [`rq::Outcome`] from a category and a displayable error.
+fn outcome_failure(category: rq::IncidentCategory, error: impl ToString) -> rq::Outcome {
+    rq::Outcome::Failure {
+        category,
+        error_message: error.to_string(),
+    }
 }
