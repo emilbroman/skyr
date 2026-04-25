@@ -69,21 +69,31 @@ pub async fn resolve_recipients(
     let org_id = extract_org_id(entity_qid)?;
     let org_name = org_id.to_string();
 
-    // Confirm the org exists. `OrgClient::get` returns `OrgQueryError::NotFound`
-    // when the org hash key is absent.
+    // Skyr's IAM model includes implicit "personal organizations" whose name
+    // equals the user's username. They are not materialized as real org
+    // records in UDB; the API synthesizes them when listing the caller's
+    // organizations. If the org name corresponds to an existing user, treat
+    // that user as the sole member.
+    // Try the explicit org first. If that fails for any reason (NotFound,
+    // or a Redis decoding quirk where HGET on a missing key returns nil
+    // and the udb client cannot destructure it into a tuple), fall back
+    // to the personal-org pattern: if a user record with the same name
+    // exists, treat that user as the sole recipient.
     let org_client = udb.org(&org_name);
-    if let Err(err) = org_client.get().await {
-        return match err {
-            udb::OrgQueryError::NotFound => Err(ResolveError::OrgNotFound(org_name)),
-            other => Err(ResolveError::Udb(other.to_string())),
-        };
-    }
-
-    let members = org_client
-        .members()
-        .list()
-        .await
-        .map_err(|e| ResolveError::Udb(e.to_string()))?;
+    let members = match org_client.get().await {
+        Ok(_) => org_client
+            .members()
+            .list()
+            .await
+            .map_err(|e| ResolveError::Udb(e.to_string()))?,
+        Err(_) => match udb.user(&org_name).get().await {
+            Ok(_) => vec![org_name.clone()],
+            Err(udb::UserQueryError::NotFound) => {
+                return Err(ResolveError::OrgNotFound(org_name));
+            }
+            Err(err) => return Err(ResolveError::Udb(err.to_string())),
+        },
+    };
 
     let mut recipients = Vec::with_capacity(members.len());
     for username in members {

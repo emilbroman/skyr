@@ -879,37 +879,21 @@ impl RepositoryClient {
             .await?;
 
         let repo = self.name.clone();
-        Ok(
-            pager
-                .rows_stream::<(
-                    DateTime<Utc>,
-                    String,
-                    Vec<u8>,
-                    i64,
-                    String,
-                    Option<bool>,
-                )>()?
-                .map(move |r| {
-                    let (
-                        created_at,
-                        environment_id,
-                        commit_hash,
-                        nonce,
-                        state,
-                        bootstrapped,
-                    ) = r?;
-                    deployment_from_row(
-                        repo.org.to_string(),
-                        repo.repo.to_string(),
-                        environment_id,
-                        commit_hash,
-                        nonce,
-                        created_at,
-                        state,
-                        bootstrapped,
-                    )
-                }),
-        )
+        Ok(pager
+            .rows_stream::<(DateTime<Utc>, String, Vec<u8>, i64, String, Option<bool>)>()?
+            .map(move |r| {
+                let (created_at, environment_id, commit_hash, nonce, state, bootstrapped) = r?;
+                deployment_from_row(
+                    repo.org.to_string(),
+                    repo.repo.to_string(),
+                    environment_id,
+                    commit_hash,
+                    nonce,
+                    created_at,
+                    state,
+                    bootstrapped,
+                )
+            }))
     }
 }
 
