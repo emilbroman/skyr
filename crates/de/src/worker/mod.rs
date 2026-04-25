@@ -35,9 +35,12 @@ pub(crate) struct Worker {
     pub(crate) rq_publisher: rq::Publisher,
     pub(crate) sdb_client: sdb::Client,
     pub(crate) log_publisher: ldb::NamespacePublisher,
-    /// Tracks when the last failure was observed, used together with the
-    /// SDB-derived `consecutive_failure_count` to gate exponential backoff.
-    pub(crate) last_failure_at: Option<Instant>,
+    /// Tracks the last failure observed locally — its timestamp (used together
+    /// with the SDB-derived `consecutive_failure_count` to gate exponential
+    /// backoff) and its classification (replayed during backed-off iterations
+    /// so the report stream keeps its failure semantics until the deployment
+    /// actually recovers).
+    pub(crate) last_failure: Option<(Instant, FailureKind, String)>,
     /// Cached compiled ASG from the previous iteration, keyed by the
     /// resolved cross-repo dependency map. Reused when the resolved map
     /// is unchanged; cleared on compile error or when the key differs.
@@ -136,14 +139,20 @@ impl Worker {
             }
         };
 
-        // Track when the last failure was observed locally; together with
-        // SDB's `consecutive_failure_count` this drives the backoff window.
+        // Track the last failure observed locally; together with SDB's
+        // `consecutive_failure_count` this drives the backoff window AND
+        // gives backed-off iterations a classification to replay (so we
+        // do not emit a misleading success heartbeat while the deployment
+        // is still in a failed state).
         match &work_result.outcome {
             IterationOutcome::Success => {
-                self.last_failure_at = None;
+                self.last_failure = None;
             }
-            IterationOutcome::Failure { .. } => {
-                self.last_failure_at = Some(Instant::now());
+            IterationOutcome::Failure {
+                kind,
+                error_message,
+            } => {
+                self.last_failure = Some((Instant::now(), *kind, error_message.clone()));
             }
         }
 
@@ -310,25 +319,30 @@ impl Worker {
         // failure.
         if failure_count > 0 {
             let delay = backoff_duration(failure_count);
-            if let Some(last_failure) = self.last_failure_at {
-                let elapsed = last_failure.elapsed();
+            if let Some((last_failure_at, last_kind, last_error)) = self.last_failure.as_ref() {
+                let elapsed = last_failure_at.elapsed();
                 if elapsed < delay {
                     tracing::debug!(
                         "{sid} backing off (failures={}, {:.0}s remaining)",
                         failure_count,
                         (delay - elapsed).as_secs_f64(),
                     );
-                    // Backed-off iterations still emit a heartbeat; the
-                    // producer reports success because the DE-internal
-                    // backoff is operating as designed.
+                    // Backed-off iterations still emit a heartbeat, but the
+                    // deployment is still in a failed state — replay the last
+                    // classification so the SDB-side failure count keeps
+                    // climbing toward the RE's threshold instead of being
+                    // reset by a misleading success heartbeat.
                     return Ok(WorkResult {
                         keep_running: true,
                         state,
-                        outcome: IterationOutcome::Success,
+                        outcome: IterationOutcome::Failure {
+                            kind: *last_kind,
+                            error_message: last_error.clone(),
+                        },
                     });
                 }
             }
-            // If last_failure_at is None (e.g., after restart), proceed
+            // If last_failure is None (e.g., after restart), proceed
             // immediately — the first attempt after restart is free.
         }
 

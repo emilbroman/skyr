@@ -257,7 +257,7 @@ async fn process(
             rq_publisher: rq_publisher.clone(),
             sdb_client: sdb_client.clone(),
             log_publisher,
-            last_failure_at: None,
+            last_failure: None,
             cached_compile: None,
             terminal_reported: false,
         };

@@ -12,6 +12,8 @@ COPY crates/de/Cargo.toml crates/de/Cargo.toml
 COPY crates/ids/Cargo.toml crates/ids/Cargo.toml
 COPY crates/ldb/Cargo.toml crates/ldb/Cargo.toml
 COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
+COPY crates/ne/Cargo.toml crates/ne/Cargo.toml
+COPY crates/nq/Cargo.toml crates/nq/Cargo.toml
 COPY crates/plugin_std_artifact/Cargo.toml crates/plugin_std_artifact/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 COPY crates/plugin_std_crypto/Cargo.toml crates/plugin_std_crypto/Cargo.toml
@@ -19,9 +21,12 @@ COPY crates/plugin_std_dns/Cargo.toml crates/plugin_std_dns/Cargo.toml
 COPY crates/plugin_std_random/Cargo.toml crates/plugin_std_random/Cargo.toml
 COPY crates/plugin_std_time/Cargo.toml crates/plugin_std_time/Cargo.toml
 COPY crates/rdb/Cargo.toml crates/rdb/Cargo.toml
+COPY crates/re/Cargo.toml crates/re/Cargo.toml
+COPY crates/rq/Cargo.toml crates/rq/Cargo.toml
 COPY crates/rtp/Cargo.toml crates/rtp/Cargo.toml
 COPY crates/rte/Cargo.toml crates/rte/Cargo.toml
 COPY crates/rtq/Cargo.toml crates/rtq/Cargo.toml
+COPY crates/sdb/Cargo.toml crates/sdb/Cargo.toml
 COPY crates/cli/Cargo.toml crates/cli/Cargo.toml
 COPY crates/sclc/Cargo.toml crates/sclc/Cargo.toml
 COPY crates/sclc-docgen/Cargo.toml crates/sclc-docgen/Cargo.toml
@@ -34,11 +39,11 @@ COPY crates/udb/Cargo.toml crates/udb/Cargo.toml
 # Create stubs for all workspace crates to cache dependency downloads
 RUN set -eu; \
     mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/de/src \
-      crates/ids/src crates/ldb/src crates/lsp/src \
+      crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src \
       crates/plugin_std_artifact/src crates/plugin_std_container/src \
       crates/plugin_std_crypto/src crates/plugin_std_dns/src \
       crates/plugin_std_random/src crates/plugin_std_time/src \
-      crates/rdb/src crates/rtp/src crates/rte/src crates/rtq/src \
+      crates/rdb/src crates/re/src crates/rq/src crates/rtp/src crates/rte/src crates/rtq/src crates/sdb/src \
       crates/cli/src crates/sclc/src crates/sclc-docgen/src crates/sclc-wasm/src \
       crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
@@ -48,6 +53,9 @@ RUN set -eu; \
     printf 'pub fn _stub() {}\n' > crates/ids/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/ldb/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/lsp/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/ne/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ne/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/nq/src/lib.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_artifact/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_container/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_crypto/src/main.rs; \
@@ -55,9 +63,12 @@ RUN set -eu; \
     printf 'fn main() {}\n' > crates/plugin_std_random/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_time/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rdb/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/re/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/rq/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/rtp/src/lib.rs; \
     printf 'fn main() {}\n' > crates/rte/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rtq/src/lib.rs; \
+    printf 'pub fn _stub() {}\n' > crates/sdb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/cli/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/sclc/src/lib.rs; \
     printf 'fn main() {}\n' > crates/sclc-docgen/src/main.rs; \
