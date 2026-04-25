@@ -18,6 +18,7 @@ members = [
   "crates/rtp",
   "crates/rte",
   "crates/rtq",
+  "crates/sdb",
   "crates/lsp",
   "crates/cli",
   "crates/sclc",
