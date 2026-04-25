@@ -559,10 +559,10 @@ resource "kubernetes_deployment" "ne" {
             "--nq-hostname", local.rabbitmq_hostname,
             "--udb-hostname", local.redis_hostname,
             "--dedup-hostname", local.redis_hostname,
-            "--smtp-host", var.ne_smtp_host,
-            "--smtp-port", tostring(var.ne_smtp_port),
-            "--smtp-tls", var.ne_smtp_tls,
-            "--smtp-from", var.ne_smtp_from,
+            "--smtp-host", local.ne_smtp_host,
+            "--smtp-port", tostring(local.ne_smtp_port),
+            "--smtp-tls", local.ne_smtp_tls,
+            "--smtp-from", local.ne_smtp_from,
           ]
 
           env {

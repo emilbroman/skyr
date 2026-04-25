@@ -150,6 +150,13 @@ async fn main() -> anyhow::Result<()> {
                 .build()
                 .await?;
 
+            // Treat an empty username/password — produced when the
+            // NE_SMTP_USERNAME / NE_SMTP_PASSWORD env vars are set to ""
+            // (e.g., by the k8s SMTP-relay-fallback path) — as "no
+            // SASL auth" rather than as an empty-string credential.
+            let smtp_username = smtp_username.filter(|s| !s.is_empty());
+            let smtp_password = smtp_password.filter(|s| !s.is_empty());
+
             let smtp_config = SmtpConfig {
                 host: smtp_host,
                 port: smtp_port,
