@@ -90,7 +90,6 @@ type Deployment {
   createdAt: String!
   state: DeploymentState!
   bootstrapped: Boolean!
-  failures: Int!
   nonce: String!
   """
     Per-deployment health rollup. **Self-only** — does not aggregate child

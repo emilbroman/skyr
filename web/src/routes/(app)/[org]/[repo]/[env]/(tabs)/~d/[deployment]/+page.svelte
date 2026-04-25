@@ -107,7 +107,7 @@ function onRedeploy() {
         </div>
         <div>
           <dt class="text-gray-400">State</dt>
-          <dd><DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={hasVolatile} /></dd>
+          <dd><DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={hasVolatile} /></dd>
         </div>
         <div>
           <dt class="text-gray-400">Health</dt>

@@ -15,7 +15,7 @@ use tokio::{
 
 use crate::backoff::backoff_duration;
 use crate::reporter::{
-    FailureKind, IterationOutcome, build_deployment_report, probe_deployment,
+    FailureKind, IterationOutcome, SdbPreview, build_deployment_report, probe_deployment,
     probe_resource_open_crash, publish_report,
 };
 use crate::util::{resource_id_from, resource_ref, short_id};
@@ -35,8 +35,8 @@ pub(crate) struct Worker {
     pub(crate) rq_publisher: rq::Publisher,
     pub(crate) sdb_client: sdb::Client,
     pub(crate) log_publisher: ldb::NamespacePublisher,
-    /// Tracks when the last failure occurred, used together with the
-    /// persisted `failures` counter to compute exponential backoff.
+    /// Tracks when the last failure was observed, used together with the
+    /// SDB-derived `consecutive_failure_count` to gate exponential backoff.
     pub(crate) last_failure_at: Option<Instant>,
     /// Cached compiled ASG from the previous iteration, keyed by the
     /// resolved cross-repo dependency map. Reused when the resolved map
@@ -102,8 +102,16 @@ impl Worker {
             return true;
         }
 
+        let deployment_qid = self.client.deployment_qid();
+
+        // Read SDB-derived backpressure signals up front so the work loop and
+        // the per-state handlers can consume them. These reads do not feed
+        // back into the report we publish below; the producer remains
+        // one-way.
+        let preview = self.read_sdb_preview(&deployment_qid).await;
+
         let started_at = Instant::now();
-        let result = self.work().await;
+        let result = self.work(&preview).await;
         let elapsed = started_at.elapsed();
 
         let work_result = match result {
@@ -128,7 +136,17 @@ impl Worker {
             }
         };
 
-        let deployment_qid = self.client.deployment_qid();
+        // Track when the last failure was observed locally; together with
+        // SDB's `consecutive_failure_count` this drives the backoff window.
+        match &work_result.outcome {
+            IterationOutcome::Success => {
+                self.last_failure_at = None;
+            }
+            IterationOutcome::Failure { .. } => {
+                self.last_failure_at = Some(Instant::now());
+            }
+        }
+
         let is_terminal = matches!(work_result.state, DeploymentState::Down);
 
         // Build & publish the report. Reporting failures are logged but never
@@ -141,13 +159,6 @@ impl Worker {
             work_result.outcome,
         );
         publish_report(&self.rq_publisher, &report).await;
-
-        // Read SDB signals (preview only; the legacy `cdb.failures` path
-        // remains authoritative for backoff and eligibility decisions until
-        // the `backoff_migration` task lands). These reads must not be
-        // observable to the RE, so they happen *after* the report is on the
-        // wire.
-        self.preview_sdb_signals(&deployment_qid).await;
 
         if is_terminal {
             self.terminal_reported = true;
@@ -164,10 +175,9 @@ impl Worker {
         !work_result.keep_running
     }
 
-    /// Read SDB signals for backoff and eligibility decisions, currently used
-    /// only for observability. Errors are logged at debug level so transient
-    /// SDB outages do not spam operator logs.
-    async fn preview_sdb_signals(&self, deployment_qid: &ids::DeploymentQid) {
+    /// Read SDB signals for backoff and eligibility decisions. Errors are
+    /// logged at debug level so transient SDB outages do not stall the DE.
+    async fn read_sdb_preview(&self, deployment_qid: &ids::DeploymentQid) -> SdbPreview {
         let mut preview = probe_deployment(&self.sdb_client, deployment_qid).await;
 
         // Resource-level open-Crash check across the deployment's owned
@@ -214,13 +224,14 @@ impl Worker {
             sdb_deployment_open_crash = preview.deployment_has_open_crash,
             sdb_any_resource_open_crash = preview.any_resource_has_open_crash,
             sdb_any_open_crash = preview.any_open_crash(),
-            "SDB backoff/eligibility preview (observational only)",
+            "SDB backoff/eligibility signals",
         );
+        preview
     }
 
     /// Run the per-state handler for the current deployment, returning the
     /// observed state and the producer's classified iteration outcome.
-    async fn work(&mut self) -> anyhow::Result<WorkResult> {
+    async fn work(&mut self, preview: &SdbPreview) -> anyhow::Result<WorkResult> {
         let deployment = self.client.get().await?;
         let sid = short_id(deployment.deployment.as_str()).to_string();
         let state = deployment.state;
@@ -235,7 +246,7 @@ impl Worker {
                 })
             }
 
-            DeploymentState::Desired => self.run_desired(&deployment).await,
+            DeploymentState::Desired => self.run_desired(&deployment, preview).await,
 
             DeploymentState::Lingering => {
                 self.run_lingering(&deployment).await?;
@@ -259,28 +270,52 @@ impl Worker {
 
     /// DESIRED state handler.
     ///
-    /// 1. Check backoff (based on persisted failures counter).
-    /// 2. Check supersession — if superseded, transition to LINGERING.
-    /// 3. Compile and evaluate.
-    /// 4. On success: set bootstrapped, transition superseded deployments.
-    /// 5. On error: increment failures counter.
+    /// 1. Check backoff (driven by SDB-derived `consecutive_failure_count`).
+    /// 2. Check eligibility — skip work when an open `Crash` incident exists.
+    /// 3. Check supersession — if superseded, transition to LINGERING.
+    /// 4. Compile and evaluate.
+    /// 5. On success: set bootstrapped, transition superseded deployments.
+    /// 6. On error: emit a classified failure outcome (the RE drives the
+    ///    incident bookkeeping via the report we publish).
     ///
     /// Returns a [`WorkResult`] whose `keep_running` is `false` to signal that
     /// the processing loop should stop (e.g., when there is no `Main.scl` and
     /// thus no volatile resources).
-    async fn run_desired(&mut self, deployment: &Deployment) -> anyhow::Result<WorkResult> {
+    async fn run_desired(
+        &mut self,
+        deployment: &Deployment,
+        preview: &SdbPreview,
+    ) -> anyhow::Result<WorkResult> {
         let sid = short_id(deployment.deployment.as_str()).to_string();
         let state = DeploymentState::Desired;
+        let failure_count = preview.failure_count();
 
-        // Backoff: if we have failures, check whether enough time has passed.
-        if deployment.failures > 0 {
-            let delay = backoff_duration(deployment.failures);
+        // Eligibility: an open `Crash` incident (on the deployment or on any
+        // resource it owns) suppresses work this iteration. We still emit a
+        // success heartbeat — the RE knows the deployment is alive; we just
+        // are not making progress while the crash is being investigated.
+        if preview.any_open_crash() {
+            tracing::debug!(
+                "{sid} skipping iteration; open Crash incident on deployment or resource",
+            );
+            return Ok(WorkResult {
+                keep_running: true,
+                state,
+                outcome: IterationOutcome::Success,
+            });
+        }
+
+        // Backoff: if SDB shows consecutive failures, check whether enough
+        // wall time has passed since the worker locally observed its last
+        // failure.
+        if failure_count > 0 {
+            let delay = backoff_duration(failure_count);
             if let Some(last_failure) = self.last_failure_at {
                 let elapsed = last_failure.elapsed();
                 if elapsed < delay {
                     tracing::debug!(
                         "{sid} backing off (failures={}, {:.0}s remaining)",
-                        deployment.failures,
+                        failure_count,
                         (delay - elapsed).as_secs_f64(),
                     );
                     // Backed-off iterations still emit a heartbeat; the
@@ -325,7 +360,7 @@ impl Worker {
         {
             if !deployment.bootstrapped {
                 tracing::info!("{sid} no Main.scl; marking bootstrapped");
-                self.client.set_progress(true, 0).await?;
+                self.client.set_progress(true).await?;
                 self.transition_superseded_to_undesired().await?;
             }
             return Ok(WorkResult {
@@ -339,29 +374,20 @@ impl Worker {
         match self.compile_and_evaluate().await {
             Ok(outcome) => {
                 if outcome.had_fatal_errors {
-                    // Fatal compile errors: increment failures, stay DESIRED.
-                    let new_failures = deployment.failures.saturating_add(1);
-                    self.last_failure_at = Some(Instant::now());
-                    self.client
-                        .set_progress(deployment.bootstrapped, new_failures)
-                        .await?;
-                    tracing::warn!("{sid} fatal compile errors (failures={})", new_failures,);
+                    tracing::warn!("{sid} fatal compile errors");
                     self.log_publisher
-                        .error(format!("{sid} compile errors (failures={new_failures})"))
+                        .error(format!("{sid} compile errors"))
                         .await;
                     return Ok(WorkResult {
                         keep_running: true,
                         state,
                         outcome: IterationOutcome::Failure {
                             kind: FailureKind::BadConfiguration,
-                            error_message: format!(
-                                "{sid} compile errors (failures={new_failures})"
-                            ),
+                            error_message: format!("{sid} compile errors"),
                         },
                     });
                 }
 
-                // Success: reset failures.
                 let owner_deployment_qid = deployment.deployment_qid().to_string();
                 let deployment_id = deployment.deployment.clone();
                 let deployment_nonce = deployment.nonce;
@@ -381,15 +407,10 @@ impl Worker {
                     if !deployment.bootstrapped {
                         tracing::info!("{sid} bootstrapped");
                         self.log_publisher.info(format!("{sid} bootstrapped")).await;
+                        self.client.set_progress(true).await?;
                     }
-                    self.client.set_progress(true, 0).await?;
                     self.transition_superseded_to_undesired().await?;
                 } else {
-                    // Partial evaluation — reset failures but not yet bootstrapped.
-                    if deployment.failures > 0 {
-                        self.client.set_progress(deployment.bootstrapped, 0).await?;
-                    }
-                    self.last_failure_at = None;
                     tracing::info!(
                         "{sid} evaluation incomplete; deferring superseded deployment teardown"
                     );
@@ -402,16 +423,7 @@ impl Worker {
                 })
             }
             Err(error) => {
-                // Transient error: increment failures, stay DESIRED.
-                let new_failures = deployment.failures.saturating_add(1);
-                self.last_failure_at = Some(Instant::now());
-                self.client
-                    .set_progress(deployment.bootstrapped, new_failures)
-                    .await?;
-                tracing::warn!(
-                    "{sid} transient error (failures={}): {error:#}",
-                    new_failures,
-                );
+                tracing::warn!("{sid} transient error: {error:#}");
                 self.log_publisher
                     .warn(format!("{sid} transient error: {error}"))
                     .await;

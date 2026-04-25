@@ -15,7 +15,6 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
           createdAt
           state
           bootstrapped
-          failures
           status {
             health
             lastReportAt
@@ -106,7 +105,6 @@ query ResourceDetail(
             createdAt
             state
             bootstrapped
-            failures
           }
           dependencies {
             type
@@ -194,7 +192,6 @@ query DeploymentDetail(
           createdAt
           state
           bootstrapped
-          failures
           status {
             health
             lastReportAt

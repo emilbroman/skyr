@@ -4,13 +4,11 @@ import { DeploymentState } from "$lib/graphql/generated";
 let {
     state,
     bootstrapped = false,
-    failures = 0,
     volatile = false,
     size = "default",
 }: {
     state: DeploymentState;
     bootstrapped?: boolean;
-    failures?: number;
     volatile?: boolean;
     size?: "default" | "small";
 } = $props();
@@ -18,41 +16,33 @@ let {
 const green = { bg: "bg-green-50 border-green-300", text: "text-green-700" };
 const yellow = { bg: "bg-yellow-50 border-yellow-300", text: "text-yellow-700" };
 const gray = { bg: "bg-gray-100 border-gray-300", text: "text-gray-500" };
-const red = { bg: "bg-red-50 border-red-300", text: "text-red-700" };
 
-let isFailing = $derived(failures > 0);
 let isUp = $derived(
     bootstrapped && (state === DeploymentState.Desired || state === DeploymentState.Lingering),
 );
 
 type Icon = "check" | "spinner-fast" | "spinner-slow" | "spinner-fast-ccw" | "exclamation";
 
-let style = $derived(
-    isFailing ? red : isUp ? green : state === DeploymentState.Down ? gray : yellow,
-);
+let style = $derived(isUp ? green : state === DeploymentState.Down ? gray : yellow);
 let icon: Icon = $derived(
-    isFailing
-        ? "spinner-fast"
-        : isUp
-          ? volatile
-              ? "spinner-slow"
-              : "check"
-          : state === DeploymentState.Down
-            ? "check"
-            : state === DeploymentState.Undesired
-              ? "spinner-fast-ccw"
-              : "spinner-fast",
+    isUp
+        ? volatile
+            ? "spinner-slow"
+            : "check"
+        : state === DeploymentState.Down
+          ? "check"
+          : state === DeploymentState.Undesired
+            ? "spinner-fast-ccw"
+            : "spinner-fast",
 );
 let label = $derived(
-    isFailing
-        ? `FAILING (${failures})`
-        : isUp
-          ? "UP"
-          : state === DeploymentState.Down
-            ? "DOWN"
-            : state === DeploymentState.Undesired
-              ? "DESTROYING"
-              : "DEPLOYING",
+    isUp
+        ? "UP"
+        : state === DeploymentState.Down
+          ? "DOWN"
+          : state === DeploymentState.Undesired
+            ? "DESTROYING"
+            : "DEPLOYING",
 );
 
 const iconSize = $derived(size === "small" ? 10 : 12);

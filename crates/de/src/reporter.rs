@@ -3,18 +3,13 @@
 //! This module wires the DE to the Reporting Queue (`rq`) and the Status
 //! Database (`sdb`). For every iteration of the worker loop the DE constructs
 //! a [`rq::Report`] describing the outcome and publishes it to the RQ. It also
-//! reads — but, in this iteration, does not yet *act on* — two SDB signals:
+//! reads two SDB signals at the top of each iteration to drive its own
+//! backpressure:
 //!
 //! 1. [`StatusSummary::consecutive_failure_count`](sdb::StatusSummary) for the
-//!    deployment, intended to replace the legacy `cdb.failures` counter that
-//!    feeds the exponential-backoff formula.
+//!    deployment, fed into the exponential-backoff formula.
 //! 2. The presence of an open `Crash` incident on the deployment or any of its
-//!    resources, intended to gate whether the deployment should be attempted.
-//!
-//! The legacy `cdb.failures`-driven backoff path remains authoritative: this
-//! module logs the SDB-derived values for observability but does not influence
-//! the DE's behavior. The hard cutover that swaps the source of truth is the
-//! `backoff_migration` task, which lands in lockstep with API and web changes.
+//!    resources, gating whether the deployment should be attempted.
 //!
 //! ## Heartbeat semantics
 //!
@@ -135,10 +130,8 @@ pub(crate) async fn publish_report(publisher: &rq::Publisher, report: &Report) {
     }
 }
 
-/// SDB-derived signals previewed for backoff/eligibility. Read on every
-/// iteration but currently used only for observability — the legacy
-/// `cdb.failures` counter remains authoritative until the `backoff_migration`
-/// task lands.
+/// SDB-derived signals read at the top of every worker iteration to drive
+/// backoff and eligibility decisions.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SdbPreview {
     /// Latest `consecutive_failure_count` for the deployment, or `None` when
@@ -152,10 +145,17 @@ pub(crate) struct SdbPreview {
 }
 
 impl SdbPreview {
-    /// Convenience accessor mirroring how the `backoff_migration` task will
-    /// gate eligibility — currently observational only.
+    /// `true` when an open `Crash` incident exists for the deployment itself
+    /// or any of its resources — used to gate whether the deployment should
+    /// be attempted this iteration.
     pub(crate) fn any_open_crash(&self) -> bool {
         self.deployment_has_open_crash || self.any_resource_has_open_crash
+    }
+
+    /// `consecutive_failure_count` clamped to a `u32`, defaulting to 0 when
+    /// SDB has no row for the deployment yet.
+    pub(crate) fn failure_count(&self) -> u32 {
+        self.consecutive_failure_count.unwrap_or(0)
     }
 }
 
