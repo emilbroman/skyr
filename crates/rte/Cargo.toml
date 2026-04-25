@@ -11,11 +11,13 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 tokio = { version = "1.49.0", features = ["full"] }
 rtq = { path = "../rtq" }
 rtp = { path = "../rtp" }
+rq = { path = "../rq" }
 sclc = { path = "../sclc" }
 serde_json = "1.0.149"
 rdb = { path = "../rdb" }
 ids = { path = "../ids" }
 ldb = { path = "../ldb" }
+chrono = { version = "0.4.43", features = ["clock"] }
 
 [lints]
 workspace = true
