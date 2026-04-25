@@ -15,7 +15,8 @@ Skyr is composed of several services and libraries that work together:
 3. The **[DE](crates/de/)** (Deployment Engine) watches for active deployments, compiles their SCL configuration using **[SCLC](crates/sclc/)**, and emits transition requests to the **[RTQ](crates/rtq/)** (Resource Transition Queue, backed by RabbitMQ).
 4. The **[RTE](crates/rte/)** (Resource Transition Engine) consumes transition messages and invokes **resource plugins** via the **[RTP](crates/rtp/)** protocol (gRPC).
 5. Plugins perform the actual resource operations (create/update/delete) and report outputs back. The RTE persists resource state in the **[RDB](crates/rdb/)** (Resource Database, backed by ScyllaDB/Cassandra).
-6. The **[API](crates/api/)** service exposes a GraphQL endpoint for user management, deployment status, logs, and artifacts.
+6. The DE and RTE both emit a status report after every operation onto the **[RQ](crates/rq/)** (Reporting Queue, backed by RabbitMQ). The **[RE](crates/re/)** (Reporting Engine) consumes RQ, classifies failures, and maintains the **[SDB](crates/sdb/)** (Status Database, backed by ScyllaDB) — per-entity health summaries and incident records. When incidents open or close, the RE writes a request to the **[NQ](crates/nq/)** (Notification Queue, backed by RabbitMQ); the **[NE](crates/ne/)** (Notification Engine) consumes NQ and sends email via SMTP.
+7. The **[API](crates/api/)** service exposes a GraphQL endpoint for user management, deployment status, incidents, logs, and artifacts.
 
 Supporting infrastructure:
 
@@ -72,6 +73,8 @@ The RTQ carries four message types:
 | [scs](crates/scs/) | Git-over-SSH configuration server |
 | [de](crates/de/) | Deployment engine daemon |
 | [rte](crates/rte/) | Resource transition engine daemon |
+| [re](crates/re/) | Reporting engine daemon (consumes RQ, maintains SDB, emits NQ) |
+| [ne](crates/ne/) | Notification engine daemon (consumes NQ, sends SMTP email) |
 | [cli](crates/cli/) | CLI/REPL binary (`skyr`) |
 | [web](web/) | Web dashboard (SvelteKit SPA) |
 
@@ -82,6 +85,7 @@ The RTQ carries four message types:
 | [cdb](crates/cdb/) | ScyllaDB | Configuration database (Git objects, deployments) |
 | [udb](crates/udb/) | Redis | User database (accounts, SSH keys, tokens) |
 | [rdb](crates/rdb/) | ScyllaDB | Resource database (inputs, outputs, dependencies) |
+| [sdb](crates/sdb/) | ScyllaDB | Status database (per-entity health summaries, incidents) |
 | [adb](crates/adb/) | S3 / MinIO | Artifact storage |
 | [ldb](crates/ldb/) | Kafka / Redpanda | Structured log database |
 
@@ -90,6 +94,8 @@ The RTQ carries four message types:
 | Crate | Transport | Description |
 |-------|-----------|-------------|
 | [rtq](crates/rtq/) | RabbitMQ | Resource transition queue |
+| [rq](crates/rq/) | RabbitMQ | Reporting queue (status reports from DE/RTE to RE) |
+| [nq](crates/nq/) | RabbitMQ | Notification queue (incident open/close events to NE) |
 | [rtp](crates/rtp/) | gRPC | Resource transition plugin protocol |
 | [scop](crates/scop/) | gRPC | Container orchestrator protocol |
 
@@ -128,13 +134,14 @@ Infrastructure services are defined in `dev/podman-compose.yml`:
 
 | Service | Port(s) | Purpose |
 |---------|---------|---------|
-| ScyllaDB | 9042 | Configuration and resource databases |
-| RabbitMQ | 5672, 15672 | Resource transition queue |
-| Redis | 6379 | User database and node registry |
+| ScyllaDB | 9042 | Configuration, resource, and status databases |
+| RabbitMQ | 5672, 15672 | Resource transition / reporting / notification queues |
+| Redis | 6379 | User database, node registry, NE dedup |
 | Redpanda | 9092 | Log database |
 | MinIO | 9000, 9001 | Artifact storage |
 | OCI Registry | 5000 | Container image registry |
 | BuildKit | 1234 | Container image builds |
+| MailHog | 1025, 8025 | SMTP capture for NE in local dev |
 
 Application services:
 
@@ -145,6 +152,8 @@ Application services:
 | scs | 2222 | SSH Git server |
 | de-{0,1} | — | Deployment engine workers |
 | rte-{0,1,2} | — | Resource transition engine workers |
+| re-{0,1} | — | Reporting engine workers |
+| ne | — | Notification engine |
 | plugin-std-random | 50051 | Random plugin |
 | plugin-std-time | 50056 | Time plugin |
 | plugin-std-artifact | 50052 | Artifact plugin |

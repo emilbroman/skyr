@@ -67,6 +67,17 @@ During **Undesired** teardown, DE enqueues Destroy messages for owned resources 
 
 DE uses environment QIDs (`org/repo::env`) as the RDB namespace for resource grouping, and deployment QIDs (`org/repo::env@deploy`) as LDB namespaces for log grouping. This ensures resources are shared within an environment while logs remain deployment-specific.
 
+## Status Reporting and Backpressure
+
+The DE is a status-reporting producer and an SDB reader.
+
+- **Producer.** Every loop iteration — including idle "check" iterations and backed-off iterations — emits a single deployment-scoped report onto the [RQ](../rq/). The report carries the deployment QID, wall time, the deployment's current operational state (`DESIRED` / `LINGERING` / `UNDESIRED` / `DOWN`), and a *terminal flag* set on the single last report emitted when the deployment reaches `DOWN`. Failure reports are producer-classified: SCL compile errors as `BadConfiguration`, infrastructure failures (CDB / RDB / RTQ / LDB / SDB unavailability) as `SystemError`. The producer never changes its reporting behavior based on SDB state — it is one-way.
+- **Reader.** At the top of every iteration the worker reads two SDB signals:
+  - `consecutive_failure_count` from the deployment's status summary, fed into the existing exponential-backoff formula.
+  - An open-`Crash` check across the deployment and any of its resources; when set, the iteration is skipped with a success heartbeat (the RE knows the worker is alive; we just are not making progress while the crash is investigated).
+
+These two reads are the only feedback loop from SDB into the DE. The legacy `failures` column on `cdb.deployments` no longer exists — backoff is sourced exclusively from SDB.
+
 ## Related Crates
 
 - [IDs](../ids/) — typed identifiers for namespace computation
@@ -74,6 +85,8 @@ DE uses environment QIDs (`org/repo::env`) as the RDB namespace for resource gro
 - [SCLC](../sclc/) — compiles SCL configuration
 - [RTQ](../rtq/) — target for transition requests
 - [RDB](../rdb/) — resource state for reconciliation
+- [RQ](../rq/) — target for status reports
+- [SDB](../sdb/) — source of backoff and Crash-eligibility signals
 - [LDB](../ldb/) — deployment log output
 - [SCS](../scs/) — creates the deployments that DE monitors
 
