@@ -1,6 +1,8 @@
 <script lang="ts">
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
+import HealthBadge from "$lib/components/HealthBadge.svelte";
+import { orgIncidentHref } from "$lib/paths";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
@@ -107,7 +109,47 @@ function onRedeploy() {
           <dt class="text-gray-400">State</dt>
           <dd><DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} failures={deployment.failures} volatile={hasVolatile} /></dd>
         </div>
+        <div>
+          <dt class="text-gray-400">Health</dt>
+          <dd>
+            <HealthBadge
+              health={deployment.status.health}
+              openIncidentCount={deployment.status.openIncidentCount}
+              worstOpenCategory={deployment.status.worstOpenCategory}
+            />
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-400">Last report</dt>
+          <dd class="text-gray-700">
+            {new Date(deployment.status.lastReportAt).getTime() === 0
+              ? "Never"
+              : new Date(deployment.status.lastReportAt).toLocaleString()}
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-400">Open incidents</dt>
+          <dd class="text-gray-700">{deployment.status.openIncidentCount}</dd>
+        </div>
       </dl>
+      {#if deployment.incidents.length > 0}
+        <div class="mt-4">
+          <h3 class="text-sm font-medium text-gray-700 mb-2">Incidents</h3>
+          <ul class="space-y-1 text-sm">
+            {#each deployment.incidents as incident}
+              <li>
+                <a
+                  href={orgIncidentHref(orgName, incident.id)}
+                  class="text-orange-600 hover:text-orange-500"
+                >
+                  {incident.category} · opened {new Date(incident.openedAt).toLocaleString()}
+                  {incident.closedAt ? ` · closed ${new Date(incident.closedAt).toLocaleString()}` : " · OPEN"}
+                </a>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
       <div class="mt-3 flex items-center gap-4">
         <a
           href={commitTreeHref(orgName, repoName, deployment.commit.hash)}

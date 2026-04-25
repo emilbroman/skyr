@@ -1,0 +1,82 @@
+query OrganizationIncidents(
+  $org: String!
+  $category: IncidentCategory
+  $openOnly: Boolean
+  $since: String
+  $until: String
+  $limit: Int
+  $offset: Int
+) {
+  organization(name: $org) {
+    name
+    incidents(
+      category: $category
+      openOnly: $openOnly
+      since: $since
+      until: $until
+      limit: $limit
+      offset: $offset
+    ) {
+      id
+      entityQid
+      category
+      openedAt
+      closedAt
+      lastReportAt
+      reportCount
+      lastErrorMessage
+      repository {
+        name
+      }
+      environment {
+        name
+      }
+      deployment {
+        id
+        ref
+        commit {
+          hash
+        }
+      }
+      resource {
+        type
+        name
+      }
+    }
+  }
+}
+
+query OrganizationIncidentDetail($org: String!, $id: ID!) {
+  organization(name: $org) {
+    name
+    incident(id: $id) {
+      id
+      entityQid
+      category
+      openedAt
+      closedAt
+      lastReportAt
+      reportCount
+      lastErrorMessage
+      triggeringReportSummary
+      repository {
+        name
+      }
+      environment {
+        name
+      }
+      deployment {
+        id
+        ref
+        commit {
+          hash
+          message
+        }
+      }
+      resource {
+        type
+        name
+      }
+    }
+  }
+}
