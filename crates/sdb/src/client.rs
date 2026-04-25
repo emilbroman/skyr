@@ -889,10 +889,22 @@ impl Client {
             )
             .await?;
         let release_rows = release.into_rows_result()?;
-        // The DELETE ... IF EXISTS row contains [applied] and the previous
-        // values when applied. We do not require it to be applied, since
-        // a concurrent close with the same intent is benign.
-        let _ = release_rows.maybe_first_row::<(bool,)>()?;
+        // Scylla's LWT response for a `DELETE ... IF EXISTS` carries the
+        // `[applied]` flag plus the row's full primary key columns —
+        // `entity_qid`, `category`, `incident_id`, `opened_at`. We do not
+        // care about the per-row values (we already read them via
+        // `get_open_slot`); we only need to consume the response so the
+        // driver does not surface a column-count mismatch when the row
+        // shape changes. A concurrent close that observed `applied=false`
+        // is benign and is treated as a success.
+        type ReleaseRow = (
+            bool,
+            Option<String>,
+            Option<String>,
+            Option<Uuid>,
+            Option<DateTime<Utc>>,
+        );
+        let _ = release_rows.maybe_first_row::<ReleaseRow>()?;
 
         // 3. Update all denormalized rows.
         let by_id_fut = self.session.execute_unpaged(
