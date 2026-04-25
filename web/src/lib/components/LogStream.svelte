@@ -105,7 +105,7 @@ onDestroy(() => {
     class="h-full overflow-y-auto font-mono text-xs p-3 space-y-0.5 bg-gray-900"
   >
     {#each logs as log}
-      <div class="flex gap-2 leading-5 hover:bg-gray-800 px-1 rounded">
+      <div class="flex flex-col sm:flex-row sm:gap-2 leading-5 hover:bg-gray-800 px-1 rounded">
         <span class="text-gray-500 shrink-0 select-none"
           >{formatLogTimestamp(log.timestamp)}</span
         >
