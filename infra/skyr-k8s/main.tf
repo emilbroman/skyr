@@ -15,7 +15,7 @@ locals {
   deploy_minio        = var.minio_endpoint_url == null
   deploy_oci_registry = var.oci_registry_url == null
   deploy_buildkit     = var.buildkit_addr == null
-  deploy_mailhog      = var.ne_smtp == null
+  deploy_smtp_relay   = var.ne_smtp == null
 
   # Resolved hostnames/URLs — internal services use K8s DNS
   scylladb_hostname = coalesce(var.scylladb_hostname, "scylladb.${local.namespace}.svc.cluster.local")
@@ -31,15 +31,17 @@ locals {
   minio_secret_key = coalesce(var.minio_secret_access_key, one(random_password.minio_secret_key[*].result))
 
   # NE SMTP: when no upstream is configured, point at the in-cluster
-  # MailHog instance. MailHog accepts plain SMTP on port 1025 with no
-  # auth, captures every message, and exposes a web UI on 8025 — fine
-  # for development and staging, not a production relay.
-  ne_smtp_host     = var.ne_smtp == null ? "mailhog.${local.namespace}.svc.cluster.local" : var.ne_smtp.host
-  ne_smtp_port     = var.ne_smtp == null ? 1025 : var.ne_smtp.port
-  ne_smtp_tls      = var.ne_smtp == null ? "none" : var.ne_smtp.tls
-  ne_smtp_from     = var.ne_smtp == null ? "skyr@${local.namespace}.local" : var.ne_smtp.from
-  ne_smtp_username = var.ne_smtp == null ? "" : var.ne_smtp.username
-  ne_smtp_password = var.ne_smtp == null ? "" : var.ne_smtp.password
+  # Postfix relay. The relay accepts plain SMTP on port 25 with no
+  # auth from inside the cluster CIDR and performs direct MX delivery
+  # to recipient mail servers. This is a working default for any
+  # deployment without a managed upstream (SES, Mailgun, Postmark).
+  ne_smtp_host          = var.ne_smtp == null ? "smtp-relay.${local.namespace}.svc.cluster.local" : var.ne_smtp.host
+  ne_smtp_port          = var.ne_smtp == null ? 25 : var.ne_smtp.port
+  ne_smtp_tls           = var.ne_smtp == null ? "none" : var.ne_smtp.tls
+  ne_smtp_from          = var.ne_smtp == null ? "skyr@${local.namespace}.local" : var.ne_smtp.from
+  ne_smtp_username      = var.ne_smtp == null ? "" : var.ne_smtp.username
+  ne_smtp_password      = var.ne_smtp == null ? "" : var.ne_smtp.password
+  ne_smtp_sender_domain = element(split("@", local.ne_smtp_from), 1)
 
   # Common labels
   labels = {

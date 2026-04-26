@@ -168,11 +168,13 @@ variable "ne_smtp" {
   description = <<-EOT
     Upstream SMTP configuration the Notification Engine relays
     through. When `null` (the default), the module provisions an
-    in-cluster MailHog instance and points NE at it — useful for
-    development, staging, or any deployment where you do not need
-    real email delivery. MailHog captures every message and exposes
-    a web UI at `mailhog:8025` inside the cluster (port-forward to
-    inspect).
+    in-cluster Postfix relay (`boky/postfix`) and points NE at it.
+    The relay accepts mail from the cluster CIDR with no auth and
+    performs direct MX delivery to recipient mail servers. Note
+    that messages from a cluster IP often get rejected by recipient
+    anti-spam systems (no PTR/SPF/DMARC, possibly blocked port 25
+    egress), so for production-style deployments you should supply
+    this object to relay through a managed service.
 
     For production-style deployments, supply this object with the
     upstream relay's host / port / TLS mode / envelope-from address,
