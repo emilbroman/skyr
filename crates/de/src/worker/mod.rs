@@ -67,6 +67,14 @@ struct WorkResult {
     /// idle DOWN/LINGERING iterations and "check"-only iterations report
     /// success; this gives the RE a uniform liveness signal.
     outcome: IterationOutcome,
+    /// True when this iteration did not actually attempt the per-state work
+    /// because it was gated by exponential backoff. The Failure outcome is
+    /// replayed from `last_failure` so the SDB-side count keeps climbing,
+    /// but `last_failure_at` must NOT be advanced for these — otherwise the
+    /// elapsed-since-last-failure counter is reset on every backoff iteration
+    /// and the worker stays in backoff forever, never re-attempting the work
+    /// that would let it discover a now-resolvable cross-repo dependency.
+    is_backoff_replay: bool,
 }
 
 impl Worker {
@@ -137,6 +145,7 @@ impl Worker {
                     keep_running: true,
                     state: DeploymentState::Desired,
                     outcome,
+                    is_backoff_replay: false,
                 }
             }
         };
@@ -146,6 +155,13 @@ impl Worker {
         // gives backed-off iterations a classification to replay (so we
         // do not emit a misleading success heartbeat while the deployment
         // is still in a failed state).
+        //
+        // Backoff replays must NOT advance `last_failure_at` — they
+        // didn't actually attempt work, and resetting the timestamp on
+        // every replay would pin `elapsed` at ~5s (the loop interval)
+        // while the SDB-driven `delay` keeps growing, leaving the worker
+        // permanently in backoff and unable to discover that a missing
+        // cross-repo dependency has since become resolvable.
         match &work_result.outcome {
             IterationOutcome::Success => {
                 self.last_failure = None;
@@ -154,7 +170,9 @@ impl Worker {
                 kind,
                 error_message,
             } => {
-                self.last_failure = Some((Instant::now(), *kind, error_message.clone()));
+                if !work_result.is_backoff_replay {
+                    self.last_failure = Some((Instant::now(), *kind, error_message.clone()));
+                }
             }
         }
 
@@ -258,6 +276,7 @@ impl Worker {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
+                    is_backoff_replay: false,
                 })
             }
 
@@ -269,6 +288,7 @@ impl Worker {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
+                    is_backoff_replay: false,
                 })
             }
 
@@ -278,6 +298,7 @@ impl Worker {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
+                    is_backoff_replay: false,
                 })
             }
         }
@@ -319,6 +340,7 @@ impl Worker {
                 keep_running: true,
                 state,
                 outcome: IterationOutcome::Success,
+                is_backoff_replay: false,
             });
         }
 
@@ -339,7 +361,9 @@ impl Worker {
                     // deployment is still in a failed state — replay the last
                     // classification so the SDB-side failure count keeps
                     // climbing toward the RE's threshold instead of being
-                    // reset by a misleading success heartbeat.
+                    // reset by a misleading success heartbeat. Mark this as
+                    // a replay so `work_and_report` doesn't advance
+                    // `last_failure_at` (see WorkResult docs).
                     return Ok(WorkResult {
                         keep_running: true,
                         state,
@@ -347,6 +371,7 @@ impl Worker {
                             kind: *last_kind,
                             error_message: last_error.clone(),
                         },
+                        is_backoff_replay: true,
                     });
                 }
             }
@@ -366,6 +391,7 @@ impl Worker {
                 keep_running: true,
                 state,
                 outcome: IterationOutcome::Success,
+                is_backoff_replay: false,
             });
         }
 
@@ -389,6 +415,7 @@ impl Worker {
                 keep_running: false,
                 state,
                 outcome: IterationOutcome::Success,
+                is_backoff_replay: false,
             });
         }
 
@@ -407,6 +434,7 @@ impl Worker {
                             kind: FailureKind::BadConfiguration,
                             error_message: format!("{sid} compile errors"),
                         },
+                        is_backoff_replay: false,
                     });
                 }
 
@@ -442,6 +470,7 @@ impl Worker {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
+                    is_backoff_replay: false,
                 })
             }
             Err(error) => {
@@ -456,6 +485,7 @@ impl Worker {
                         kind: FailureKind::SystemError,
                         error_message: format!("{sid} transient error: {error:#}"),
                     },
+                    is_backoff_replay: false,
                 })
             }
         }
