@@ -5,7 +5,7 @@ query DeploymentLastLogs($amount: Int) {
       name
       qid
       deployments {
-        id
+        qid
         ref
         state
         lastLogs(amount: $amount) {

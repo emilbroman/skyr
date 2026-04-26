@@ -212,7 +212,7 @@ async fn print_deployment_last_logs(
                         && !d.last_logs.is_empty()
                 })
                 .map(|d| DeploymentLogOutput {
-                    deployment_id: d.id,
+                    deployment_id: d.qid,
                     logs: d
                         .last_logs
                         .into_iter()
