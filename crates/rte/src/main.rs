@@ -360,6 +360,7 @@ async fn handle_create(
                 outcome_failure(rq::IncidentCategory::SystemError, error),
                 rq::ResourceOperationalState::Pending,
                 false,
+                false,
             )
             .await;
             delivery.nack(false).await?;
@@ -388,6 +389,7 @@ async fn handle_create(
             ),
             rq::ResourceOperationalState::Pending,
             false,
+            false,
         )
         .await;
         delivery.nack(false).await?;
@@ -412,6 +414,7 @@ async fn handle_create(
             ),
             rq::ResourceOperationalState::Pending,
             false,
+            false,
         )
         .await;
         delivery.nack(false).await?;
@@ -434,6 +437,7 @@ async fn handle_create(
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::BadConfiguration, error),
                 rq::ResourceOperationalState::Pending,
+                false,
                 false,
             )
             .await;
@@ -497,12 +501,15 @@ async fn handle_create(
                 outcome_failure(rq::IncidentCategory::Crash, error),
                 rq::ResourceOperationalState::Pending,
                 false,
+                false,
             )
             .await;
             delivery.nack(false).await?;
             return Ok(());
         }
     };
+
+    let volatile = is_volatile_markers(&resource.markers);
 
     // Validate plugin output size before persistence (3.3).
     if let Ok(output_json) = serde_json::to_value(&resource.outputs)
@@ -524,6 +531,7 @@ async fn handle_create(
             ),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -567,6 +575,7 @@ async fn handle_create(
             outcome_failure(rq::IncidentCategory::SystemError, error),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -599,6 +608,7 @@ async fn handle_create(
         outcome_success(),
         rq::ResourceOperationalState::Live,
         false,
+        volatile,
     )
     .await;
     Ok(())
@@ -668,12 +678,15 @@ async fn handle_destroy(
                 outcome_failure(rq::IncidentCategory::SystemError, error),
                 rq::ResourceOperationalState::Live,
                 false,
+                false,
             )
             .await;
             delivery.nack(false).await?;
             return Ok(());
         }
     };
+
+    let volatile = is_volatile_markers(&current.markers);
 
     let inputs = match current.inputs {
         Some(inputs) => inputs,
@@ -694,6 +707,7 @@ async fn handle_destroy(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -719,6 +733,7 @@ async fn handle_destroy(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -747,6 +762,7 @@ async fn handle_destroy(
             ),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -801,6 +817,7 @@ async fn handle_destroy(
             outcome_failure(rq::IncidentCategory::Crash, error),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -838,6 +855,7 @@ async fn handle_destroy(
             outcome_failure(rq::IncidentCategory::SystemError, error),
             rq::ResourceOperationalState::Destroyed,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -871,6 +889,7 @@ async fn handle_destroy(
         outcome_success(),
         rq::ResourceOperationalState::Destroyed,
         true,
+        volatile,
     )
     .await;
     Ok(())
@@ -887,12 +906,20 @@ struct UpdateParams<'a> {
     source_trace: &'a ids::SourceTrace,
 }
 
+/// Successful outcome of [`handle_update_inputs`]: the target deployment QID
+/// the resource is now owned by, plus the post-operation volatility marker
+/// the caller threads into its terminal `publish_report`.
+struct UpdateInputsSuccess {
+    target_dep_qid: String,
+    volatile: bool,
+}
+
 async fn handle_update_inputs(
     params: UpdateParams<'_>,
     delivery: &rtq::Delivery,
     ctx: &WorkerContext,
     start: Instant,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<UpdateInputsSuccess>> {
     let resource = params.resource;
     let owner_deployment_qid = params.owner_deployment_qid;
     let target_deployment_id = params.target_deployment_id;
@@ -937,12 +964,15 @@ async fn handle_update_inputs(
                 outcome_failure(rq::IncidentCategory::SystemError, error),
                 rq::ResourceOperationalState::Live,
                 false,
+                false,
             )
             .await;
             delivery.nack(false).await?;
             return Ok(None);
         }
     };
+
+    let mut volatile = is_volatile_markers(&current.markers);
 
     if current.owner.as_deref() != Some(owner_deployment_qid) {
         // Idempotent drop — different deployment owns this resource.
@@ -979,6 +1009,7 @@ async fn handle_update_inputs(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1005,6 +1036,7 @@ async fn handle_update_inputs(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1031,6 +1063,7 @@ async fn handle_update_inputs(
             ),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -1055,6 +1088,7 @@ async fn handle_update_inputs(
                 outcome_failure(rq::IncidentCategory::BadConfiguration, error),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1093,6 +1127,7 @@ async fn handle_update_inputs(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1166,12 +1201,15 @@ async fn handle_update_inputs(
                     outcome_failure(rq::IncidentCategory::Crash, error),
                     rq::ResourceOperationalState::Live,
                     false,
+                    volatile,
                 )
                 .await;
                 delivery.nack(false).await?;
                 return Ok(None);
             }
         };
+
+        volatile = is_volatile_markers(&updated.markers);
 
         // Validate plugin output size before persistence (3.3).
         if let Ok(output_json) = serde_json::to_value(&updated.outputs)
@@ -1194,6 +1232,7 @@ async fn handle_update_inputs(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1258,13 +1297,17 @@ async fn handle_update_inputs(
             outcome_failure(rq::IncidentCategory::SystemError, error),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
         return Ok(None);
     }
 
-    Ok(Some(target_dep_qid))
+    Ok(Some(UpdateInputsSuccess {
+        target_dep_qid,
+        volatile,
+    }))
 }
 
 async fn handle_adopt(
@@ -1279,7 +1322,7 @@ async fn handle_adopt(
         &message.from_deployment_id,
         &message.from_deployment_nonce,
     );
-    let Some(to_dep_qid) = handle_update_inputs(
+    let Some(success) = handle_update_inputs(
         UpdateParams {
             resource: &message.resource,
             owner_deployment_qid: &from_dep_qid,
@@ -1298,6 +1341,10 @@ async fn handle_adopt(
     else {
         return Ok(());
     };
+    let UpdateInputsSuccess {
+        target_dep_qid: to_dep_qid,
+        volatile,
+    } = success;
 
     let res_qid = resource_qid_string(&message.resource);
     let resource_id = message.resource.resource_id.clone();
@@ -1337,6 +1384,7 @@ async fn handle_adopt(
         outcome_success(),
         rq::ResourceOperationalState::Live,
         false,
+        volatile,
     )
     .await;
     Ok(())
@@ -1354,7 +1402,7 @@ async fn handle_restore(
         &message.deployment_id,
         &message.deployment_nonce,
     );
-    let Some(dep_qid) = handle_update_inputs(
+    let Some(success) = handle_update_inputs(
         UpdateParams {
             resource: &message.resource,
             owner_deployment_qid: &dep_qid,
@@ -1373,6 +1421,10 @@ async fn handle_restore(
     else {
         return Ok(());
     };
+    let UpdateInputsSuccess {
+        target_dep_qid: dep_qid,
+        volatile,
+    } = success;
 
     let res_qid = resource_qid_string(&message.resource);
     let dep_short = deployment_short(&message.deployment_id);
@@ -1404,6 +1456,7 @@ async fn handle_restore(
         outcome_success(),
         rq::ResourceOperationalState::Live,
         false,
+        volatile,
     )
     .await;
     Ok(())
@@ -1473,12 +1526,15 @@ async fn handle_check(
                 outcome_failure(rq::IncidentCategory::SystemError, error),
                 rq::ResourceOperationalState::Live,
                 false,
+                false,
             )
             .await;
             delivery.nack(false).await?;
             return Ok(());
         }
     };
+
+    let mut volatile = is_volatile_markers(&current.markers);
 
     let inputs = match current.inputs {
         Some(inputs) => inputs,
@@ -1499,6 +1555,7 @@ async fn handle_check(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1524,6 +1581,7 @@ async fn handle_check(
                 ),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
@@ -1552,6 +1610,7 @@ async fn handle_check(
             ),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -1608,12 +1667,15 @@ async fn handle_check(
                 outcome_failure(rq::IncidentCategory::SystemError, error),
                 rq::ResourceOperationalState::Live,
                 false,
+                volatile,
             )
             .await;
             delivery.nack(false).await?;
             return Ok(());
         }
     };
+
+    volatile = is_volatile_markers(&checked.markers);
 
     // Validate plugin output size before persistence (3.3).
     if let Ok(output_json) = serde_json::to_value(&checked.outputs)
@@ -1635,6 +1697,7 @@ async fn handle_check(
             ),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -1665,6 +1728,7 @@ async fn handle_check(
             outcome_failure(rq::IncidentCategory::SystemError, error),
             rq::ResourceOperationalState::Live,
             false,
+            volatile,
         )
         .await;
         delivery.nack(false).await?;
@@ -1684,6 +1748,7 @@ async fn handle_check(
         outcome_success(),
         rq::ResourceOperationalState::Live,
         false,
+        volatile,
     )
     .await;
     Ok(())
@@ -1802,6 +1867,7 @@ async fn publish_report(
     outcome: rq::Outcome,
     operational_state: rq::ResourceOperationalState,
     terminal: bool,
+    volatile: bool,
 ) {
     let report = rq::Report {
         entity_qid: rq::EntityQid::Resource(resource_qid.clone()),
@@ -1811,6 +1877,7 @@ async fn publish_report(
         extension: rq::EntityExtension::Resource(rq::ResourceExtension {
             operational_state,
             terminal,
+            volatile,
         }),
     };
     if let Err(error) = publisher.enqueue(&report).await {
@@ -1820,6 +1887,14 @@ async fn publish_report(
             "failed to publish rq report",
         );
     }
+}
+
+/// Returns `true` if the marker set indicates a volatile resource (i.e. one
+/// the plugin has marked as externally mutable). Threaded through every
+/// [`publish_report`] call so the RE watchdog only expects heartbeats from
+/// resources that actually receive periodic Check messages.
+fn is_volatile_markers(markers: &std::collections::BTreeSet<sclc::Marker>) -> bool {
+    markers.contains(&sclc::Marker::Volatile)
 }
 
 /// Build a successful [`rq::Outcome`].
