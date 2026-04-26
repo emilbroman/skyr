@@ -15,6 +15,8 @@ inputs = {
   oci_registry_insecure     = true
   redpanda_advertise_host   = "node1.vm.bb3.internal"
   dns_zone                  = "host.skyr.cloud"
+  cluster_cidr              = "10.100.0.0/16"
+  sender_domain             = "skyr.cloud"
 }
 
 generate "proxmox_provider" {

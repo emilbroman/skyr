@@ -164,6 +164,22 @@ variable "ne_worker_count" {
 
 # --- NE SMTP ---
 
+variable "sender_domain" {
+  type        = string
+  description = <<-EOT
+    Domain used in the envelope-from address when NE relays through
+    the in-cluster Postfix relay (i.e. when `ne_smtp` is null). The
+    sender mailbox is derived as `noreply@<sender_domain>`, and the
+    Postfix `ALLOWED_SENDER_DOMAINS` is set to match. When null, the
+    namespace-suffixed default (`<namespace>.local`) is used, which
+    is fine for development but rarely accepted by recipient MTAs.
+
+    Ignored when `ne_smtp` is set — in that case the operator
+    supplies `ne_smtp.from` directly.
+  EOT
+  default     = null
+}
+
 variable "ne_smtp" {
   description = <<-EOT
     Upstream SMTP configuration the Notification Engine relays

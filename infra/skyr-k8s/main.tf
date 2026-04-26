@@ -38,7 +38,7 @@ locals {
   ne_smtp_host          = var.ne_smtp == null ? "smtp-relay.${local.namespace}.svc.cluster.local" : var.ne_smtp.host
   ne_smtp_port          = var.ne_smtp == null ? 25 : var.ne_smtp.port
   ne_smtp_tls           = var.ne_smtp == null ? "none" : var.ne_smtp.tls
-  ne_smtp_from          = var.ne_smtp == null ? "skyr@${local.namespace}.local" : var.ne_smtp.from
+  ne_smtp_from          = var.ne_smtp == null ? "noreply@${coalesce(var.sender_domain, "${local.namespace}.local")}" : var.ne_smtp.from
   ne_smtp_username      = var.ne_smtp == null ? "" : var.ne_smtp.username
   ne_smtp_password      = var.ne_smtp == null ? "" : var.ne_smtp.password
   ne_smtp_sender_domain = element(split("@", local.ne_smtp_from), 1)
