@@ -264,44 +264,60 @@ impl Worker {
 
     /// Run the per-state handler for the current deployment, returning the
     /// observed state and the producer's classified iteration outcome.
+    ///
+    /// The state captured at the start of the iteration is used to dispatch
+    /// to the per-state handler, but the state reported back to the RE is
+    /// re-read at the end so that any transition the handler performed (e.g.
+    /// UNDESIRED→DOWN once teardown finishes) is reflected in the report.
+    /// Without this, the report's `operational_state` and the derived
+    /// `terminal` flag lag a full iteration behind reality, which lets the
+    /// active-deployments row disappear from CDB while the heartbeat cache
+    /// still carries a non-terminal entry — the watchdog then opens a
+    /// synthetic SystemError once the cadence elapses.
     async fn work(&mut self, preview: &SdbPreview) -> anyhow::Result<WorkResult> {
         let deployment = self.client.get().await?;
         let sid = short_id(deployment.deployment.as_str()).to_string();
         let state = deployment.state;
 
-        match state {
+        let work_result = match state {
             DeploymentState::Down => {
                 tracing::info!("{sid} down, waiting to be decommissioned...");
-                Ok(WorkResult {
+                WorkResult {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
                     is_backoff_replay: false,
-                })
+                }
             }
 
-            DeploymentState::Desired => self.run_desired(&deployment, preview).await,
+            DeploymentState::Desired => self.run_desired(&deployment, preview).await?,
 
             DeploymentState::Lingering => {
                 self.run_lingering(&deployment).await?;
-                Ok(WorkResult {
+                WorkResult {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
                     is_backoff_replay: false,
-                })
+                }
             }
 
             DeploymentState::Undesired => {
                 self.run_undesired(&deployment).await?;
-                Ok(WorkResult {
+                WorkResult {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Success,
                     is_backoff_replay: false,
-                })
+                }
             }
-        }
+        };
+
+        let final_state = self.client.get().await?.state;
+        Ok(WorkResult {
+            state: final_state,
+            ..work_result
+        })
     }
 
     /// DESIRED state handler.
