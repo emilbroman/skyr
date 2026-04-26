@@ -383,6 +383,19 @@ pub struct ResourceExtension {
     /// been destroyed).
     #[serde(default)]
     pub terminal: bool,
+
+    /// `true` if the producer has marked this resource as volatile (its
+    /// plugin has the `sclc::Marker::Volatile` marker set). Non-volatile
+    /// resources do not receive periodic Check messages, so the RE watchdog
+    /// must not expect heartbeats for them while they sit in `Live`.
+    ///
+    /// Defaults to `false` on the wire so older producers and reports from
+    /// failure paths that cannot determine volatility decode safely. An
+    /// inaccurate `false` is conservative: the watchdog will not track that
+    /// entry, and the next successful report flips the flag if the resource
+    /// really is volatile.
+    #[serde(default)]
+    pub volatile: bool,
 }
 
 /// Typed, entity-scoped extension carried alongside the common report base.
@@ -410,6 +423,16 @@ impl EntityExtension {
         match self {
             EntityExtension::Deployment(ext) => ext.terminal,
             EntityExtension::Resource(ext) => ext.terminal,
+        }
+    }
+
+    /// Returns whether the entity is a volatile resource. Always `false` for
+    /// deployments — volatility is a per-resource property reflecting whether
+    /// the resource's plugin has set the `Volatile` marker.
+    pub fn is_volatile(&self) -> bool {
+        match self {
+            EntityExtension::Deployment(_) => false,
+            EntityExtension::Resource(ext) => ext.volatile,
         }
     }
 }
@@ -940,6 +963,7 @@ mod tests {
             extension: EntityExtension::Resource(ResourceExtension {
                 operational_state: ResourceOperationalState::Destroyed,
                 terminal: true,
+                volatile: false,
             }),
         };
         let json = serde_json::to_string(&report).unwrap();
@@ -957,6 +981,47 @@ mod tests {
         }"#;
         let ext: EntityExtension = serde_json::from_str(json).unwrap();
         assert!(!ext.is_terminal());
+    }
+
+    #[test]
+    fn resource_extension_volatile_default_is_false() {
+        // Producers that pre-date the volatile flag should still decode, with
+        // the flag defaulting to false. The watchdog interprets that as "do
+        // not expect heartbeats", which matches the safe behavior.
+        let json = r#"{
+            "kind": "RESOURCE",
+            "operational_state": "LIVE"
+        }"#;
+        let ext: EntityExtension = serde_json::from_str(json).unwrap();
+        assert!(!ext.is_volatile());
+    }
+
+    #[test]
+    fn deployment_extension_is_volatile_is_always_false() {
+        let ext = EntityExtension::Deployment(DeploymentExtension {
+            operational_state: DeploymentOperationalState::Desired,
+            terminal: false,
+        });
+        assert!(!ext.is_volatile());
+    }
+
+    #[test]
+    fn resource_extension_volatile_round_trips() {
+        let report = Report {
+            entity_qid: EntityQid::Resource(sample_resource_qid()),
+            timestamp: sample_timestamp(),
+            outcome: Outcome::Success,
+            metrics: Metrics::wall_time(5),
+            extension: EntityExtension::Resource(ResourceExtension {
+                operational_state: ResourceOperationalState::Live,
+                terminal: false,
+                volatile: true,
+            }),
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let back: Report = serde_json::from_str(&json).unwrap();
+        assert_eq!(report, back);
+        assert!(back.extension.is_volatile());
     }
 
     #[test]
