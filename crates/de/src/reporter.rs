@@ -21,8 +21,13 @@
 //! ## Terminal flag
 //!
 //! The deployment-scoped extension carries a terminal flag that is set on the
-//! single last report emitted for a deployment — when the deployment reaches
-//! the DOWN terminal state. After that, no further reports are emitted.
+//! last report a worker invocation will emit. That happens when the deployment
+//! reaches the DOWN terminal state, and also when the worker stops its loop
+//! while the deployment is still in another state but has nothing left to do
+//! (e.g. a bootstrapped no-`Main.scl` deployment idling until an external
+//! trigger such as a supersession respawns the worker). The RE uses this flag
+//! to drop the entity from heartbeat tracking so the watchdog does not fire
+//! while no reports are expected.
 
 use std::time::Duration;
 
