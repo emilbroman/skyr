@@ -151,6 +151,7 @@ mutation CreateDeployment(
     commitHash: $commitHash
   ) {
     id
+    nonce
     state
   }
 }
