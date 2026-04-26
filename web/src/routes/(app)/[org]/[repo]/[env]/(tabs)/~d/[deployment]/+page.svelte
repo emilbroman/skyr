@@ -186,7 +186,7 @@ function onRedeploy() {
         >
           <LogStream
             document={DeploymentLogsDocument}
-            variables={{ deploymentId: deployment.id, initialAmount: 100 }}
+            variables={{ deploymentId: deployment.qid, initialAmount: 100 }}
             logField="deploymentLogs"
           />
         </div>

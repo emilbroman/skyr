@@ -185,6 +185,7 @@ query DeploymentDetail(
       environment(name: $env) {
         deployment(id: $id) {
           id
+          qid
           ref
           commit {
             hash
