@@ -46,8 +46,10 @@ pub(crate) struct Worker {
     /// is unchanged; cleared on compile error or when the key differs.
     pub(crate) cached_compile: Option<CachedCompile>,
     /// Latched once the deployment's terminal status report has been emitted
-    /// onto the RQ. The terminal report is, by design, the last report ever
-    /// emitted for this deployment.
+    /// onto the RQ. The terminal report is the last report this worker
+    /// invocation will emit — either because the deployment reached DOWN, or
+    /// because the worker has nothing left to do (no `Main.scl`) and is going
+    /// idle until an external trigger (e.g. supersession) respawns it.
     pub(crate) terminal_reported: bool,
 }
 
@@ -156,7 +158,14 @@ impl Worker {
             }
         }
 
-        let is_terminal = matches!(work_result.state, DeploymentState::Down);
+        // A report is terminal when this worker invocation will emit no
+        // further reports — either because the deployment reached DOWN, or
+        // because the per-state handler decided to stop the loop (e.g. a
+        // bootstrapped no-Main.scl deployment with nothing left to do). The
+        // RE uses this flag to drop the entity from heartbeat tracking, so
+        // the watchdog does not fire while we sit idle.
+        let is_terminal =
+            matches!(work_result.state, DeploymentState::Down) || !work_result.keep_running;
 
         // Build & publish the report. Reporting failures are logged but never
         // propagate — the DE keeps reconciling regardless of broker health.
@@ -175,13 +184,10 @@ impl Worker {
                 deployment = %deployment_qid,
                 "emitted terminal status report; stopping worker",
             );
-            // The terminal report is the last report ever emitted; stop the
-            // loop unconditionally.
             return true;
         }
 
-        // Otherwise the inner work() decision dictates whether we keep going.
-        !work_result.keep_running
+        false
     }
 
     /// Read SDB signals for backoff and eligibility decisions. Errors are
@@ -289,7 +295,9 @@ impl Worker {
     ///
     /// Returns a [`WorkResult`] whose `keep_running` is `false` to signal that
     /// the processing loop should stop (e.g., when there is no `Main.scl` and
-    /// thus no volatile resources).
+    /// thus no volatile resources). The reporting layer reads `keep_running`
+    /// to decide whether to mark the iteration's report as terminal — see
+    /// `work_and_report` and the reporter module's terminal-flag docs.
     async fn run_desired(
         &mut self,
         deployment: &Deployment,
