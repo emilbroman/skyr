@@ -33,7 +33,8 @@ use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
 use crate::config::WorkerConfig;
-use crate::pipeline::PipelineContext;
+use crate::entity::CadenceConfig;
+use crate::pipeline::{HeartbeatEntry, PipelineContext};
 
 /// Static error message used in synthetic SystemError incidents created by
 /// the watchdog. Visible to operators via the SDB row's
@@ -72,10 +73,7 @@ async fn sweep(
         if entry.watchdog_open {
             continue;
         }
-        let Some(state) = entry.operational_state.as_deref() else {
-            continue;
-        };
-        let Some(cadence) = cfg.cadence.for_state_str(state) else {
+        let Some(cadence) = expected_cadence(&entry, &cfg.cadence) else {
             continue;
         };
         let elapsed = (now - entry.last_report_at)
@@ -165,6 +163,22 @@ async fn try_open_watchdog_incident(
     }
 }
 
+/// Returns the cadence the watchdog should expect for this cache entry, or
+/// `None` if no heartbeat is expected and the entry should be skipped.
+///
+/// Non-volatile `LIVE` resources are skipped because the DE only enqueues
+/// `Check` messages — the only producer of ongoing reports for `LIVE`
+/// resources — for resources whose plugin marks them volatile. Treating
+/// non-volatile `LIVE` like the terminal `DOWN` / `DESTROYED` states keeps
+/// the watchdog from firing on resources that are working as designed.
+fn expected_cadence(entry: &HeartbeatEntry, cadence: &CadenceConfig) -> Option<Duration> {
+    let state = entry.operational_state.as_deref()?;
+    if state == "LIVE" && !entry.volatile {
+        return None;
+    }
+    cadence.for_state_str(state)
+}
+
 /// Reverses [`crate::entity::scope_keys`] given only the canonical string
 /// form of an entity QID. Returns `None` for strings that are neither a valid
 /// deployment QID nor a valid resource QID.
@@ -203,5 +217,67 @@ mod tests {
     #[test]
     fn parse_scope_keys_rejects_garbage() {
         assert!(scope_keys_from_string("not a qid").is_none());
+    }
+
+    fn entry(state: &str, volatile: bool) -> HeartbeatEntry {
+        HeartbeatEntry {
+            last_report_at: Utc::now(),
+            operational_state: Some(state.to_string()),
+            volatile,
+            watchdog_open: false,
+        }
+    }
+
+    #[test]
+    fn non_volatile_live_resource_has_no_expected_cadence() {
+        // The reproducer for the bug: non-volatile resources never get Check
+        // messages, so the watchdog must not expect heartbeats from them.
+        let cfg = CadenceConfig::default();
+        assert_eq!(expected_cadence(&entry("LIVE", false), &cfg), None);
+    }
+
+    #[test]
+    fn volatile_live_resource_uses_resource_live_cadence() {
+        let cfg = CadenceConfig::default();
+        assert_eq!(
+            expected_cadence(&entry("LIVE", true), &cfg),
+            Some(cfg.resource_live)
+        );
+    }
+
+    #[test]
+    fn pending_resource_uses_resource_pending_cadence_regardless_of_volatile() {
+        let cfg = CadenceConfig::default();
+        // PENDING resources are mid-creation; the volatile flag isn't
+        // meaningful yet, but we use it to remain conservative — the cadence
+        // is the same either way.
+        assert_eq!(
+            expected_cadence(&entry("PENDING", false), &cfg),
+            Some(cfg.resource_pending)
+        );
+        assert_eq!(
+            expected_cadence(&entry("PENDING", true), &cfg),
+            Some(cfg.resource_pending)
+        );
+    }
+
+    #[test]
+    fn deployment_states_are_unaffected_by_volatile_flag() {
+        // Deployments never carry volatility; the cache entry's volatile flag
+        // is always false for them. The cadence rules are unchanged.
+        let cfg = CadenceConfig::default();
+        assert_eq!(
+            expected_cadence(&entry("DESIRED", false), &cfg),
+            Some(cfg.deployment_desired)
+        );
+        assert_eq!(expected_cadence(&entry("DOWN", false), &cfg), None);
+    }
+
+    #[test]
+    fn missing_operational_state_yields_no_cadence() {
+        let cfg = CadenceConfig::default();
+        let mut e = entry("LIVE", true);
+        e.operational_state = None;
+        assert_eq!(expected_cadence(&e, &cfg), None);
     }
 }

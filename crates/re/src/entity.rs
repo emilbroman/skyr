@@ -179,6 +179,7 @@ mod tests {
         let ext = EntityExtension::Resource(ResourceExtension {
             operational_state: ResourceOperationalState::Live,
             terminal: false,
+            volatile: false,
         });
         assert_eq!(operational_state_str(&ext), "LIVE");
     }

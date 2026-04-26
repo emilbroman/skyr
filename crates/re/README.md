@@ -90,8 +90,15 @@ incident. The cadence defaults are:
 | State (resource) | Default grace |
 |---|---|
 | `PENDING` | 60s |
-| `LIVE` | 10min |
+| `LIVE` (volatile) | 10min |
+| `LIVE` (non-volatile) | (never) |
 | `DESTROYED` | (never — terminal) |
+
+Non-volatile resources (e.g. `Std/Random`, crypto keys, build artifacts) are
+not re-checked by the DE after creation, so they never produce ongoing
+heartbeats. The watchdog therefore treats non-volatile `LIVE` as a terminal
+state and never fires on it. Volatility is carried per-report on the RQ
+extension and cached alongside the operational state.
 
 The cache is populated only by reports the worker has processed since
 startup; a fresh worker has a brief warm-up window during which silent

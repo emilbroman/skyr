@@ -81,6 +81,11 @@ pub struct HeartbeatCache {
 pub struct HeartbeatEntry {
     pub last_report_at: DateTime<Utc>,
     pub operational_state: Option<String>,
+    /// Whether the most recent report flagged this resource as volatile.
+    /// Non-volatile resources do not receive periodic Check messages while
+    /// they sit in `Live`, so the watchdog must not expect heartbeats from
+    /// them. Always `false` for deployment entries.
+    pub volatile: bool,
     /// Suppresses repeated watchdog firing while an incident is already open
     /// for this entity. Cleared whenever a real heartbeat arrives.
     pub watchdog_open: bool,
@@ -188,6 +193,7 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
                 HeartbeatEntry {
                     last_report_at: report.timestamp,
                     operational_state: Some(op_state.to_string()),
+                    volatile: report.extension.is_volatile(),
                     // A real report clears any prior watchdog suppression so
                     // the next missed heartbeat can fire fresh.
                     watchdog_open: false,
@@ -455,6 +461,7 @@ mod tests {
             HeartbeatEntry {
                 last_report_at: now,
                 operational_state: Some("DESIRED".to_string()),
+                volatile: false,
                 watchdog_open: false,
             },
         );
@@ -473,6 +480,7 @@ mod tests {
             HeartbeatEntry {
                 last_report_at: now,
                 operational_state: Some("DESIRED".to_string()),
+                volatile: false,
                 watchdog_open: false,
             },
         );
