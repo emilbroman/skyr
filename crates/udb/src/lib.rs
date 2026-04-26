@@ -671,7 +671,7 @@ impl OrgClient {
 
     pub async fn get(&self) -> Result<Org, OrgQueryError> {
         let mut conn = self.client.conn.clone();
-        let (creator,): (Option<String>,) = conn.hget(org_key(&self.name), &["creator"]).await?;
+        let creator: Option<String> = conn.hget(org_key(&self.name), "creator").await?;
 
         let Some(creator) = creator else {
             return Err(OrgQueryError::NotFound);
