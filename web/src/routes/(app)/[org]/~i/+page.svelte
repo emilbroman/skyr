@@ -8,7 +8,14 @@ import {
     OrganizationIncidentsDocument,
 } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { envHref, orgHref, orgIncidentHref, repoHref } from "$lib/paths";
+import {
+    deploymentHref,
+    envHref,
+    orgHref,
+    orgIncidentHref,
+    repoHref,
+    resourceHref,
+} from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
 
@@ -32,26 +39,31 @@ function categoryToHealth(category: IncidentCategory): HealthStatus {
     return category === IncidentCategory.Crash ? HealthStatus.Down : HealthStatus.Degraded;
 }
 
-function entityLabel(incident: (typeof rows)[number]): { label: string; href: string | null } {
+function entityCell(incident: (typeof rows)[number]): {
+    kind: string;
+    name: string;
+    href: string | null;
+} {
+    const repo = incident.repository?.name ?? "";
+    const env = incident.environment?.name ?? "";
     if (incident.deployment) {
         const d = incident.deployment;
-        const env = incident.environment?.name ?? "";
-        const repo = incident.repository?.name ?? "";
         return {
-            label: `${repo}/${env}: deployment ${d.commit.hash.slice(0, 8)}`,
-            href: envHref(orgName, repo, env),
+            kind: "Deployment",
+            name: d.commit.hash.slice(0, 8),
+            href: repo && env ? deploymentHref(orgName, repo, env, d.id) : null,
         };
     }
     if (incident.resource) {
         const r = incident.resource;
-        const env = incident.environment?.name ?? "";
-        const repo = incident.repository?.name ?? "";
+        const shortType = r.type.split(".").slice(1).join(".") || r.type;
         return {
-            label: `${repo}/${env}: ${r.type} "${r.name}"`,
-            href: envHref(orgName, repo, env),
+            kind: shortType,
+            name: r.name,
+            href: repo && env ? resourceHref(orgName, repo, env, `${r.type}:${r.name}`) : null,
         };
     }
-    return { label: incident.entityQid, href: null };
+    return { kind: "", name: incident.entityQid, href: null };
 }
 </script>
 
@@ -59,12 +71,17 @@ function entityLabel(incident: (typeof rows)[number]): { label: string; href: st
     <title>Incidents · {orgName} – Skyr</title>
 </svelte:head>
 
-<nav class="text-xl font-bold text-gray-900 mb-3">
-    <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
-    <span class="mx-1 text-gray-400">/</span>
-    <span>Incidents</span>
-</nav>
+<div
+    class="flex items-center justify-between border-b border-gray-200 bg-white px-4 h-10 sticky top-14 z-30"
+>
+    <span class="text-xs text-gray-500">
+        Incidents
+        <span class="mx-1 text-gray-400">/</span>
+        <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
+    </span>
+</div>
 
+<div class="p-6">
 <div class="flex flex-wrap gap-3 mb-4 items-center">
     <label class="text-sm text-gray-600 inline-flex items-center gap-2">
         <input type="checkbox" bind:checked={openOnly} />
@@ -95,59 +112,102 @@ function entityLabel(incident: (typeof rows)[number]): { label: string; href: st
 {:else if rows.length === 0}
     <p class="text-gray-500">No incidents.</p>
 {:else}
-    <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+    <div class="bg-white border border-gray-200 rounded-lg overflow-x-auto">
         <table class="w-full text-left text-sm">
             <thead>
                 <tr class="border-b border-gray-200 text-gray-500">
-                    <th class="py-2 pl-4 pr-4 font-medium">Status</th>
-                    <th class="py-2 pr-4 font-medium">Entity</th>
+                    <th class="py-2 pl-4 pr-4 font-medium"></th>
                     <th class="py-2 pr-4 font-medium">Opened</th>
-                    <th class="py-2 pr-4 font-medium">Closed</th>
-                    <th class="py-2 pr-4 font-medium">Reports</th>
                     <th class="py-2 pr-4 font-medium">Last error</th>
+                    <th class="py-2 pr-4 font-medium">Type</th>
+                    <th class="py-2 pr-4 font-medium">Reports</th>
+                    <th class="py-2 pr-4 font-medium">Repository</th>
+                    <th class="py-2 pr-4 font-medium">Environment</th>
+                    <th class="py-2 pr-4 font-medium">Entity</th>
                 </tr>
             </thead>
             <tbody>
                 {#each rows as incident}
-                    {@const entity = entityLabel(incident)}
+                    {@const entity = entityCell(incident)}
+                    {@const repoName = incident.repository?.name ?? ""}
+                    {@const envName = incident.environment?.name ?? ""}
+                    {@const isOpen = incident.closedAt == null}
                     <tr class="border-b border-gray-200 hover:bg-gray-50">
                         <td class="py-2 pl-4 pr-4">
-                            <a
-                                href={orgIncidentHref(orgName, incident.id)}
-                                class="inline-block"
-                            >
-                                <HealthBadge
-                                    health={categoryToHealth(incident.category)}
-                                    worstOpenCategory={incident.category}
-                                    size="small"
-                                />
-                            </a>
-                        </td>
-                        <td class="py-2 pr-4">
-                            {#if entity.href}
-                                <a
-                                    href={entity.href}
-                                    class="text-orange-600 hover:text-orange-500"
-                                >
-                                    {entity.label}
-                                </a>
-                            {:else}
-                                <span class="font-mono text-xs text-gray-500"
-                                    >{entity.label}</span
-                                >
+                            {#if isOpen}
+                                <span
+                                    class="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"
+                                    aria-label="Open"
+                                ></span>
                             {/if}
                         </td>
                         <td class="py-2 pr-4 text-gray-500">
                             {new Date(incident.openedAt).toLocaleString()}
                         </td>
-                        <td class="py-2 pr-4 text-gray-500">
-                            {incident.closedAt
-                                ? new Date(incident.closedAt).toLocaleString()
-                                : "—"}
+                        <td class="py-2 pr-4 max-w-[40ch]">
+                            <a
+                                href={orgIncidentHref(orgName, incident.id)}
+                                class="text-orange-600 hover:text-orange-500 break-words line-clamp-3"
+                                title={incident.lastErrorMessage ?? ""}
+                            >
+                                {incident.lastErrorMessage ?? ""}
+                            </a>
+                        </td>
+                        <td class="py-2 pr-4">
+                            <HealthBadge
+                                health={categoryToHealth(incident.category)}
+                                worstOpenCategory={incident.category}
+                                size="small"
+                            />
                         </td>
                         <td class="py-2 pr-4 text-gray-500">{incident.reportCount}</td>
-                        <td class="py-2 pr-4 text-gray-500 truncate max-w-xs">
-                            {incident.lastErrorMessage ?? ""}
+                        <td class="py-2 pr-4">
+                            {#if repoName}
+                                <a
+                                    href={repoHref(orgName, repoName)}
+                                    class="text-orange-600 hover:text-orange-500"
+                                >
+                                    {repoName}
+                                </a>
+                            {:else}
+                                <span class="text-gray-400">—</span>
+                            {/if}
+                        </td>
+                        <td class="py-2 pr-4">
+                            {#if repoName && envName}
+                                <a
+                                    href={envHref(orgName, repoName, envName)}
+                                    class="text-orange-600 hover:text-orange-500"
+                                >
+                                    {envName}
+                                </a>
+                            {:else}
+                                <span class="text-gray-400">—</span>
+                            {/if}
+                        </td>
+                        <td class="py-2 pr-4 max-w-[40ch] font-mono text-xs">
+                            {#if entity.href}
+                                <a
+                                    href={entity.href}
+                                    class="text-orange-600 hover:text-orange-500 block"
+                                    title={`${entity.kind} ${entity.name}`}
+                                >
+                                    {#if entity.kind}
+                                        <span class="block truncate">{entity.kind}</span>
+                                    {/if}
+                                    <span class="block truncate">{entity.name}</span>
+                                </a>
+                            {:else}
+                                <span
+                                    class="text-gray-500 block"
+                                    title={`${entity.kind} ${entity.name}`}
+                                >
+                                    {#if entity.kind}
+                                        <span class="block truncate">{entity.kind}</span>
+                                    {/if}
+                                    <span class="block truncate">{entity.name}</span>
+                                </span>
+                            {/if}
                         </td>
                     </tr>
                 {/each}
@@ -155,3 +215,4 @@ function entityLabel(incident: (typeof rows)[number]): { label: string; href: st
         </table>
     </div>
 {/if}
+</div>

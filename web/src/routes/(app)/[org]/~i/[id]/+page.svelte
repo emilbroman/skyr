@@ -45,14 +45,19 @@ function categoryLabel(c: IncidentCategory): string {
     <title>Incident · {orgName} – Skyr</title>
 </svelte:head>
 
-<nav class="text-xl font-bold text-gray-900 mb-3">
-    <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
-    <span class="mx-1 text-gray-400">/</span>
-    <a href={orgIncidentsHref(orgName)} class="hover:text-gray-700">Incidents</a>
-    <span class="mx-1 text-gray-400">/</span>
-    <span class="font-mono text-sm">{incidentId.slice(0, 8)}</span>
-</nav>
+<div
+    class="flex items-center justify-between border-b border-gray-200 bg-white px-4 h-10 sticky top-14 z-30"
+>
+    <span class="text-xs text-gray-500">
+        <a href={orgIncidentsHref(orgName)} class="hover:text-gray-700">Incidents</a>
+        <span class="mx-1 text-gray-400">/</span>
+        <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
+        <span class="mx-1 text-gray-400">/</span>
+        <span class="font-mono">{incidentId.slice(0, 8)}</span>
+    </span>
+</div>
 
+<div class="p-6">
 {#if detail.isPending}
     <Spinner />
 {:else if detail.error}
@@ -143,3 +148,4 @@ function categoryLabel(c: IncidentCategory): string {
         {/if}
     </div>
 {/if}
+</div>
