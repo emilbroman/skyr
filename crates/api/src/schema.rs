@@ -718,7 +718,17 @@ pub(crate) struct Deployment {
 
 #[juniper::graphql_object(Context = Context)]
 impl Deployment {
+    /// Local identifier within the deployment's environment, in the form
+    /// `<commit-hash>.<nonce>`. This is what `Environment.deployment(id:)`
+    /// expects as its argument and what the web UI uses as the URL slug.
     fn id(&self) -> String {
+        format!("{}.{}", self.deployment.deployment, self.deployment.nonce)
+    }
+
+    /// Globally-unique deployment identifier (the full QID, including org,
+    /// repo, and environment). Use this when you need a key that is unique
+    /// across the entire system — log subscriptions, status namespaces, etc.
+    fn qid(&self) -> String {
         self.deployment.deployment_qid().to_string()
     }
 

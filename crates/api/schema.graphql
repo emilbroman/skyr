@@ -84,7 +84,18 @@ type Commit {
 }
 
 type Deployment {
+  """
+    Local identifier within the deployment's environment, in the form
+    `<commit-hash>.<nonce>`. This is what `Environment.deployment(id:)`
+    expects as its argument and what the web UI uses as the URL slug.
+  """
   id: String!
+  """
+    Globally-unique deployment identifier (the full QID, including org,
+    repo, and environment). Use this when you need a key that is unique
+    across the entire system — log subscriptions, status namespaces, etc.
+  """
+  qid: String!
   ref: String!
   commit: Commit!
   createdAt: String!
