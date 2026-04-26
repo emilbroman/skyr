@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "redpanda" {
+resource "kubernetes_deployment_v1" "redpanda" {
   count = local.deploy_redpanda ? 1 : 0
 
   metadata {
@@ -27,7 +27,7 @@ resource "kubernetes_deployment" "redpanda" {
           args = [
             "redpanda", "start",
             "--kafka-addr", var.redpanda_advertise_host != null ? "internal://0.0.0.0:9092,external://0.0.0.0:19092" : "internal://0.0.0.0:9092",
-            "--advertise-kafka-addr", var.redpanda_advertise_host != null ? "internal://redpanda.${local.namespace}.svc.cluster.local:9092,external://${var.redpanda_advertise_host}:${kubernetes_service.redpanda[0].spec[0].port[1].node_port}" : "internal://redpanda.${local.namespace}.svc.cluster.local:9092",
+            "--advertise-kafka-addr", var.redpanda_advertise_host != null ? "internal://redpanda.${local.namespace}.svc.cluster.local:9092,external://${var.redpanda_advertise_host}:${kubernetes_service_v1.redpanda[0].spec[0].port[1].node_port}" : "internal://redpanda.${local.namespace}.svc.cluster.local:9092",
             "--overprovisioned",
             "--smp", "1",
             "--memory", "1G",
@@ -55,7 +55,7 @@ resource "kubernetes_deployment" "redpanda" {
   }
 }
 
-resource "kubernetes_service" "redpanda" {
+resource "kubernetes_service_v1" "redpanda" {
   count = local.deploy_redpanda ? 1 : 0
 
   metadata {

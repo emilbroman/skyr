@@ -2,7 +2,7 @@
 # Web — Static frontend (port 80)
 # =============================================================================
 
-resource "kubernetes_deployment" "web" {
+resource "kubernetes_deployment_v1" "web" {
   metadata {
     name      = "web"
     namespace = local.namespace
@@ -46,7 +46,7 @@ resource "kubernetes_deployment" "web" {
   }
 }
 
-resource "kubernetes_service" "web" {
+resource "kubernetes_service_v1" "web" {
   metadata {
     name      = "web"
     namespace = local.namespace
@@ -69,7 +69,7 @@ resource "kubernetes_service" "web" {
 # API — GraphQL endpoint (port 8080)
 # =============================================================================
 
-resource "kubernetes_deployment" "api" {
+resource "kubernetes_deployment_v1" "api" {
   metadata {
     name      = "api"
     namespace = local.namespace
@@ -116,7 +116,7 @@ resource "kubernetes_deployment" "api" {
             name = "MINIO_ACCESS_KEY"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-access-key-id"
               }
             }
@@ -126,7 +126,7 @@ resource "kubernetes_deployment" "api" {
             name = "MINIO_SECRET_KEY"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-secret-key"
               }
             }
@@ -136,7 +136,7 @@ resource "kubernetes_deployment" "api" {
             name = "CHALLENGE_SALT"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "challenge-salt"
               }
             }
@@ -156,7 +156,7 @@ resource "kubernetes_deployment" "api" {
   }
 }
 
-resource "kubernetes_service" "api" {
+resource "kubernetes_service_v1" "api" {
   metadata {
     name      = "api"
     namespace = local.namespace
@@ -179,7 +179,7 @@ resource "kubernetes_service" "api" {
 # SCS — Git-over-SSH server (port 2222)
 # =============================================================================
 
-resource "kubernetes_deployment" "scs" {
+resource "kubernetes_deployment_v1" "scs" {
   metadata {
     name      = "scs"
     namespace = local.namespace
@@ -202,7 +202,7 @@ resource "kubernetes_deployment" "scs" {
         volume {
           name = "host-key"
           secret {
-            secret_name = kubernetes_secret.skyr.metadata[0].name
+            secret_name = kubernetes_secret_v1.skyr.metadata[0].name
             items {
               key  = "host.pem"
               path = "host.pem"
@@ -246,7 +246,7 @@ resource "kubernetes_deployment" "scs" {
   }
 }
 
-resource "kubernetes_service" "scs" {
+resource "kubernetes_service_v1" "scs" {
   metadata {
     name      = "scs"
     namespace = local.namespace
@@ -269,7 +269,7 @@ resource "kubernetes_service" "scs" {
 # DE — Deployment Engine (no port, internal daemon)
 # =============================================================================
 
-resource "kubernetes_deployment" "de" {
+resource "kubernetes_deployment_v1" "de" {
   count = var.de_worker_count
 
   metadata {
@@ -322,7 +322,7 @@ resource "kubernetes_deployment" "de" {
 # RTE — Resource Transition Engine (multiple workers, no port)
 # =============================================================================
 
-resource "kubernetes_deployment" "rte" {
+resource "kubernetes_deployment_v1" "rte" {
   count = var.rte_worker_count
 
   metadata {
@@ -413,7 +413,7 @@ resource "kubernetes_deployment" "rte" {
             name = "MINIO_ACCESS_KEY"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-access-key-id"
               }
             }
@@ -423,7 +423,7 @@ resource "kubernetes_deployment" "rte" {
             name = "MINIO_SECRET_KEY"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-secret-key"
               }
             }
@@ -477,7 +477,7 @@ resource "kubernetes_deployment" "rte" {
 # RE — Reporting Engine (multiple workers, no port)
 # =============================================================================
 
-resource "kubernetes_deployment" "re" {
+resource "kubernetes_deployment_v1" "re" {
   count = var.re_worker_count
 
   metadata {
@@ -528,7 +528,7 @@ resource "kubernetes_deployment" "re" {
 # NE — Notification Engine (competing consumers; SMTP credentials)
 # =============================================================================
 
-resource "kubernetes_deployment" "ne" {
+resource "kubernetes_deployment_v1" "ne" {
   metadata {
     name      = "ne"
     namespace = local.namespace
@@ -569,7 +569,7 @@ resource "kubernetes_deployment" "ne" {
             name = "NE_SMTP_USERNAME"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.ne_smtp.metadata[0].name
+                name = kubernetes_secret_v1.ne_smtp.metadata[0].name
                 key  = "username"
               }
             }
@@ -579,7 +579,7 @@ resource "kubernetes_deployment" "ne" {
             name = "NE_SMTP_PASSWORD"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.ne_smtp.metadata[0].name
+                name = kubernetes_secret_v1.ne_smtp.metadata[0].name
                 key  = "password"
               }
             }

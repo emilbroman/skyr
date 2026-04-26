@@ -4,17 +4,17 @@ output "namespace" {
 }
 
 output "web_service_name" {
-  value       = kubernetes_service.web.metadata[0].name
+  value       = kubernetes_service_v1.web.metadata[0].name
   description = "Name of the web frontend Kubernetes Service."
 }
 
 output "api_service_name" {
-  value       = kubernetes_service.api.metadata[0].name
+  value       = kubernetes_service_v1.api.metadata[0].name
   description = "Name of the API Kubernetes Service."
 }
 
 output "scs_service_name" {
-  value       = kubernetes_service.scs.metadata[0].name
+  value       = kubernetes_service_v1.scs.metadata[0].name
   description = "Name of the SCS (SSH) Kubernetes Service."
 }
 
@@ -56,21 +56,21 @@ output "buildkit_addr" {
 # --- NodePort outputs (populated only when service type is NodePort) ---
 
 output "orchestrator_node_port" {
-  value       = try(kubernetes_service.plugin_std_container.spec[0].port[0].node_port, null)
+  value       = try(kubernetes_service_v1.plugin_std_container.spec[0].port[0].node_port, null)
   description = "NodePort for the container orchestrator (port 50053), if exposed."
 }
 
 output "ldb_node_port" {
-  value       = try(kubernetes_service.redpanda[0].spec[0].port[0].node_port, null)
+  value       = try(kubernetes_service_v1.redpanda[0].spec[0].port[0].node_port, null)
   description = "NodePort for the LDB broker / Redpanda internal listener (port 9092), if exposed."
 }
 
 output "ldb_external_node_port" {
-  value       = var.redpanda_advertise_host != null ? try(kubernetes_service.redpanda[0].spec[0].port[1].node_port, null) : null
+  value       = var.redpanda_advertise_host != null ? try(kubernetes_service_v1.redpanda[0].spec[0].port[1].node_port, null) : null
   description = "NodePort for the LDB broker / Redpanda external listener (port 19092), if exposed."
 }
 
 output "oci_registry_node_port" {
-  value       = try(kubernetes_service.oci_registry[0].spec[0].port[0].node_port, null)
+  value       = try(kubernetes_service_v1.oci_registry[0].spec[0].port[0].node_port, null)
   description = "NodePort for the OCI registry (port 5000), if exposed."
 }

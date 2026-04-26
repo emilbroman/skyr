@@ -30,7 +30,7 @@ locals {
   }) : null
 }
 
-resource "kubernetes_secret" "oci_registry_auth" {
+resource "kubernetes_secret_v1" "oci_registry_auth" {
   count = local.oci_registry_has_auth ? 1 : 0
 
   metadata {
@@ -46,7 +46,7 @@ resource "kubernetes_secret" "oci_registry_auth" {
   }
 }
 
-resource "kubernetes_config_map" "buildkit" {
+resource "kubernetes_config_map_v1" "buildkit" {
   count = local.deploy_buildkit ? 1 : 0
 
   metadata {
@@ -60,7 +60,7 @@ resource "kubernetes_config_map" "buildkit" {
   }
 }
 
-resource "kubernetes_deployment" "buildkit" {
+resource "kubernetes_deployment_v1" "buildkit" {
   count = local.deploy_buildkit ? 1 : 0
 
   metadata {
@@ -85,7 +85,7 @@ resource "kubernetes_deployment" "buildkit" {
         volume {
           name = "config"
           config_map {
-            name = kubernetes_config_map.buildkit[0].metadata[0].name
+            name = kubernetes_config_map_v1.buildkit[0].metadata[0].name
           }
         }
 
@@ -94,7 +94,7 @@ resource "kubernetes_deployment" "buildkit" {
           content {
             name = "registry-auth"
             secret {
-              secret_name = kubernetes_secret.oci_registry_auth[0].metadata[0].name
+              secret_name = kubernetes_secret_v1.oci_registry_auth[0].metadata[0].name
             }
           }
         }
@@ -137,7 +137,7 @@ resource "kubernetes_deployment" "buildkit" {
   }
 }
 
-resource "kubernetes_service" "buildkit" {
+resource "kubernetes_service_v1" "buildkit" {
   count = local.deploy_buildkit ? 1 : 0
 
   metadata {

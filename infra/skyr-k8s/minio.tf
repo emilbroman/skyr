@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "minio" {
+resource "kubernetes_deployment_v1" "minio" {
   count = local.deploy_minio ? 1 : 0
 
   metadata {
@@ -30,7 +30,7 @@ resource "kubernetes_deployment" "minio" {
             name = "MINIO_ROOT_USER"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-access-key-id"
               }
             }
@@ -40,7 +40,7 @@ resource "kubernetes_deployment" "minio" {
             name = "MINIO_ROOT_PASSWORD"
             value_from {
               secret_key_ref {
-                name = kubernetes_secret.skyr.metadata[0].name
+                name = kubernetes_secret_v1.skyr.metadata[0].name
                 key  = "minio-secret-key"
               }
             }
@@ -63,7 +63,7 @@ resource "kubernetes_deployment" "minio" {
   }
 }
 
-resource "kubernetes_service" "minio" {
+resource "kubernetes_service_v1" "minio" {
   count = local.deploy_minio ? 1 : 0
 
   metadata {

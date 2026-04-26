@@ -56,7 +56,7 @@ resource "random_password" "minio_secret_key" {
 
 # --- Kubernetes Secret ---
 
-resource "kubernetes_secret" "skyr" {
+resource "kubernetes_secret_v1" "skyr" {
   metadata {
     name      = "skyr"
     namespace = local.namespace
@@ -78,7 +78,7 @@ resource "kubernetes_secret" "skyr" {
 # in-cluster Postfix relay does not require auth from cluster pods, and
 # the NE binary skips the SASL handshake when both fields are empty.
 
-resource "kubernetes_secret" "ne_smtp" {
+resource "kubernetes_secret_v1" "ne_smtp" {
   metadata {
     name      = "ne-smtp"
     namespace = local.namespace

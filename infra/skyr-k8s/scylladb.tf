@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "scylladb" {
+resource "kubernetes_deployment_v1" "scylladb" {
   count = local.deploy_scylladb ? 1 : 0
 
   metadata {
@@ -34,7 +34,7 @@ resource "kubernetes_deployment" "scylladb" {
   }
 }
 
-resource "kubernetes_service" "scylladb" {
+resource "kubernetes_service_v1" "scylladb" {
   count = local.deploy_scylladb ? 1 : 0
 
   metadata {

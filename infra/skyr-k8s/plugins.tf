@@ -7,7 +7,7 @@
 # their own infrastructure dependencies.
 # =============================================================================
 
-resource "kubernetes_secret" "plugin_std_container_tls" {
+resource "kubernetes_secret_v1" "plugin_std_container_tls" {
   count = local.scop_tls_enabled ? 1 : 0
 
   metadata {
@@ -25,7 +25,7 @@ resource "kubernetes_secret" "plugin_std_container_tls" {
   }
 }
 
-resource "kubernetes_deployment" "plugin_std_container" {
+resource "kubernetes_deployment_v1" "plugin_std_container" {
   metadata {
     name      = "plugin-std-container"
     namespace = local.namespace
@@ -55,7 +55,7 @@ resource "kubernetes_deployment" "plugin_std_container" {
           content {
             name = "registry-auth"
             secret {
-              secret_name = kubernetes_secret.oci_registry_auth[0].metadata[0].name
+              secret_name = kubernetes_secret_v1.oci_registry_auth[0].metadata[0].name
             }
           }
         }
@@ -65,7 +65,7 @@ resource "kubernetes_deployment" "plugin_std_container" {
           content {
             name = "scop-tls"
             secret {
-              secret_name = kubernetes_secret.plugin_std_container_tls[0].metadata[0].name
+              secret_name = kubernetes_secret_v1.plugin_std_container_tls[0].metadata[0].name
             }
           }
         }
@@ -151,7 +151,7 @@ resource "kubernetes_deployment" "plugin_std_container" {
   }
 }
 
-resource "kubernetes_service" "plugin_std_container" {
+resource "kubernetes_service_v1" "plugin_std_container" {
   metadata {
     name      = "plugin-std-container"
     namespace = local.namespace
@@ -185,7 +185,7 @@ resource "kubernetes_service" "plugin_std_container" {
 # and serves a UDP DNS server alongside the RTP gRPC server.
 # =============================================================================
 
-resource "kubernetes_deployment" "plugin_std_dns" {
+resource "kubernetes_deployment_v1" "plugin_std_dns" {
   metadata {
     name      = "plugin-std-dns"
     namespace = local.namespace
@@ -239,7 +239,7 @@ resource "kubernetes_deployment" "plugin_std_dns" {
   }
 }
 
-resource "kubernetes_service" "plugin_std_dns" {
+resource "kubernetes_service_v1" "plugin_std_dns" {
   metadata {
     name      = "plugin-std-dns"
     namespace = local.namespace

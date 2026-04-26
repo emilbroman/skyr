@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "rabbitmq" {
+resource "kubernetes_deployment_v1" "rabbitmq" {
   count = local.deploy_rabbitmq ? 1 : 0
 
   metadata {
@@ -41,7 +41,7 @@ resource "kubernetes_deployment" "rabbitmq" {
   }
 }
 
-resource "kubernetes_service" "rabbitmq" {
+resource "kubernetes_service_v1" "rabbitmq" {
   count = local.deploy_rabbitmq ? 1 : 0
 
   metadata {

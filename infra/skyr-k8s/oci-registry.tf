@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "oci_registry" {
+resource "kubernetes_deployment_v1" "oci_registry" {
   count = local.deploy_oci_registry ? 1 : 0
 
   metadata {
@@ -34,7 +34,7 @@ resource "kubernetes_deployment" "oci_registry" {
   }
 }
 
-resource "kubernetes_service" "oci_registry" {
+resource "kubernetes_service_v1" "oci_registry" {
   count = local.deploy_oci_registry ? 1 : 0
 
   metadata {

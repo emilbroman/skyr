@@ -1,11 +1,11 @@
-resource "kubernetes_namespace" "this" {
+resource "kubernetes_namespace_v1" "this" {
   metadata {
     name = var.namespace
   }
 }
 
 locals {
-  namespace = kubernetes_namespace.this.metadata[0].name
+  namespace = kubernetes_namespace_v1.this.metadata[0].name
 
   # Whether to deploy each dependency internally
   deploy_scylladb     = var.scylladb_hostname == null

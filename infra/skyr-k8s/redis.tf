@@ -1,4 +1,4 @@
-resource "kubernetes_deployment" "redis" {
+resource "kubernetes_deployment_v1" "redis" {
   count = local.deploy_redis ? 1 : 0
 
   metadata {
@@ -34,7 +34,7 @@ resource "kubernetes_deployment" "redis" {
   }
 }
 
-resource "kubernetes_service" "redis" {
+resource "kubernetes_service_v1" "redis" {
   count = local.deploy_redis ? 1 : 0
 
   metadata {

@@ -69,8 +69,8 @@ generate "scoc_pve" {
       nameserver = "10.20.0.1"
       vlan_id = 4
 
-      orchestrator_address = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.plugin_std_container.spec[0].port[0].node_port}"
-      ldb_brokers          = "node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service.redpanda[0].spec[0].port[1].node_port}"
+      orchestrator_address = "http://node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service_v1.plugin_std_container.spec[0].port[0].node_port}"
+      ldb_brokers          = "node$${count.index + 1}.vm.bb3.internal:$${kubernetes_service_v1.redpanda[0].spec[0].port[1].node_port}"
       oci_registry          = "cr.bb3.internal"
       oci_registry_insecure = true
       oci_registry_username = var.oci_registry_username
@@ -122,7 +122,7 @@ generate "ingress" {
             match    = "Host(`skyr.cloud`) && (PathPrefix(`/graphql`) || PathPrefix(`/graphiql`))"
             kind     = "Rule"
             services = [{
-              name = kubernetes_service.api.metadata[0].name
+              name = kubernetes_service_v1.api.metadata[0].name
               port = 8080
             }]
           }]
@@ -151,7 +151,7 @@ generate "ingress" {
             kind     = "Rule"
             priority = 1
             services = [{
-              name = kubernetes_service.web.metadata[0].name
+              name = kubernetes_service_v1.web.metadata[0].name
               port = 80
             }]
           }]
@@ -178,7 +178,7 @@ generate "ingress" {
           routes = [{
             match = "HostSNI(`*`)"
             services = [{
-              name = kubernetes_service.scs.metadata[0].name
+              name = kubernetes_service_v1.scs.metadata[0].name
               port = 2222
             }]
           }]
@@ -201,7 +201,7 @@ generate "ingress" {
           entryPoints = ["dns"]
           routes = [{
             services = [{
-              name = kubernetes_service.plugin_std_dns.metadata[0].name
+              name = kubernetes_service_v1.plugin_std_dns.metadata[0].name
               port = 53
             }]
           }]

@@ -6,7 +6,7 @@
 # deployments should set `var.ne_smtp` to relay through a managed
 # service like SES, Mailgun, or Postmark.
 
-resource "kubernetes_deployment" "smtp_relay" {
+resource "kubernetes_deployment_v1" "smtp_relay" {
   count = local.deploy_smtp_relay ? 1 : 0
 
   metadata {
@@ -58,7 +58,7 @@ resource "kubernetes_deployment" "smtp_relay" {
   }
 }
 
-resource "kubernetes_service" "smtp_relay" {
+resource "kubernetes_service_v1" "smtp_relay" {
   count = local.deploy_smtp_relay ? 1 : 0
 
   metadata {
