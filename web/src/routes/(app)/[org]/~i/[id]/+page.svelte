@@ -102,19 +102,11 @@ function categoryLabel(c: IncidentCategory): string {
             <dd>{incident.reportCount}</dd>
         </dl>
 
-        {#if incident.lastErrorMessage}
+        {#if incident.summary}
             <div>
-                <h3 class="text-sm font-medium text-gray-700 mb-1">Last error</h3>
+                <h3 class="text-sm font-medium text-gray-700 mb-1">Summary</h3>
                 <pre
-                    class="bg-gray-50 border border-gray-200 rounded p-3 text-xs whitespace-pre-wrap break-all">{incident.lastErrorMessage}</pre>
-            </div>
-        {/if}
-
-        {#if incident.triggeringReportSummary}
-            <div>
-                <h3 class="text-sm font-medium text-gray-700 mb-1">Triggering report</h3>
-                <pre
-                    class="bg-gray-50 border border-gray-200 rounded p-3 text-xs whitespace-pre-wrap break-all">{incident.triggeringReportSummary}</pre>
+                    class="bg-gray-50 border border-gray-200 rounded p-3 text-xs whitespace-pre-wrap break-all">{incident.summary}</pre>
             </div>
         {/if}
 

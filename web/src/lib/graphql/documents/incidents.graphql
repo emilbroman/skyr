@@ -24,7 +24,7 @@ query OrganizationIncidents(
       closedAt
       lastReportAt
       reportCount
-      lastErrorMessage
+      summary
       repository {
         name
       }
@@ -57,8 +57,7 @@ query OrganizationIncidentDetail($org: String!, $id: ID!) {
       closedAt
       lastReportAt
       reportCount
-      lastErrorMessage
-      triggeringReportSummary
+      summary
       repository {
         name
       }

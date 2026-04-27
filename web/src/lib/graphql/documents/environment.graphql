@@ -130,7 +130,7 @@ query ResourceDetail(
             closedAt
             lastReportAt
             reportCount
-            lastErrorMessage
+            summary
           }
         }
       }
@@ -209,7 +209,7 @@ query DeploymentDetail(
             closedAt
             lastReportAt
             reportCount
-            lastErrorMessage
+            summary
           }
           resources {
             type

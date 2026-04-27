@@ -148,9 +148,9 @@ function entityCell(incident: (typeof rows)[number]): {
                             <a
                                 href={orgIncidentHref(orgName, incident.id)}
                                 class="text-orange-600 hover:text-orange-500 break-words line-clamp-3"
-                                title={incident.lastErrorMessage ?? ""}
+                                title={incident.summary ?? ""}
                             >
-                                {incident.lastErrorMessage ?? ""}
+                                {incident.summary ?? ""}
                             </a>
                         </td>
                         <td class="py-2 pr-4">
