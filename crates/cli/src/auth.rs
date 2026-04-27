@@ -47,7 +47,7 @@ pub(crate) async fn acquire_token(
     client: &reqwest::Client,
     api_url: &str,
 ) -> anyhow::Result<String> {
-    if let Ok(token) = read_token().await
+    if let Ok(token) = read_token(api_url).await
         && !is_expired_token(&token)?
     {
         return Ok(token);
@@ -56,7 +56,7 @@ pub(crate) async fn acquire_token(
     let user = read_user_config().await?;
     let endpoint = graphql_endpoint(api_url);
     let token = signin_with_key(client, &endpoint, &user.username, Path::new(&user.key)).await?;
-    write_token(&token).await?;
+    write_token(api_url, &token).await?;
     Ok(token)
 }
 
@@ -125,11 +125,12 @@ async fn query_auth_challenge(
 }
 
 pub(crate) async fn persist_auth_state(
+    api_url: &str,
     username: &str,
     key_path: &Path,
     token: &str,
 ) -> anyhow::Result<()> {
-    let token_path = token_cache_path()?;
+    let token_path = token_cache_path(api_url)?;
     let user_config_path = user_config_path()?;
 
     if let Some(parent) = token_path.parent() {
@@ -300,8 +301,8 @@ pub(crate) fn expand_tilde(path: &str) -> anyhow::Result<PathBuf> {
     Ok(Path::new(path).to_path_buf())
 }
 
-async fn read_token() -> anyhow::Result<String> {
-    let token_path = token_cache_path()?;
+async fn read_token(api_url: &str) -> anyhow::Result<String> {
+    let token_path = token_cache_path(api_url)?;
     Ok(tokio::fs::read_to_string(&token_path)
         .await
         .with_context(|| format!("failed to read {}", token_path.display()))?
@@ -309,8 +310,8 @@ async fn read_token() -> anyhow::Result<String> {
         .to_owned())
 }
 
-async fn write_token(token: &str) -> anyhow::Result<()> {
-    let token_path = token_cache_path()?;
+async fn write_token(api_url: &str, token: &str) -> anyhow::Result<()> {
+    let token_path = token_cache_path(api_url)?;
     if let Some(parent) = token_path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -364,8 +365,34 @@ fn is_expired_token(token: &str) -> anyhow::Result<bool> {
     TokenExpiry::parse(token)?.is_expired()
 }
 
-fn token_cache_path() -> anyhow::Result<PathBuf> {
-    Ok(home_dir()?.join(".cache").join("skyr_token"))
+fn token_cache_path(api_url: &str) -> anyhow::Result<PathBuf> {
+    Ok(home_dir()?
+        .join(".cache")
+        .join("skyr-token")
+        .join(token_host_id(api_url)))
+}
+
+/// Derive a filesystem-safe host identifier from an API URL.
+///
+/// Strips the scheme and any path/query, then replaces any character that isn't
+/// alphanumeric, `.`, `-`, `_`, or `:` with `_`. Keeps the port so different
+/// servers on the same host get distinct cache entries.
+fn token_host_id(api_url: &str) -> String {
+    let s = api_url.trim();
+    let s = s
+        .strip_prefix("https://")
+        .or_else(|| s.strip_prefix("http://"))
+        .unwrap_or(s);
+    let s = s.split('/').next().unwrap_or(s);
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn user_config_path() -> anyhow::Result<PathBuf> {
@@ -437,7 +464,7 @@ pub async fn run_auth(args: AuthArgs, ctx: &CliContext) -> anyhow::Result<()> {
             fullname,
             key,
         } => run_signup(ctx, &username, &email, fullname.as_deref(), &key).await,
-        AuthCommand::Signout => run_signout(ctx.format).await,
+        AuthCommand::Signout => run_signout(ctx).await,
         AuthCommand::Whoami => run_whoami(ctx).await,
     }
 }
@@ -448,7 +475,7 @@ async fn run_signin(ctx: &CliContext, username: &str, key: &str) -> anyhow::Resu
     let key_path = expand_tilde(key)?;
 
     let token = signin_with_key(&client, &endpoint, username, &key_path).await?;
-    persist_auth_state(username, &key_path, &token).await?;
+    persist_auth_state(ctx.api_url(), username, &key_path, &token).await?;
 
     #[derive(Serialize)]
     struct SigninOutput<'a> {
@@ -497,7 +524,13 @@ async fn run_signup(
         "signup",
     )
     .await?;
-    persist_auth_state(&data.signup.user.username, &key_path, &data.signup.token).await?;
+    persist_auth_state(
+        ctx.api_url(),
+        &data.signup.user.username,
+        &key_path,
+        &data.signup.token,
+    )
+    .await?;
 
     #[derive(Serialize)]
     struct SignupUserOutput {
@@ -539,8 +572,8 @@ async fn run_signup(
     Ok(())
 }
 
-async fn run_signout(format: OutputFormat) -> anyhow::Result<()> {
-    let token_path = token_cache_path()?;
+async fn run_signout(ctx: &CliContext) -> anyhow::Result<()> {
+    let token_path = token_cache_path(ctx.api_url())?;
     let user_config_path = user_config_path()?;
     let mut removed: Vec<String> = Vec::new();
 
@@ -560,7 +593,7 @@ async fn run_signout(format: OutputFormat) -> anyhow::Result<()> {
     }
     let output = SignoutOutput { removed };
 
-    match format {
+    match ctx.format {
         OutputFormat::Json => crate::output::print_json(&output)?,
         OutputFormat::Text => {
             if output.removed.is_empty() {
