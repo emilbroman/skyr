@@ -1,0 +1,1 @@
+UpdateResource ty=Std/DNS.CNAMERecord name=alias.example.com inputs={name: "alias.example.com", target: "new.example.com", ttl: {milliseconds: 60000}}

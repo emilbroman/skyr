@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "Std/DNS.MXRecord": {
+      "example.com": {
+        "inputs": {
+          "name": "example.com",
+          "ttl": { "milliseconds": 60000 },
+          "exchanges": [{ "priority": 10, "host": "mail.example.com" }]
+        },
+        "outputs": {
+          "fqdn": "example.com",
+          "ttl": { "milliseconds": 60000 },
+          "exchanges": [{ "priority": 10, "host": "mail.example.com" }]
+        }
+      }
+    }
+  }
+}

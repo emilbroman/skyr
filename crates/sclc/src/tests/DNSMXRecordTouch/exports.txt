@@ -1,0 +1,1 @@
+{record: {exchanges: [{host: "mail.example.com", priority: 10}], fqdn: "example.com", name: "example.com", ttl: {milliseconds: 60000}}}

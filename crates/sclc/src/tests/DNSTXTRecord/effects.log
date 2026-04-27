@@ -1,0 +1,1 @@
+CreateResource ty=Std/DNS.TXTRecord name=example.com inputs={name: "example.com", ttl: {milliseconds: 60000}, values: ["v=spf1 -all"]}

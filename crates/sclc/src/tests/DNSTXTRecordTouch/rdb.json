@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "Std/DNS.TXTRecord": {
+      "example.com": {
+        "inputs": {
+          "name": "example.com",
+          "ttl": { "milliseconds": 60000 },
+          "values": ["v=spf1 -all"]
+        },
+        "outputs": {
+          "fqdn": "example.com",
+          "ttl": { "milliseconds": 60000 },
+          "values": ["v=spf1 -all"]
+        }
+      }
+    }
+  }
+}

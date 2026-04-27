@@ -486,6 +486,21 @@ test_case!(ContainerHost);
 test_case!(DNSARecord);
 test_case!(DNSARecordTouch);
 test_case!(DNSARecordUpdate);
+test_case!(DNSAAAARecord);
+test_case!(DNSAAAARecordTouch);
+test_case!(DNSAAAARecordUpdate);
+test_case!(DNSCNAMERecord);
+test_case!(DNSCNAMERecordTouch);
+test_case!(DNSCNAMERecordUpdate);
+test_case!(DNSTXTRecord);
+test_case!(DNSTXTRecordTouch);
+test_case!(DNSTXTRecordUpdate);
+test_case!(DNSMXRecord);
+test_case!(DNSMXRecordTouch);
+test_case!(DNSMXRecordUpdate);
+test_case!(DNSSRVRecord);
+test_case!(DNSSRVRecordTouch);
+test_case!(DNSSRVRecordUpdate);
 
 // Std/Crypto
 test_case!(CryptoED25519);

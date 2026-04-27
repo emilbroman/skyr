@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "Std/DNS.SRVRecord": {
+      "_svc._tcp.example.com": {
+        "inputs": {
+          "name": "_svc._tcp.example.com",
+          "ttl": { "milliseconds": 30000 },
+          "records": [{ "priority": 10, "weight": 5, "port": 443, "target": "svc.example.com" }]
+        },
+        "outputs": {
+          "fqdn": "_svc._tcp.example.com",
+          "ttl": { "milliseconds": 30000 },
+          "records": [{ "priority": 10, "weight": 5, "port": 443, "target": "svc.example.com" }]
+        }
+      }
+    }
+  }
+}
