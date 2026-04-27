@@ -2,8 +2,9 @@
 //!
 //! v1 keeps the templates small and free of HTML; richer templating is out of
 //! scope. The subject summarises the event for inbox triage, and the body
-//! lists the structured incident metadata followed by the most recent error
-//! blurb (if any).
+//! lists the structured incident metadata followed by the incident's
+//! summary — the union of distinct error messages observed across all the
+//! incident's reports.
 
 use nq::{NotificationEventType, NotificationRequest};
 
@@ -45,14 +46,10 @@ pub fn render(request: &NotificationRequest) -> RenderedEmail {
         body.push_str(&format!("Closed at:   {}\n", closed_at.to_rfc3339()));
     }
 
-    if let Some(error) = request
-        .last_error_message
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        body.push_str("\nLast error:\n");
-        body.push_str(error);
-        if !error.ends_with('\n') {
+    if let Some(summary) = request.summary.as_deref().filter(|s| !s.is_empty()) {
+        body.push_str("\nSummary:\n");
+        body.push_str(summary);
+        if !summary.ends_with('\n') {
             body.push('\n');
         }
     }
@@ -77,7 +74,7 @@ mod tests {
             category: SeverityCategory::Crash,
             opened_at: "2026-04-25T12:00:00Z".parse::<DateTime<Utc>>().unwrap(),
             closed_at: None,
-            last_error_message: Some("plugin returned EOF".into()),
+            summary: Some("plugin returned EOF".into()),
         }
     }
 
@@ -85,7 +82,7 @@ mod tests {
         let mut req = open_request();
         req.event_type = NotificationEventType::Closed;
         req.closed_at = Some("2026-04-25T12:05:00Z".parse::<DateTime<Utc>>().unwrap());
-        req.last_error_message = None;
+        req.summary = None;
         req
     }
 
@@ -104,25 +101,35 @@ mod tests {
     }
 
     #[test]
-    fn open_body_includes_error_blurb() {
+    fn open_body_includes_summary() {
         let r = render(&open_request());
-        assert!(r.body.contains("Last error:"));
+        assert!(r.body.contains("Summary:"));
         assert!(r.body.contains("plugin returned EOF"));
         assert!(!r.body.contains("Closed at:"));
     }
 
     #[test]
-    fn close_body_includes_closed_at_and_omits_error_section() {
-        let r = render(&close_request());
+    fn close_body_includes_closed_at_and_renders_summary_when_present() {
+        let mut req = close_request();
+        req.summary = Some("plugin returned EOF\n\nplugin reset".into());
+        let r = render(&req);
         assert!(r.body.contains("Closed at:"));
-        assert!(!r.body.contains("Last error:"));
+        assert!(r.body.contains("Summary:"));
+        assert!(r.body.contains("plugin reset"));
     }
 
     #[test]
-    fn empty_error_message_does_not_render_section() {
+    fn close_body_with_no_summary_omits_section() {
+        let r = render(&close_request());
+        assert!(r.body.contains("Closed at:"));
+        assert!(!r.body.contains("Summary:"));
+    }
+
+    #[test]
+    fn empty_summary_does_not_render_section() {
         let mut req = open_request();
-        req.last_error_message = Some(String::new());
+        req.summary = Some(String::new());
         let r = render(&req);
-        assert!(!r.body.contains("Last error:"));
+        assert!(!r.body.contains("Summary:"));
     }
 }
