@@ -1,16 +1,18 @@
-query ResourceLastLogs($amount: Int) {
-  repositories {
-    name
-    environments {
+query ResourceLastLogs($organization: String!, $repository: String!, $amount: Int) {
+  organization(name: $organization) {
+    repository(name: $repository) {
       name
-      qid
-      resources {
-        type
+      environments {
         name
-        lastLogs(amount: $amount) {
-          severity
-          timestamp
-          message
+        qid
+        resources {
+          type
+          name
+          lastLogs(amount: $amount) {
+            severity
+            timestamp
+            message
+          }
         }
       }
     }

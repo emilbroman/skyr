@@ -70,12 +70,14 @@ pub async fn run_resources(args: ResourcesArgs, ctx: &CliContext) -> anyhow::Res
 
     match args.command {
         ResourcesCommand::List => {
+            let organization = ctx.org()?.to_owned();
             let repository = ctx.repo()?.to_owned();
             let environment = ctx.env().ok().map(str::to_owned);
             list_resources(
                 &client,
                 &endpoint,
                 &token,
+                &organization,
                 &repository,
                 environment.as_deref(),
                 ctx.format,
@@ -90,10 +92,14 @@ pub async fn run_resources(args: ResourcesArgs, ctx: &CliContext) -> anyhow::Res
             if follow {
                 stream_resource_logs(&endpoint, &token, &resource_qids, latest).await
             } else {
+                let organization = ctx.org()?.to_owned();
+                let repository = ctx.repo()?.to_owned();
                 print_resource_last_logs(
                     &client,
                     &endpoint,
                     &token,
+                    &organization,
+                    &repository,
                     &resource_qids,
                     latest,
                     ctx.format,
@@ -183,10 +189,12 @@ struct ResourceListOutput {
     outputs: Option<serde_json::Value>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn list_resources(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
     environment: Option<&str>,
     format: OutputFormat,
@@ -195,17 +203,17 @@ async fn list_resources(
         client,
         endpoint,
         token,
-        list_repository_resources::Variables {},
+        list_repository_resources::Variables {
+            organization: organization.to_owned(),
+            repository: repository.to_owned(),
+        },
         "resource list",
     )
     .await?;
-    let repo = data
-        .repositories
-        .into_iter()
-        .find(|r| r.name == repository)
-        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
-    let environments: Vec<_> = repo
+    let environments: Vec<_> = data
+        .organization
+        .repository
         .environments
         .into_iter()
         .filter(|env| environment.map(|filter| env.name == filter).unwrap_or(true))
@@ -286,10 +294,13 @@ struct ResourceLogOutput {
     logs: Vec<output::LogOutput>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn print_resource_last_logs(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
+    repository: &str,
     resource_qids: &[String],
     amount: i64,
     format: OutputFormat,
@@ -299,6 +310,8 @@ async fn print_resource_last_logs(
         endpoint,
         token,
         resource_last_logs::Variables {
+            organization: organization.to_owned(),
+            repository: repository.to_owned(),
             amount: Some(amount),
         },
         "resource logs",
@@ -306,23 +319,21 @@ async fn print_resource_last_logs(
     .await?;
 
     let mut resource_logs: HashMap<String, Vec<output::LogOutput>> = HashMap::new();
-    for repo in &data.repositories {
-        for env in &repo.environments {
-            for resource in &env.resources {
-                let qid = build_resource_qid(&env.qid, &resource.type_, &resource.name);
-                resource_logs.insert(
-                    qid,
-                    resource
-                        .last_logs
-                        .iter()
-                        .map(|l| output::LogOutput {
-                            severity: format!("{:?}", l.severity),
-                            timestamp: l.timestamp.clone(),
-                            message: l.message.clone(),
-                        })
-                        .collect(),
-                );
-            }
+    for env in &data.organization.repository.environments {
+        for resource in &env.resources {
+            let qid = build_resource_qid(&env.qid, &resource.type_, &resource.name);
+            resource_logs.insert(
+                qid,
+                resource
+                    .last_logs
+                    .iter()
+                    .map(|l| output::LogOutput {
+                        severity: format!("{:?}", l.severity),
+                        timestamp: l.timestamp.clone(),
+                        message: l.message.clone(),
+                    })
+                    .collect(),
+            );
         }
     }
 

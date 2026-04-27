@@ -42,7 +42,10 @@ pub async fn run_repo(args: RepoArgs, ctx: &Context) -> anyhow::Result<()> {
     let endpoint = auth::graphql_endpoint(ctx.api_url());
 
     match args.command {
-        RepoCommand::List => list_repositories(&client, &endpoint, &token, ctx.format).await,
+        RepoCommand::List => {
+            let org = ctx.org()?.to_owned();
+            list_repositories(&client, &endpoint, &token, &org, ctx.format).await
+        }
         RepoCommand::Create { name } => {
             let org = ctx.org()?;
             validate_segment(org).map_err(|e| anyhow!("--org `{org}`: {e}"))?;
@@ -93,13 +96,16 @@ async fn list_repositories(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let data = auth::graphql_query::<ListRepositories>(
         client,
         endpoint,
         token,
-        list_repositories::Variables {},
+        list_repositories::Variables {
+            organization: organization.to_owned(),
+        },
         "repository list",
     )
     .await?;
@@ -110,6 +116,7 @@ async fn list_repositories(
     }
 
     let repositories = data
+        .organization
         .repositories
         .into_iter()
         .map(|repo| RepositoryOutput { name: repo.name })

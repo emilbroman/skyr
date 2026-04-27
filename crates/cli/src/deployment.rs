@@ -48,20 +48,38 @@ pub async fn run_deployments(args: DeploymentsArgs, ctx: &CliContext) -> anyhow:
     let client = reqwest::Client::new();
     let token = auth::acquire_token(&client, ctx.api_url()).await?;
     let endpoint = auth::graphql_endpoint(ctx.api_url());
+    let organization = ctx.org()?.to_owned();
     let repository = ctx.repo()?.to_owned();
 
     match args.command {
         DeploymentsCommand::List => {
-            list_deployments(&client, &endpoint, &token, &repository, ctx.format).await
+            list_deployments(
+                &client,
+                &endpoint,
+                &token,
+                &organization,
+                &repository,
+                ctx.format,
+            )
+            .await
         }
         DeploymentsCommand::Logs { follow, latest } => {
             if follow {
-                stream_deployment_logs(&client, &endpoint, &token, &repository, latest).await
+                stream_deployment_logs(
+                    &client,
+                    &endpoint,
+                    &token,
+                    &organization,
+                    &repository,
+                    latest,
+                )
+                .await
             } else {
                 print_deployment_last_logs(
                     &client,
                     &endpoint,
                     &token,
+                    &organization,
                     &repository,
                     latest,
                     ctx.format,
@@ -100,10 +118,12 @@ async fn list_deployments(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let environments = query_repository_environments(client, endpoint, token, repository).await?;
+    let environments =
+        query_repository_environments(client, endpoint, token, organization, repository).await?;
 
     let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
@@ -175,6 +195,7 @@ async fn print_deployment_last_logs(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
     amount: i64,
     format: OutputFormat,
@@ -184,18 +205,17 @@ async fn print_deployment_last_logs(
         endpoint,
         token,
         deployment_last_logs::Variables {
+            organization: organization.to_owned(),
+            repository: repository.to_owned(),
             amount: Some(amount),
         },
         "deployment logs",
     )
     .await?;
-    let repo = data
-        .repositories
-        .into_iter()
-        .find(|r| r.name == repository)
-        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
-    let deployments: Vec<_> = repo
+    let deployments: Vec<_> = data
+        .organization
+        .repository
         .environments
         .into_iter()
         .flat_map(|env| {
@@ -245,6 +265,7 @@ async fn stream_deployment_logs(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
     initial_amount: i64,
 ) -> anyhow::Result<()> {
@@ -256,7 +277,8 @@ async fn stream_deployment_logs(
 
     loop {
         let environments =
-            query_repository_environments(client, endpoint, token, repository).await?;
+            query_repository_environments(client, endpoint, token, organization, repository)
+                .await?;
 
         let environment_qids: BTreeSet<String> = environments
             .into_iter()
@@ -333,23 +355,22 @@ async fn query_repository_environments(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
 ) -> anyhow::Result<
-    Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesEnvironments>,
+    Vec<list_repository_deployments::ListRepositoryDeploymentsOrganizationRepositoryEnvironments>,
 > {
     let data = auth::graphql_query::<ListRepositoryDeployments>(
         client,
         endpoint,
         token,
-        list_repository_deployments::Variables {},
+        list_repository_deployments::Variables {
+            organization: organization.to_owned(),
+            repository: repository.to_owned(),
+        },
         "deployment list",
     )
     .await?;
-    let repository = data
-        .repositories
-        .into_iter()
-        .find(|repo| repo.name == repository)
-        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
-    Ok(repository.environments)
+    Ok(data.organization.repository.environments)
 }

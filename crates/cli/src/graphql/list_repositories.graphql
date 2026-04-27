@@ -1,5 +1,7 @@
-query ListRepositories {
-  repositories {
-    name
+query ListRepositories($organization: String!) {
+  organization(name: $organization) {
+    repositories {
+      name
+    }
   }
 }

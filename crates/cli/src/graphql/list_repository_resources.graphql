@@ -1,16 +1,18 @@
-query ListRepositoryResources {
-  repositories {
-    name
-    environments {
+query ListRepositoryResources($organization: String!, $repository: String!) {
+  organization(name: $organization) {
+    repository(name: $repository) {
       name
-      qid
-      resources {
-        type
+      environments {
         name
-        inputs
-        outputs
-        owner {
-          id
+        qid
+        resources {
+          type
+          name
+          inputs
+          outputs
+          owner {
+            id
+          }
         }
       }
     }

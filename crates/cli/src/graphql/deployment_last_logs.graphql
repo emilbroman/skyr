@@ -1,16 +1,18 @@
-query DeploymentLastLogs($amount: Int) {
-  repositories {
-    name
-    environments {
+query DeploymentLastLogs($organization: String!, $repository: String!, $amount: Int) {
+  organization(name: $organization) {
+    repository(name: $repository) {
       name
-      qid
-      deployments {
+      environments {
+        name
         qid
-        state
-        lastLogs(amount: $amount) {
-          severity
-          timestamp
-          message
+        deployments {
+          qid
+          state
+          lastLogs(amount: $amount) {
+            severity
+            timestamp
+            message
+          }
         }
       }
     }

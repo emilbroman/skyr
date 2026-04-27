@@ -1,24 +1,26 @@
-query ListRepositoryDeployments {
-  repositories {
-    name
-    environments {
+query ListRepositoryDeployments($organization: String!, $repository: String!) {
+  organization(name: $organization) {
+    repository(name: $repository) {
       name
-      qid
-      deployments {
-        id
-        commit {
-          hash
-        }
-        createdAt
-        state
-        resources {
-          type
-          name
-          inputs
-          outputs
-          dependencies {
+      environments {
+        name
+        qid
+        deployments {
+          id
+          commit {
+            hash
+          }
+          createdAt
+          state
+          resources {
             type
             name
+            inputs
+            outputs
+            dependencies {
+              type
+              name
+            }
           }
         }
       }
