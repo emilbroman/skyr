@@ -455,9 +455,17 @@ test_case!(OptionDefault);
 test_case!(OptionUnwrapSome);
 
 // Std/Encoding
+test_case!(EncodingBase64);
+test_case!(EncodingBase64Url);
+test_case!(EncodingFromJson);
+test_case!(EncodingFromToml);
+test_case!(EncodingHex);
 test_case!(EncodingToJson);
 test_case!(EncodingToJsonRecord);
-test_case!(EncodingFromJson);
+test_case!(EncodingToml);
+test_case!(EncodingUrlEncode);
+test_case!(EncodingYaml);
+test_case!(EncodingYamlRoundTrip);
 
 // Std/Time
 test_case!(TimeToISO);

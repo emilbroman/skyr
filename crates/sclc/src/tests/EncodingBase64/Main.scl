@@ -1,0 +1,5 @@
+import Std/Encoding
+
+export let a = Encoding.toBase64("hello")
+export let b = Encoding.toBase64("")
+export let c = Encoding.fromBase64("aGVsbG8=")
