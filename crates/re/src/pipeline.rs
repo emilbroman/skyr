@@ -53,10 +53,6 @@ pub enum PipelineError {
     Nq(#[from] nq::PublishError),
 }
 
-/// Maximum number of characters of error message kept as the
-/// `triggering_report_summary`. Keeps the SDB row size bounded.
-const TRIGGERING_SUMMARY_MAX_CHARS: usize = 512;
-
 /// Shared, cheaply-cloneable handle bundling the worker's external
 /// dependencies and its in-memory state.
 #[derive(Clone)]
@@ -268,7 +264,6 @@ async fn handle_failure(
     }
 
     // 3. Threshold tripped: try to open.
-    let triggering = truncate_for_summary(error_message);
     let outcome = ctx
         .sdb
         .open_incident(
@@ -276,7 +271,6 @@ async fn handle_failure(
             category,
             report_at,
             error_message,
-            Some(triggering),
             &scopes.org_scope,
             &scopes.repo_scope,
             &scopes.env_scope,
@@ -298,7 +292,7 @@ async fn handle_failure(
                 category: nq_category(category),
                 opened_at: incident.opened_at,
                 closed_at: None,
-                last_error_message: Some(incident.last_error_message.clone()),
+                summary: Some(incident.summary.clone()),
             };
             ctx.nq.enqueue(&request).await?;
         }
@@ -357,7 +351,6 @@ async fn handle_success(
                 // it; passing the existing count keeps it monotonic. We
                 // re-read to obtain the running total.
                 running_count_for(ctx, entity_qid, category).await,
-                "", // close because of success — no producer error message.
                 &scopes.org_scope,
                 &scopes.repo_scope,
                 &scopes.env_scope,
@@ -371,6 +364,11 @@ async fn handle_success(
                 incident_id = %incident.id,
                 "closed incident on success heartbeat"
             );
+            let summary = if incident.summary.is_empty() {
+                None
+            } else {
+                Some(incident.summary.clone())
+            };
             let request = nq::NotificationRequest {
                 incident_id: incident.id.to_string(),
                 event_type: nq::NotificationEventType::Closed,
@@ -378,7 +376,7 @@ async fn handle_success(
                 category: nq_category(category),
                 opened_at: incident.opened_at,
                 closed_at: incident.closed_at,
-                last_error_message: None,
+                summary,
             };
             ctx.nq.enqueue(&request).await?;
         }
@@ -410,40 +408,9 @@ fn nq_category(category: IncidentCategory) -> nq::SeverityCategory {
     category
 }
 
-fn truncate_for_summary(message: &str) -> String {
-    if message.chars().count() <= TRIGGERING_SUMMARY_MAX_CHARS {
-        message.to_string()
-    } else {
-        let mut out = String::with_capacity(TRIGGERING_SUMMARY_MAX_CHARS + 3);
-        for (i, ch) in message.chars().enumerate() {
-            if i >= TRIGGERING_SUMMARY_MAX_CHARS {
-                break;
-            }
-            out.push(ch);
-        }
-        out.push_str("...");
-        out
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn truncate_short_message_is_unchanged() {
-        let s = "short";
-        assert_eq!(truncate_for_summary(s), "short");
-    }
-
-    #[test]
-    fn truncate_long_message_appends_ellipsis() {
-        let s = "x".repeat(TRIGGERING_SUMMARY_MAX_CHARS + 100);
-        let out = truncate_for_summary(&s);
-        assert!(out.ends_with("..."));
-        // Count is char-based; ASCII matches byte-count here.
-        assert_eq!(out.chars().count(), TRIGGERING_SUMMARY_MAX_CHARS + 3);
-    }
 
     #[test]
     fn nq_category_round_trips() {

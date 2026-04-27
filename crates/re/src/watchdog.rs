@@ -37,8 +37,8 @@ use crate::entity::CadenceConfig;
 use crate::pipeline::{HeartbeatEntry, PipelineContext};
 
 /// Static error message used in synthetic SystemError incidents created by
-/// the watchdog. Visible to operators via the SDB row's
-/// `last_error_message` field and in the NE-rendered email body.
+/// the watchdog. Visible to operators via the SDB row's `summary` field and
+/// in the NE-rendered email body.
 const WATCHDOG_ERROR_MESSAGE: &str =
     "watchdog: no report received within the expected cadence for this entity";
 
@@ -134,7 +134,6 @@ async fn try_open_watchdog_incident(
             IncidentCategory::SystemError,
             now,
             WATCHDOG_ERROR_MESSAGE,
-            Some(WATCHDOG_ERROR_MESSAGE.to_string()),
             &scopes.org_scope,
             &scopes.repo_scope,
             &scopes.env_scope,
@@ -154,7 +153,7 @@ async fn try_open_watchdog_incident(
                 category: IncidentCategory::SystemError,
                 opened_at: incident.opened_at,
                 closed_at: None,
-                last_error_message: Some(incident.last_error_message.clone()),
+                summary: Some(incident.summary.clone()),
             };
             ctx.nq.enqueue(&request).await?;
             Ok(WatchdogOutcome::Opened)
