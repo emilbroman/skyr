@@ -51,7 +51,7 @@ pub fn current_branch() -> anyhow::Result<String> {
 /// Parse the org/repo pair out of a remote url. Supported shapes:
 ///
 /// - `host[:port]/org/repo[.git]`               (Skyr's bare host:port form)
-/// - `git@host:org/repo[.git]`                  (scp-like SSH)
+/// - `[user@]host:org/repo[.git]`               (scp-like SSH)
 /// - `ssh://[user@]host[:port]/org/repo[.git]`
 /// - `https://host[:port]/org/repo[.git]`
 /// - `http://host[:port]/org/repo[.git]`
@@ -66,11 +66,14 @@ pub fn parse_remote_url(url: &str) -> anyhow::Result<(String, String)> {
             .split_once('/')
             .ok_or_else(|| anyhow!("missing path component"))?;
         path
-    } else if let Some(rest) = url.strip_prefix("git@") {
-        // git@host:org/repo
-        let (_host, path) = rest
+    } else if let Some((username, after_at)) = url.split_once('@')
+        && !username.contains('/')
+        && !username.contains(':')
+    {
+        // [user@]host:org/repo scp-like SSH form.
+        let (_host, path) = after_at
             .split_once(':')
-            .ok_or_else(|| anyhow!("expected `host:org/repo` after `git@`"))?;
+            .ok_or_else(|| anyhow!("expected `host:org/repo` after `{username}@`"))?;
         path
     } else if let Some((authority, path)) = url.split_once('/') {
         // Bare `host[:port]/org/repo`. Disambiguate from a no-host
@@ -123,6 +126,10 @@ mod tests {
         assert_eq!(
             parse_remote_url("git@skyr.cloud:myorg/myrepo").unwrap(),
             ("myorg".into(), "myrepo".into())
+        );
+        assert_eq!(
+            parse_remote_url("emilbroman@skyr.cloud:Demo/Constructs").unwrap(),
+            ("Demo".into(), "Constructs".into())
         );
     }
 
