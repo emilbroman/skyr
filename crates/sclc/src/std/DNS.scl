@@ -29,3 +29,153 @@ export type ARecordOutput {
 	/// IPv4 addresses
 	addresses: [Str],
 }
+
+/// Create a DNS AAAA record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.AAAARecord({
+///     name: "a.b.c",
+///     ttl: Time.minute,
+///     addresses: ["2001:db8::1"],
+/// })
+/// ```
+export let AAAARecord = extern "Std/DNS.AAAARecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// IPv6 addresses
+	addresses: [Str],
+}) AAAARecordOutput
+
+export type AAAARecordOutput {
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// IPv6 addresses
+	addresses: [Str],
+}
+
+/// Create a DNS CNAME record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.CNAMERecord({
+///     name: "alias.example.com",
+///     ttl: Time.minute,
+///     target: "canonical.example.com",
+/// })
+/// ```
+export let CNAMERecord = extern "Std/DNS.CNAMERecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// CNAME target
+	target: Str,
+}) CNAMERecordOutput
+
+export type CNAMERecordOutput {
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// CNAME target
+	target: Str,
+}
+
+/// Create a DNS TXT record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.TXTRecord({
+///     name: "example.com",
+///     ttl: Time.minute,
+///     values: ["v=spf1 -all"],
+/// })
+/// ```
+export let TXTRecord = extern "Std/DNS.TXTRecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Text values
+	values: [Str],
+}) TXTRecordOutput
+
+export type TXTRecordOutput {
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Text values
+	values: [Str],
+}
+
+/// Create a DNS MX record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.MXRecord({
+///     name: "example.com",
+///     ttl: Time.minute,
+///     exchanges: [{ priority: 10, host: "mail.example.com" }],
+/// })
+/// ```
+export let MXRecord = extern "Std/DNS.MXRecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Mail exchangers
+	exchanges: [{ priority: Int, host: Str }],
+}) MXRecordOutput
+
+export type MXRecordOutput {
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Mail exchangers
+	exchanges: [{ priority: Int, host: Str }],
+}
+
+/// Create a DNS SRV record.
+///
+/// ```scl
+/// import Std/DNS
+/// import Std/Time
+///
+/// DNS.SRVRecord({
+///     name: "_svc._tcp.example.com",
+///     ttl: Time.minute,
+///     records: [{ priority: 10, weight: 5, port: 443, target: "svc.example.com" }],
+/// })
+/// ```
+export let SRVRecord = extern "Std/DNS.SRVRecord": fn({
+	/// Fully-qualified domain name
+	name: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Service records
+	records: [{ priority: Int, weight: Int, port: Int, target: Str }],
+}) SRVRecordOutput
+
+export type SRVRecordOutput {
+	/// Fully-qualified domain name (name + zone)
+	fqdn: Str,
+	/// Time to live
+	ttl: Time.Duration,
+	/// Service records
+	records: [{ priority: Int, weight: Int, port: Int, target: Str }],
+}

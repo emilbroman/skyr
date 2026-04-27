@@ -1,0 +1,1 @@
+{record: {fqdn: "alias.example.com", name: "alias.example.com", target: "canonical.example.com", ttl: {milliseconds: 60000}}}

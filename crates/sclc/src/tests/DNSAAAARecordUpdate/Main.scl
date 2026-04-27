@@ -1,0 +1,7 @@
+import Std/DNS
+
+export let record = DNS.AAAARecord({
+    name: "a.b.c",
+    ttl: { milliseconds: 60000 },
+    addresses: ["2001:db8::1", "2001:db8::2"],
+})

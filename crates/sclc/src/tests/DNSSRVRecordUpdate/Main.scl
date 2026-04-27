@@ -1,0 +1,7 @@
+import Std/DNS
+
+export let record = DNS.SRVRecord({
+    name: "_svc._tcp.example.com",
+    ttl: { milliseconds: 60000 },
+    records: [{ priority: 10, weight: 10, port: 443, target: "svc2.example.com" }],
+})

@@ -1,14 +1,14 @@
 use std::net::SocketAddr;
 
 use hickory_proto::op::{Message, MessageType, OpCode, ResponseCode};
-use hickory_proto::rr::rdata::{A, SOA};
+use hickory_proto::rr::rdata::{A, AAAA, CNAME, MX, SOA, SRV, TXT};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, warn};
 
 use crate::dns_store::DnsStore;
 
-/// Run a UDP DNS server that answers A and SOA queries for records in the zone.
+/// Run a UDP DNS server that answers queries for records in the zone.
 pub async fn run(addr: SocketAddr, zone: String, store: DnsStore) -> anyhow::Result<()> {
     let socket = UdpSocket::bind(addr).await?;
     tracing::info!("DNS server listening on {addr}");
@@ -69,6 +69,11 @@ async fn handle_query(query: &Message, zone_name: &Name, store: &DnsStore) -> Me
 
     match qtype {
         RecordType::A => handle_a_query(&mut response, qname, zone_name, store).await,
+        RecordType::AAAA => handle_aaaa_query(&mut response, qname, zone_name, store).await,
+        RecordType::CNAME => handle_cname_query(&mut response, qname, zone_name, store).await,
+        RecordType::TXT => handle_txt_query(&mut response, qname, zone_name, store).await,
+        RecordType::MX => handle_mx_query(&mut response, qname, zone_name, store).await,
+        RecordType::SRV => handle_srv_query(&mut response, qname, zone_name, store).await,
         RecordType::SOA if qname == zone_name => {
             add_soa(&mut response, zone_name, false);
             response.set_response_code(ResponseCode::NoError);
@@ -83,7 +88,6 @@ async fn handle_query(query: &Message, zone_name: &Name, store: &DnsStore) -> Me
 }
 
 async fn handle_a_query(response: &mut Message, qname: &Name, zone_name: &Name, store: &DnsStore) {
-    // Normalize: strip trailing dot for Redis lookup
     let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
 
     debug!(fqdn = %fqdn, "DNS A query");
@@ -103,6 +107,208 @@ async fn handle_a_query(response: &mut Message, qname: &Name, zone_name: &Name, 
         }
         Ok(None) => {
             debug!(fqdn = %fqdn, "DNS record not found");
+            response.set_response_code(ResponseCode::NXDomain);
+            add_soa(response, zone_name, true);
+        }
+        Err(e) => {
+            error!(fqdn = %fqdn, error = %e, "Redis lookup failed");
+            response.set_response_code(ResponseCode::ServFail);
+        }
+    }
+}
+
+async fn handle_aaaa_query(
+    response: &mut Message,
+    qname: &Name,
+    zone_name: &Name,
+    store: &DnsStore,
+) {
+    let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
+
+    debug!(fqdn = %fqdn, "DNS AAAA query");
+
+    match store.get_aaaa_record(&fqdn).await {
+        Ok(Some(data)) => {
+            for addr_str in &data.addresses {
+                if let Ok(addr) = addr_str.parse::<std::net::Ipv6Addr>() {
+                    let record = Record::from_rdata(
+                        qname.clone(),
+                        data.ttl_seconds,
+                        RData::AAAA(AAAA(addr)),
+                    );
+                    response.add_answer(record);
+                } else {
+                    warn!(address = %addr_str, "invalid IPv6 address in DNS record");
+                }
+            }
+            response.set_response_code(ResponseCode::NoError);
+        }
+        Ok(None) => {
+            debug!(fqdn = %fqdn, "DNS AAAA record not found");
+            response.set_response_code(ResponseCode::NXDomain);
+            add_soa(response, zone_name, true);
+        }
+        Err(e) => {
+            error!(fqdn = %fqdn, error = %e, "Redis lookup failed");
+            response.set_response_code(ResponseCode::ServFail);
+        }
+    }
+}
+
+async fn handle_cname_query(
+    response: &mut Message,
+    qname: &Name,
+    zone_name: &Name,
+    store: &DnsStore,
+) {
+    let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
+
+    debug!(fqdn = %fqdn, "DNS CNAME query");
+
+    match store.get_cname_record(&fqdn).await {
+        Ok(Some(data)) => {
+            let target_str = if data.target.ends_with('.') {
+                data.target.clone()
+            } else {
+                format!("{}.", data.target)
+            };
+            match Name::from_ascii(&target_str) {
+                Ok(name) => {
+                    let record = Record::from_rdata(
+                        qname.clone(),
+                        data.ttl_seconds,
+                        RData::CNAME(CNAME(name)),
+                    );
+                    response.add_answer(record);
+                    response.set_response_code(ResponseCode::NoError);
+                }
+                Err(e) => {
+                    warn!(target = %data.target, error = %e, "invalid CNAME target");
+                    response.set_response_code(ResponseCode::ServFail);
+                }
+            }
+        }
+        Ok(None) => {
+            debug!(fqdn = %fqdn, "DNS CNAME record not found");
+            response.set_response_code(ResponseCode::NXDomain);
+            add_soa(response, zone_name, true);
+        }
+        Err(e) => {
+            error!(fqdn = %fqdn, error = %e, "Redis lookup failed");
+            response.set_response_code(ResponseCode::ServFail);
+        }
+    }
+}
+
+async fn handle_txt_query(
+    response: &mut Message,
+    qname: &Name,
+    zone_name: &Name,
+    store: &DnsStore,
+) {
+    let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
+
+    debug!(fqdn = %fqdn, "DNS TXT query");
+
+    match store.get_txt_record(&fqdn).await {
+        Ok(Some(data)) => {
+            let record = Record::from_rdata(
+                qname.clone(),
+                data.ttl_seconds,
+                RData::TXT(TXT::new(data.values.clone())),
+            );
+            response.add_answer(record);
+            response.set_response_code(ResponseCode::NoError);
+        }
+        Ok(None) => {
+            debug!(fqdn = %fqdn, "DNS TXT record not found");
+            response.set_response_code(ResponseCode::NXDomain);
+            add_soa(response, zone_name, true);
+        }
+        Err(e) => {
+            error!(fqdn = %fqdn, error = %e, "Redis lookup failed");
+            response.set_response_code(ResponseCode::ServFail);
+        }
+    }
+}
+
+async fn handle_mx_query(response: &mut Message, qname: &Name, zone_name: &Name, store: &DnsStore) {
+    let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
+
+    debug!(fqdn = %fqdn, "DNS MX query");
+
+    match store.get_mx_record(&fqdn).await {
+        Ok(Some(data)) => {
+            for exchange in &data.exchanges {
+                let host_str = if exchange.host.ends_with('.') {
+                    exchange.host.clone()
+                } else {
+                    format!("{}.", exchange.host)
+                };
+                match Name::from_ascii(&host_str) {
+                    Ok(name) => {
+                        let record = Record::from_rdata(
+                            qname.clone(),
+                            data.ttl_seconds,
+                            RData::MX(MX::new(exchange.priority, name)),
+                        );
+                        response.add_answer(record);
+                    }
+                    Err(e) => {
+                        warn!(host = %exchange.host, error = %e, "invalid MX host");
+                    }
+                }
+            }
+            response.set_response_code(ResponseCode::NoError);
+        }
+        Ok(None) => {
+            debug!(fqdn = %fqdn, "DNS MX record not found");
+            response.set_response_code(ResponseCode::NXDomain);
+            add_soa(response, zone_name, true);
+        }
+        Err(e) => {
+            error!(fqdn = %fqdn, error = %e, "Redis lookup failed");
+            response.set_response_code(ResponseCode::ServFail);
+        }
+    }
+}
+
+async fn handle_srv_query(
+    response: &mut Message,
+    qname: &Name,
+    zone_name: &Name,
+    store: &DnsStore,
+) {
+    let fqdn = qname.to_ascii().trim_end_matches('.').to_lowercase();
+
+    debug!(fqdn = %fqdn, "DNS SRV query");
+
+    match store.get_srv_record(&fqdn).await {
+        Ok(Some(data)) => {
+            for entry in &data.records {
+                let target_str = if entry.target.ends_with('.') {
+                    entry.target.clone()
+                } else {
+                    format!("{}.", entry.target)
+                };
+                match Name::from_ascii(&target_str) {
+                    Ok(name) => {
+                        let record = Record::from_rdata(
+                            qname.clone(),
+                            data.ttl_seconds,
+                            RData::SRV(SRV::new(entry.priority, entry.weight, entry.port, name)),
+                        );
+                        response.add_answer(record);
+                    }
+                    Err(e) => {
+                        warn!(target = %entry.target, error = %e, "invalid SRV target");
+                    }
+                }
+            }
+            response.set_response_code(ResponseCode::NoError);
+        }
+        Ok(None) => {
+            debug!(fqdn = %fqdn, "DNS SRV record not found");
             response.set_response_code(ResponseCode::NXDomain);
             add_soa(response, zone_name, true);
         }

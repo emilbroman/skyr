@@ -1,0 +1,7 @@
+import Std/DNS
+
+export let record = DNS.TXTRecord({
+    name: "example.com",
+    ttl: { milliseconds: 60000 },
+    values: ["v=spf1 include:example.net -all"],
+})

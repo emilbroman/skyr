@@ -1,0 +1,1 @@
+{record: {addresses: ["2001:db8::1"], fqdn: "a.b.c", name: "a.b.c", ttl: {milliseconds: 60000}}}

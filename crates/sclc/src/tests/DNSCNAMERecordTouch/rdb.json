@@ -1,0 +1,18 @@
+{
+  "resources": {
+    "Std/DNS.CNAMERecord": {
+      "alias.example.com": {
+        "inputs": {
+          "name": "alias.example.com",
+          "ttl": { "milliseconds": 60000 },
+          "target": "canonical.example.com"
+        },
+        "outputs": {
+          "fqdn": "alias.example.com",
+          "ttl": { "milliseconds": 60000 },
+          "target": "canonical.example.com"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+import Std/DNS
+
+export let record = DNS.CNAMERecord({
+    name: "alias.example.com",
+    ttl: { milliseconds: 60000 },
+    target: "canonical.example.com",
+})

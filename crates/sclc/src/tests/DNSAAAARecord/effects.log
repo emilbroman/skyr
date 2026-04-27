@@ -1,0 +1,1 @@
+CreateResource ty=Std/DNS.AAAARecord name=a.b.c inputs={addresses: ["2001:db8::1"], name: "a.b.c", ttl: {milliseconds: 60000}}

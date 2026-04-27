@@ -24,7 +24,129 @@ DNS.ARecord({
 | **Inputs** | `name: Str` — fully-qualified domain name |
 | | `ttl: Time.Duration` — time to live |
 | | `addresses: [Str]` — list of IPv4 addresses |
-| **Outputs** | Same as inputs |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `addresses: [Str]` |
+
+### DNS.AAAARecord
+
+Create a DNS AAAA record (IPv6).
+
+```scl
+import Std/DNS
+import Std/Time
+
+DNS.AAAARecord({
+    name: "example.com",
+    ttl: Time.minute,
+    addresses: ["2001:db8::1"],
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `name: Str` — fully-qualified domain name |
+| | `ttl: Time.Duration` — time to live |
+| | `addresses: [Str]` — list of IPv6 addresses |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `addresses: [Str]` |
+
+### DNS.CNAMERecord
+
+Create a DNS CNAME record.
+
+```scl
+import Std/DNS
+import Std/Time
+
+DNS.CNAMERecord({
+    name: "alias.example.com",
+    ttl: Time.minute,
+    target: "canonical.example.com",
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `name: Str` — fully-qualified domain name |
+| | `ttl: Time.Duration` — time to live |
+| | `target: Str` — canonical name target |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `target: Str` |
+
+### DNS.TXTRecord
+
+Create a DNS TXT record.
+
+```scl
+import Std/DNS
+import Std/Time
+
+DNS.TXTRecord({
+    name: "example.com",
+    ttl: Time.minute,
+    values: ["v=spf1 -all"],
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `name: Str` — fully-qualified domain name |
+| | `ttl: Time.Duration` — time to live |
+| | `values: [Str]` — one or more text strings |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `values: [Str]` |
+
+### DNS.MXRecord
+
+Create a DNS MX record.
+
+```scl
+import Std/DNS
+import Std/Time
+
+DNS.MXRecord({
+    name: "example.com",
+    ttl: Time.minute,
+    exchanges: [{ priority: 10, host: "mail.example.com" }],
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `name: Str` — fully-qualified domain name |
+| | `ttl: Time.Duration` — time to live |
+| | `exchanges: [{priority: Int, host: Str}]` — mail exchangers |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `exchanges: [{priority: Int, host: Str}]` |
+
+### DNS.SRVRecord
+
+Create a DNS SRV record.
+
+```scl
+import Std/DNS
+import Std/Time
+
+DNS.SRVRecord({
+    name: "_svc._tcp.example.com",
+    ttl: Time.minute,
+    records: [{ priority: 10, weight: 5, port: 443, target: "svc.example.com" }],
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `name: Str` — fully-qualified domain name |
+| | `ttl: Time.Duration` — time to live |
+| | `records: [{priority: Int, weight: Int, port: Int, target: Str}]` — service locations |
+| **Outputs** | `fqdn: Str` — fully-qualified domain name (name + zone) |
+| | `ttl: Time.Duration` |
+| | `records: [{priority: Int, weight: Int, port: Int, target: Str}]` |
 
 ## Std/Crypto
 
