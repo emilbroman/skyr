@@ -17,7 +17,7 @@ use axum::{
 use base64::Engine;
 use chrono::Utc;
 use clap::Parser;
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use http::StatusCode;
 use juniper::{FieldResult, RootNode};
 use sha2::Digest;
@@ -279,25 +279,6 @@ impl Query {
         }
 
         Ok(Organization { name: org })
-    }
-
-    async fn repositories(context: &Context) -> FieldResult<Vec<Repository>> {
-        let (_, user) = context.check_auth().await?;
-        context
-            .cdb_client
-            .repositories_by_organization(user.username.clone())
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list repositories: {}", e);
-                internal_error()
-            })?
-            .map(|repository| repository.map(|repository| Repository { repository }))
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to read repository row: {}", e);
-                internal_error()
-            })
     }
 }
 

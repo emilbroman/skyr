@@ -238,7 +238,6 @@ type Query {
   refreshToken: AuthSuccess!
   organizations: [Organization!]!
   organization(name: String!): Organization!
-  repositories: [Repository!]!
 }
 
 type Repository {
