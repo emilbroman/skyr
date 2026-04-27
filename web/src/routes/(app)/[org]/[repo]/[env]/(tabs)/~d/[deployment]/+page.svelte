@@ -2,7 +2,7 @@
 import { page } from "$app/stores";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import HealthBadge from "$lib/components/HealthBadge.svelte";
-import { orgIncidentHref } from "$lib/paths";
+import { envIncidentHref } from "$lib/paths";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
@@ -131,18 +131,17 @@ function onRedeploy() {
           <dd class="text-gray-700">{deployment.status.openIncidentCount}</dd>
         </div>
       </dl>
-      {#if deployment.incidents.length > 0}
+      {#if deployment.openIncidents.length > 0}
         <div class="mt-4">
-          <h3 class="text-sm font-medium text-gray-700 mb-2">Incidents</h3>
+          <h3 class="text-sm font-medium text-gray-700 mb-2">Open incidents</h3>
           <ul class="space-y-1 text-sm">
-            {#each deployment.incidents as incident}
+            {#each deployment.openIncidents as incident}
               <li>
                 <a
-                  href={orgIncidentHref(orgName, incident.id)}
+                  href={envIncidentHref(orgName, repoName, envName, incident.id)}
                   class="text-orange-600 hover:text-orange-500"
                 >
-                  Opened {new Date(incident.openedAt).toLocaleString()}
-                  {incident.closedAt ? ` · closed ${new Date(incident.closedAt).toLocaleString()}` : " · OPEN"}
+                  Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
                 </a>
               </li>
             {/each}

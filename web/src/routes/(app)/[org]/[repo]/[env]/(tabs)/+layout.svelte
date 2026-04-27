@@ -13,12 +13,14 @@ import {
     envArtifactsHref,
     envDeploymentsHref,
     envHref,
+    envIncidentsHref,
     envLogsHref,
     resourcesHref,
 } from "$lib/paths";
 import { user } from "$lib/stores/auth";
 import {
     AlignJustify,
+    AlertTriangle,
     Archive,
     Box,
     Check,
@@ -99,6 +101,7 @@ let deploymentsPath = $derived(envDeploymentsHref(orgName, repoName, envName));
 let resPath = $derived(resourcesHref(orgName, repoName, envName));
 let artifactsPath = $derived(envArtifactsHref(orgName, repoName, envName));
 let logsPath = $derived(envLogsHref(orgName, repoName, envName));
+let incidentsPath = $derived(envIncidentsHref(orgName, repoName, envName));
 let activeTab = $derived(
     currentPath.startsWith(deploymentsPath)
         ? "deployments"
@@ -108,8 +111,11 @@ let activeTab = $derived(
             ? "artifacts"
             : currentPath.startsWith(logsPath)
               ? "logs"
-              : "files",
+              : currentPath.startsWith(incidentsPath)
+                ? "incidents"
+                : "files",
 );
+let openIncidentCount = $derived((env?.incidents ?? []).filter((i) => i.closedAt == null).length);
 
 function switchEnv(newEnv: string) {
     const tabHref =
@@ -121,7 +127,9 @@ function switchEnv(newEnv: string) {
                 ? envArtifactsHref(orgName, repoName, newEnv)
                 : activeTab === "logs"
                   ? envLogsHref(orgName, repoName, newEnv)
-                  : envHref(orgName, repoName, newEnv);
+                  : activeTab === "incidents"
+                    ? envIncidentsHref(orgName, repoName, newEnv)
+                    : envHref(orgName, repoName, newEnv);
     goto(tabHref);
 }
 </script>
@@ -306,6 +314,18 @@ function switchEnv(newEnv: string) {
       >
         <AlignJustify class="w-4 h-4" />
         Logs
+      </a>
+      <a
+        href={incidentsPath}
+        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        'incidents'
+          ? 'border-orange-500 text-gray-900'
+          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+      >
+        <AlertTriangle class="w-4 h-4" />
+        Incidents {#if openIncidentCount > 0}<span class="text-red-500 ml-1"
+          >({openIncidentCount})</span
+        >{/if}
       </a>
     </div>
 

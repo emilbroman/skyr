@@ -1,76 +1,70 @@
-query OrganizationIncidents(
-  $org: String!
-  $openOnly: Boolean
-  $since: String
-  $until: String
-  $limit: Int
-  $offset: Int
-) {
+query EnvironmentIncidents($org: String!, $repo: String!, $env: String!) {
   organization(name: $org) {
-    name
-    incidents(
-      openOnly: $openOnly
-      since: $since
-      until: $until
-      limit: $limit
-      offset: $offset
-    ) {
-      id
-      entityQid
-      openedAt
-      closedAt
-      lastReportAt
-      reportCount
-      summary
-      repository {
+    repository(name: $repo) {
+      environment(name: $env) {
         name
-      }
-      environment {
-        name
-      }
-      deployment {
-        id
-        ref
-        commit {
-          hash
+        qid
+        incidents {
+          id
+          openedAt
+          closedAt
+          lastReportAt
+          reportCount
+          summary
+          entity {
+            qid
+            ... on Resource {
+              type
+              name
+            }
+            ... on Deployment {
+              id
+              ref
+              commit {
+                hash
+              }
+            }
+          }
         }
-      }
-      resource {
-        type
-        name
       }
     }
   }
 }
 
-query OrganizationIncidentDetail($org: String!, $id: ID!) {
+query EnvironmentIncidentDetail(
+  $org: String!
+  $repo: String!
+  $env: String!
+  $id: ID!
+) {
   organization(name: $org) {
-    name
-    incident(id: $id) {
-      id
-      entityQid
-      openedAt
-      closedAt
-      lastReportAt
-      reportCount
-      summary
-      repository {
+    repository(name: $repo) {
+      environment(name: $env) {
         name
-      }
-      environment {
-        name
-      }
-      deployment {
-        id
-        ref
-        commit {
-          hash
-          message
+        qid
+        incident(id: $id) {
+          id
+          openedAt
+          closedAt
+          lastReportAt
+          reportCount
+          summary
+          entity {
+            qid
+            ... on Resource {
+              type
+              name
+            }
+            ... on Deployment {
+              id
+              ref
+              commit {
+                hash
+                message
+              }
+            }
+          }
         }
-      }
-      resource {
-        type
-        name
       }
     }
   }

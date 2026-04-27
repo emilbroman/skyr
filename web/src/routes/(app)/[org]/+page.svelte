@@ -3,7 +3,7 @@ import { page } from "$app/stores";
 import { OrganizationDetailDocument, AddOrganizationMemberDocument } from "$lib/graphql/generated";
 import { graphqlQuery, graphqlMutation } from "$lib/graphql/query";
 import Spinner from "$lib/components/Spinner.svelte";
-import { newRepoHref, orgIncidentsHref, repoHref, newOrgHref } from "$lib/paths";
+import { newRepoHref, repoHref, newOrgHref } from "$lib/paths";
 import { user } from "$lib/stores/auth";
 
 let orgName = $derived($page.params.org ?? "");
@@ -46,12 +46,6 @@ function submitAddMember() {
   <div class="flex items-center justify-between mb-6">
     <h1 class="font-bold text-gray-900">{orgName}</h1>
     <div class="flex items-center gap-2">
-      <a
-        href={orgIncidentsHref(orgName)}
-        class="px-4 py-2 bg-white border border-gray-200 hover:border-gray-400 text-gray-700 rounded font-medium transition-colors"
-      >
-        Incidents
-      </a>
       <a
         href={newRepoHref(orgName)}
         class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors"

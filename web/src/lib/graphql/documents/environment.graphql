@@ -4,6 +4,10 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
       environment(name: $env) {
         name
         qid
+        incidents {
+          id
+          closedAt
+        }
         deployments {
           id
           nonce
@@ -120,10 +124,9 @@ query ResourceDetail(
             openIncidentCount
             consecutiveFailureCount
           }
-          incidents(limit: 50) {
+          openIncidents {
             id
             openedAt
-            closedAt
             lastReportAt
             reportCount
             summary
@@ -197,10 +200,9 @@ query DeploymentDetail(
             openIncidentCount
             consecutiveFailureCount
           }
-          incidents(limit: 50) {
+          openIncidents {
             id
             openedAt
-            closedAt
             lastReportAt
             reportCount
             summary

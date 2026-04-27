@@ -17,7 +17,7 @@ import {
     commitTreeHref,
     decodeSegment,
     deploymentHref,
-    orgIncidentHref,
+    envIncidentHref,
     resourceHref,
 } from "$lib/paths";
 
@@ -350,20 +350,17 @@ let aRecordFqdn = $derived.by(() => {
         </div>
       {/if}
     </dl>
-    {#if resource.incidents.length > 0}
+    {#if resource.openIncidents.length > 0}
       <div class="mt-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-2">Incidents</h3>
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Open incidents</h3>
         <ul class="space-y-1 text-sm">
-          {#each resource.incidents as incident}
+          {#each resource.openIncidents as incident}
             <li>
               <a
-                href={orgIncidentHref(orgName, incident.id)}
+                href={envIncidentHref(orgName, repoName, envName, incident.id)}
                 class="text-orange-600 hover:text-orange-500"
               >
-                Opened {new Date(incident.openedAt).toLocaleString()}
-                {incident.closedAt
-                  ? ` · closed ${new Date(incident.closedAt).toLocaleString()}`
-                  : " · OPEN"}
+                Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
               </a>
             </li>
           {/each}

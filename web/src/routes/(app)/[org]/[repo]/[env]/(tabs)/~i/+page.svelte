@@ -1,82 +1,53 @@
 <script lang="ts">
 import { page } from "$app/stores";
 import Spinner from "$lib/components/Spinner.svelte";
-import { OrganizationIncidentsDocument } from "$lib/graphql/generated";
+import { EnvironmentIncidentsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import {
-    deploymentHref,
-    envHref,
-    orgHref,
-    orgIncidentHref,
-    repoHref,
-    resourceHref,
-} from "$lib/paths";
+import { decodeSegment, deploymentHref, envIncidentHref, resourceHref } from "$lib/paths";
 
 let orgName = $derived($page.params.org ?? "");
-
-let openOnly = $state(true);
+let repoName = $derived($page.params.repo ?? "");
+let envName = $derived(decodeSegment($page.params.env ?? ""));
 
 const incidents = graphqlQuery(() => ({
-    document: OrganizationIncidentsDocument,
-    variables: {
-        org: orgName,
-        openOnly,
-        limit: 100,
-    },
+    document: EnvironmentIncidentsDocument,
+    variables: { org: orgName, repo: repoName, env: envName },
     refetchInterval: 15_000,
 }));
 
-let rows = $derived(incidents.data?.organization.incidents ?? []);
+let rows = $derived(incidents.data?.organization.repository.environment.incidents ?? []);
 
 function entityCell(incident: (typeof rows)[number]): {
     kind: string;
     name: string;
     href: string | null;
 } {
-    const repo = incident.repository?.name ?? "";
-    const env = incident.environment?.name ?? "";
-    if (incident.deployment) {
-        const d = incident.deployment;
+    const entity = incident.entity;
+    if (!entity) {
+        return { kind: "", name: "(destroyed)", href: null };
+    }
+    if (entity.__typename === "Deployment") {
         return {
             kind: "Deployment",
-            name: d.commit.hash.slice(0, 8),
-            href: repo && env ? deploymentHref(orgName, repo, env, d.id) : null,
+            name: entity.commit.hash.slice(0, 8),
+            href: deploymentHref(orgName, repoName, envName, entity.id),
         };
     }
-    if (incident.resource) {
-        const r = incident.resource;
-        const shortType = r.type.split(".").slice(1).join(".") || r.type;
+    if (entity.__typename === "Resource") {
+        const shortType = entity.type.split(".").slice(1).join(".") || entity.type;
         return {
             kind: shortType,
-            name: r.name,
-            href: repo && env ? resourceHref(orgName, repo, env, `${r.type}:${r.name}`) : null,
+            name: entity.name,
+            href: resourceHref(orgName, repoName, envName, `${entity.type}:${entity.name}`),
         };
     }
-    return { kind: "", name: incident.entityQid, href: null };
+    return { kind: "", name: entity.qid, href: null };
 }
 </script>
 
 <svelte:head>
-    <title>Incidents · {orgName} – Skyr</title>
+    <title>Incidents · {envName} · {repoName} – Skyr</title>
 </svelte:head>
-
-<div
-    class="flex items-center justify-between border-b border-gray-200 bg-white px-4 h-10 sticky top-14 z-30"
->
-    <span class="text-xs text-gray-500">
-        Incidents
-        <span class="mx-1 text-gray-400">/</span>
-        <a href={orgHref(orgName)} class="hover:text-gray-700">{orgName}</a>
-    </span>
-</div>
-
-<div class="p-6">
-<div class="flex flex-wrap gap-3 mb-4 items-center">
-    <label class="text-sm text-gray-600 inline-flex items-center gap-2">
-        <input type="checkbox" bind:checked={openOnly} />
-        Open only
-    </label>
-</div>
 
 {#if incidents.isPending}
     <Spinner />
@@ -85,7 +56,7 @@ function entityCell(incident: (typeof rows)[number]): {
         {incidents.error.message}
     </div>
 {:else if rows.length === 0}
-    <p class="text-gray-500">No incidents.</p>
+    <p class="text-gray-500">No incidents in this environment.</p>
 {:else}
     <div class="bg-white border border-gray-200 rounded-lg overflow-x-auto">
         <table class="w-full text-left text-sm">
@@ -95,16 +66,12 @@ function entityCell(incident: (typeof rows)[number]): {
                     <th class="py-2 pr-4 font-medium">Opened</th>
                     <th class="py-2 pr-4 font-medium">Last error</th>
                     <th class="py-2 pr-4 font-medium">Reports</th>
-                    <th class="py-2 pr-4 font-medium">Repository</th>
-                    <th class="py-2 pr-4 font-medium">Environment</th>
                     <th class="py-2 pr-4 font-medium">Entity</th>
                 </tr>
             </thead>
             <tbody>
                 {#each rows as incident}
                     {@const entity = entityCell(incident)}
-                    {@const repoName = incident.repository?.name ?? ""}
-                    {@const envName = incident.environment?.name ?? ""}
                     {@const isOpen = incident.closedAt == null}
                     <tr class="border-b border-gray-200 hover:bg-gray-50">
                         <td class="py-2 pl-4 pr-4">
@@ -120,7 +87,7 @@ function entityCell(incident: (typeof rows)[number]): {
                         </td>
                         <td class="py-2 pr-4 max-w-[40ch]">
                             <a
-                                href={orgIncidentHref(orgName, incident.id)}
+                                href={envIncidentHref(orgName, repoName, envName, incident.id)}
                                 class="text-orange-600 hover:text-orange-500 break-words line-clamp-3"
                                 title={incident.summary ?? ""}
                             >
@@ -128,30 +95,6 @@ function entityCell(incident: (typeof rows)[number]): {
                             </a>
                         </td>
                         <td class="py-2 pr-4 text-gray-500">{incident.reportCount}</td>
-                        <td class="py-2 pr-4">
-                            {#if repoName}
-                                <a
-                                    href={repoHref(orgName, repoName)}
-                                    class="text-orange-600 hover:text-orange-500"
-                                >
-                                    {repoName}
-                                </a>
-                            {:else}
-                                <span class="text-gray-400">—</span>
-                            {/if}
-                        </td>
-                        <td class="py-2 pr-4">
-                            {#if repoName && envName}
-                                <a
-                                    href={envHref(orgName, repoName, envName)}
-                                    class="text-orange-600 hover:text-orange-500"
-                                >
-                                    {envName}
-                                </a>
-                            {:else}
-                                <span class="text-gray-400">—</span>
-                            {/if}
-                        </td>
                         <td class="py-2 pr-4 max-w-[40ch] font-mono text-xs">
                             {#if entity.href}
                                 <a
@@ -182,4 +125,3 @@ function entityCell(incident: (typeof rows)[number]): {
         </table>
     </div>
 {/if}
-</div>

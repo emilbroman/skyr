@@ -73,12 +73,17 @@ export function resourceHref(
     return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~r/${encodeSegment(resourceId)}`;
 }
 
-export function orgIncidentsHref(orgName: string): string {
-    return `/${encodeURIComponent(orgName)}/~i`;
+export function envIncidentsHref(orgName: string, repoName: string, envName: string): string {
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~i`;
 }
 
-export function orgIncidentHref(orgName: string, incidentId: string): string {
-    return `/${encodeURIComponent(orgName)}/~i/${encodeURIComponent(incidentId)}`;
+export function envIncidentHref(
+    orgName: string,
+    repoName: string,
+    envName: string,
+    incidentId: string,
+): string {
+    return `/${encodeURIComponent(orgName)}/${encodeURIComponent(repoName)}/${encodeSegment(envName)}/~i/${encodeURIComponent(incidentId)}`;
 }
 
 export function commitTreeHref(
