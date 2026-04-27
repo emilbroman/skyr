@@ -96,17 +96,11 @@ impl FnExpr {
         expr: &crate::Loc<super::Expr>,
         expected: &Type,
     ) -> Result<crate::TypeSynth, TypeCheckError> {
-        // If no untyped params, fall back to synth-then-subsume.
-        let has_untyped = self.params.iter().any(|p| p.ty.is_none());
-        if !has_untyped {
-            return checker.synth_then_subsume(env, expr, expected);
-        }
-
-        // Try to extract a function type from the expected type.
+        // If the expected type isn't a function type, fall back to synth-then-subsume.
         let expected_unfolded = expected.clone().unfold();
         let expected_fn = match &expected_unfolded.kind {
-            crate::TypeKind::Fn(fn_ty) => Some(fn_ty),
-            _ => None,
+            crate::TypeKind::Fn(fn_ty) => fn_ty.clone(),
+            _ => return checker.synth_then_subsume(env, expr, expected),
         };
 
         let mut diags = DiagList::new();
@@ -129,20 +123,25 @@ impl FnExpr {
 
         let mut params = Vec::with_capacity(self.params.len());
         for (i, param) in self.params.iter().enumerate() {
+            let expected_param_ty = expected_fn.params.get(i);
             let param_ty = if let Some(ty_expr) = &param.ty {
-                checker
+                let ty = checker
                     .resolve_type_expr(&fn_env, ty_expr)
-                    .unpack(&mut diags)
-            } else if let Some(fn_ty) = expected_fn {
-                if let Some(expected_param_ty) = fn_ty.params.get(i) {
-                    expected_param_ty.clone()
-                } else {
-                    diags.push(MissingParameterType {
-                        module_id: env.module_id()?,
-                        span: param.var.span(),
-                    });
-                    Type::Any()
+                    .unpack(&mut diags);
+                // Function parameters are contravariant: the expected param type
+                // must be assignable to the provided one.
+                if let Some(expected_param_ty) = expected_param_ty {
+                    checker.subsumption_check(
+                        &fn_env,
+                        ty_expr.span(),
+                        expected_param_ty.clone(),
+                        &ty,
+                        &mut diags,
+                    )?;
                 }
+                ty
+            } else if let Some(expected_param_ty) = expected_param_ty {
+                expected_param_ty.clone()
             } else {
                 diags.push(MissingParameterType {
                     module_id: env.module_id()?,
@@ -158,10 +157,9 @@ impl FnExpr {
             params.push(param_ty);
         }
 
-        let expected_ret = expected_fn.map(|ft| ft.ret.as_ref());
         let ret = if let Some(body) = &self.body {
             checker
-                .check_expr(&fn_env, body.as_ref(), expected_ret)?
+                .check_expr(&fn_env, body.as_ref(), Some(expected_fn.ret.as_ref()))?
                 .unpack(&mut diags)
         } else {
             Type::Never()

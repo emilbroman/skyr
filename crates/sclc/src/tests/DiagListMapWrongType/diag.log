@@ -1,1 +1,3 @@
 DiagListMapWrongType/Main 2:36,2:48: invalid type: fn(Str) Str is not assignable to fn(Int) Int, because Int is not assignable to Str
+DiagListMapWrongType/Main 2:42,2:45: invalid type: Int is not assignable to Str
+DiagListMapWrongType/Main 2:47,2:48: invalid type: Str is not assignable to Int

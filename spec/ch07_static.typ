@@ -370,18 +370,24 @@ monomorphic function type:
     caption: [Monomorphic function.],
 )
 
-A parameter whose annotation is omitted is legal only when the
-expected type determines it:
+In checking mode parameter annotations are optional. Each provided
+annotation must be a supertype of the corresponding expected
+parameter type (contravariance of $arrow$ in its domain), each
+omitted annotation is filled in by the expected type, and the body
+is checked against the expected return type. Let $A_i$ denote the
+effective parameter type — the provided annotation when present, or
+$A'_i$ when omitted:
 
 #figure(
     prooftree(
         rule(
             name: [T-Fn-Check],
-            $Gamma ts #kw("fn") (x_1, dots, x_n) . e check (overline(A)) arrow B$,
+            $Gamma ts #kw("fn") (x_1 colon A_1^?, dots, x_n colon A_n^?) . e check (overline(A')) arrow B$,
+            $forall i . #h(0.2em) A'_i subtype A_i$,
             $Gamma, overline(x colon A) ts e check B$,
         )
     ),
-    caption: [Checking mode supplies missing parameter types.],
+    caption: [Checking mode propagates expected parameter and return types.],
 )
 
 A generic function introduces fresh type variables and checks its body
