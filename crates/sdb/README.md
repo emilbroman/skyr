@@ -27,7 +27,7 @@ Lazy `(entity_qid)`-keyed rollup: the most recent report timestamp, whether it s
 
 ### Incident records
 
-Durable, RE-owned records of sustained failures. Each incident carries an immutable category (one of five fixed severities), `opened_at`, optional `closed_at`, a running `report_count`, the latest error blurb, and an optional triggering report summary.
+Durable, RE-owned records of sustained failures. Each incident carries an immutable category (one of five fixed severities), `opened_at`, optional `closed_at`, a running `report_count`, and a cached `summary` projection of the failure messages observed across the incident's lifetime. The raw report stream lives in the separate `sdb.incident_reports` table; the `summary` column is a denormalized cache of `DISTINCT(error_message)`s in first-seen order, joined by `\n\n`, with each segment truncated to [`REPORT_MESSAGE_MAX_CHARS`] chars. Closure does **not** clear the summary — a closed incident retains the union of failures seen between its open and close.
 
 The five categories ship as the [`Category`] enum and round-trip through SCREAMING_SNAKE_CASE strings in the schema:
 
@@ -66,9 +66,10 @@ Tables:
 - `sdb.incidents_by_id` — single-incident lookup by `id` (UUID).
 - `sdb.incidents_by_entity` — per-entity timeline, clustering by `(opened_at DESC, id ASC)`.
 - `sdb.incidents_by_org` / `sdb.incidents_by_repo` / `sdb.incidents_by_env` — same shape as by-entity but partitioned on the denormalized scope key.
+- `sdb.incident_reports` — append-only per-incident report stream, keyed `((incident_id), report_at DESC)`. Source of truth for the cached `summary` column on the incident tables.
 - `sdb.open_incidents` — registry enforcing the at-most-one-open rule via LWT.
 
-Each incident is materialized into five tables on open and updated coherently on append/close. Listing methods combine clustering-order Scylla scans with client-side filtering for `category`, `open_only`, `since`, `until`, and `offset` / `limit`.
+Each incident is materialized into five denormalized incident tables on open and updated coherently on append/close. Each failure report is written verbatim to `incident_reports`; on append the `summary` column is recomputed from the canonical report stream and fanned out to every denormalized row, so listings remain a single read. Listing methods combine clustering-order Scylla scans with client-side filtering for `category`, `open_only`, `since`, `until`, and `offset` / `limit`.
 
 ## Testing
 

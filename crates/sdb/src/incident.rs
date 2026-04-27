@@ -73,10 +73,26 @@ pub struct Incident {
     pub last_report_at: DateTime<Utc>,
     /// Number of failure reports observed during this incident's lifetime.
     pub report_count: u64,
-    /// Most recent error blurb (for UI/debug). May be empty.
-    pub last_error_message: String,
-    /// Optional snippet from the report that originally opened this incident.
-    pub triggering_report_summary: Option<String>,
+    /// Cached projection of the distinct error messages observed across all
+    /// reports attributed to this incident, in first-seen order, joined by
+    /// `\n\n`. Each segment is truncated to [`crate::REPORT_MESSAGE_MAX_CHARS`]
+    /// chars before deduping. The source of truth lives in
+    /// `sdb.incident_reports`; this column is a denormalized cache so listings
+    /// remain a single read.
+    pub summary: String,
+}
+
+/// A single failure report attached to an incident. Stored append-only in
+/// `sdb.incident_reports`, keyed on `(incident_id, report_at)` so RQ
+/// redeliveries with the same wall-clock timestamp collapse idempotently.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IncidentReport {
+    /// Wall-clock timestamp at which the producer finished the operation.
+    pub report_at: DateTime<Utc>,
+    /// The error blurb the producer supplied with this report. Stored verbatim;
+    /// the per-message truncation only applies when projecting into the
+    /// incident's `summary`.
+    pub error_message: String,
 }
 
 impl Incident {

@@ -23,6 +23,9 @@
 //! - `sdb.incidents_by_org` / `sdb.incidents_by_repo` /
 //!   `sdb.incidents_by_env` — denormalized scope tables for org / repo /
 //!   environment-scoped listings.
+//! - `sdb.incident_reports` — append-only per-incident report stream;
+//!   source of truth from which the cached `summary` column on the
+//!   incident tables is derived.
 //! - `sdb.open_incidents` — registry enforcing the at-most-one-open-per
 //!   `(entity, category)` rule via Scylla LWT.
 //!
@@ -47,10 +50,11 @@ mod summary;
 pub use category::{Category, InvalidCategory};
 pub use client::{
     Client, ClientBuilder, CloseIncidentOutcome, EntityRef, IncidentFilter, OpenIncidentOutcome,
-    Pagination, ScopeKeys, scope_keys_for_deployment, scope_keys_for_resource,
+    Pagination, REPORT_MESSAGE_MAX_CHARS, ScopeKeys, scope_keys_for_deployment,
+    scope_keys_for_resource,
 };
 pub use error::{ConnectError, SdbError};
-pub use incident::{Incident, IncidentId};
+pub use incident::{Incident, IncidentId, IncidentReport};
 pub use summary::StatusSummary;
 
 #[cfg(test)]

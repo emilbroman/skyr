@@ -72,8 +72,7 @@ fn incident_is_open_reflects_closed_at() {
         closed_at: None,
         last_report_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         report_count: 1,
-        last_error_message: "boom".into(),
-        triggering_report_summary: None,
+        summary: "boom".into(),
     };
     assert!(inc.is_open());
     inc.closed_at = Some(Utc.with_ymd_and_hms(2024, 1, 1, 1, 0, 0).unwrap());

@@ -95,16 +95,7 @@ async fn open_incident_lwt_at_most_one_per_pair() {
 
     // First open succeeds.
     let outcome = client
-        .open_incident(
-            &entity_qid,
-            Category::Crash,
-            now,
-            "boom",
-            Some("trigger".into()),
-            &org,
-            &repo,
-            &env,
-        )
+        .open_incident(&entity_qid, Category::Crash, now, "boom", &org, &repo, &env)
         .await
         .unwrap();
     let opened_id = match outcome {
@@ -113,7 +104,7 @@ async fn open_incident_lwt_at_most_one_per_pair() {
             assert_eq!(inc.entity_qid, entity_qid);
             assert!(inc.is_open());
             assert_eq!(inc.report_count, 1);
-            assert_eq!(inc.last_error_message, "boom");
+            assert_eq!(inc.summary, "boom");
             inc.id
         }
         OpenIncidentOutcome::AlreadyOpen { .. } => panic!("expected Opened"),
@@ -126,7 +117,6 @@ async fn open_incident_lwt_at_most_one_per_pair() {
             Category::Crash,
             now + Duration::seconds(10),
             "boom-again",
-            None,
             &org,
             &repo,
             &env,
@@ -147,7 +137,6 @@ async fn open_incident_lwt_at_most_one_per_pair() {
             Category::SystemError,
             now + Duration::seconds(20),
             "infra",
-            None,
             &org,
             &repo,
             &env,
@@ -183,7 +172,6 @@ async fn append_and_close_lifecycle() {
             Category::CannotProgress,
             opened_at,
             "first",
-            None,
             &org,
             &repo,
             &env,
@@ -195,7 +183,8 @@ async fn append_and_close_lifecycle() {
         _ => panic!("expected Opened"),
     };
 
-    // Append a couple of failures.
+    // Append a couple of failures with distinct messages so the summary
+    // captures both.
     let later = opened_at + Duration::seconds(30);
     let updated = client
         .append_failure_to_open_incident(
@@ -214,8 +203,15 @@ async fn append_and_close_lifecycle() {
         .unwrap()
         .expect("incident exists");
     assert_eq!(updated.report_count, 5);
-    assert_eq!(updated.last_error_message, "fifth");
+    assert_eq!(updated.summary, "first\n\nfifth");
     assert_eq!(updated.last_report_at, later);
+
+    // Reports table is the source of truth.
+    let mut reports = client.list_reports_for_incident(id).await.unwrap();
+    reports.sort_by_key(|r| r.report_at);
+    assert_eq!(reports.len(), 2);
+    assert_eq!(reports[0].error_message, "first");
+    assert_eq!(reports[1].error_message, "fifth");
 
     // Close.
     let closed_at = later + Duration::seconds(30);
@@ -226,7 +222,6 @@ async fn append_and_close_lifecycle() {
             closed_at,
             later,
             5,
-            "fifth",
             &org,
             &repo,
             &env,
@@ -238,6 +233,8 @@ async fn append_and_close_lifecycle() {
             assert_eq!(inc.id, id);
             assert_eq!(inc.closed_at, Some(closed_at));
             assert!(!inc.is_open());
+            // Closure does not blank the summary.
+            assert_eq!(inc.summary, "first\n\nfifth");
         }
         CloseIncidentOutcome::NotOpen => panic!("expected Closed"),
     }
@@ -250,7 +247,6 @@ async fn append_and_close_lifecycle() {
             closed_at + Duration::seconds(1),
             later,
             5,
-            "fifth",
             &org,
             &repo,
             &env,
@@ -266,7 +262,6 @@ async fn append_and_close_lifecycle() {
             Category::CannotProgress,
             closed_at + Duration::seconds(60),
             "recur",
-            None,
             &org,
             &repo,
             &env,
@@ -303,7 +298,6 @@ async fn listings_filter_and_paginate() {
                 *cat,
                 opened_at,
                 format!("err-{i}"),
-                None,
                 &org,
                 &repo,
                 &env,
@@ -321,7 +315,6 @@ async fn listings_filter_and_paginate() {
             base + Duration::seconds(120),
             base + Duration::seconds(60),
             1,
-            "err-2",
             &org,
             &repo,
             &env,

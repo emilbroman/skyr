@@ -12,9 +12,19 @@ use uuid::Uuid;
 use crate::{
     category::Category,
     error::{ConnectError, SdbError},
-    incident::{Incident, IncidentId},
+    incident::{Incident, IncidentId, IncidentReport},
     summary::StatusSummary,
 };
+
+/// Maximum number of characters of any one error message kept verbatim when
+/// projected into an incident's [`summary`](Incident::summary). Each distinct
+/// message is truncated to this length before being deduped and joined; the
+/// raw message is stored unmodified in `sdb.incident_reports`.
+pub const REPORT_MESSAGE_MAX_CHARS: usize = 512;
+
+/// Joiner placed between distinct messages when computing an incident's
+/// [`summary`](Incident::summary).
+const SUMMARY_JOINER: &str = "\n\n";
 
 // ---------------------------------------------------------------------------
 // Prepared-statement bundles
@@ -43,13 +53,18 @@ macro_rules! prepared_statements {
     }
 }
 
-// Schema version: 1
+// Schema version: 2
 //
 // Migration strategy: this crate uses CREATE ... IF NOT EXISTS for all DDL.
 // When the schema needs to change, add new CREATE statements (for additive
 // changes like new columns or indexes) or implement an explicit migration
 // step that checks the current schema version and applies ALTER statements.
 // Bump the version comment above when the schema changes.
+//
+// v2: replaced `last_error_message` and `triggering_report_summary` on the
+// incident tables with a single `summary` column, derived from the new
+// `incident_reports` table. The migration `migrate_v2` applies the schema
+// delta with idempotent ALTERs.
 
 prepared_statements! {
     TableStatements {
@@ -77,8 +92,7 @@ prepared_statements! {
                 closed_at TIMESTAMP,
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
-                last_error_message TEXT,
-                triggering_report_summary TEXT,
+                summary TEXT,
                 org_scope TEXT,
                 repo_scope TEXT,
                 env_scope TEXT,
@@ -98,8 +112,7 @@ prepared_statements! {
                 closed_at TIMESTAMP,
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
-                last_error_message TEXT,
-                triggering_report_summary TEXT,
+                summary TEXT,
                 PRIMARY KEY ((entity_qid), opened_at, id)
             ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
         "#,
@@ -117,8 +130,7 @@ prepared_statements! {
                 closed_at TIMESTAMP,
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
-                last_error_message TEXT,
-                triggering_report_summary TEXT,
+                summary TEXT,
                 PRIMARY KEY ((org_scope), opened_at, id)
             ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
         "#,
@@ -133,8 +145,7 @@ prepared_statements! {
                 closed_at TIMESTAMP,
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
-                last_error_message TEXT,
-                triggering_report_summary TEXT,
+                summary TEXT,
                 PRIMARY KEY ((repo_scope), opened_at, id)
             ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
         "#,
@@ -149,10 +160,23 @@ prepared_statements! {
                 closed_at TIMESTAMP,
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
-                last_error_message TEXT,
-                triggering_report_summary TEXT,
+                summary TEXT,
                 PRIMARY KEY ((env_scope), opened_at, id)
             ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
+        "#,
+
+        // Append-only stream of failure reports attributed to an incident.
+        // Source of truth for the projected `summary` column on the incident
+        // tables. Clustered DESC so the most recent report is the first row
+        // returned to a paged read; the recompute path reverses in-process
+        // when it needs first-seen order.
+        create_incident_reports_table = r#"
+            CREATE TABLE IF NOT EXISTS sdb.incident_reports (
+                incident_id UUID,
+                report_at TIMESTAMP,
+                error_message TEXT,
+                PRIMARY KEY ((incident_id), report_at)
+            ) WITH CLUSTERING ORDER BY (report_at DESC)
         "#,
 
         // Open-incident registry. One row per `(entity_qid, category)` for as
@@ -223,30 +247,28 @@ prepared_statements! {
         insert_incident_by_id = r#"
             INSERT INTO sdb.incidents_by_id (
                 id, entity_qid, category, opened_at, closed_at,
-                last_report_at, report_count, last_error_message,
-                triggering_report_summary,
+                last_report_at, report_count, summary,
                 org_scope, repo_scope, env_scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         get_incident_by_id = r#"
             SELECT entity_qid, category, opened_at, closed_at,
-                   last_report_at, report_count, last_error_message,
-                   triggering_report_summary, org_scope, repo_scope, env_scope
+                   last_report_at, report_count, summary,
+                   org_scope, repo_scope, env_scope
             FROM sdb.incidents_by_id
             WHERE id = ?
         "#,
 
         update_incident_by_id_close = r#"
             UPDATE sdb.incidents_by_id
-            SET closed_at = ?, last_report_at = ?, report_count = ?,
-                last_error_message = ?
+            SET closed_at = ?, last_report_at = ?, report_count = ?
             WHERE id = ?
         "#,
 
         update_incident_by_id_append = r#"
             UPDATE sdb.incidents_by_id
-            SET last_report_at = ?, report_count = ?, last_error_message = ?
+            SET last_report_at = ?, report_count = ?, summary = ?
             WHERE id = ?
         "#,
 
@@ -255,27 +277,25 @@ prepared_statements! {
         insert_incident_by_entity = r#"
             INSERT INTO sdb.incidents_by_entity (
                 entity_qid, opened_at, id, category, closed_at,
-                last_report_at, report_count, last_error_message,
-                triggering_report_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_report_at, report_count, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         update_incident_by_entity_close = r#"
             UPDATE sdb.incidents_by_entity
-            SET closed_at = ?, last_report_at = ?, report_count = ?,
-                last_error_message = ?
+            SET closed_at = ?, last_report_at = ?, report_count = ?
             WHERE entity_qid = ? AND opened_at = ? AND id = ?
         "#,
 
         update_incident_by_entity_append = r#"
             UPDATE sdb.incidents_by_entity
-            SET last_report_at = ?, report_count = ?, last_error_message = ?
+            SET last_report_at = ?, report_count = ?, summary = ?
             WHERE entity_qid = ? AND opened_at = ? AND id = ?
         "#,
 
         list_incidents_by_entity = r#"
             SELECT id, opened_at, category, closed_at, last_report_at,
-                   report_count, last_error_message, triggering_report_summary
+                   report_count, summary
             FROM sdb.incidents_by_entity
             WHERE entity_qid = ?
         "#,
@@ -285,28 +305,25 @@ prepared_statements! {
         insert_incident_by_org = r#"
             INSERT INTO sdb.incidents_by_org (
                 org_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, last_error_message,
-                triggering_report_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_report_at, report_count, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         update_incident_by_org_close = r#"
             UPDATE sdb.incidents_by_org
-            SET closed_at = ?, last_report_at = ?, report_count = ?,
-                last_error_message = ?
+            SET closed_at = ?, last_report_at = ?, report_count = ?
             WHERE org_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         update_incident_by_org_append = r#"
             UPDATE sdb.incidents_by_org
-            SET last_report_at = ?, report_count = ?, last_error_message = ?
+            SET last_report_at = ?, report_count = ?, summary = ?
             WHERE org_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         list_incidents_by_org = r#"
             SELECT id, opened_at, entity_qid, category, closed_at,
-                   last_report_at, report_count, last_error_message,
-                   triggering_report_summary
+                   last_report_at, report_count, summary
             FROM sdb.incidents_by_org
             WHERE org_scope = ?
         "#,
@@ -314,28 +331,25 @@ prepared_statements! {
         insert_incident_by_repo = r#"
             INSERT INTO sdb.incidents_by_repo (
                 repo_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, last_error_message,
-                triggering_report_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_report_at, report_count, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         update_incident_by_repo_close = r#"
             UPDATE sdb.incidents_by_repo
-            SET closed_at = ?, last_report_at = ?, report_count = ?,
-                last_error_message = ?
+            SET closed_at = ?, last_report_at = ?, report_count = ?
             WHERE repo_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         update_incident_by_repo_append = r#"
             UPDATE sdb.incidents_by_repo
-            SET last_report_at = ?, report_count = ?, last_error_message = ?
+            SET last_report_at = ?, report_count = ?, summary = ?
             WHERE repo_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         list_incidents_by_repo = r#"
             SELECT id, opened_at, entity_qid, category, closed_at,
-                   last_report_at, report_count, last_error_message,
-                   triggering_report_summary
+                   last_report_at, report_count, summary
             FROM sdb.incidents_by_repo
             WHERE repo_scope = ?
         "#,
@@ -343,30 +357,43 @@ prepared_statements! {
         insert_incident_by_env = r#"
             INSERT INTO sdb.incidents_by_env (
                 env_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, last_error_message,
-                triggering_report_summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                last_report_at, report_count, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
         update_incident_by_env_close = r#"
             UPDATE sdb.incidents_by_env
-            SET closed_at = ?, last_report_at = ?, report_count = ?,
-                last_error_message = ?
+            SET closed_at = ?, last_report_at = ?, report_count = ?
             WHERE env_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         update_incident_by_env_append = r#"
             UPDATE sdb.incidents_by_env
-            SET last_report_at = ?, report_count = ?, last_error_message = ?
+            SET last_report_at = ?, report_count = ?, summary = ?
             WHERE env_scope = ? AND opened_at = ? AND id = ?
         "#,
 
         list_incidents_by_env = r#"
             SELECT id, opened_at, entity_qid, category, closed_at,
-                   last_report_at, report_count, last_error_message,
-                   triggering_report_summary
+                   last_report_at, report_count, summary
             FROM sdb.incidents_by_env
             WHERE env_scope = ?
+        "#,
+
+        // -- incident_reports ---------------------------------------------
+
+        // LWW on `(incident_id, report_at)` — RQ redeliveries with the same
+        // wall-clock timestamp idempotently overwrite a row with itself.
+        insert_incident_report = r#"
+            INSERT INTO sdb.incident_reports (
+                incident_id, report_at, error_message
+            ) VALUES (?, ?, ?)
+        "#,
+
+        list_incident_reports = r#"
+            SELECT report_at, error_message
+            FROM sdb.incident_reports
+            WHERE incident_id = ?
         "#,
     }
 }
@@ -410,13 +437,14 @@ impl ClientBuilder {
 
         let table_statements = TableStatements::new(&session).await?;
 
-        let (r0, r1, r2, r3, r4, r5, r6) = futures::join!(
+        let (r0, r1, r2, r3, r4, r5, r6, r7) = futures::join!(
             session.execute_unpaged(&table_statements.create_status_summaries_table, ()),
             session.execute_unpaged(&table_statements.create_incidents_by_id_table, ()),
             session.execute_unpaged(&table_statements.create_incidents_by_entity_table, ()),
             session.execute_unpaged(&table_statements.create_incidents_by_org_table, ()),
             session.execute_unpaged(&table_statements.create_incidents_by_repo_table, ()),
             session.execute_unpaged(&table_statements.create_incidents_by_env_table, ()),
+            session.execute_unpaged(&table_statements.create_incident_reports_table, ()),
             session.execute_unpaged(&table_statements.create_open_incidents_table, ()),
         );
         r0?;
@@ -426,6 +454,9 @@ impl ClientBuilder {
         r4?;
         r5?;
         r6?;
+        r7?;
+
+        migrate_v2(&session).await?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -434,6 +465,31 @@ impl ClientBuilder {
             statements: Arc::new(statements),
         })
     }
+}
+
+/// Apply the v2 schema delta: drop `last_error_message` and
+/// `triggering_report_summary` from each incident table; add `summary` if not
+/// already present. Each ALTER is independently idempotent — `IF EXISTS` /
+/// `IF NOT EXISTS` make the migration safe to re-run on already-migrated
+/// keyspaces and on fresh keyspaces alike.
+async fn migrate_v2(session: &Session) -> Result<(), ConnectError> {
+    const TABLES: &[&str] = &[
+        "incidents_by_id",
+        "incidents_by_entity",
+        "incidents_by_org",
+        "incidents_by_repo",
+        "incidents_by_env",
+    ];
+    for table in TABLES {
+        for stmt in [
+            format!("ALTER TABLE sdb.{table} DROP IF EXISTS last_error_message"),
+            format!("ALTER TABLE sdb.{table} DROP IF EXISTS triggering_report_summary"),
+            format!("ALTER TABLE sdb.{table} ADD IF NOT EXISTS summary TEXT"),
+        ] {
+            session.query_unpaged(stmt, ()).await?;
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -573,22 +629,25 @@ impl Client {
     /// per pair.
     ///
     /// On success, writes the full incident record across the `incidents_by_*`
-    /// tables. The provided `org_scope` / `repo_scope` / `env_scope` values
-    /// are denormalized scope keys derived from `entity_qid` by the caller —
-    /// see [`Client::scope_keys_for`] for a helper.
+    /// tables and records the triggering failure as the first row in
+    /// `incident_reports`. The cached `summary` column is the (truncated)
+    /// `error_message` since this is the only report seen so far.
+    ///
+    /// The provided `org_scope` / `repo_scope` / `env_scope` values are
+    /// denormalized scope keys derived from `entity_qid` by the caller — see
+    /// [`Client::scope_keys_for`] for a helper.
     #[allow(clippy::too_many_arguments)]
     pub async fn open_incident(
         &self,
         entity_qid: &str,
         category: Category,
         opened_at: DateTime<Utc>,
-        last_error_message: impl Into<String>,
-        triggering_report_summary: Option<String>,
+        error_message: impl Into<String>,
         org_scope: &str,
         repo_scope: &str,
         env_scope: &str,
     ) -> Result<OpenIncidentOutcome, SdbError> {
-        let last_error_message = last_error_message.into();
+        let error_message = error_message.into();
         let new_id = IncidentId::new();
 
         // 1. Try to claim the (entity, category) slot via LWT.
@@ -617,9 +676,19 @@ impl Client {
             return Ok(OpenIncidentOutcome::AlreadyOpen { existing_id });
         }
 
-        // 2. Persist the incident record across denormalized tables.
+        // 2. Record the triggering report.
+        self.session
+            .execute_unpaged(
+                &self.statements.insert_incident_report,
+                (new_id.as_uuid(), opened_at, error_message.as_str()),
+            )
+            .await?;
+
+        // 3. Persist the incident record across denormalized tables. The
+        //    summary cache is just the (truncated) triggering message at this
+        //    point — there is exactly one report.
         let report_count: i64 = 1;
-        let triggering = triggering_report_summary.as_deref();
+        let summary = truncate_for_summary(&error_message);
 
         let by_id_fut = self.session.execute_unpaged(
             &self.statements.insert_incident_by_id,
@@ -631,8 +700,7 @@ impl Client {
                 None::<DateTime<Utc>>,
                 opened_at,
                 report_count,
-                last_error_message.as_str(),
-                triggering,
+                summary.as_str(),
                 org_scope,
                 repo_scope,
                 env_scope,
@@ -649,8 +717,7 @@ impl Client {
                 None::<DateTime<Utc>>,
                 opened_at,
                 report_count,
-                last_error_message.as_str(),
-                triggering,
+                summary.as_str(),
             ),
         );
 
@@ -665,8 +732,7 @@ impl Client {
                 None::<DateTime<Utc>>,
                 opened_at,
                 report_count,
-                last_error_message.as_str(),
-                triggering,
+                summary.as_str(),
             ),
         );
 
@@ -681,8 +747,7 @@ impl Client {
                 None::<DateTime<Utc>>,
                 opened_at,
                 report_count,
-                last_error_message.as_str(),
-                triggering,
+                summary.as_str(),
             ),
         );
 
@@ -697,8 +762,7 @@ impl Client {
                 None::<DateTime<Utc>>,
                 opened_at,
                 report_count,
-                last_error_message.as_str(),
-                triggering,
+                summary.as_str(),
             ),
         );
 
@@ -723,13 +787,13 @@ impl Client {
             closed_at: None,
             last_report_at: opened_at,
             report_count: 1,
-            last_error_message,
-            triggering_report_summary,
+            summary,
         }))
     }
 
-    /// Append a failure report to an already-open incident, bumping
-    /// `report_count`, `last_report_at`, and `last_error_message`.
+    /// Append a failure report to an already-open incident. Records the
+    /// report verbatim in `incident_reports`, then recomputes and rewrites the
+    /// cached `summary` column on every denormalized incident table.
     ///
     /// `opened_at` is required because the per-entity / per-scope tables key
     /// on it; callers typically obtain it from the previously-loaded incident
@@ -744,20 +808,39 @@ impl Client {
         opened_at: DateTime<Utc>,
         last_report_at: DateTime<Utc>,
         new_report_count: u64,
-        last_error_message: impl Into<String>,
+        error_message: impl Into<String>,
         org_scope: &str,
         repo_scope: &str,
         env_scope: &str,
     ) -> Result<Option<Incident>, SdbError> {
-        let last_error_message = last_error_message.into();
+        let error_message = error_message.into();
         let report_count_i64 = i64::try_from(new_report_count).unwrap_or(i64::MAX);
 
+        // 1. Record the failure verbatim in `incident_reports`. LWW on
+        //    `(incident_id, report_at)` makes RQ redeliveries idempotent.
+        self.session
+            .execute_unpaged(
+                &self.statements.insert_incident_report,
+                (
+                    incident_id.as_uuid(),
+                    last_report_at,
+                    error_message.as_str(),
+                ),
+            )
+            .await?;
+
+        // 2. Recompute the cached summary from the canonical report stream.
+        let reports = self.list_reports_for_incident(incident_id).await?;
+        let summary = compute_summary(&reports);
+
+        // 3. Fan-out the updated counters and summary to the denormalized
+        //    incident tables.
         let by_id_fut = self.session.execute_unpaged(
             &self.statements.update_incident_by_id_append,
             (
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
+                summary.as_str(),
                 incident_id.as_uuid(),
             ),
         );
@@ -767,7 +850,7 @@ impl Client {
             (
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
+                summary.as_str(),
                 entity_qid,
                 opened_at,
                 incident_id.as_uuid(),
@@ -779,7 +862,7 @@ impl Client {
             (
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
+                summary.as_str(),
                 org_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -791,7 +874,7 @@ impl Client {
             (
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
+                summary.as_str(),
                 repo_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -803,7 +886,7 @@ impl Client {
             (
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
+                summary.as_str(),
                 env_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -830,7 +913,7 @@ impl Client {
             // writes, callers should still see the values they just wrote.
             inc.last_report_at = last_report_at;
             inc.report_count = new_report_count;
-            inc.last_error_message = last_error_message;
+            inc.summary = summary;
             // category and opened_at must match the caller-provided values
             // since LWT ensures these are stable; assert by overwriting in
             // case of corrupt rows.
@@ -844,8 +927,11 @@ impl Client {
     /// Close an open incident. Idempotent: a second call with the same
     /// `(entity, category)` will return [`CloseIncidentOutcome::NotOpen`].
     ///
-    /// Releases the LWT slot in `open_incidents` and stamps `closed_at` /
-    /// updates the trailing fields across all incident tables.
+    /// Releases the LWT slot in `open_incidents` and stamps `closed_at` plus
+    /// the final `last_report_at` / `report_count` across all incident
+    /// tables. The cached `summary` is left untouched — closure does not add
+    /// a new report row, so its content is the union of failures seen during
+    /// the open window.
     #[allow(clippy::too_many_arguments)]
     pub async fn close_incident(
         &self,
@@ -854,12 +940,10 @@ impl Client {
         closed_at: DateTime<Utc>,
         last_report_at: DateTime<Utc>,
         final_report_count: u64,
-        last_error_message: impl Into<String>,
         org_scope: &str,
         repo_scope: &str,
         env_scope: &str,
     ) -> Result<CloseIncidentOutcome, SdbError> {
-        let last_error_message = last_error_message.into();
         let report_count_i64 = i64::try_from(final_report_count).unwrap_or(i64::MAX);
 
         // 1. Look up the open slot to learn the incident id and opened_at
@@ -913,7 +997,6 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
                 incident_id.as_uuid(),
             ),
         );
@@ -924,7 +1007,6 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
                 entity_qid,
                 opened_at,
                 incident_id.as_uuid(),
@@ -937,7 +1019,6 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
                 org_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -950,7 +1031,6 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
                 repo_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -963,7 +1043,6 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count_i64,
-                last_error_message.as_str(),
                 env_scope,
                 opened_at,
                 incident_id.as_uuid(),
@@ -1052,8 +1131,7 @@ impl Client {
             Option<DateTime<Utc>>, // closed_at
             DateTime<Utc>,         // last_report_at
             i64,                   // report_count
-            String,                // last_error_message
-            Option<String>,        // triggering_report_summary
+            Option<String>,        // summary
             String,                // org_scope
             String,                // repo_scope
             String,                // env_scope
@@ -1070,8 +1148,7 @@ impl Client {
             closed_at,
             last_report_at,
             report_count,
-            last_error_message,
-            triggering_report_summary,
+            summary,
             _org_scope,
             _repo_scope,
             _env_scope,
@@ -1085,9 +1162,35 @@ impl Client {
             closed_at,
             last_report_at,
             report_count: report_count.max(0) as u64,
-            last_error_message,
-            triggering_report_summary,
+            summary: summary.unwrap_or_default(),
         }))
+    }
+
+    /// List every report attributed to `incident_id`, newest-first per the
+    /// table's clustering order. Used internally to recompute the cached
+    /// summary; exposed publicly so the API/UI can render a per-incident
+    /// timeline if it wishes.
+    pub async fn list_reports_for_incident(
+        &self,
+        incident_id: IncidentId,
+    ) -> Result<Vec<IncidentReport>, SdbError> {
+        let pager = self
+            .session
+            .execute_iter(
+                self.statements.list_incident_reports.clone(),
+                (incident_id.as_uuid(),),
+            )
+            .await?;
+        let mut out = Vec::new();
+        let mut stream = pager.rows_stream::<(DateTime<Utc>, String)>()?;
+        while let Some(row) = stream.next().await {
+            let (report_at, error_message) = row?;
+            out.push(IncidentReport {
+                report_at,
+                error_message,
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -1144,21 +1247,11 @@ impl Client {
             Option<DateTime<Utc>>, // closed_at
             DateTime<Utc>,         // last_report_at
             i64,                   // report_count
-            String,                // last_error_message
-            Option<String>,        // triggering_report_summary
+            Option<String>,        // summary
         );
 
         let stream = pager.rows_stream::<Row>()?.map(move |row| {
-            let (
-                id,
-                opened_at,
-                category,
-                closed_at,
-                last_report_at,
-                report_count,
-                last_error_message,
-                triggering_report_summary,
-            ) = row?;
+            let (id, opened_at, category, closed_at, last_report_at, report_count, summary) = row?;
             Ok::<_, SdbError>(Incident {
                 id: IncidentId::from_uuid(id),
                 entity_qid: entity_qid.clone(),
@@ -1167,8 +1260,7 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count: report_count.max(0) as u64,
-                last_error_message,
-                triggering_report_summary,
+                summary: summary.unwrap_or_default(),
             })
         });
 
@@ -1240,8 +1332,7 @@ impl Client {
             Option<DateTime<Utc>>, // closed_at
             DateTime<Utc>,         // last_report_at
             i64,                   // report_count
-            String,                // last_error_message
-            Option<String>,        // triggering_report_summary
+            Option<String>,        // summary
         );
 
         let stream = pager.rows_stream::<Row>()?.map(|row| {
@@ -1253,8 +1344,7 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count,
-                last_error_message,
-                triggering_report_summary,
+                summary,
             ) = row?;
             Ok::<_, SdbError>(Incident {
                 id: IncidentId::from_uuid(id),
@@ -1264,8 +1354,7 @@ impl Client {
                 closed_at,
                 last_report_at,
                 report_count: report_count.max(0) as u64,
-                last_error_message,
-                triggering_report_summary,
+                summary: summary.unwrap_or_default(),
             })
         });
 
@@ -1369,4 +1458,127 @@ pub fn scope_keys_for_deployment(qid: &ids::DeploymentQid) -> ScopeKeys {
 /// Convenience: compute scope keys for a resource QID.
 pub fn scope_keys_for_resource(qid: &ids::ResourceQid) -> ScopeKeys {
     Client::scope_keys_for(EntityRef::Resource(qid))
+}
+
+// ---------------------------------------------------------------------------
+// Summary projection
+// ---------------------------------------------------------------------------
+
+/// Project a slice of [`IncidentReport`]s into the canonical summary string.
+///
+/// The reports may be supplied in any order; this function reverses if
+/// necessary to produce *first-seen* order for distinct messages, truncates
+/// each message to [`REPORT_MESSAGE_MAX_CHARS`] chars, drops empties, then
+/// joins with [`SUMMARY_JOINER`].
+fn compute_summary(reports: &[IncidentReport]) -> String {
+    let mut chronological: Vec<&IncidentReport> = reports.iter().collect();
+    chronological.sort_by_key(|r| r.report_at);
+
+    let mut seen: Vec<String> = Vec::new();
+    for report in chronological {
+        let truncated = truncate_for_summary(&report.error_message);
+        if truncated.is_empty() {
+            continue;
+        }
+        if !seen.iter().any(|s| s == &truncated) {
+            seen.push(truncated);
+        }
+    }
+
+    seen.join(SUMMARY_JOINER)
+}
+
+/// Truncate a single error message to [`REPORT_MESSAGE_MAX_CHARS`] chars,
+/// appending an ellipsis if it had to be shortened. Operates on Unicode
+/// scalar values so multi-byte input is not split mid-codepoint.
+fn truncate_for_summary(message: &str) -> String {
+    if message.chars().count() <= REPORT_MESSAGE_MAX_CHARS {
+        return message.to_string();
+    }
+    let mut out = String::with_capacity(REPORT_MESSAGE_MAX_CHARS + 3);
+    for (i, ch) in message.chars().enumerate() {
+        if i >= REPORT_MESSAGE_MAX_CHARS {
+            break;
+        }
+        out.push(ch);
+    }
+    out.push_str("...");
+    out
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    fn report(secs: i64, msg: &str) -> IncidentReport {
+        let report_at = chrono::DateTime::<Utc>::from_timestamp(secs, 0).unwrap();
+        IncidentReport {
+            report_at,
+            error_message: msg.to_string(),
+        }
+    }
+
+    #[test]
+    fn distinct_messages_in_first_seen_order() {
+        let reports = [
+            report(10, "first"),
+            report(20, "second"),
+            report(30, "first"),
+            report(40, "third"),
+        ];
+        assert_eq!(compute_summary(&reports), "first\n\nsecond\n\nthird");
+    }
+
+    #[test]
+    fn order_is_independent_of_input_order() {
+        let mut reports = [
+            report(40, "third"),
+            report(30, "first"),
+            report(20, "second"),
+            report(10, "first"),
+        ];
+        assert_eq!(compute_summary(&reports), "first\n\nsecond\n\nthird");
+        reports.reverse();
+        assert_eq!(compute_summary(&reports), "first\n\nsecond\n\nthird");
+    }
+
+    #[test]
+    fn empty_messages_are_dropped() {
+        let reports = [report(10, ""), report(20, "real"), report(30, "")];
+        assert_eq!(compute_summary(&reports), "real");
+    }
+
+    #[test]
+    fn long_messages_are_truncated_per_segment() {
+        let big = "x".repeat(REPORT_MESSAGE_MAX_CHARS + 10);
+        let reports = [report(10, &big), report(20, "small")];
+        let summary = compute_summary(&reports);
+        let segments: Vec<&str> = summary.split(SUMMARY_JOINER).collect();
+        assert_eq!(segments.len(), 2);
+        assert!(segments[0].ends_with("..."));
+        assert_eq!(
+            segments[0].chars().count(),
+            REPORT_MESSAGE_MAX_CHARS + 3,
+            "truncated message keeps the cap plus the ellipsis",
+        );
+        assert_eq!(segments[1], "small");
+    }
+
+    #[test]
+    fn empty_input_yields_empty_summary() {
+        assert_eq!(compute_summary(&[]), "");
+    }
+
+    #[test]
+    fn truncate_short_message_is_unchanged() {
+        assert_eq!(truncate_for_summary("short"), "short");
+    }
+
+    #[test]
+    fn truncate_long_message_appends_ellipsis() {
+        let s = "y".repeat(REPORT_MESSAGE_MAX_CHARS + 50);
+        let out = truncate_for_summary(&s);
+        assert!(out.ends_with("..."));
+        assert_eq!(out.chars().count(), REPORT_MESSAGE_MAX_CHARS + 3);
+    }
 }
