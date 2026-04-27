@@ -12,6 +12,7 @@ query EnvironmentIncidents($org: String!, $repo: String!, $env: String!) {
           reportCount
           summary
           entity {
+            __typename
             qid
             ... on Resource {
               type
@@ -19,10 +20,7 @@ query EnvironmentIncidents($org: String!, $repo: String!, $env: String!) {
             }
             ... on Deployment {
               id
-              ref
-              commit {
-                hash
-              }
+              shortId
             }
           }
         }
@@ -50,6 +48,7 @@ query EnvironmentIncidentDetail(
           reportCount
           summary
           entity {
+            __typename
             qid
             ... on Resource {
               type
@@ -57,11 +56,7 @@ query EnvironmentIncidentDetail(
             }
             ... on Deployment {
               id
-              ref
-              commit {
-                hash
-                message
-              }
+              shortId
             }
           }
         }

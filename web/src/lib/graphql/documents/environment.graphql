@@ -10,8 +10,7 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
         }
         deployments {
           id
-          nonce
-          ref
+          shortId
           commit {
             hash
             message
@@ -98,8 +97,7 @@ query ResourceDetail(
           markers
           owner {
             id
-            nonce
-            ref
+            shortId
             commit {
               hash
               message
@@ -150,7 +148,6 @@ mutation CreateDeployment(
     commitHash: $commitHash
   ) {
     id
-    nonce
     state
   }
 }
@@ -184,8 +181,8 @@ query DeploymentDetail(
       environment(name: $env) {
         deployment(id: $id) {
           id
+          shortId
           qid
-          ref
           commit {
             hash
             message

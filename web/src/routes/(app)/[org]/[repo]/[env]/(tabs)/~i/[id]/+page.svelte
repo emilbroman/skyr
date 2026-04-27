@@ -1,9 +1,13 @@
 <script lang="ts">
+import { Check, Copy } from "lucide-svelte";
+import { onDestroy } from "svelte";
 import { page } from "$app/stores";
+import IncidentEntityLink from "$lib/components/IncidentEntityLink.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import { EnvironmentIncidentDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { decodeSegment, deploymentHref, envIncidentsHref, resourceHref } from "$lib/paths";
+import { decodeSegment } from "$lib/paths";
+import { formatDuration } from "$lib/timestamps";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -17,19 +21,31 @@ const detail = graphqlQuery(() => ({
 }));
 
 let incident = $derived(detail.data?.organization.repository.environment.incident ?? null);
+
+let now = $state(Date.now());
+const tick = setInterval(() => {
+    now = Date.now();
+}, 1000);
+onDestroy(() => clearInterval(tick));
+
+let copied = $state(false);
+function copyId() {
+    navigator.clipboard.writeText(incidentId);
+    copied = true;
+    setTimeout(() => (copied = false), 2000);
+}
+
+let elapsedMs = $derived.by(() => {
+    if (!incident) return 0;
+    const start = new Date(incident.openedAt).getTime();
+    const end = incident.closedAt ? new Date(incident.closedAt).getTime() : now;
+    return Math.max(0, end - start);
+});
 </script>
 
 <svelte:head>
     <title>Incident · {envName} · {repoName} – Skyr</title>
 </svelte:head>
-
-<div class="text-xs text-gray-500 mb-3">
-    <a href={envIncidentsHref(orgName, repoName, envName)} class="hover:text-gray-700">
-        Incidents
-    </a>
-    <span class="mx-1 text-gray-400">/</span>
-    <span class="font-mono">{incidentId.slice(0, 8)}</span>
-</div>
 
 {#if detail.isPending}
     <Spinner />
@@ -41,73 +57,69 @@ let incident = $derived(detail.data?.organization.repository.environment.inciden
     <p class="text-gray-500">Incident not found.</p>
 {:else}
     <div class="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-        <div class="flex items-center gap-3">
-            <span class="text-sm text-gray-500">
-                {incident.closedAt ? "Closed" : "Open"}
-            </span>
+        <div class="flex items-baseline justify-between gap-3">
+            <div
+                class="flex items-center gap-2 text-sm font-bold {incident.closedAt
+                    ? ''
+                    : 'text-red-600'}"
+            >
+                <span
+                    class="inline-block w-2.5 h-2.5 rounded-full {incident.closedAt
+                        ? 'bg-gray-400'
+                        : 'bg-red-500 animate-pulse'}"
+                    aria-label={incident.closedAt ? "Closed" : "Open"}
+                ></span>
+                {incident.closedAt
+                    ? `Closed after ${formatDuration(elapsedMs)}`
+                    : `Opened ${formatDuration(elapsedMs)} ago`}
+            </div>
+            <button
+                type="button"
+                onclick={copyId}
+                title="Copy ID"
+                class="inline-flex items-center gap-1.5 font-mono text-xs text-gray-500 hover:text-gray-700 break-all cursor-pointer"
+            >
+                {incidentId}
+                {#if copied}
+                    <Check class="w-3.5 h-3.5 text-green-500" />
+                {:else}
+                    <Copy class="w-3.5 h-3.5" />
+                {/if}
+            </button>
         </div>
 
-        <dl class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <dt class="text-gray-500">Opened at</dt>
-            <dd>{new Date(incident.openedAt).toLocaleString()}</dd>
-
-            <dt class="text-gray-500">Closed at</dt>
-            <dd>
-                {incident.closedAt
-                    ? new Date(incident.closedAt).toLocaleString()
-                    : "—"}
-            </dd>
-
-            <dt class="text-gray-500">Last report at</dt>
-            <dd>{new Date(incident.lastReportAt).toLocaleString()}</dd>
-
-            <dt class="text-gray-500">Report count</dt>
-            <dd>{incident.reportCount}</dd>
-        </dl>
-
-        {#if incident.summary}
-            <div>
-                <h3 class="text-sm font-medium text-gray-700 mb-1">Summary</h3>
-                <pre
-                    class="bg-gray-50 border border-gray-200 rounded p-3 text-xs whitespace-pre-wrap break-all">{incident.summary}</pre>
-            </div>
-        {/if}
-
-        {#if incident.entity}
-            {@const entity = incident.entity}
-            <div>
-                <h3 class="text-sm font-medium text-gray-700 mb-1">
-                    {entity.__typename}
-                </h3>
-                {#if entity.__typename === "Deployment"}
-                    <a
-                        class="text-orange-600 hover:text-orange-500 text-sm"
-                        href={deploymentHref(orgName, repoName, envName, entity.id)}
-                    >
-                        {entity.commit.hash.slice(0, 8)} —
-                        {entity.commit.message.split("\n")[0]}
-                    </a>
-                {:else if entity.__typename === "Resource"}
-                    <a
-                        class="text-orange-600 hover:text-orange-500 text-sm"
-                        href={resourceHref(
-                            orgName,
-                            repoName,
-                            envName,
-                            `${entity.type}:${entity.name}`,
-                        )}
-                    >
-                        {entity.type} "{entity.name}"
-                    </a>
-                {/if}
-            </div>
-        {:else}
-            <div>
-                <h3 class="text-sm font-medium text-gray-700 mb-1">Entity</h3>
-                <p class="text-sm text-gray-500">
+        <div class="flex items-baseline justify-between gap-3">
+            {#if incident.entity}
+                <p class="text-xs text-gray-500">
+                    Observed on
+                    <IncidentEntityLink
+                        entity={incident.entity}
+                        org={orgName}
+                        repo={repoName}
+                        env={envName}
+                    />
+                </p>
+            {:else}
+                <p class="text-xs text-gray-500">
                     The entity this incident was attached to has been destroyed.
                 </p>
-            </div>
+            {/if}
+            <p class="text-xs text-gray-500">
+                Reported {incident.reportCount}
+                {incident.reportCount === 1 ? "time" : "times"} between
+                <span class="text-gray-900">
+                    {new Date(incident.openedAt).toLocaleString()}
+                </span>
+                and
+                <span class="text-gray-900">
+                    {new Date(incident.lastReportAt).toLocaleString()}
+                </span>
+            </p>
+        </div>
+
+        {#if incident.summary}
+            <pre
+                class="bg-gray-50 border border-gray-200 rounded p-3 text-xs whitespace-pre-wrap break-all">{incident.summary}</pre>
         {/if}
     </div>
 {/if}

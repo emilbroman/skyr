@@ -148,7 +148,7 @@ async function onDeploy(envName: string) {
             commitHash,
         });
         const deployment = data.createDeployment;
-        goto(deploymentHref(orgName, repoName, envName, `${commitHash}.${deployment.nonce}`));
+        goto(deploymentHref(orgName, repoName, envName, deployment.id));
     } catch (e) {
         deployError = e instanceof Error ? e.message : "Failed to create deployment";
         deployPending = false;

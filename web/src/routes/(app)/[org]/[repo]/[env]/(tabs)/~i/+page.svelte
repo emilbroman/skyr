@@ -1,9 +1,13 @@
 <script lang="ts">
+import { ArrowUpRight } from "lucide-svelte";
+import { onDestroy } from "svelte";
 import { page } from "$app/stores";
+import IncidentEntityLink from "$lib/components/IncidentEntityLink.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import { EnvironmentIncidentsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
-import { decodeSegment, deploymentHref, envIncidentHref, resourceHref } from "$lib/paths";
+import { decodeSegment, envIncidentHref } from "$lib/paths";
+import { formatCompactTimestamp, formatDuration } from "$lib/timestamps";
 
 let orgName = $derived($page.params.org ?? "");
 let repoName = $derived($page.params.repo ?? "");
@@ -17,31 +21,16 @@ const incidents = graphqlQuery(() => ({
 
 let rows = $derived(incidents.data?.organization.repository.environment.incidents ?? []);
 
-function entityCell(incident: (typeof rows)[number]): {
-    kind: string;
-    name: string;
-    href: string | null;
-} {
-    const entity = incident.entity;
-    if (!entity) {
-        return { kind: "", name: "(destroyed)", href: null };
-    }
-    if (entity.__typename === "Deployment") {
-        return {
-            kind: "Deployment",
-            name: entity.commit.hash.slice(0, 8),
-            href: deploymentHref(orgName, repoName, envName, entity.id),
-        };
-    }
-    if (entity.__typename === "Resource") {
-        const shortType = entity.type.split(".").slice(1).join(".") || entity.type;
-        return {
-            kind: shortType,
-            name: entity.name,
-            href: resourceHref(orgName, repoName, envName, `${entity.type}:${entity.name}`),
-        };
-    }
-    return { kind: "", name: entity.qid, href: null };
+let now = $state(Date.now());
+const tick = setInterval(() => {
+    now = Date.now();
+}, 1000);
+onDestroy(() => clearInterval(tick));
+
+function timeframe(openedAt: string, closedAt: string | null | undefined): string {
+    const start = new Date(openedAt).getTime();
+    const end = closedAt ? new Date(closedAt).getTime() : now;
+    return `${formatCompactTimestamp(openedAt)} (${formatDuration(end - start)})`;
 }
 </script>
 
@@ -61,63 +50,70 @@ function entityCell(incident: (typeof rows)[number]): {
     <div class="bg-white border border-gray-200 rounded-lg overflow-x-auto">
         <table class="w-full text-left text-sm">
             <thead>
-                <tr class="border-b border-gray-200 text-gray-500">
+                <tr class="border-b border-gray-200 text-gray-500 whitespace-nowrap">
                     <th class="py-2 pl-4 pr-4 font-medium"></th>
-                    <th class="py-2 pr-4 font-medium">Opened</th>
-                    <th class="py-2 pr-4 font-medium">Last error</th>
-                    <th class="py-2 pr-4 font-medium">Reports</th>
-                    <th class="py-2 pr-4 font-medium">Entity</th>
+                    <th class="py-2 pr-4 font-medium">ID</th>
+                    <th class="py-2 pr-4 font-medium">Observed on</th>
+                    <th class="py-2 pr-4 font-medium w-full">Summary</th>
+                    <th class="py-2 pr-4 font-medium">Timeframe</th>
                 </tr>
             </thead>
             <tbody>
                 {#each rows as incident}
-                    {@const entity = entityCell(incident)}
+                    {@const entity = incident.entity}
                     {@const isOpen = incident.closedAt == null}
-                    <tr class="border-b border-gray-200 hover:bg-gray-50">
+                    <tr class="border-b border-gray-200 hover:bg-gray-50 align-baseline">
                         <td class="py-2 pl-4 pr-4">
-                            {#if isOpen}
-                                <span
-                                    class="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse"
-                                    aria-label="Open"
-                                ></span>
-                            {/if}
+                            <span
+                                class="inline-block w-2 h-2 rounded-full {isOpen
+                                    ? 'bg-red-500 animate-pulse'
+                                    : 'bg-gray-400'}"
+                                aria-label={isOpen ? "Open" : "Closed"}
+                            ></span>
                         </td>
-                        <td class="py-2 pr-4 text-gray-500">
-                            {new Date(incident.openedAt).toLocaleString()}
-                        </td>
-                        <td class="py-2 pr-4 max-w-[40ch]">
+                        <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">
                             <a
                                 href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                                class="text-orange-600 hover:text-orange-500 break-words line-clamp-3"
+                                class="text-gray-900 hover:text-gray-600"
+                                title={incident.id}
+                            >
+                                {incident.id.slice(-8)}
+                                <ArrowUpRight
+                                    class="w-3.5 h-3.5 inline-block align-text-bottom -ml-0.5"
+                                />
+                            </a>
+                        </td>
+                        <td class="py-2 pr-4 max-w-[40ch]">
+                            {#if entity}
+                                <IncidentEntityLink
+                                    {entity}
+                                    org={orgName}
+                                    repo={repoName}
+                                    env={envName}
+                                    class="block truncate"
+                                />
+                            {:else}
+                                <span class="text-gray-500 font-mono text-xs">(destroyed)</span>
+                            {/if}
+                        </td>
+                        <td class="py-2 pr-4 w-full">
+                            <a
+                                href={envIncidentHref(orgName, repoName, envName, incident.id)}
+                                class="text-gray-900 hover:text-gray-600 break-words line-clamp-3 whitespace-pre-line"
                                 title={incident.summary ?? ""}
                             >
                                 {incident.summary ?? ""}
                             </a>
                         </td>
-                        <td class="py-2 pr-4 text-gray-500">{incident.reportCount}</td>
-                        <td class="py-2 pr-4 max-w-[40ch] font-mono text-xs">
-                            {#if entity.href}
-                                <a
-                                    href={entity.href}
-                                    class="text-orange-600 hover:text-orange-500 block"
-                                    title={`${entity.kind} ${entity.name}`}
-                                >
-                                    {#if entity.kind}
-                                        <span class="block truncate">{entity.kind}</span>
-                                    {/if}
-                                    <span class="block truncate">{entity.name}</span>
-                                </a>
-                            {:else}
-                                <span
-                                    class="text-gray-500 block"
-                                    title={`${entity.kind} ${entity.name}`}
-                                >
-                                    {#if entity.kind}
-                                        <span class="block truncate">{entity.kind}</span>
-                                    {/if}
-                                    <span class="block truncate">{entity.name}</span>
-                                </span>
-                            {/if}
+                        <td
+                            class="py-2 pr-4 whitespace-nowrap tabular-nums {isOpen
+                                ? 'text-red-600 font-bold'
+                                : 'text-gray-500'}"
+                            title={`${new Date(
+                                incident.openedAt,
+                            ).toLocaleString()}${incident.closedAt ? ` → ${new Date(incident.closedAt).toLocaleString()}` : ""}`}
+                        >
+                            {timeframe(incident.openedAt, incident.closedAt)}
                         </td>
                     </tr>
                 {/each}

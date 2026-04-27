@@ -291,15 +291,10 @@ let aRecordFqdn = $derived.by(() => {
           <dt class="text-gray-400">Owner</dt>
           <dd>
             <a
-              href={deploymentHref(
-                orgName,
-                repoName,
-                envName,
-                `${resource.owner.commit.hash}.${resource.owner.nonce}`,
-              )}
+              href={deploymentHref(orgName, repoName, envName, resource.owner.id)}
               class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
             >
-              {resource.owner.commit.hash.substring(0, 8)}
+              {resource.owner.shortId}
             </a>
             <span class="text-gray-500 ml-2"
               >{resource.owner.commit.message.split("\n")[0]}</span

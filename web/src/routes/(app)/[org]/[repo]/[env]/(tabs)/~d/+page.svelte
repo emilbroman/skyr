@@ -174,11 +174,11 @@ function onWindowClick(event: MouseEvent) {
         {#each sortedDeployments as deployment}
           <tr class="border-b border-gray-200 hover:bg-gray-50">
             <td class="py-3 pl-4 pr-4 font-mono text-xs text-gray-500">
-              {deployment.commit.hash.substring(0, 8)}
+              {deployment.shortId}
             </td>
             <td class="py-3 pr-4 truncate max-w-md">
               <a
-                href={deploymentHref(orgName, repoName, envName, `${deployment.commit.hash}.${deployment.nonce}`)}
+                href={deploymentHref(orgName, repoName, envName, deployment.id)}
                 class="text-orange-600 hover:text-orange-500"
               >
                 {deployment.commit.message.split("\n")[0]}
@@ -220,12 +220,12 @@ function onWindowClick(event: MouseEvent) {
       {#each sortedDeployments as deployment}
         <div class="relative bg-white border border-gray-200 rounded-lg p-4">
           <div class="flex items-center justify-between text-xs text-gray-500">
-            <span class="font-mono">{deployment.commit.hash.substring(0, 8)}</span>
+            <span class="font-mono">{deployment.shortId}</span>
             <span>{new Date(deployment.createdAt).toLocaleString()}</span>
           </div>
           <div class="mt-2 truncate">
             <a
-              href={deploymentHref(orgName, repoName, envName, `${deployment.commit.hash}.${deployment.nonce}`)}
+              href={deploymentHref(orgName, repoName, envName, deployment.id)}
               class="text-orange-600 hover:text-orange-500"
             >
               {deployment.commit.message.split("\n")[0]}

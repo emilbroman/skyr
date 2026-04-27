@@ -74,7 +74,7 @@ function onRedeploy() {
 </script>
 
 <svelte:head>
-    <title>{deployment?.commit.hash.substring(0, 8) ?? deploymentId} · {orgName}/{repoName} ({envName}) – Skyr</title>
+    <title>{deployment?.shortId ?? deploymentId} · {orgName}/{repoName} ({envName}) – Skyr</title>
 </svelte:head>
 
 <div>
@@ -90,13 +90,12 @@ function onRedeploy() {
       <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
         <div>
           <dt class="text-gray-400">Ref</dt>
-          <dd class="text-gray-700">{deployment.ref}</dd>
+          <dd class="text-gray-700">{envName}</dd>
         </div>
         <div>
           <dt class="text-gray-400">Commit</dt>
           <dd class="text-gray-700 font-mono text-xs" title={deployment.commit.message}>
-            {deployment.commit.hash.substring(0, 8)} &mdash; {deployment.commit
-              .message}
+            {deployment.shortId} &mdash; {deployment.commit.message}
           </dd>
         </div>
         <div>

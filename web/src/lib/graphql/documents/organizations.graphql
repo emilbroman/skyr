@@ -23,7 +23,7 @@ query OrganizationDetail($org: String!) {
         qid
         deployments {
           id
-          ref
+          shortId
           state
           commit {
             hash

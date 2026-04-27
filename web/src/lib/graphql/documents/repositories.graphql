@@ -19,7 +19,7 @@ query RepositoryDetail($org: String!, $repo: String!) {
         }
         deployments {
           id
-          ref
+          shortId
           state
           commit {
             hash
