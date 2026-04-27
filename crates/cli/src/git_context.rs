@@ -26,9 +26,18 @@ fn run_git(args: &[&str]) -> anyhow::Result<String> {
 }
 
 pub fn current_org_repo() -> anyhow::Result<(String, String)> {
-    let url = run_git(&["remote", "get-url", "origin"])
-        .map_err(|e| anyhow!("could not read `origin` remote: {e}"))?;
-    parse_remote_url(&url).with_context(|| format!("could not parse remote url `{url}`"))
+    let (remote, url) = match run_git(&["remote", "get-url", "skyr"]) {
+        Ok(url) => ("skyr", url),
+        Err(skyr_err) => match run_git(&["remote", "get-url", "origin"]) {
+            Ok(url) => ("origin", url),
+            Err(origin_err) => {
+                return Err(anyhow!(
+                    "could not read `skyr` or `origin` remote:\n  skyr: {skyr_err}\n  origin: {origin_err}"
+                ));
+            }
+        },
+    };
+    parse_remote_url(&url).with_context(|| format!("could not parse `{remote}` remote url `{url}`"))
 }
 
 pub fn current_branch() -> anyhow::Result<String> {

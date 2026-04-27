@@ -131,7 +131,7 @@ skyr auth whoami
 skyr auth signout
 
 # Tier-2 commands. From a working tree on the `main` branch of `alice/my-app`,
-# org/repo come from the `origin` remote and env from the current branch.
+# org/repo come from the `skyr` remote (or `origin` as a fallback) and env from the current branch.
 skyr repo list
 skyr repo create my-app                     # creates alice/my-app from current org
 skyr deployments list                       # alice/my-app

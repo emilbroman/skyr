@@ -35,10 +35,10 @@ struct Program {
         default_value = "https://skyr.cloud"
     )]
     api_url: String,
-    /// Override the organization (default: parsed from `origin` git remote).
+    /// Override the organization (default: parsed from `skyr` or `origin` git remote).
     #[arg(long, global = true, env = "SKYR_ORG")]
     org: Option<String>,
-    /// Override the repository (default: parsed from `origin` git remote).
+    /// Override the repository (default: parsed from `skyr` or `origin` git remote).
     #[arg(long, global = true, env = "SKYR_REPO")]
     repo: Option<String>,
     /// Override the environment (default: current git branch).

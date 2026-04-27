@@ -212,7 +212,7 @@ None of the built-in resource types are currently sticky.
 
 Use the CLI to check on your deployments:
 
-From a working tree on the repo, org/repo come from the `origin` remote:
+From a working tree on the repo, org/repo come from the `skyr` remote (or `origin` as a fallback):
 
 ```bash
 skyr deployments list                 # List all deployments
