@@ -1,28 +1,40 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use ulid::Ulid;
 
 use crate::category::Category;
 
 /// Stable, RE-assigned identifier for an incident. Uniquely identifies an
 /// incident across all entities and categories.
+///
+/// The underlying type is a [`Ulid`]: a 128-bit value whose high 48 bits are
+/// the wall-clock millisecond at generation time. Lexicographic ordering on
+/// the canonical string form therefore matches creation-time ordering, which
+/// is what the SDB clusters by in the `incidents` table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct IncidentId(pub Uuid);
+pub struct IncidentId(pub Ulid);
 
 impl IncidentId {
-    /// Generate a new random incident ID.
+    /// Generate a new incident ID with a `now()` timestamp prefix.
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(Ulid::new())
     }
 
-    /// Construct from an existing [`Uuid`].
-    pub const fn from_uuid(uuid: Uuid) -> Self {
-        Self(uuid)
+    /// Generate a new incident ID whose embedded timestamp matches `at`. Used
+    /// when we want the ID's prefix to align with the report's `opened_at`
+    /// rather than wall-clock now.
+    pub fn at(at: DateTime<Utc>) -> Self {
+        Self(Ulid::from_datetime(at.into()))
     }
 
-    /// Get the underlying [`Uuid`].
-    pub fn as_uuid(&self) -> Uuid {
+    /// Construct from an existing [`Ulid`].
+    pub const fn from_ulid(ulid: Ulid) -> Self {
+        Self(ulid)
+    }
+
+    /// Get the underlying [`Ulid`].
+    pub fn as_ulid(&self) -> Ulid {
         self.0
     }
 }
@@ -40,10 +52,10 @@ impl std::fmt::Display for IncidentId {
 }
 
 impl std::str::FromStr for IncidentId {
-    type Err = uuid::Error;
+    type Err = ulid::DecodeError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Uuid::parse_str(s).map(Self)
+        Ulid::from_string(s).map(Self)
     }
 }
 
@@ -61,10 +73,11 @@ pub struct Incident {
     /// canonical string form.
     pub entity_qid: String,
     /// The classification at *open* time. Immutable for the lifetime of the
-    /// incident — incidents do not escalate or de-escalate.
+    /// incident — incidents do not escalate or de-escalate. Internal to the
+    /// status-reporting subsystem; not surfaced through the public API.
     pub category: Category,
     /// Wall-clock timestamp when the threshold tripped and this incident
-    /// opened.
+    /// opened. Always equals the millisecond timestamp embedded in [`id`].
     pub opened_at: DateTime<Utc>,
     /// Wall-clock timestamp when this incident closed; `None` while open.
     pub closed_at: Option<DateTime<Utc>>,

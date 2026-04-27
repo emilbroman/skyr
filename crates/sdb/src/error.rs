@@ -18,9 +18,6 @@ pub enum ConnectError {
 
     #[error("failed to create tables: {0}")]
     CreateTables(#[from] ExecutionError),
-
-    #[error("failed to migrate schema: {0}")]
-    Migrate(String),
 }
 
 /// Error returned by SDB read or write operations.
@@ -57,5 +54,5 @@ pub enum SdbError {
     InvalidCategory(#[from] InvalidCategory),
 
     #[error("invalid incident id in database row: {0}")]
-    InvalidIncidentId(#[from] uuid::Error),
+    InvalidIncidentId(#[from] ulid::DecodeError),
 }

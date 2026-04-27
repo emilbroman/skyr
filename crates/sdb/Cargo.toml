@@ -12,7 +12,7 @@ rq = { path = "../rq" }
 scylla = { version = "1.5.0", features = ["chrono-04"] }
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
-uuid = { version = "1.22.0", features = ["v4", "serde"] }
+ulid = { version = "1.2.1", features = ["serde"] }
 
 [features]
 # Enables integration tests that require a live ScyllaDB instance reachable at

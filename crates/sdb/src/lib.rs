@@ -18,21 +18,19 @@
 //!
 //! - `sdb.status_summaries` — per-entity rollup, lazily created on first
 //!   report and deleted on terminal report.
-//! - `sdb.incidents_by_id` — single-incident lookup by id.
-//! - `sdb.incidents_by_entity` — per-entity timeline (newest first).
-//! - `sdb.incidents_by_org` / `sdb.incidents_by_repo` /
-//!   `sdb.incidents_by_env` — denormalized scope tables for org / repo /
-//!   environment-scoped listings.
+//! - `sdb.incidents` — authoritative incident store, partitioned by
+//!   environment QID and clustered DESC by ULID-prefixed `incident_id`.
+//! - `sdb.open_incidents_by_entity` — slim LWT registry that doubles as the
+//!   index for `Resource.openIncidents` / `Deployment.openIncidents`. One
+//!   row per `(entity_qid, category)` for as long as the incident is open.
 //! - `sdb.incident_reports` — append-only per-incident report stream;
 //!   source of truth from which the cached `summary` column on the
-//!   incident tables is derived.
-//! - `sdb.open_incidents` — registry enforcing the at-most-one-open-per
-//!   `(entity, category)` rule via Scylla LWT.
+//!   `incidents` table is derived.
 //!
 //! ## Lifecycle invariants
 //!
 //! - **At most one open incident per `(entity_qid, category)` pair**, enforced
-//!   via LWT (`INSERT ... IF NOT EXISTS`) on `open_incidents`.
+//!   via LWT (`INSERT ... IF NOT EXISTS`) on `open_incidents_by_entity`.
 //! - **Closure is permanent.** Once `closed_at` is set, the incident is never
 //!   re-opened. Recurrence creates a brand-new incident with a fresh id.
 //! - **Status summaries are lazy** — created on first call to
@@ -49,9 +47,7 @@ mod summary;
 
 pub use category::{Category, InvalidCategory};
 pub use client::{
-    Client, ClientBuilder, CloseIncidentOutcome, EntityRef, IncidentFilter, OpenIncidentOutcome,
-    Pagination, REPORT_MESSAGE_MAX_CHARS, ScopeKeys, scope_keys_for_deployment,
-    scope_keys_for_resource,
+    Client, ClientBuilder, CloseIncidentOutcome, OpenIncidentOutcome, REPORT_MESSAGE_MAX_CHARS,
 };
 pub use error::{ConnectError, SdbError};
 pub use incident::{Incident, IncidentId, IncidentReport};

@@ -1,14 +1,12 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt, TryStreamExt};
+use futures_util::StreamExt;
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::PrepareError,
     statement::prepared::PreparedStatement,
 };
-use uuid::Uuid;
 
 use crate::{
     category::Category,
@@ -54,18 +52,21 @@ macro_rules! prepared_statements {
     }
 }
 
-// Schema version: 2
+// Schema version: 3
 //
-// Migration strategy: this crate uses CREATE ... IF NOT EXISTS for all DDL.
-// When the schema needs to change, add new CREATE statements (for additive
-// changes like new columns or indexes) or implement an explicit migration
-// step that checks the current schema version and applies ALTER statements.
-// Bump the version comment above when the schema changes.
+// Replaces the v2 fan-out (incidents_by_id / by_entity / by_org / by_repo /
+// by_env, plus a separate open_incidents LWT registry) with a slimmer model:
 //
-// v2: replaced `last_error_message` and `triggering_report_summary` on the
-// incident tables with a single `summary` column, derived from the new
-// `incident_reports` table. The migration `migrate_v2` applies the schema
-// delta with idempotent ALTERs.
+//  - `incidents` is the authoritative store, partitioned by environment QID,
+//    clustered by ULID-prefixed incident_id DESC so listings within an
+//    environment come back newest-first for free.
+//  - `open_incidents_by_entity` doubles as the LWT registry enforcing the
+//    at-most-one-open-per-(entity, category) invariant *and* the listing
+//    index for `Resource.openIncidents` / `Deployment.openIncidents`.
+//
+// All TEXT incident IDs are Crockford-base32 ULIDs; lexicographic order
+// matches creation-time order. The schema cannot be migrated in place from
+// v2 — the keyspace is dropped and recreated when stepping forward.
 
 prepared_statements! {
     TableStatements {
@@ -83,10 +84,14 @@ prepared_statements! {
             )
         "#,
 
-        // Single-incident lookup by id.
-        create_incidents_by_id_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.incidents_by_id (
-                id UUID,
+        // Authoritative incident store. Partitioned by environment QID so the
+        // env-scoped listing is a single partition scan; clustered DESC on
+        // the ULID id so the newest incident sits at the front of the
+        // partition.
+        create_incidents_table = r#"
+            CREATE TABLE IF NOT EXISTS sdb.incidents (
+                env_qid TEXT,
+                incident_id TEXT,
                 entity_qid TEXT,
                 category TEXT,
                 opened_at TIMESTAMP,
@@ -94,103 +99,35 @@ prepared_statements! {
                 last_report_at TIMESTAMP,
                 report_count BIGINT,
                 summary TEXT,
-                org_scope TEXT,
-                repo_scope TEXT,
-                env_scope TEXT,
-                PRIMARY KEY ((id))
+                PRIMARY KEY ((env_qid), incident_id)
+            ) WITH CLUSTERING ORDER BY (incident_id DESC)
+        "#,
+
+        // Slim LWT registry: at most one row per `(entity_qid, category)` for
+        // as long as the incident is open. Both enforces the invariant on
+        // `open_incident` and serves as the index for
+        // `Resource.openIncidents` / `Deployment.openIncidents`.
+        create_open_incidents_by_entity_table = r#"
+            CREATE TABLE IF NOT EXISTS sdb.open_incidents_by_entity (
+                entity_qid TEXT,
+                category TEXT,
+                incident_id TEXT,
+                PRIMARY KEY ((entity_qid), category)
             )
         "#,
 
-        // Per-entity timeline. Used for `Deployment.incidents` /
-        // `Resource.incidents`. Sorted newest first so default listings hit
-        // the front.
-        create_incidents_by_entity_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.incidents_by_entity (
-                entity_qid TEXT,
-                opened_at TIMESTAMP,
-                id UUID,
-                category TEXT,
-                closed_at TIMESTAMP,
-                last_report_at TIMESTAMP,
-                report_count BIGINT,
-                summary TEXT,
-                PRIMARY KEY ((entity_qid), opened_at, id)
-            ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
-        "#,
-
-        // Scope tables for `Organization.incidents`,
-        // `Repository.incidents`, `Environment.incidents`. The scope key is
-        // the canonical string form of the org/repo/env QID respectively.
-        create_incidents_by_org_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.incidents_by_org (
-                org_scope TEXT,
-                opened_at TIMESTAMP,
-                id UUID,
-                entity_qid TEXT,
-                category TEXT,
-                closed_at TIMESTAMP,
-                last_report_at TIMESTAMP,
-                report_count BIGINT,
-                summary TEXT,
-                PRIMARY KEY ((org_scope), opened_at, id)
-            ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
-        "#,
-
-        create_incidents_by_repo_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.incidents_by_repo (
-                repo_scope TEXT,
-                opened_at TIMESTAMP,
-                id UUID,
-                entity_qid TEXT,
-                category TEXT,
-                closed_at TIMESTAMP,
-                last_report_at TIMESTAMP,
-                report_count BIGINT,
-                summary TEXT,
-                PRIMARY KEY ((repo_scope), opened_at, id)
-            ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
-        "#,
-
-        create_incidents_by_env_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.incidents_by_env (
-                env_scope TEXT,
-                opened_at TIMESTAMP,
-                id UUID,
-                entity_qid TEXT,
-                category TEXT,
-                closed_at TIMESTAMP,
-                last_report_at TIMESTAMP,
-                report_count BIGINT,
-                summary TEXT,
-                PRIMARY KEY ((env_scope), opened_at, id)
-            ) WITH CLUSTERING ORDER BY (opened_at DESC, id ASC)
-        "#,
-
         // Append-only stream of failure reports attributed to an incident.
-        // Source of truth for the projected `summary` column on the incident
-        // tables. Clustered DESC so the most recent report is the first row
+        // Source of truth for the projected `summary` column on the incidents
+        // table. Clustered DESC so the most recent report is the first row
         // returned to a paged read; the recompute path reverses in-process
         // when it needs first-seen order.
         create_incident_reports_table = r#"
             CREATE TABLE IF NOT EXISTS sdb.incident_reports (
-                incident_id UUID,
+                incident_id TEXT,
                 report_at TIMESTAMP,
                 error_message TEXT,
                 PRIMARY KEY ((incident_id), report_at)
             ) WITH CLUSTERING ORDER BY (report_at DESC)
-        "#,
-
-        // Open-incident registry. One row per `(entity_qid, category)` for as
-        // long as the incident is open. Enforces the at-most-one-open rule via
-        // LWT on insert, and is consulted on close to release the slot.
-        create_open_incidents_table = r#"
-            CREATE TABLE IF NOT EXISTS sdb.open_incidents (
-                entity_qid TEXT,
-                category TEXT,
-                incident_id UUID,
-                opened_at TIMESTAMP,
-                PRIMARY KEY ((entity_qid), category)
-            )
         "#,
     }
 
@@ -217,168 +154,65 @@ prepared_statements! {
             WHERE entity_qid = ?
         "#,
 
-        // -- open_incidents (LWT) -----------------------------------------
+        // -- open_incidents_by_entity (LWT) -------------------------------
 
         claim_open_slot = r#"
-            INSERT INTO sdb.open_incidents (entity_qid, category, incident_id, opened_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sdb.open_incidents_by_entity (entity_qid, category, incident_id)
+            VALUES (?, ?, ?)
             IF NOT EXISTS
         "#,
 
         release_open_slot = r#"
-            DELETE FROM sdb.open_incidents
+            DELETE FROM sdb.open_incidents_by_entity
             WHERE entity_qid = ? AND category = ?
             IF EXISTS
         "#,
 
         get_open_slot = r#"
-            SELECT incident_id, opened_at
-            FROM sdb.open_incidents
+            SELECT incident_id
+            FROM sdb.open_incidents_by_entity
             WHERE entity_qid = ? AND category = ?
         "#,
 
         list_open_slots_for_entity = r#"
             SELECT category, incident_id
-            FROM sdb.open_incidents
+            FROM sdb.open_incidents_by_entity
             WHERE entity_qid = ?
         "#,
 
-        // -- incidents_by_id ----------------------------------------------
+        // -- incidents ----------------------------------------------------
 
-        insert_incident_by_id = r#"
-            INSERT INTO sdb.incidents_by_id (
-                id, entity_qid, category, opened_at, closed_at,
-                last_report_at, report_count, summary,
-                org_scope, repo_scope, env_scope
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        insert_incident = r#"
+            INSERT INTO sdb.incidents (
+                env_qid, incident_id, entity_qid, category,
+                opened_at, closed_at, last_report_at, report_count, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
 
-        get_incident_by_id = r#"
+        get_incident = r#"
             SELECT entity_qid, category, opened_at, closed_at,
-                   last_report_at, report_count, summary,
-                   org_scope, repo_scope, env_scope
-            FROM sdb.incidents_by_id
-            WHERE id = ?
-        "#,
-
-        update_incident_by_id_close = r#"
-            UPDATE sdb.incidents_by_id
-            SET closed_at = ?, last_report_at = ?, report_count = ?
-            WHERE id = ?
-        "#,
-
-        update_incident_by_id_append = r#"
-            UPDATE sdb.incidents_by_id
-            SET last_report_at = ?, report_count = ?, summary = ?
-            WHERE id = ?
-        "#,
-
-        // -- incidents_by_entity ------------------------------------------
-
-        insert_incident_by_entity = r#"
-            INSERT INTO sdb.incidents_by_entity (
-                entity_qid, opened_at, id, category, closed_at,
-                last_report_at, report_count, summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-
-        update_incident_by_entity_close = r#"
-            UPDATE sdb.incidents_by_entity
-            SET closed_at = ?, last_report_at = ?, report_count = ?
-            WHERE entity_qid = ? AND opened_at = ? AND id = ?
-        "#,
-
-        update_incident_by_entity_append = r#"
-            UPDATE sdb.incidents_by_entity
-            SET last_report_at = ?, report_count = ?, summary = ?
-            WHERE entity_qid = ? AND opened_at = ? AND id = ?
-        "#,
-
-        list_incidents_by_entity = r#"
-            SELECT id, opened_at, category, closed_at, last_report_at,
-                   report_count, summary
-            FROM sdb.incidents_by_entity
-            WHERE entity_qid = ?
-        "#,
-
-        // -- incidents_by_org / repo / env --------------------------------
-
-        insert_incident_by_org = r#"
-            INSERT INTO sdb.incidents_by_org (
-                org_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-
-        update_incident_by_org_close = r#"
-            UPDATE sdb.incidents_by_org
-            SET closed_at = ?, last_report_at = ?, report_count = ?
-            WHERE org_scope = ? AND opened_at = ? AND id = ?
-        "#,
-
-        update_incident_by_org_append = r#"
-            UPDATE sdb.incidents_by_org
-            SET last_report_at = ?, report_count = ?, summary = ?
-            WHERE org_scope = ? AND opened_at = ? AND id = ?
-        "#,
-
-        list_incidents_by_org = r#"
-            SELECT id, opened_at, entity_qid, category, closed_at,
                    last_report_at, report_count, summary
-            FROM sdb.incidents_by_org
-            WHERE org_scope = ?
+            FROM sdb.incidents
+            WHERE env_qid = ? AND incident_id = ?
         "#,
 
-        insert_incident_by_repo = r#"
-            INSERT INTO sdb.incidents_by_repo (
-                repo_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-
-        update_incident_by_repo_close = r#"
-            UPDATE sdb.incidents_by_repo
-            SET closed_at = ?, last_report_at = ?, report_count = ?
-            WHERE repo_scope = ? AND opened_at = ? AND id = ?
-        "#,
-
-        update_incident_by_repo_append = r#"
-            UPDATE sdb.incidents_by_repo
-            SET last_report_at = ?, report_count = ?, summary = ?
-            WHERE repo_scope = ? AND opened_at = ? AND id = ?
-        "#,
-
-        list_incidents_by_repo = r#"
-            SELECT id, opened_at, entity_qid, category, closed_at,
+        list_incidents_in_env = r#"
+            SELECT incident_id, entity_qid, category, opened_at, closed_at,
                    last_report_at, report_count, summary
-            FROM sdb.incidents_by_repo
-            WHERE repo_scope = ?
+            FROM sdb.incidents
+            WHERE env_qid = ?
         "#,
 
-        insert_incident_by_env = r#"
-            INSERT INTO sdb.incidents_by_env (
-                env_scope, opened_at, id, entity_qid, category, closed_at,
-                last_report_at, report_count, summary
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        "#,
-
-        update_incident_by_env_close = r#"
-            UPDATE sdb.incidents_by_env
+        update_incident_close = r#"
+            UPDATE sdb.incidents
             SET closed_at = ?, last_report_at = ?, report_count = ?
-            WHERE env_scope = ? AND opened_at = ? AND id = ?
+            WHERE env_qid = ? AND incident_id = ?
         "#,
 
-        update_incident_by_env_append = r#"
-            UPDATE sdb.incidents_by_env
+        update_incident_append = r#"
+            UPDATE sdb.incidents
             SET last_report_at = ?, report_count = ?, summary = ?
-            WHERE env_scope = ? AND opened_at = ? AND id = ?
-        "#,
-
-        list_incidents_by_env = r#"
-            SELECT id, opened_at, entity_qid, category, closed_at,
-                   last_report_at, report_count, summary
-            FROM sdb.incidents_by_env
-            WHERE env_scope = ?
+            WHERE env_qid = ? AND incident_id = ?
         "#,
 
         // -- incident_reports ---------------------------------------------
@@ -438,26 +272,16 @@ impl ClientBuilder {
 
         let table_statements = TableStatements::new(&session).await?;
 
-        let (r0, r1, r2, r3, r4, r5, r6, r7) = futures::join!(
+        let (r0, r1, r2, r3) = futures::join!(
             session.execute_unpaged(&table_statements.create_status_summaries_table, ()),
-            session.execute_unpaged(&table_statements.create_incidents_by_id_table, ()),
-            session.execute_unpaged(&table_statements.create_incidents_by_entity_table, ()),
-            session.execute_unpaged(&table_statements.create_incidents_by_org_table, ()),
-            session.execute_unpaged(&table_statements.create_incidents_by_repo_table, ()),
-            session.execute_unpaged(&table_statements.create_incidents_by_env_table, ()),
+            session.execute_unpaged(&table_statements.create_incidents_table, ()),
+            session.execute_unpaged(&table_statements.create_open_incidents_by_entity_table, ()),
             session.execute_unpaged(&table_statements.create_incident_reports_table, ()),
-            session.execute_unpaged(&table_statements.create_open_incidents_table, ()),
         );
         r0?;
         r1?;
         r2?;
         r3?;
-        r4?;
-        r5?;
-        r6?;
-        r7?;
-
-        migrate_v2(&session).await?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -466,75 +290,6 @@ impl ClientBuilder {
             statements: Arc::new(statements),
         })
     }
-}
-
-/// Apply the v2 schema delta: drop `last_error_message` and
-/// `triggering_report_summary` from each incident table; add `summary` if not
-/// already present. Idempotent across fresh and already-migrated keyspaces:
-/// the current column set is read from `system_schema.columns` so each ALTER
-/// only runs when it would actually change the schema. ScyllaDB does not
-/// support the `IF EXISTS` / `IF NOT EXISTS` clauses on column-level ALTERs
-/// (those are Cassandra 4.0+ syntax), hence the explicit existence check.
-async fn migrate_v2(session: &Session) -> Result<(), ConnectError> {
-    const TABLES: &[&str] = &[
-        "incidents_by_id",
-        "incidents_by_entity",
-        "incidents_by_org",
-        "incidents_by_repo",
-        "incidents_by_env",
-    ];
-    for table in TABLES {
-        let columns = list_columns(session, "sdb", table).await?;
-
-        if columns.contains("last_error_message") {
-            session
-                .query_unpaged(
-                    format!("ALTER TABLE sdb.{table} DROP last_error_message"),
-                    (),
-                )
-                .await?;
-        }
-        if columns.contains("triggering_report_summary") {
-            session
-                .query_unpaged(
-                    format!("ALTER TABLE sdb.{table} DROP triggering_report_summary"),
-                    (),
-                )
-                .await?;
-        }
-        if !columns.contains("summary") {
-            session
-                .query_unpaged(format!("ALTER TABLE sdb.{table} ADD summary TEXT"), ())
-                .await?;
-        }
-    }
-    Ok(())
-}
-
-async fn list_columns(
-    session: &Session,
-    keyspace: &str,
-    table: &str,
-) -> Result<HashSet<String>, ConnectError> {
-    let result = session
-        .query_unpaged(
-            "SELECT column_name FROM system_schema.columns \
-             WHERE keyspace_name = ? AND table_name = ?",
-            (keyspace, table),
-        )
-        .await?;
-    let rows = result
-        .into_rows_result()
-        .map_err(|e| ConnectError::Migrate(e.to_string()))?;
-    let typed = rows
-        .rows::<(String,)>()
-        .map_err(|e| ConnectError::Migrate(e.to_string()))?;
-    let mut columns = HashSet::new();
-    for row in typed {
-        let (name,) = row.map_err(|e| ConnectError::Migrate(e.to_string()))?;
-        columns.insert(name);
-    }
-    Ok(columns)
 }
 
 // ---------------------------------------------------------------------------
@@ -670,37 +425,36 @@ pub enum CloseIncidentOutcome {
 
 impl Client {
     /// Attempt to open a new incident for `(entity_qid, category)`. Uses LWT
-    /// on the `open_incidents` registry to ensure at most one open incident
-    /// per pair.
+    /// on the `open_incidents_by_entity` registry to ensure at most one open
+    /// incident per pair.
     ///
-    /// On success, writes the full incident record across the `incidents_by_*`
-    /// tables and records the triggering failure as the first row in
+    /// On success, writes the full incident record to `incidents` (partitioned
+    /// by `env_qid`) and records the triggering failure as the first row in
     /// `incident_reports`. The cached `summary` column is the (truncated)
     /// `error_message` since this is the only report seen so far.
     ///
-    /// The provided `org_scope` / `repo_scope` / `env_scope` values are
-    /// denormalized scope keys derived from `entity_qid` by the caller — see
-    /// [`Client::scope_keys_for`] for a helper.
-    #[allow(clippy::too_many_arguments)]
+    /// `env_qid` is the canonical string form of the environment QID derived
+    /// from `entity_qid` by the caller. Both deployment and resource entity
+    /// QIDs embed an environment QID; passing it explicitly keeps SDB free of
+    /// QID-parsing logic.
     pub async fn open_incident(
         &self,
         entity_qid: &str,
+        env_qid: &str,
         category: Category,
         opened_at: DateTime<Utc>,
         error_message: impl Into<String>,
-        org_scope: &str,
-        repo_scope: &str,
-        env_scope: &str,
     ) -> Result<OpenIncidentOutcome, SdbError> {
         let error_message = error_message.into();
-        let new_id = IncidentId::new();
+        let new_id = IncidentId::at(opened_at);
+        let new_id_str = new_id.to_string();
 
         // 1. Try to claim the (entity, category) slot via LWT.
         let claim = self
             .session
             .execute_unpaged(
                 &self.statements.claim_open_slot,
-                (entity_qid, category.as_str(), new_id.as_uuid(), opened_at),
+                (entity_qid, category.as_str(), new_id_str.as_str()),
             )
             .await?;
         let claim_rows = claim.into_rows_result()?;
@@ -709,15 +463,17 @@ impl Client {
         // the first column, plus the existing values when not applied.
         type ClaimRow = (
             bool,
-            Option<String>,        // entity_qid
-            Option<String>,        // category
-            Option<Uuid>,          // incident_id
-            Option<DateTime<Utc>>, // opened_at
+            Option<String>, // entity_qid
+            Option<String>, // category
+            Option<String>, // incident_id (existing)
         );
         let row = claim_rows.first_row::<ClaimRow>()?;
         if !row.0 {
             // Another caller already opened an incident for this slot.
-            let existing_id = row.3.map(IncidentId::from_uuid).unwrap_or_default();
+            let existing_id = match row.3 {
+                Some(s) => s.parse::<IncidentId>()?,
+                None => IncidentId::default(),
+            };
             return Ok(OpenIncidentOutcome::AlreadyOpen { existing_id });
         }
 
@@ -725,104 +481,32 @@ impl Client {
         self.session
             .execute_unpaged(
                 &self.statements.insert_incident_report,
-                (new_id.as_uuid(), opened_at, error_message.as_str()),
+                (new_id_str.as_str(), opened_at, error_message.as_str()),
             )
             .await?;
 
-        // 3. Persist the incident record across denormalized tables. The
-        //    summary cache is just the (truncated) triggering message at this
-        //    point — there is exactly one report.
+        // 3. Persist the authoritative incident row. Summary cache is the
+        //    (truncated) triggering message at this point — there is exactly
+        //    one report.
         let report_count: i64 = 1;
         let summary = truncate_for_summary(&error_message);
 
-        let by_id_fut = self.session.execute_unpaged(
-            &self.statements.insert_incident_by_id,
-            (
-                new_id.as_uuid(),
-                entity_qid,
-                category.as_str(),
-                opened_at,
-                None::<DateTime<Utc>>,
-                opened_at,
-                report_count,
-                summary.as_str(),
-                org_scope,
-                repo_scope,
-                env_scope,
-            ),
-        );
-
-        let by_entity_fut = self.session.execute_unpaged(
-            &self.statements.insert_incident_by_entity,
-            (
-                entity_qid,
-                opened_at,
-                new_id.as_uuid(),
-                category.as_str(),
-                None::<DateTime<Utc>>,
-                opened_at,
-                report_count,
-                summary.as_str(),
-            ),
-        );
-
-        let by_org_fut = self.session.execute_unpaged(
-            &self.statements.insert_incident_by_org,
-            (
-                org_scope,
-                opened_at,
-                new_id.as_uuid(),
-                entity_qid,
-                category.as_str(),
-                None::<DateTime<Utc>>,
-                opened_at,
-                report_count,
-                summary.as_str(),
-            ),
-        );
-
-        let by_repo_fut = self.session.execute_unpaged(
-            &self.statements.insert_incident_by_repo,
-            (
-                repo_scope,
-                opened_at,
-                new_id.as_uuid(),
-                entity_qid,
-                category.as_str(),
-                None::<DateTime<Utc>>,
-                opened_at,
-                report_count,
-                summary.as_str(),
-            ),
-        );
-
-        let by_env_fut = self.session.execute_unpaged(
-            &self.statements.insert_incident_by_env,
-            (
-                env_scope,
-                opened_at,
-                new_id.as_uuid(),
-                entity_qid,
-                category.as_str(),
-                None::<DateTime<Utc>>,
-                opened_at,
-                report_count,
-                summary.as_str(),
-            ),
-        );
-
-        let (r0, r1, r2, r3, r4) = futures::join!(
-            by_id_fut,
-            by_entity_fut,
-            by_org_fut,
-            by_repo_fut,
-            by_env_fut
-        );
-        r0?;
-        r1?;
-        r2?;
-        r3?;
-        r4?;
+        self.session
+            .execute_unpaged(
+                &self.statements.insert_incident,
+                (
+                    env_qid,
+                    new_id_str.as_str(),
+                    entity_qid,
+                    category.as_str(),
+                    opened_at,
+                    None::<DateTime<Utc>>,
+                    opened_at,
+                    report_count,
+                    summary.as_str(),
+                ),
+            )
+            .await?;
 
         Ok(OpenIncidentOutcome::Opened(Incident {
             id: new_id,
@@ -838,39 +522,32 @@ impl Client {
 
     /// Append a failure report to an already-open incident. Records the
     /// report verbatim in `incident_reports`, then recomputes and rewrites the
-    /// cached `summary` column on every denormalized incident table.
+    /// cached `summary` column on the authoritative incident row.
     ///
-    /// `opened_at` is required because the per-entity / per-scope tables key
-    /// on it; callers typically obtain it from the previously-loaded incident
-    /// record (or via [`Client::find_open_incident_id`]). Returns the updated
-    /// incident, or `None` if no incident with the given id exists.
+    /// Returns the updated incident, or `None` if no incident with the given
+    /// id exists in the given environment.
     #[allow(clippy::too_many_arguments)]
     pub async fn append_failure_to_open_incident(
         &self,
         incident_id: IncidentId,
         entity_qid: &str,
+        env_qid: &str,
         category: Category,
         opened_at: DateTime<Utc>,
         last_report_at: DateTime<Utc>,
         new_report_count: u64,
         error_message: impl Into<String>,
-        org_scope: &str,
-        repo_scope: &str,
-        env_scope: &str,
     ) -> Result<Option<Incident>, SdbError> {
         let error_message = error_message.into();
         let report_count_i64 = i64::try_from(new_report_count).unwrap_or(i64::MAX);
+        let id_str = incident_id.to_string();
 
         // 1. Record the failure verbatim in `incident_reports`. LWW on
         //    `(incident_id, report_at)` makes RQ redeliveries idempotent.
         self.session
             .execute_unpaged(
                 &self.statements.insert_incident_report,
-                (
-                    incident_id.as_uuid(),
-                    last_report_at,
-                    error_message.as_str(),
-                ),
+                (id_str.as_str(), last_report_at, error_message.as_str()),
             )
             .await?;
 
@@ -878,90 +555,28 @@ impl Client {
         let reports = self.list_reports_for_incident(incident_id).await?;
         let summary = compute_summary(&reports);
 
-        // 3. Fan-out the updated counters and summary to the denormalized
-        //    incident tables.
-        let by_id_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_id_append,
-            (
-                last_report_at,
-                report_count_i64,
-                summary.as_str(),
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_entity_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_entity_append,
-            (
-                last_report_at,
-                report_count_i64,
-                summary.as_str(),
-                entity_qid,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_org_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_org_append,
-            (
-                last_report_at,
-                report_count_i64,
-                summary.as_str(),
-                org_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_repo_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_repo_append,
-            (
-                last_report_at,
-                report_count_i64,
-                summary.as_str(),
-                repo_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_env_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_env_append,
-            (
-                last_report_at,
-                report_count_i64,
-                summary.as_str(),
-                env_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let (r0, r1, r2, r3, r4) = futures::join!(
-            by_id_fut,
-            by_entity_fut,
-            by_org_fut,
-            by_repo_fut,
-            by_env_fut
-        );
-        r0?;
-        r1?;
-        r2?;
-        r3?;
-        r4?;
+        // 3. Rewrite the authoritative incident row.
+        self.session
+            .execute_unpaged(
+                &self.statements.update_incident_append,
+                (
+                    last_report_at,
+                    report_count_i64,
+                    summary.as_str(),
+                    env_qid,
+                    id_str.as_str(),
+                ),
+            )
+            .await?;
 
         // Re-read the canonical row to return a coherent value.
-        let mut incident = self.get_incident(incident_id).await?;
+        let mut incident = self.incident_in_env(env_qid, incident_id).await?;
         if let Some(ref mut inc) = incident {
             // Defensive: if read returned different data due to concurrent
             // writes, callers should still see the values they just wrote.
             inc.last_report_at = last_report_at;
             inc.report_count = new_report_count;
             inc.summary = summary;
-            // category and opened_at must match the caller-provided values
-            // since LWT ensures these are stable; assert by overwriting in
-            // case of corrupt rows.
             inc.category = category;
             inc.opened_at = opened_at;
             inc.entity_qid = entity_qid.to_string();
@@ -972,27 +587,23 @@ impl Client {
     /// Close an open incident. Idempotent: a second call with the same
     /// `(entity, category)` will return [`CloseIncidentOutcome::NotOpen`].
     ///
-    /// Releases the LWT slot in `open_incidents` and stamps `closed_at` plus
-    /// the final `last_report_at` / `report_count` across all incident
-    /// tables. The cached `summary` is left untouched — closure does not add
-    /// a new report row, so its content is the union of failures seen during
-    /// the open window.
-    #[allow(clippy::too_many_arguments)]
+    /// Releases the LWT slot in `open_incidents_by_entity` and stamps
+    /// `closed_at` plus the final `last_report_at` / `report_count` on the
+    /// authoritative incident row. The cached `summary` is left untouched —
+    /// closure does not add a new report row, so its content is the union of
+    /// failures seen during the open window.
     pub async fn close_incident(
         &self,
         entity_qid: &str,
+        env_qid: &str,
         category: Category,
         closed_at: DateTime<Utc>,
         last_report_at: DateTime<Utc>,
         final_report_count: u64,
-        org_scope: &str,
-        repo_scope: &str,
-        env_scope: &str,
     ) -> Result<CloseIncidentOutcome, SdbError> {
         let report_count_i64 = i64::try_from(final_report_count).unwrap_or(i64::MAX);
 
-        // 1. Look up the open slot to learn the incident id and opened_at
-        //    timestamps needed to address the by-entity/by-scope rows.
+        // 1. Look up the open slot to learn the incident id.
         let slot = self
             .session
             .execute_unpaged(
@@ -1001,12 +612,10 @@ impl Client {
             )
             .await?;
         let slot_rows = slot.into_rows_result()?;
-        let Some((incident_uuid, opened_at)) =
-            slot_rows.maybe_first_row::<(Uuid, DateTime<Utc>)>()?
-        else {
+        let Some((id_str,)) = slot_rows.maybe_first_row::<(String,)>()? else {
             return Ok(CloseIncidentOutcome::NotOpen);
         };
-        let incident_id = IncidentId::from_uuid(incident_uuid);
+        let incident_id = id_str.parse::<IncidentId>()?;
 
         // 2. Release the LWT slot. We use IF EXISTS to make the close
         //    idempotent; a concurrent close is treated as a success.
@@ -1019,96 +628,30 @@ impl Client {
             .await?;
         let release_rows = release.into_rows_result()?;
         // Scylla's LWT response for a `DELETE ... IF EXISTS` carries the
-        // `[applied]` flag plus the row's full primary key columns —
-        // `entity_qid`, `category`, `incident_id`, `opened_at`. We do not
-        // care about the per-row values (we already read them via
-        // `get_open_slot`); we only need to consume the response so the
-        // driver does not surface a column-count mismatch when the row
-        // shape changes. A concurrent close that observed `applied=false`
-        // is benign and is treated as a success.
-        type ReleaseRow = (
-            bool,
-            Option<String>,
-            Option<String>,
-            Option<Uuid>,
-            Option<DateTime<Utc>>,
-        );
+        // `[applied]` flag plus the row's full primary key columns. We do not
+        // care about the per-row values (we already have them); we only need
+        // to consume the response so the driver does not surface a column-
+        // count mismatch when the row shape changes. A concurrent close that
+        // observed `applied=false` is benign and is treated as a success.
+        type ReleaseRow = (bool, Option<String>, Option<String>, Option<String>);
         let _ = release_rows.maybe_first_row::<ReleaseRow>()?;
 
-        // 3. Update all denormalized rows.
-        let by_id_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_id_close,
-            (
-                closed_at,
-                last_report_at,
-                report_count_i64,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_entity_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_entity_close,
-            (
-                closed_at,
-                last_report_at,
-                report_count_i64,
-                entity_qid,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_org_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_org_close,
-            (
-                closed_at,
-                last_report_at,
-                report_count_i64,
-                org_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_repo_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_repo_close,
-            (
-                closed_at,
-                last_report_at,
-                report_count_i64,
-                repo_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let by_env_fut = self.session.execute_unpaged(
-            &self.statements.update_incident_by_env_close,
-            (
-                closed_at,
-                last_report_at,
-                report_count_i64,
-                env_scope,
-                opened_at,
-                incident_id.as_uuid(),
-            ),
-        );
-
-        let (r0, r1, r2, r3, r4) = futures::join!(
-            by_id_fut,
-            by_entity_fut,
-            by_org_fut,
-            by_repo_fut,
-            by_env_fut
-        );
-        r0?;
-        r1?;
-        r2?;
-        r3?;
-        r4?;
+        // 3. Stamp the close timestamps on the authoritative row.
+        self.session
+            .execute_unpaged(
+                &self.statements.update_incident_close,
+                (
+                    closed_at,
+                    last_report_at,
+                    report_count_i64,
+                    env_qid,
+                    incident_id.to_string().as_str(),
+                ),
+            )
+            .await?;
 
         // 4. Re-read for the response.
-        let updated = self.get_incident(incident_id).await?;
+        let updated = self.incident_in_env(env_qid, incident_id).await?;
         match updated {
             Some(inc) => Ok(CloseIncidentOutcome::Closed(inc)),
             // Should be unreachable in practice, but degrade gracefully.
@@ -1121,7 +664,7 @@ impl Client {
         &self,
         entity_qid: &str,
         category: Category,
-    ) -> Result<Option<(IncidentId, DateTime<Utc>)>, SdbError> {
+    ) -> Result<Option<IncidentId>, SdbError> {
         let result = self
             .session
             .execute_unpaged(
@@ -1130,16 +673,15 @@ impl Client {
             )
             .await?;
         let rows = result.into_rows_result()?;
-        match rows.maybe_first_row::<(Uuid, DateTime<Utc>)>()? {
-            Some((id, opened_at)) => Ok(Some((IncidentId::from_uuid(id), opened_at))),
+        match rows.maybe_first_row::<(String,)>()? {
+            Some((id_str,)) => Ok(Some(id_str.parse::<IncidentId>()?)),
             None => Ok(None),
         }
     }
 
     /// List the open `(category, incident_id)` pairs for an entity. Used by
-    /// callers (notably the RE) to recompute `worst_open_category` and the
-    /// `open_incident_count` summary fields without scanning incident
-    /// history.
+    /// the RE to recompute `worst_open_category` and `open_incident_count`
+    /// without scanning incident history.
     pub async fn list_open_incidents_for_entity(
         &self,
         entity_qid: &str,
@@ -1152,20 +694,25 @@ impl Client {
             )
             .await?;
         let mut out = Vec::new();
-        let mut stream = pager.rows_stream::<(String, Uuid)>()?;
+        let mut stream = pager.rows_stream::<(String, String)>()?;
         while let Some(row) = stream.next().await {
-            let (category, id) = row?;
-            out.push((category.parse::<Category>()?, IncidentId::from_uuid(id)));
+            let (category, id_str) = row?;
+            out.push((category.parse::<Category>()?, id_str.parse::<IncidentId>()?));
         }
         Ok(out)
     }
 
-    /// Fetch a single incident by id. Returns `None` if no such incident
-    /// exists.
-    pub async fn get_incident(&self, id: IncidentId) -> Result<Option<Incident>, SdbError> {
+    /// Fetch a single incident by environment + id. Returns `None` if no
+    /// such incident exists.
+    pub async fn incident_in_env(
+        &self,
+        env_qid: &str,
+        id: IncidentId,
+    ) -> Result<Option<Incident>, SdbError> {
+        let id_str = id.to_string();
         let result = self
             .session
-            .execute_unpaged(&self.statements.get_incident_by_id, (id.as_uuid(),))
+            .execute_unpaged(&self.statements.get_incident, (env_qid, id_str.as_str()))
             .await?;
         let rows = result.into_rows_result()?;
 
@@ -1177,27 +724,14 @@ impl Client {
             DateTime<Utc>,         // last_report_at
             i64,                   // report_count
             Option<String>,        // summary
-            String,                // org_scope
-            String,                // repo_scope
-            String,                // env_scope
         );
 
         let Some(row) = rows.maybe_first_row::<Row>()? else {
             return Ok(None);
         };
 
-        let (
-            entity_qid,
-            category,
-            opened_at,
-            closed_at,
-            last_report_at,
-            report_count,
-            summary,
-            _org_scope,
-            _repo_scope,
-            _env_scope,
-        ) = row;
+        let (entity_qid, category, opened_at, closed_at, last_report_at, report_count, summary) =
+            row;
 
         Ok(Some(Incident {
             id,
@@ -1211,6 +745,72 @@ impl Client {
         }))
     }
 
+    /// List every incident in the given environment, newest-first per the
+    /// table's clustering order.
+    pub async fn incidents_in_env(&self, env_qid: &str) -> Result<Vec<Incident>, SdbError> {
+        let pager = self
+            .session
+            .execute_iter(self.statements.list_incidents_in_env.clone(), (env_qid,))
+            .await?;
+
+        type Row = (
+            String,                // incident_id
+            String,                // entity_qid
+            String,                // category
+            DateTime<Utc>,         // opened_at
+            Option<DateTime<Utc>>, // closed_at
+            DateTime<Utc>,         // last_report_at
+            i64,                   // report_count
+            Option<String>,        // summary
+        );
+
+        let mut out = Vec::new();
+        let mut stream = pager.rows_stream::<Row>()?;
+        while let Some(row) = stream.next().await {
+            let (
+                id_str,
+                entity_qid,
+                category,
+                opened_at,
+                closed_at,
+                last_report_at,
+                report_count,
+                summary,
+            ) = row?;
+            out.push(Incident {
+                id: id_str.parse::<IncidentId>()?,
+                entity_qid,
+                category: category.parse::<Category>()?,
+                opened_at,
+                closed_at,
+                last_report_at,
+                report_count: report_count.max(0) as u64,
+                summary: summary.unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// List every currently-open incident for an entity, returning the full
+    /// records (not just the slot index). Issues one read against
+    /// `open_incidents_by_entity` followed by one point read per open slot
+    /// against `incidents`. The slot count is bounded by the cardinality of
+    /// [`Category`] (currently five) so the per-entity blow-up is fixed.
+    pub async fn open_incidents_for_entity(
+        &self,
+        entity_qid: &str,
+        env_qid: &str,
+    ) -> Result<Vec<Incident>, SdbError> {
+        let slots = self.list_open_incidents_for_entity(entity_qid).await?;
+        let mut out = Vec::with_capacity(slots.len());
+        for (_category, id) in slots {
+            if let Some(inc) = self.incident_in_env(env_qid, id).await? {
+                out.push(inc);
+            }
+        }
+        Ok(out)
+    }
+
     /// List every report attributed to `incident_id`, newest-first per the
     /// table's clustering order. Used internally to recompute the cached
     /// summary; exposed publicly so the API/UI can render a per-incident
@@ -1219,12 +819,10 @@ impl Client {
         &self,
         incident_id: IncidentId,
     ) -> Result<Vec<IncidentReport>, SdbError> {
+        let id_str = incident_id.to_string();
         let pager = self
             .session
-            .execute_iter(
-                self.statements.list_incident_reports.clone(),
-                (incident_id.as_uuid(),),
-            )
+            .execute_iter(self.statements.list_incident_reports.clone(), (id_str,))
             .await?;
         let mut out = Vec::new();
         let mut stream = pager.rows_stream::<(DateTime<Utc>, String)>()?;
@@ -1237,272 +835,6 @@ impl Client {
         }
         Ok(out)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Listing
-// ---------------------------------------------------------------------------
-
-/// Filter predicate for listing incidents. All fields are optional and
-/// combine with logical AND. Pagination is handled by the caller via
-/// `offset` and `limit`.
-#[derive(Clone, Debug, Default)]
-pub struct IncidentFilter {
-    /// If `Some`, only include incidents in the given category.
-    pub category: Option<Category>,
-    /// If `true`, only include currently-open incidents (`closed_at IS NULL`).
-    pub open_only: bool,
-    /// If `Some`, only include incidents whose `opened_at >= since`.
-    pub since: Option<DateTime<Utc>>,
-    /// If `Some`, only include incidents whose `opened_at < until`.
-    pub until: Option<DateTime<Utc>>,
-}
-
-/// Pagination parameters for incident listings.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Pagination {
-    /// Number of leading rows to skip after applying the filter.
-    pub offset: usize,
-    /// Maximum number of rows to return after `offset`. `None` means
-    /// unlimited.
-    pub limit: Option<usize>,
-}
-
-impl Client {
-    /// List incidents whose entity QID matches `entity_qid`, newest first.
-    pub async fn incidents_by_entity(
-        &self,
-        entity_qid: &str,
-        filter: &IncidentFilter,
-        pagination: Pagination,
-    ) -> Result<Vec<Incident>, SdbError> {
-        let pager = self
-            .session
-            .execute_iter(
-                self.statements.list_incidents_by_entity.clone(),
-                (entity_qid,),
-            )
-            .await?;
-        let entity_qid = entity_qid.to_string();
-
-        type Row = (
-            Uuid,                  // id
-            DateTime<Utc>,         // opened_at
-            String,                // category
-            Option<DateTime<Utc>>, // closed_at
-            DateTime<Utc>,         // last_report_at
-            i64,                   // report_count
-            Option<String>,        // summary
-        );
-
-        let stream = pager.rows_stream::<Row>()?.map(move |row| {
-            let (id, opened_at, category, closed_at, last_report_at, report_count, summary) = row?;
-            Ok::<_, SdbError>(Incident {
-                id: IncidentId::from_uuid(id),
-                entity_qid: entity_qid.clone(),
-                category: category.parse::<Category>()?,
-                opened_at,
-                closed_at,
-                last_report_at,
-                report_count: report_count.max(0) as u64,
-                summary: summary.unwrap_or_default(),
-            })
-        });
-
-        collect_filtered(stream, filter, pagination).await
-    }
-
-    /// List incidents within an organization scope.
-    pub async fn incidents_by_org(
-        &self,
-        org_scope: &str,
-        filter: &IncidentFilter,
-        pagination: Pagination,
-    ) -> Result<Vec<Incident>, SdbError> {
-        self.incidents_by_scope(
-            self.statements.list_incidents_by_org.clone(),
-            org_scope,
-            filter,
-            pagination,
-        )
-        .await
-    }
-
-    /// List incidents within a repository scope.
-    pub async fn incidents_by_repo(
-        &self,
-        repo_scope: &str,
-        filter: &IncidentFilter,
-        pagination: Pagination,
-    ) -> Result<Vec<Incident>, SdbError> {
-        self.incidents_by_scope(
-            self.statements.list_incidents_by_repo.clone(),
-            repo_scope,
-            filter,
-            pagination,
-        )
-        .await
-    }
-
-    /// List incidents within an environment scope.
-    pub async fn incidents_by_env(
-        &self,
-        env_scope: &str,
-        filter: &IncidentFilter,
-        pagination: Pagination,
-    ) -> Result<Vec<Incident>, SdbError> {
-        self.incidents_by_scope(
-            self.statements.list_incidents_by_env.clone(),
-            env_scope,
-            filter,
-            pagination,
-        )
-        .await
-    }
-
-    async fn incidents_by_scope(
-        &self,
-        statement: PreparedStatement,
-        scope: &str,
-        filter: &IncidentFilter,
-        pagination: Pagination,
-    ) -> Result<Vec<Incident>, SdbError> {
-        let pager = self.session.execute_iter(statement, (scope,)).await?;
-
-        type Row = (
-            Uuid,                  // id
-            DateTime<Utc>,         // opened_at
-            String,                // entity_qid
-            String,                // category
-            Option<DateTime<Utc>>, // closed_at
-            DateTime<Utc>,         // last_report_at
-            i64,                   // report_count
-            Option<String>,        // summary
-        );
-
-        let stream = pager.rows_stream::<Row>()?.map(|row| {
-            let (
-                id,
-                opened_at,
-                entity_qid,
-                category,
-                closed_at,
-                last_report_at,
-                report_count,
-                summary,
-            ) = row?;
-            Ok::<_, SdbError>(Incident {
-                id: IncidentId::from_uuid(id),
-                entity_qid,
-                category: category.parse::<Category>()?,
-                opened_at,
-                closed_at,
-                last_report_at,
-                report_count: report_count.max(0) as u64,
-                summary: summary.unwrap_or_default(),
-            })
-        });
-
-        collect_filtered(stream, filter, pagination).await
-    }
-}
-
-async fn collect_filtered<S>(
-    stream: S,
-    filter: &IncidentFilter,
-    pagination: Pagination,
-) -> Result<Vec<Incident>, SdbError>
-where
-    S: futures::Stream<Item = Result<Incident, SdbError>>,
-{
-    let raw: Vec<Incident> = stream.try_collect().await?;
-    let mut out = Vec::new();
-    let mut skipped = 0usize;
-    for incident in raw {
-        if let Some(c) = filter.category
-            && incident.category != c
-        {
-            continue;
-        }
-        if filter.open_only && incident.closed_at.is_some() {
-            continue;
-        }
-        if let Some(since) = filter.since
-            && incident.opened_at < since
-        {
-            continue;
-        }
-        if let Some(until) = filter.until
-            && incident.opened_at >= until
-        {
-            continue;
-        }
-        if skipped < pagination.offset {
-            skipped += 1;
-            continue;
-        }
-        out.push(incident);
-        if let Some(limit) = pagination.limit
-            && out.len() >= limit
-        {
-            break;
-        }
-    }
-    Ok(out)
-}
-
-// ---------------------------------------------------------------------------
-// Scope helpers
-// ---------------------------------------------------------------------------
-
-/// Denormalized scope keys derived from an entity QID. The SDB stores these
-/// alongside each incident row to support `Organization.incidents`,
-/// `Repository.incidents`, and `Environment.incidents` queries without a
-/// secondary index.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ScopeKeys {
-    pub org_scope: String,
-    pub repo_scope: String,
-    pub env_scope: String,
-}
-
-impl Client {
-    /// Compute the org/repo/env scope keys for a [`DeploymentQid`] or
-    /// [`ResourceQid`]. This is the canonical helper for callers writing
-    /// incidents — see [`scope_keys_for_deployment`] and
-    /// [`scope_keys_for_resource`] for the typed variants.
-    pub fn scope_keys_for(qid: EntityRef<'_>) -> ScopeKeys {
-        match qid {
-            EntityRef::Deployment(d) => ScopeKeys {
-                org_scope: d.environment.repo.org.to_string(),
-                repo_scope: d.environment.repo.to_string(),
-                env_scope: d.environment.to_string(),
-            },
-            EntityRef::Resource(r) => ScopeKeys {
-                org_scope: r.environment.repo.org.to_string(),
-                repo_scope: r.environment.repo.to_string(),
-                env_scope: r.environment.to_string(),
-            },
-        }
-    }
-}
-
-/// Borrowed view of an entity QID. Used to compute denormalized scope keys
-/// without coupling SDB to specific entity-type wrappers.
-#[derive(Clone, Copy, Debug)]
-pub enum EntityRef<'a> {
-    Deployment(&'a ids::DeploymentQid),
-    Resource(&'a ids::ResourceQid),
-}
-
-/// Convenience: compute scope keys for a deployment QID.
-pub fn scope_keys_for_deployment(qid: &ids::DeploymentQid) -> ScopeKeys {
-    Client::scope_keys_for(EntityRef::Deployment(qid))
-}
-
-/// Convenience: compute scope keys for a resource QID.
-pub fn scope_keys_for_resource(qid: &ids::ResourceQid) -> ScopeKeys {
-    Client::scope_keys_for(EntityRef::Resource(qid))
 }
 
 // ---------------------------------------------------------------------------

@@ -1,9 +1,6 @@
 use chrono::{TimeZone, Utc};
 
-use crate::{
-    Category, EntityRef, Incident, IncidentFilter, IncidentId, Pagination, ScopeKeys,
-    StatusSummary, scope_keys_for_deployment, scope_keys_for_resource,
-};
+use crate::{Category, Incident, IncidentId, StatusSummary};
 
 // ── Category ─────────────────────────────────────────────────────────
 
@@ -60,6 +57,16 @@ fn incident_id_round_trips_through_string() {
     assert_eq!(parsed, id);
 }
 
+#[test]
+fn incident_id_lex_order_matches_creation_order() {
+    // ULIDs are constructed with a millisecond-resolution timestamp prefix;
+    // the canonical Crockford-base32 form sorts lexicographically with the
+    // same order. A second-apart pair therefore strictly orders.
+    let earlier = IncidentId::at(Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap());
+    let later = IncidentId::at(Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 1).unwrap());
+    assert!(earlier.to_string() < later.to_string());
+}
+
 // ── Incident ─────────────────────────────────────────────────────────
 
 #[test]
@@ -94,69 +101,4 @@ fn status_summary_default_open_state() {
     };
     assert_eq!(s.open_incident_count, 0);
     assert_eq!(s.worst_open_category, None);
-}
-
-// ── Filter / pagination defaults ─────────────────────────────────────
-
-#[test]
-fn incident_filter_default_is_empty() {
-    let f = IncidentFilter::default();
-    assert!(f.category.is_none());
-    assert!(!f.open_only);
-    assert!(f.since.is_none());
-    assert!(f.until.is_none());
-}
-
-#[test]
-fn pagination_default_is_unlimited() {
-    let p = Pagination::default();
-    assert_eq!(p.offset, 0);
-    assert!(p.limit.is_none());
-}
-
-// ── Scope keys ───────────────────────────────────────────────────────
-
-#[test]
-fn scope_keys_for_deployment_qid() {
-    let qid: ids::DeploymentQid =
-        "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718"
-            .parse()
-            .unwrap();
-    let keys = scope_keys_for_deployment(&qid);
-    assert_eq!(keys.org_scope, "MyOrg");
-    assert_eq!(keys.repo_scope, "MyOrg/MyRepo");
-    assert_eq!(keys.env_scope, "MyOrg/MyRepo::main");
-}
-
-#[test]
-fn scope_keys_for_resource_qid() {
-    let qid: ids::ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
-    let keys = scope_keys_for_resource(&qid);
-    assert_eq!(
-        keys,
-        ScopeKeys {
-            org_scope: "MyOrg".into(),
-            repo_scope: "MyOrg/MyRepo".into(),
-            env_scope: "MyOrg/MyRepo::main".into(),
-        }
-    );
-}
-
-#[test]
-fn scope_keys_via_entity_ref_match_typed_helpers() {
-    let dep_qid: ids::DeploymentQid =
-        "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718"
-            .parse()
-            .unwrap();
-    let res_qid: ids::ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
-
-    use crate::Client;
-    assert_eq!(
-        Client::scope_keys_for(EntityRef::Deployment(&dep_qid)),
-        scope_keys_for_deployment(&dep_qid),
-    );
-    assert_eq!(
-        Client::scope_keys_for(EntityRef::Resource(&res_qid)),
-        scope_keys_for_resource(&res_qid),
-    );
 }
