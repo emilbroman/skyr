@@ -122,16 +122,14 @@ async function submitPasskeySignup() {
 </svelte:head>
 
 <div class="flex-1 flex items-center justify-center p-4">
-  <div class="w-full max-w-lg">
-    <div class="text-center mb-8">
-      <p class="text-gray-500">Create your account</p>
+  <div class="w-full max-w-sm">
+    <div class="text-center mb-6">
+      <p class="text-xs text-gray-500">Create your account</p>
     </div>
 
-    <div class="bg-white rounded-lg border border-gray-200 p-6">
+    <div class="bg-white rounded border border-gray-200 p-5">
       {#if error}
-        <div
-          class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600"
-        >
+        <div class="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
           {error}
         </div>
       {/if}
@@ -143,10 +141,7 @@ async function submitPasskeySignup() {
             fetchChallenge();
           }}
         >
-          <label
-            class="block mb-2 font-medium text-gray-600"
-            for="username"
-          >
+          <label class="block mb-1 text-xs font-medium text-gray-500" for="username">
             Username
           </label>
           <input
@@ -155,17 +150,14 @@ async function submitPasskeySignup() {
             bind:value={username}
             oninput={() => (usernameError = null)}
             placeholder="Choose a username"
-            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
             disabled={loading}
           />
           {#if usernameError}
-            <p class="mt-1 text-sm text-red-600">{usernameError}</p>
+            <p class="mt-1 text-xs text-red-600">{usernameError}</p>
           {/if}
 
-          <label
-            class="block mt-4 mb-2 font-medium text-gray-600"
-            for="email"
-          >
+          <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="email">
             Email
           </label>
           <input
@@ -173,14 +165,11 @@ async function submitPasskeySignup() {
             type="email"
             bind:value={email}
             placeholder="you@example.com"
-            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
             disabled={loading}
           />
 
-          <label
-            class="block mt-4 mb-2 font-medium text-gray-600"
-            for="fullname"
-          >
+          <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="fullname">
             Full name <span class="text-gray-400 font-normal">(optional)</span>
           </label>
           <input
@@ -188,37 +177,35 @@ async function submitPasskeySignup() {
             type="text"
             bind:value={fullname}
             placeholder="Your full name"
-            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
             disabled={loading}
           />
 
           <button
             type="submit"
-            class="w-full mt-4 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full mt-3 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading || !username.trim() || !email.trim()}
           >
             {loading ? "Loading..." : "Continue"}
           </button>
         </form>
 
-        <p class="mt-4 text-center text-gray-500">
+        <p class="mt-4 text-center text-xs text-gray-500">
           Already have an account?
           <a
             href="/~signin{username.trim() ? `?username=${encodeURIComponent(username.trim())}` : ''}"
-            class="text-orange-600 hover:text-orange-500"
+            class="text-gray-700 hover:text-blue-600 underline-offset-2 hover:underline"
           >
             Sign in
           </a>
         </p>
       {:else}
-        <div class="space-y-5">
+        <div class="space-y-3">
           <div>
-            <p class="text-gray-500 mb-3">
-              Signing up as <span class="text-gray-900 font-medium"
-                >{username}</span
-              >
+            <p class="text-xs text-gray-500">
+              Signing up as <span class="text-gray-900 font-medium">{username}</span>
               <button
-                class="text-orange-600 hover:text-orange-500 ml-2"
+                class="text-xs text-gray-500 hover:text-blue-600 ml-2 underline-offset-2 hover:underline"
                 onclick={() => {
                   step = "form";
                   authChallenge = null;
@@ -234,7 +221,7 @@ async function submitPasskeySignup() {
 
           <button
             onclick={submitPasskeySignup}
-            class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="w-full px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             disabled={loading || signup.isPending}
           >
             {loading || signup.isPending ? "Signing up..." : "Sign up with passkey"}
@@ -243,7 +230,7 @@ async function submitPasskeySignup() {
           {#if !showSshFlow}
             <button
               onclick={() => (showSshFlow = true)}
-              class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors"
+              class="w-full px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors"
             >
               Sign up with SSH signature
             </button>
@@ -258,11 +245,11 @@ async function submitPasskeySignup() {
             />
           {/if}
 
-          <p class="text-center text-gray-500">
+          <p class="text-center text-xs text-gray-500">
             Already have an account?
             <a
               href="/~signin?username={encodeURIComponent(username.trim())}"
-              class="text-orange-600 hover:text-orange-500"
+              class="text-gray-700 hover:text-blue-600 underline-offset-2 hover:underline"
             >
               Sign in
             </a>
@@ -271,6 +258,6 @@ async function submitPasskeySignup() {
       {/if}
     </div>
 
-    <SkyrLogo class="w-8 h-8 mx-auto mt-6" />
+    <SkyrLogo class="w-6 h-6 mx-auto mt-5" />
   </div>
 </div>

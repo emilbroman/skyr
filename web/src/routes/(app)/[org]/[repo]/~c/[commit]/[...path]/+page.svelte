@@ -238,7 +238,7 @@ let highlightLine = $derived.by(() => {
               {#if i > 0}<span>, </span>{/if}
               <a
                 href={commitTreeHref(orgName, repoName, parent.hash)}
-                class="text-orange-600 hover:text-orange-500 transition-colors"
+                class="text-blue-600 hover:text-blue-500 transition-colors"
               >
                 {parent.hash.substring(0, 8)}
               </a>
@@ -250,7 +250,7 @@ let highlightLine = $derived.by(() => {
       <div class="deploy-dropdown relative inline-block shrink-0">
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-orange-400 hover:text-orange-600 transition-colors focus:outline-none focus:border-orange-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-700 font-medium cursor-pointer hover:border-gray-300 hover:text-gray-900 transition-colors focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           disabled={!environmentsLoaded || environments.length === 0 || deployPending}
           onclick={() => {
               deployMenuOpen = !deployMenuOpen;
@@ -319,7 +319,7 @@ let highlightLine = $derived.by(() => {
               </button>
               <button
                 type="button"
-                class="px-3 py-1.5 text-sm rounded-lg bg-orange-600 text-gray-900 hover:bg-orange-500 transition-colors cursor-pointer disabled:opacity-50"
+                class="px-3 py-1.5 text-xs font-medium rounded bg-gray-900 text-white hover:bg-gray-800 transition-colors cursor-pointer disabled:opacity-50"
                 disabled={deployPending}
                 onclick={() => deployConfirmEnv && onDeploy(deployConfirmEnv)}
               >

@@ -174,42 +174,34 @@ function removeKey(fingerprint: string) {
     <title>Settings – Skyr</title>
 </svelte:head>
 
-<div class="p-6 max-w-2xl mx-auto">
-    <h1 class="font-bold text-gray-900 mb-8">Settings</h1>
+<div class="max-w-2xl mx-auto px-6 py-8">
+    <h1 class="text-sm font-semibold text-gray-900 mb-6 pb-3 border-b border-gray-200">Settings</h1>
 
     {#if settings.isPending}
         <Spinner />
     {:else if settings.error}
-        <div
-            class="p-4 bg-red-50 border border-red-200 rounded text-red-600"
-        >
+        <div class="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-600">
             {settings.error.message}
         </div>
     {:else}
         <!-- Profile section -->
-        <section class="mb-10">
-            <h2 class="font-medium text-gray-900 mb-4">Profile</h2>
-            <div class="bg-white border border-gray-200 rounded-lg p-5">
-                <div class="mb-4">
-                    <label
-                        class="block font-medium text-gray-500 mb-1"
-                        for="username"
-                    >
+        <section class="mb-8">
+            <h2 class="text-xs font-semibold text-gray-700 mb-2">Profile</h2>
+            <div class="bg-white border border-gray-200 rounded p-4">
+                <div class="mb-3">
+                    <label class="block text-xs font-medium text-gray-500 mb-1" for="username">
                         Username
                     </label>
-                    <p id="username" class="text-gray-900">
+                    <p id="username" class="text-xs text-gray-900">
                         {settings.data.me.username}
                     </p>
                 </div>
 
-                <div class="mb-4">
-                    <label
-                        class="block font-medium text-gray-500 mb-1"
-                        for="email"
-                    >
+                <div class="mb-3">
+                    <label class="block text-xs font-medium text-gray-500 mb-1" for="email">
                         Email
                     </label>
-                    <p id="email" class="text-gray-900">
+                    <p id="email" class="text-xs text-gray-900">
                         {settings.data.me.email}
                     </p>
                 </div>
@@ -220,35 +212,30 @@ function removeKey(fingerprint: string) {
                         saveFullname();
                     }}
                 >
-                    <label
-                        class="block font-medium text-gray-500 mb-1"
-                        for="fullname"
-                    >
+                    <label class="block text-xs font-medium text-gray-500 mb-1" for="fullname">
                         Full name
                     </label>
-                    <div class="flex gap-3">
+                    <div class="flex gap-2">
                         <input
                             id="fullname"
                             type="text"
                             bind:value={fullname}
                             placeholder="Your full name"
-                            class="flex-1 px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+                            class="flex-1 px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
                         />
                         <button
                             type="submit"
                             disabled={fullnameSaving}
-                            class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {fullnameSaving ? "Saving..." : "Save"}
                         </button>
                     </div>
                     {#if fullnameSuccess}
-                        <p class="mt-2 text-green-700">Saved.</p>
+                        <p class="mt-2 text-xs text-green-700">Saved.</p>
                     {/if}
                     {#if fullnameError}
-                        <p class="mt-2 text-red-600">
-                            {fullnameError}
-                        </p>
+                        <p class="mt-2 text-xs text-red-600">{fullnameError}</p>
                     {/if}
                 </form>
             </div>
@@ -256,25 +243,25 @@ function removeKey(fingerprint: string) {
 
         <!-- Authentication keys section -->
         <section>
-            <h2 class="font-medium text-gray-900 mb-4">
-                Authentication Keys
+            <h2 class="text-xs font-semibold text-gray-700 mb-2">
+                Authentication keys
             </h2>
-            <div class="bg-white border border-gray-200 rounded-lg p-5">
+            <div class="bg-white border border-gray-200 rounded p-4">
                 {#if settings.data.me.publicKeys.length === 0}
-                    <p class="text-gray-500 mb-4">No keys registered.</p>
+                    <p class="text-xs text-gray-500 mb-3">No keys registered.</p>
                 {:else}
-                    <ul class="space-y-3 mb-4">
+                    <ul class="space-y-1.5 mb-3">
                         {#each settings.data.me.publicKeys as fingerprint}
                             <li
-                                class="flex items-center justify-between bg-gray-100 border border-gray-300 rounded px-3 py-2"
+                                class="flex items-center justify-between bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5"
                             >
-                                <code class="text-gray-600 truncate">
+                                <code class="text-xs text-gray-600 truncate">
                                     {fingerprint}
                                 </code>
                                 <button
                                     onclick={() => removeKey(fingerprint)}
                                     disabled={removePublicKey.isPending}
-                                    class="ml-3 text-red-600 hover:text-red-500 transition-colors disabled:opacity-50 shrink-0"
+                                    class="ml-3 text-xs text-red-600 hover:text-red-500 transition-colors disabled:opacity-50 shrink-0"
                                 >
                                     Remove
                                 </button>
@@ -284,27 +271,27 @@ function removeKey(fingerprint: string) {
                 {/if}
 
                 {#if removeKeyError}
-                    <p class="mb-3 text-red-600">{removeKeyError}</p>
+                    <p class="mb-2 text-xs text-red-600">{removeKeyError}</p>
                 {/if}
 
                 {#if addKeyMode === "closed"}
                     <button
                         onclick={startAddKey}
                         disabled={addKeyLoading}
-                        class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        class="px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                         {addKeyLoading ? "Loading..." : "Add key"}
                     </button>
                 {:else if addKeyMode === "choose"}
-                    <div class="space-y-3">
+                    <div class="space-y-2">
                         {#if addKeyError}
-                            <p class="text-red-600">{addKeyError}</p>
+                            <p class="text-xs text-red-600">{addKeyError}</p>
                         {/if}
 
                         <button
                             onclick={addPasskey}
                             disabled={addKeyLoading || addPublicKey.isPending}
-                            class="w-full px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            class="w-full px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {addKeyLoading || addPublicKey.isPending
                                 ? "Adding..."
@@ -313,22 +300,22 @@ function removeKey(fingerprint: string) {
 
                         <button
                             onclick={() => (addKeyMode = "ssh")}
-                            class="w-full px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded font-medium transition-colors"
+                            class="w-full px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors"
                         >
                             Add SSH key
                         </button>
 
                         <button
                             onclick={cancelAddKey}
-                            class="w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
+                            class="w-full px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
                         >
                             Cancel
                         </button>
                     </div>
                 {:else if addKeyMode === "ssh"}
-                    <div class="space-y-3">
+                    <div class="space-y-2">
                         {#if addKeyError}
-                            <p class="text-red-600">{addKeyError}</p>
+                            <p class="text-xs text-red-600">{addKeyError}</p>
                         {/if}
 
                         <SshSignatureInput
@@ -341,7 +328,7 @@ function removeKey(fingerprint: string) {
 
                         <button
                             onclick={cancelAddKey}
-                            class="w-full px-4 py-2 text-gray-500 hover:text-gray-700 transition-colors"
+                            class="w-full px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
                         >
                             Cancel
                         </button>

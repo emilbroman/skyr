@@ -83,7 +83,7 @@ onDestroy(() => {
 <div class="relative h-full">
   {#if !autoScroll}
     <button
-      class="absolute top-2 right-2 z-10 px-2 py-1 bg-gray-800/90 backdrop-blur border border-gray-700 rounded shadow-sm text-orange-400 hover:text-orange-300 transition-colors"
+      class="absolute top-2 right-2 z-10 px-2 py-1 bg-gray-800/90 backdrop-blur border border-gray-700 rounded shadow-sm text-blue-400 hover:text-blue-300 transition-colors"
       onclick={() => {
         autoScroll = true;
         scrollToBottom();

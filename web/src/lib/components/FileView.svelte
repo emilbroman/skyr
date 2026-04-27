@@ -128,7 +128,7 @@ $effect(() => {
       <button
         class="transition-colors {showSource
           ? 'text-gray-500 hover:text-gray-800'
-          : 'text-orange-600 hover:text-orange-500'}"
+          : 'text-blue-600 hover:text-blue-500'}"
         onclick={() => (showSource = !showSource)}
       >
         {showSource ? "Preview" : "Source"}
@@ -137,21 +137,21 @@ $effect(() => {
   </div>
   {#snippet resourceInlay(items: string[])}
     {#if items.length === 1}
-      <span class="ml-4 text-orange-500/70 font-sans select-none"
+      <span class="ml-4 text-blue-500/70 font-sans select-none"
         >{items[0]}</span
       >
     {:else}
       <span
         class="ml-4 relative inline-block font-sans select-none group/inlay"
       >
-        <span class="text-orange-500/70 cursor-default"
+        <span class="text-blue-500/70 cursor-default"
           >{items.length} resources</span
         >
         <div
           class="hidden group-hover/inlay:block absolute left-0 top-full z-10 mt-1 py-1 px-2 bg-gray-100 border border-gray-300 rounded shadow-lg whitespace-nowrap"
         >
           {#each items as item}
-            <div class="text-orange-500 leading-5">{item}</div>
+            <div class="text-blue-500 leading-5">{item}</div>
           {/each}
         </div>
       </span>
@@ -172,7 +172,7 @@ $effect(() => {
               <tr
                 id="line-{lineNum}"
                 class="hover:bg-gray-100 {highlightLine === lineNum
-                  ? 'bg-orange-100'
+                  ? 'bg-blue-50'
                   : ''}"
               >
                 <td
@@ -196,7 +196,7 @@ $effect(() => {
               <tr
                 id="line-{lineNum}"
                 class="hover:bg-gray-100 {highlightLine === lineNum
-                  ? 'bg-orange-100'
+                  ? 'bg-blue-50'
                   : ''}"
               >
                 <td

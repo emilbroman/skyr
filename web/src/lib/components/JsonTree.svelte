@@ -288,7 +288,7 @@ let resolved = $derived(resolve(value));
     {:else if resolved.kind === "string"}
       <span class="text-green-700">{resolved.display}</span>
     {:else if resolved.kind === "number"}
-      <span class="text-orange-600">{resolved.display}</span>
+      <span class="text-blue-600">{resolved.display}</span>
     {:else if resolved.kind === "boolean"}
       <span class="text-yellow-600">{resolved.display}</span>
     {:else if resolved.kind === "null"}
@@ -296,7 +296,7 @@ let resolved = $derived(resolve(value));
     {:else if resolved.kind === "path"}
       <span class="text-green-700">{resolved.path}</span>{" "}<span class="text-gray-400">{resolved.hash}</span>
     {:else if resolved.kind === "special"}
-      <span class="text-orange-600 italic">{resolved.display}</span>
+      <span class="text-blue-600 italic">{resolved.display}</span>
     {/if}
   </span>
 {/if}

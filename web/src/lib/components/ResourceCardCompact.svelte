@@ -12,20 +12,20 @@ let typeParts = $derived(resource.type.split("."));
 </script>
 
 {#snippet content()}
-  <div class="text-orange-500/70 truncate">
+  <div class="text-gray-400 font-mono text-xs truncate">
     {#if typeParts.length > 1}
       <span>{typeParts.slice(0, -1).join(".")}.</span>
     {/if}
-    <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
+    <span class="text-gray-700 font-medium">{typeParts[typeParts.length - 1]}</span>
   </div>
-  <div class="flex items-center gap-1.5 mt-0.5">
-    <span class="text-gray-600 truncate">{resource.name}</span>
+  <div class="flex items-center gap-1 mt-0.5 text-xs">
+    <span class="text-gray-800 truncate">{resource.name}</span>
     {#each resource.markers as marker}
       <span
-        class="px-1 py-px rounded border {marker ===
+        class="px-1.5 py-0.5 rounded text-xs {marker ===
         ResourceMarker.Volatile
-          ? 'border-yellow-300 text-yellow-700'
-          : 'border-blue-300 text-blue-700'}"
+          ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
+          : 'bg-blue-50 text-blue-700 border border-blue-200'}"
       >
         {marker}
       </span>

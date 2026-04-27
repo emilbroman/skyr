@@ -45,7 +45,7 @@ let artifacts = $derived(envDetail.data?.organization.repository.environment.art
             href={artifact.url}
             target="_blank"
             rel="noopener noreferrer"
-            class="text-orange-600 hover:text-orange-500"
+            class="text-blue-600 hover:text-blue-500"
           >
             Download
           </a>

@@ -2,6 +2,7 @@
 import { OrganizationsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import Spinner from "$lib/components/Spinner.svelte";
+import { Plus } from "lucide-svelte";
 import { orgHref, newOrgHref } from "$lib/paths";
 
 const organizations = graphqlQuery(() => ({
@@ -13,13 +14,14 @@ const organizations = graphqlQuery(() => ({
     <title>Organizations – Skyr</title>
 </svelte:head>
 
-<div class="p-6">
-  <div class="flex items-center justify-between mb-6">
-    <h1 class="font-bold text-gray-900">Organizations</h1>
+<div class="max-w-4xl mx-auto px-6 py-8">
+  <div class="flex items-end justify-between mb-6 pb-3 border-b border-gray-200">
+    <h1 class="text-sm font-semibold text-gray-900">Organizations</h1>
     <a
       href={newOrgHref()}
-      class="px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors"
+      class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors"
     >
+      <Plus class="w-3.5 h-3.5" />
       New organization
     </a>
   </div>
@@ -27,31 +29,27 @@ const organizations = graphqlQuery(() => ({
   {#if organizations.isPending}
     <Spinner />
   {:else if organizations.error}
-    <div class="p-4 bg-red-50 border border-red-200 rounded text-red-600">
+    <div class="p-3 bg-red-50 border border-red-200 rounded text-xs text-red-600">
       {organizations.error.message}
     </div>
   {:else if organizations.data.organizations.length === 0}
-    <div class="text-center py-16">
-      <p class="text-gray-500 mb-2">No organizations found.</p>
-      <p class="text-gray-400">
-        Create an organization to get started.
-      </p>
+    <div class="text-center py-16 border border-dashed border-gray-200 rounded">
+      <p class="text-xs text-gray-500 mb-1">No organizations found.</p>
+      <p class="text-xs text-gray-400">Create an organization to get started.</p>
     </div>
   {:else}
-    <div class="grid gap-4">
+    <div class="bg-white border border-gray-200 rounded overflow-hidden divide-y divide-gray-100">
       {#each organizations.data.organizations as org}
         <a
           href={orgHref(org.name)}
-          class="block bg-white border border-gray-200 rounded-lg p-5 hover:border-gray-400 transition-colors"
+          class="flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors group"
         >
-          <div class="flex items-center justify-between">
-            <h2 class="font-medium text-gray-900">{org.name}</h2>
-            <span class="text-gray-400"
-              >{org.repositories.length} repositor{org.repositories.length !== 1
-                ? "ies"
-                : "y"}</span
-            >
-          </div>
+          <h2 class="text-xs font-medium text-gray-900 group-hover:text-blue-600">{org.name}</h2>
+          <span class="text-xs text-gray-400"
+            >{org.repositories.length} repositor{org.repositories.length !== 1
+              ? "ies"
+              : "y"}</span
+          >
         </a>
       {/each}
     </div>

@@ -92,7 +92,7 @@ function onRedeploy() {
       <div class="text-xs mb-2">
         <a
           href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
-          class="text-orange-600 hover:text-orange-500 transition-colors inline-flex items-center gap-0.5"
+          class="text-blue-600 hover:text-blue-500 transition-colors inline-flex items-center gap-0.5"
         >
           <span class="font-mono">{deployment.commit.hash.slice(0, 8)}</span>
           <ArrowUpRight class="w-3 h-3" />
@@ -148,7 +148,7 @@ function onRedeploy() {
               <li>
                 <a
                   href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                  class="text-orange-600 hover:text-orange-500"
+                  class="text-blue-600 hover:text-blue-500"
                 >
                   Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
                 </a>
@@ -163,7 +163,7 @@ function onRedeploy() {
             type="button"
             onclick={onRedeploy}
             disabled={createDeployment.isPending}
-            class="px-3 py-1 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="px-3 py-1 text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {createDeployment.isPending ? "Deploying..." : "Deploy"}
           </button>

@@ -31,8 +31,8 @@ function submit() {
     <title>New Repository · {orgName} – Skyr</title>
 </svelte:head>
 
-<div class="p-6 max-w-lg mx-auto">
-    <h1 class="font-bold text-gray-900 mb-6">New repository</h1>
+<div class="max-w-md mx-auto px-6 py-8">
+    <h1 class="text-sm font-semibold text-gray-900 mb-4 pb-3 border-b border-gray-200">New repository</h1>
 
     <form
         onsubmit={(e) => {
@@ -40,7 +40,7 @@ function submit() {
             submit();
         }}
     >
-        <label class="block font-medium text-gray-500 mb-1" for="repo-name">
+        <label class="block text-xs font-medium text-gray-500 mb-1" for="repo-name">
             Repository name
         </label>
         <input
@@ -51,16 +51,14 @@ function submit() {
             pattern="[a-zA-Z_][a-zA-Z0-9_]*"
             title="Must start with a letter or underscore, followed by letters, numbers, or underscores"
             required
-            class="w-full px-3 py-2 bg-gray-100 border border-gray-300 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-orange-500"
+            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
         />
-        <p class="mt-1 text-gray-400">
+        <p class="mt-1 text-xs text-gray-400">
             Must start with a letter or underscore, followed by letters, numbers, or underscores.
         </p>
 
         {#if error}
-            <div
-                class="mt-4 p-3 bg-red-50 border border-red-200 rounded text-red-600"
-            >
+            <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
                 {error}
             </div>
         {/if}
@@ -68,7 +66,7 @@ function submit() {
         <button
             type="submit"
             disabled={createRepository.isPending || !repoName.trim()}
-            class="mt-4 px-4 py-2 bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            class="mt-4 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
             {createRepository.isPending ? "Creating..." : "Create repository"}
         </button>

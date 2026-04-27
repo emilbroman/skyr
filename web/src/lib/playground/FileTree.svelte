@@ -155,7 +155,7 @@ function handleRenameKeydown(e: KeyboardEvent) {
         {#if creatingIn === ""}
             <div class="flex items-center gap-1.5 px-3 py-0.5" style="padding-left: 12px;">
                 {#if creatingFolder}
-                    <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                    <Folder class="w-3.5 h-3.5 text-blue-500 shrink-0" />
                 {:else}
                     <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
                 {/if}
@@ -185,9 +185,9 @@ function handleRenameKeydown(e: KeyboardEvent) {
             onkeydown={(e) => { if (e.key === "Enter") toggleFolder(node.path); }}
         >
             {#if isExpanded}
-                <FolderOpen class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                <FolderOpen class="w-3.5 h-3.5 text-blue-500 shrink-0" />
             {:else}
-                <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                <Folder class="w-3.5 h-3.5 text-blue-500 shrink-0" />
             {/if}
             <span class="flex-1 truncate text-gray-700">{node.name}</span>
             <div class="hidden group-hover:flex gap-0.5">
@@ -217,7 +217,7 @@ function handleRenameKeydown(e: KeyboardEvent) {
                     style="padding-left: {12 + (depth + 1) * 16}px;"
                 >
                     {#if creatingFolder}
-                        <Folder class="w-3.5 h-3.5 text-orange-500 shrink-0" />
+                        <Folder class="w-3.5 h-3.5 text-blue-500 shrink-0" />
                     {:else}
                         <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
                     {/if}

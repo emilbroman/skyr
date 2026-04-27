@@ -84,7 +84,7 @@ function findCurrentTitle(items: NavItem[]): string | null {
 let currentTitle = $derived(findCurrentTitle(nav) ?? "Docs");
 
 const searchInputClass =
-    "w-full pl-8 pr-3 py-1.5 text-sm border border-gray-200 rounded-md bg-gray-50 focus:bg-white focus:border-gray-300 focus:outline-none";
+    "w-full pl-7 pr-2.5 py-1 text-xs border border-gray-200 rounded bg-white placeholder-gray-400 focus:bg-white focus:border-blue-500 focus:outline-none";
 </script>
 
 {#snippet searchResultsList()}
@@ -93,9 +93,9 @@ const searchInputClass =
             <li>
                 <button
                     onclick={() => selectResult(entry)}
-                    class="w-full text-left px-2 py-1.5 rounded hover:bg-gray-100 block"
+                    class="w-full text-left px-2 py-1.5 rounded hover:bg-gray-50 block"
                 >
-                    <span class="text-sm font-medium text-gray-900 block truncate">{entry.title}</span>
+                    <span class="text-xs font-medium text-gray-900 block truncate">{entry.title}</span>
                     {#if entry.pageTitle}
                         <span class="text-xs text-gray-500 block truncate">{entry.pageTitle}</span>
                     {/if}
@@ -111,20 +111,20 @@ const searchInputClass =
 {/snippet}
 
 {#snippet navTree(items: NavItem[])}
-    <ul class="space-y-1">
+    <ul class="space-y-px">
         {#each items as item}
             <li>
                 <a
                     href={item.path}
                     onclick={() => (mobileNavOpen = false)}
-                    class="block px-2 py-1 rounded {isActive(item.path)
-                        ? 'bg-gray-100 text-gray-900 font-medium'
-                        : 'text-gray-600 hover:text-gray-900'}"
+                    class="block px-2 py-1 rounded text-xs {isActive(item.path)
+                        ? 'bg-blue-50 text-blue-600 font-medium'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'}"
                 >
                     {item.title}
                 </a>
                 {#if item.children}
-                    <div class="ml-3 mt-1">
+                    <div class="ml-3 mt-px">
                         {@render navTree(item.children)}
                     </div>
                 {/if}
@@ -159,7 +159,7 @@ const searchInputClass =
         </div>
         <nav class="flex-1 p-4 text-sm overflow-y-auto">
             <div class="mb-3 relative">
-                <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <Search size={12} class="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 <input
                     type="text"
                     placeholder="Search docs..."
@@ -180,9 +180,9 @@ const searchInputClass =
 
 <div class="flex-1 bg-white flex">
     <!-- Desktop sidebar -->
-    <nav class="hidden md:block w-56 shrink-0 border-r border-gray-200 p-4 text-sm sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">
+    <nav class="hidden md:block w-56 shrink-0 border-r border-gray-200 p-3 text-sm sticky top-14 max-h-[calc(100vh-3.5rem)] overflow-y-auto">
         <div class="mb-3 relative">
-            <Search size={14} class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+            <Search size={12} class="absolute left-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
             <input
                 type="text"
                 placeholder="Search docs..."
@@ -198,7 +198,7 @@ const searchInputClass =
         {/if}
     </nav>
 
-    <main class="flex-1 min-w-0 max-w-3xl px-8 py-6">
+    <main class="flex-1 min-w-0 max-w-3xl px-8 py-8">
         {@render children()}
     </main>
 </div>

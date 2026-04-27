@@ -74,36 +74,34 @@ let readmeContent = $derived.by(() => {
 });
 </script>
 
-<div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
-  <div class="divide-y divide-gray-200">
+<div class="bg-white border border-gray-200 rounded overflow-hidden">
+  <div class="divide-y divide-gray-100">
     {#if path.length > 0}
       <a
         href={parentHref()}
-        class="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-gray-100 transition-colors"
+        class="w-full text-left px-3 py-1.5 flex items-center gap-2 text-xs hover:bg-gray-50 transition-colors"
       >
-        <ArrowLeft class="w-4 h-4 text-gray-400" />
+        <ArrowLeft class="w-3.5 h-3.5 text-gray-400" />
         <span class="text-gray-500">..</span>
       </a>
     {/if}
     {#each sortedEntries as entry}
       <a
         href={entryHref(entry.name ?? "")}
-        class="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-gray-100 transition-colors"
+        class="w-full text-left px-3 py-1.5 flex items-center gap-2 text-xs hover:bg-gray-50 transition-colors group"
       >
         {#if entry.__typename === "Tree"}
-          <Folder class="w-4 h-4 text-orange-600 shrink-0" />
-          <span class="text-gray-700">{entry.name}</span>
+          <Folder class="w-3.5 h-3.5 text-blue-500 shrink-0" />
+          <span class="text-gray-800 group-hover:text-blue-600">{entry.name}</span>
         {:else}
-          <FileText class="w-4 h-4 text-gray-400 shrink-0" />
-          <span class="text-gray-600">{entry.name}</span>
-          <span class="ml-auto text-gray-400"
-            >{formatSize(entry.size)}</span
-          >
+          <FileText class="w-3.5 h-3.5 text-gray-400 shrink-0" />
+          <span class="text-gray-700 group-hover:text-blue-600">{entry.name}</span>
+          <span class="ml-auto text-gray-400">{formatSize(entry.size)}</span>
         {/if}
       </a>
     {/each}
     {#if sortedEntries.length === 0}
-      <div class="p-8 text-center text-gray-400">Empty directory</div>
+      <div class="p-6 text-center text-xs text-gray-400">Empty directory</div>
     {/if}
   </div>
 </div>

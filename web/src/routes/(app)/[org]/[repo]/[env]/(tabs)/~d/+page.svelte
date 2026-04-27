@@ -114,95 +114,97 @@ function onWindowClick(event: MouseEvent) {
 </svelte:head>
 
 {#if createDeploymentError}
-  <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600">
+  <div class="mb-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
     {createDeploymentError}
   </div>
 {/if}
 
 {#if env}
   {#if env.deployments.length === 0}
-    <p class="text-gray-500">No deployments.</p>
+    <div class="text-center py-12 border border-dashed border-gray-200 rounded">
+      <p class="text-xs text-gray-500">No deployments.</p>
+    </div>
   {:else}
-    <div class="hidden md:block bg-white border border-gray-200 rounded-lg overflow-hidden">
-    <table class="w-full text-left">
+    <div class="hidden md:block bg-white border border-gray-200 rounded overflow-hidden">
+    <table class="w-full text-left text-xs">
       <thead>
-        <tr class="border-b border-gray-200 text-gray-500">
-          <th class="pb-3 pt-3 pl-4 pr-4 font-medium">
+        <tr class="border-b border-gray-200 text-gray-500 bg-gray-50">
+          <th class="py-2 pl-4 pr-4 font-medium">
             <button
-              class="hover:text-gray-800 transition-colors cursor-pointer"
+              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("id")}
             >
               ID{sortIndicator("id")}
             </button>
           </th>
-          <th class="pb-3 pt-3 pr-4 font-medium">
+          <th class="py-2 pr-4 font-medium">
             <button
-              class="hover:text-gray-800 transition-colors cursor-pointer"
+              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("commit")}
             >
               Commit{sortIndicator("commit")}
             </button>
           </th>
-          <th class="pb-3 pt-3 pr-4 font-medium">
+          <th class="py-2 pr-4 font-medium">
             <button
-              class="hover:text-gray-800 transition-colors cursor-pointer"
+              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("deployedAt")}
             >
               Deployed at{sortIndicator("deployedAt")}
             </button>
           </th>
-          <th class="pb-3 pt-3 pr-4 font-medium">
+          <th class="py-2 pr-4 font-medium">
             <button
-              class="hover:text-gray-800 transition-colors cursor-pointer"
+              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("state")}
             >
               State{sortIndicator("state")}
             </button>
           </th>
-          <th class="pb-3 pt-3 pr-4 font-medium">
+          <th class="py-2 pr-4 font-medium">
             <button
-              class="hover:text-gray-800 transition-colors cursor-pointer"
+              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("resources")}
             >
               Resources{sortIndicator("resources")}
             </button>
           </th>
-          <th class="pb-3 pt-3 pr-4 font-medium"></th>
+          <th class="py-2 pr-4 font-medium"></th>
         </tr>
       </thead>
-      <tbody>
+      <tbody class="divide-y divide-gray-100">
         {#each sortedDeployments as deployment}
-          <tr class="border-b border-gray-200 hover:bg-gray-50">
-            <td class="py-3 pl-4 pr-4 font-mono text-xs text-gray-500">
+          <tr class="hover:bg-gray-50">
+            <td class="py-2 pl-4 pr-4 font-mono text-gray-500">
               {deployment.shortId}
             </td>
-            <td class="py-3 pr-4 truncate max-w-md">
+            <td class="py-2 pr-4 truncate max-w-md">
               <a
                 href={deploymentHref(orgName, repoName, envName, deployment.id)}
-                class="text-orange-600 hover:text-orange-500"
+                class="text-gray-800 hover:text-blue-600"
               >
                 {deployment.commit.message.split("\n")[0]}
               </a>
             </td>
-            <td class="py-3 pr-4 text-gray-500">
+            <td class="py-2 pr-4 text-gray-500">
               {new Date(deployment.createdAt).toLocaleString()}
             </td>
-            <td class="py-3 pr-4">
+            <td class="py-2 pr-4">
               <div class="flex items-center gap-1.5">
                 <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
                 <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" showLabel={false} />
               </div>
             </td>
-            <td class="py-3 pr-4 text-gray-500">
+            <td class="py-2 pr-4 text-gray-500">
               {deployment.resources.length}
             </td>
-            <td class="py-3 pr-4 text-right">
+            <td class="py-2 pr-4 text-right">
               {#if deployment.state !== DeploymentState.Desired}
                 <button
                   type="button"
                   onclick={() => onDeploy(deployment.commit.hash)}
                   disabled={createDeployment.isPending && pendingCommit === deployment.commit.hash}
-                  class="px-2 py-1 text-xs bg-orange-600 hover:bg-orange-500 text-gray-900 rounded font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="px-2.5 py-1 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {createDeployment.isPending && pendingCommit === deployment.commit.hash
                     ? "Deploying..."
@@ -226,7 +228,7 @@ function onWindowClick(event: MouseEvent) {
           <div class="mt-2 truncate">
             <a
               href={deploymentHref(orgName, repoName, envName, deployment.id)}
-              class="text-orange-600 hover:text-orange-500"
+              class="text-blue-600 hover:text-blue-500"
             >
               {deployment.commit.message.split("\n")[0]}
             </a>

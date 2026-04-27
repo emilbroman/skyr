@@ -137,11 +137,11 @@ function switchEnv(newEnv: string) {
 <svelte:window onclick={handleClickOutside} />
 
 <div>
-  <nav class="mb-2 flex items-center">
+  <nav class="mb-3 flex items-center">
     <div class="inline-flex items-center relative">
-      <GitBranch class="w-4 h-4 text-gray-400 absolute left-2.5 pointer-events-none" />
+      <GitBranch class="w-3.5 h-3.5 text-gray-400 absolute left-2 pointer-events-none" />
       <select
-        class="appearance-none bg-white border border-gray-200 rounded-lg pl-8 py-1.5 pr-8 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
+        class="appearance-none bg-white border border-gray-200 rounded pl-7 py-1 pr-7 text-xs text-gray-700 font-medium cursor-pointer hover:border-gray-300 transition-colors focus:outline-none focus:border-blue-500"
         value={envName}
         onchange={(e) => switchEnv(e.currentTarget.value)}
       >
@@ -150,19 +150,19 @@ function switchEnv(newEnv: string) {
           <option value={name}>{name}</option>
         {/each}
       </select>
-      <ChevronDown class="w-3.5 h-3.5 text-gray-400 absolute right-2.5 pointer-events-none" />
+      <ChevronDown class="w-3 h-3 text-gray-400 absolute right-2 pointer-events-none" />
     </div>
 
     <div class="teardown-dropdown relative inline-block ml-auto">
       <button
-        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-red-400 hover:text-red-600 transition-colors focus:outline-none focus:border-red-500"
+        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-700 font-medium cursor-pointer hover:border-red-300 hover:text-red-600 transition-colors focus:outline-none focus:border-red-500"
         onclick={() => {
             tearDownConfirmOpen = !tearDownConfirmOpen;
             tearDownConfirmInput = "";
             tearDownError = null;
         }}
       >
-        <Power class="w-4 h-4" />
+        <Power class="w-3.5 h-3.5" />
         Tear down
       </button>
 
@@ -214,12 +214,12 @@ function switchEnv(newEnv: string) {
 
     <div class="clone-dropdown relative inline-block ml-2">
       <button
-        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-gray-400 transition-colors focus:outline-none focus:border-orange-500"
+        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-700 font-medium cursor-pointer hover:border-gray-300 hover:text-gray-900 transition-colors focus:outline-none focus:border-blue-500"
         onclick={() => (cloneDropdownOpen = !cloneDropdownOpen)}
       >
-        <Download class="w-4 h-4" />
+        <Download class="w-3.5 h-3.5" />
         Clone
-        <ChevronDown class="w-3.5 h-3.5 text-gray-400" />
+        <ChevronDown class="w-3 h-3 text-gray-400" />
       </button>
 
       {#if cloneDropdownOpen}
@@ -261,20 +261,20 @@ function switchEnv(newEnv: string) {
     <div class="flex gap-1 border-b border-gray-200 mb-3 overflow-x-auto overflow-y-hidden">
       <a
         href={envBase}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'files'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <Folder class="w-4 h-4" />
         Files
       </a>
       <a
         href={deploymentsPath}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'deployments'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <RefreshCw class="w-4 h-4" />
         Deployments <span class="text-gray-400 ml-1"
@@ -283,10 +283,10 @@ function switchEnv(newEnv: string) {
       </a>
       <a
         href={resPath}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'resources'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <Box class="w-4 h-4" />
         Resources <span class="text-gray-400 ml-1"
@@ -295,10 +295,10 @@ function switchEnv(newEnv: string) {
       </a>
       <a
         href={artifactsPath}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'artifacts'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <Archive class="w-4 h-4" />
         Artifacts {#if env.artifacts.length > 0}<span class="text-gray-400 ml-1"
@@ -307,20 +307,20 @@ function switchEnv(newEnv: string) {
       </a>
       <a
         href={logsPath}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'logs'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <AlignJustify class="w-4 h-4" />
         Logs
       </a>
       <a
         href={incidentsPath}
-        class="inline-flex items-center gap-1.5 px-2 py-2 whitespace-nowrap transition-colors border-b-3 -mb-px {activeTab ===
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
         'incidents'
-          ? 'border-orange-500 text-gray-900'
-          : 'border-transparent text-gray-500 hover:text-gray-800'}"
+          ? 'border-blue-500 text-blue-600'
+          : 'border-transparent text-gray-500 hover:text-gray-700'}"
       >
         <AlertTriangle class="w-4 h-4" />
         Incidents {#if openIncidentCount > 0}<span class="text-red-500 ml-1"

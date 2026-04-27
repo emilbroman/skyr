@@ -501,7 +501,7 @@ function typeParts(type: string): { prefix: string; last: string } {
           <path
             d={edgePath(edge)}
             fill="none"
-            stroke={isEdgeHighlighted(edge) ? "#ea580c" : "#d1d5db"}
+            stroke={isEdgeHighlighted(edge) ? "#3b82f6" : "#d1d5db"}
             stroke-width={isEdgeHighlighted(edge) ? 2 : 1.5}
             opacity={hoveredNode && !isEdgeHighlighted(edge) ? 0.15 : 1}
             marker-end="url(#{isEdgeHighlighted(edge) ? 'arrow-hl' : 'arrow'})"
@@ -518,11 +518,11 @@ function typeParts(type: string): { prefix: string; last: string } {
                   class="flex flex-col justify-center w-full h-full rounded-lg border px-3 py-2 transition-all duration-150
 										{node.isShadow
                     ? 'border-dashed border-amber-300/60 bg-white/60'
-                    : 'border-gray-300 bg-white hover:border-orange-500'}
+                    : 'border-gray-200 bg-white hover:border-blue-500'}
 										{hoveredNode === node.id
                     ? node.isShadow
-                      ? 'border-amber-500 shadow-lg shadow-amber-500/10'
-                      : 'border-orange-500 shadow-lg shadow-orange-500/10'
+                      ? 'border-amber-500 shadow-sm shadow-amber-500/10'
+                      : 'border-blue-500 shadow-sm shadow-blue-500/10'
                     : ''}
 										{hoveredNode && hoveredNode !== node.id ? 'opacity-40' : ''}"
                   onmouseenter={() => (hoveredNode = node.id)}
@@ -531,13 +531,13 @@ function typeParts(type: string): { prefix: string; last: string } {
                   <div
                     class="truncate {node.isShadow
                       ? 'text-gray-400'
-                      : 'text-orange-500/70'}"
+                      : 'text-gray-400'}"
                   >
                     {#if tp.prefix}<span>{tp.prefix}</span>{/if}
                     <span
                       class={node.isShadow
                         ? "text-gray-500"
-                        : "text-orange-500"}>{tp.last}</span
+                        : "text-gray-800 font-medium"}>{tp.last}</span
                     >
                   </div>
                   <div class="flex items-center gap-1.5 mt-0.5">
@@ -550,8 +550,8 @@ function typeParts(type: string): { prefix: string; last: string } {
                       <span
                         class="px-1 py-px rounded border shrink-0 {marker ===
                         ResourceMarker.Volatile
-                          ? 'border-yellow-300 text-yellow-700'
-                          : 'border-blue-300 text-blue-700'}"
+                          ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
+                          : 'bg-blue-50 text-blue-700 border border-blue-200'}"
                       >
                         {marker}
                       </span>
@@ -569,7 +569,7 @@ function typeParts(type: string): { prefix: string; last: string } {
                   class="flex flex-col justify-center w-full h-full rounded-lg border border-dashed px-3 py-2 transition-all duration-150
 										border-amber-300/60 bg-white/60
 										{hoveredNode === node.id
-                    ? 'border-amber-500 shadow-lg shadow-amber-500/10'
+                    ? 'border-amber-500 shadow-sm shadow-amber-500/10'
                     : ''}
 										{hoveredNode && hoveredNode !== node.id ? 'opacity-40' : ''}"
                   onmouseenter={() => (hoveredNode = node.id)}

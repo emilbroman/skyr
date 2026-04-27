@@ -6,14 +6,17 @@ let { data } = $props();
     <title>Standard Library Reference – Skyr Docs</title>
 </svelte:head>
 
-<article class="prose max-w-none">
-    <h1>Standard Library Reference</h1>
+<article>
+    <h1 class="text-base font-semibold text-gray-900 mb-4 pb-3 border-b border-gray-200">Standard Library Reference</h1>
 
-    <ul>
+    <div class="bg-white border border-gray-200 rounded overflow-hidden divide-y divide-gray-100">
         {#each data.modules as mod}
-            <li>
-                <a href="/~docs/scl/stdlib-ref/{mod.slug}/"><code>{mod.name}</code></a>
-            </li>
+            <a
+                href="/~docs/scl/stdlib-ref/{mod.slug}/"
+                class="block px-4 py-2.5 text-xs hover:bg-gray-50 transition-colors group"
+            >
+                <code class="text-gray-800 group-hover:text-blue-600">{mod.name}</code>
+            </a>
         {/each}
-    </ul>
+    </div>
 </article>

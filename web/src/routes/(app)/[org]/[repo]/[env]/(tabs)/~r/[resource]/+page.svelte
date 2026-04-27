@@ -159,19 +159,19 @@ let aRecordFqdn = $derived.by(() => {
     <div class="flex-1">
       <div class="mb-1">
         {#if typeParts.length > 1}
-          <span class="text-orange-500/70"
+          <span class="text-gray-400 font-mono"
             >{typeParts.slice(0, -1).join(".")}.</span
           >
         {/if}
-        <span class="text-orange-500">{typeParts[typeParts.length - 1]}</span>
+        <span class="text-gray-700 font-mono font-medium">{typeParts[typeParts.length - 1]}</span>
       </div>
       <h2 class="font-bold text-gray-900 flex items-center gap-2">
         {resource.name}
         {#each resource.markers as marker}
           <span
-            class="px-1.5 py-px rounded border {marker === 'VOLATILE'
-              ? 'border-yellow-300 text-yellow-700'
-              : 'border-blue-300 text-blue-700'}"
+            class="px-1.5 py-0.5 rounded text-xs {marker === 'VOLATILE'
+              ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
+              : 'bg-blue-50 text-blue-700 border border-blue-200'}"
           >
             {marker}
           </span>
@@ -292,7 +292,7 @@ let aRecordFqdn = $derived.by(() => {
           <dd>
             <a
               href={deploymentHref(orgName, repoName, envName, resource.owner.id)}
-              class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
+              class="text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
             >
               {resource.owner.shortId}
             </a>
@@ -337,7 +337,7 @@ let aRecordFqdn = $derived.by(() => {
                 resource.owner?.commit.hash ?? "",
                 filePath,
               ) + `#line-${line}`}
-              class="text-orange-600 hover:text-orange-500 font-mono text-xs transition-colors"
+              class="text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
             >
               {filePath}:{line}
             </a>
@@ -353,7 +353,7 @@ let aRecordFqdn = $derived.by(() => {
             <li>
               <a
                 href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                class="text-orange-600 hover:text-orange-500"
+                class="text-blue-600 hover:text-blue-500"
               >
                 Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
               </a>
@@ -393,7 +393,7 @@ let aRecordFqdn = $derived.by(() => {
             href="http://{aRecordFqdn}"
             target="_blank"
             rel="noopener noreferrer"
-            class="text-orange-600 hover:text-orange-500 transition-colors"
+            class="text-blue-600 hover:text-blue-500 transition-colors"
             title="Open in browser"
           >
             <ExternalLink class="w-4 h-4" />

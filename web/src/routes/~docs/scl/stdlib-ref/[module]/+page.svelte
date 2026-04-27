@@ -10,7 +10,7 @@ function esc(s: string): string {
 }
 
 function typeLink(name: string): string {
-    return `<a href="#type-${name.toLowerCase()}" class="text-orange-600 hover:underline">${esc(name)}</a>`;
+    return `<a href="#type-${name.toLowerCase()}" class="text-blue-600 hover:underline">${esc(name)}</a>`;
 }
 
 /** Compact inline HTML representation of a type. */
@@ -133,17 +133,17 @@ const hasValueExports = $derived(sortedValueExports.length > 0);
 </svelte:head>
 
 <article>
-    <h1 class="text-2xl font-bold mb-6"><code>{data.name}</code></h1>
+    <h1 class="text-base font-semibold mb-6 pb-3 border-b border-gray-200"><code class="text-gray-900">{data.name}</code></h1>
 
     {#if hasTypeExports}
-        <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">Types</h2>
-        <div class="divide-y divide-gray-200 mb-8">
+        <h2 class="text-xs font-semibold text-gray-700 mb-2">Types</h2>
+        <div class="divide-y divide-gray-100 mb-8 border border-gray-200 rounded bg-white">
             {#each sortedTypeExports as [typeName, typeType]}
                 {@const doc = data.typeExports.doc_comments[typeName]}
-                <section class="py-5" id={"type-" + typeName.toLowerCase()}>
-                    <h3 class="text-lg font-semibold mb-1"><code>{typeName}</code></h3>
+                <section class="px-4 py-4" id={"type-" + typeName.toLowerCase()}>
+                    <h3 class="text-sm font-semibold text-gray-900 mb-1"><code>{typeName}</code></h3>
                     {#if doc}
-                        <div class="prose prose-sm max-w-none mt-2">{@html doc}</div>
+                        <div class="prose prose-sm max-w-none mt-1 prose-p:my-1 prose-code:before:content-none prose-code:after:content-none prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline">{@html doc}</div>
                     {/if}
                     {@render typeDetail(typeType, [], 0)}
                 </section>
@@ -153,32 +153,32 @@ const hasValueExports = $derived(sortedValueExports.length > 0);
 
     {#if hasValueExports}
         {#if hasTypeExports}
-            <h2 class="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">
+            <h2 class="text-xs font-semibold text-gray-700 mb-2">
                 Functions & Values
             </h2>
         {/if}
-        <div class="divide-y divide-gray-200">
+        <div class="divide-y divide-gray-100 border border-gray-200 rounded bg-white">
             {#each sortedValueExports as [fieldName, fieldType]}
                 {@const doc = data.valueExports.doc_comments[fieldName]}
                 {@const fnTy = getFnType(fieldType)}
                 {@const typeParamIds = fnTy ? fnTy.type_params.map(([id]) => id) : []}
 
-                <section class="py-5" id={fieldName.toLowerCase()}>
-                    <h3 class="text-lg font-semibold mb-1"><code>{fieldName}</code></h3>
+                <section class="px-4 py-4" id={fieldName.toLowerCase()}>
+                    <h3 class="text-sm font-semibold text-gray-900 mb-1"><code>{fieldName}</code></h3>
 
                     {#if fnTy}
                         <pre
-                            class="bg-gray-50 border border-gray-200 rounded px-3 py-2 text-sm overflow-x-auto my-2"
+                            class="bg-gray-50 border border-gray-200 rounded px-2.5 py-1.5 text-xs overflow-x-auto my-2 text-gray-800"
                             ><code>{@html formatFnSig(fnTy)}</code></pre>
                     {:else}
-                        <p class="text-sm text-gray-600 my-1">
-                            <strong>Type:</strong>
+                        <p class="text-xs text-gray-600 my-1">
+                            <strong class="text-gray-700">Type:</strong>
                             <code class="text-xs">{@html formatType(fieldType)}</code>
                         </p>
                     {/if}
 
                     {#if doc}
-                        <div class="prose prose-sm max-w-none mt-2">{@html doc}</div>
+                        <div class="prose prose-sm max-w-none mt-1 prose-p:my-1 prose-code:before:content-none prose-code:after:content-none prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline">{@html doc}</div>
                     {/if}
 
                     {#if fnTy}
@@ -235,26 +235,26 @@ const hasValueExports = $derived(sortedValueExports.length > 0);
     {@const complexFields = entries.filter(([_, ty]) => needsExpansion(ty))}
     {@const complexNames = new Set(complexFields.map(([name]) => name))}
 
-    <table class="w-full text-sm border-collapse">
+    <table class="w-full text-xs border-collapse">
         <thead>
-            <tr class="text-left text-xs text-gray-500 border-b border-gray-200">
-                <th class="py-1 pr-3 font-medium">Name</th>
-                <th class="py-1 pr-3 font-medium">Type</th>
-                <th class="py-1 font-medium">Description</th>
+            <tr class="text-left text-xs text-gray-500 border-b border-gray-200 bg-gray-50">
+                <th class="px-2 py-1.5 font-semibold text-gray-700">Name</th>
+                <th class="px-2 py-1.5 font-semibold text-gray-700">Type</th>
+                <th class="px-2 py-1.5 font-semibold text-gray-700">Description</th>
             </tr>
         </thead>
         <tbody>
             {#each entries as [name, ty]}
-                <tr class="border-b border-gray-100">
-                    <td class="py-1 pr-3 align-top"><code class="text-xs">{name}</code></td>
-                    <td class="py-1 pr-3 align-top">
+                <tr class="border-b border-gray-100 last:border-b-0">
+                    <td class="px-2 py-1.5 align-top"><code class="text-xs text-gray-800">{name}</code></td>
+                    <td class="px-2 py-1.5 align-top">
                         {#if complexNames.has(name)}
                             <span class="text-xs text-gray-400 italic">see below</span>
                         {:else}
                             <code class="text-xs">{@html formatType(ty, typeParamIds)}</code>
                         {/if}
                     </td>
-                    <td class="py-1 align-top prose prose-sm max-w-none [&>p]:m-0">
+                    <td class="px-2 py-1.5 align-top prose prose-sm max-w-none [&>p]:m-0 prose-code:before:content-none prose-code:after:content-none">
                         {@html record.doc_comments[name] ?? ""}
                     </td>
                 </tr>
