@@ -6,7 +6,6 @@ query ListRepositoryDeployments {
       qid
       deployments {
         id
-        ref
         commit {
           hash
         }

@@ -301,11 +301,7 @@ mod cdb_finder {
             };
 
             // Construct a cached DeploymentClient.
-            let dc = repo_client.deployment(
-                deployment.environment,
-                deployment.deployment,
-                deployment.nonce,
-            );
+            let dc = repo_client.deployment(deployment.environment, deployment.deployment);
             let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
             self.cache
                 .write()

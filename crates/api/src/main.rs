@@ -692,7 +692,7 @@ impl Mutation {
         let env: ids::EnvironmentId = environment
             .parse()
             .map_err(|_| field_error("Invalid environment name"))?;
-        let deployment_id: ids::DeploymentId = commit_hash
+        let commit: ids::CommitHash = commit_hash
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_qid = ids::RepoQid { org, repo };
@@ -700,10 +700,11 @@ impl Mutation {
         // Each deployment gets a fresh nonce so that re-deploying the same
         // commit creates a distinct deployment identity.
         let nonce = ids::DeploymentNonce::random();
+        let deployment_id = ids::DeploymentId::new(commit, nonce);
         let client = context
             .cdb_client
             .repo(repo_qid)
-            .deployment(env, deployment_id, nonce);
+            .deployment(env, deployment_id);
 
         client.make_desired().await.map_err(|e| {
             tracing::error!("Failed to create deployment: {}", e);
@@ -771,11 +772,7 @@ impl Mutation {
                 internal_error()
             })?;
             if dep.environment == env && dep.state == cdb::DeploymentState::Desired {
-                let dc = repo_client.deployment(
-                    dep.environment.clone(),
-                    dep.deployment.clone(),
-                    dep.nonce,
-                );
+                let dc = repo_client.deployment(dep.environment.clone(), dep.deployment.clone());
                 dc.set(cdb::DeploymentState::Undesired).await.map_err(|e| {
                     tracing::error!("Failed to set deployment to Undesired: {}", e);
                     internal_error()
@@ -903,7 +900,6 @@ impl Mutation {
         let message = rtq::Message::Destroy(rtq::DestroyMessage {
             resource: resource_ref,
             deployment_id: owner_qid.deployment,
-            deployment_nonce: owner_qid.nonce,
         });
 
         context.rtq_publisher.enqueue(&message).await.map_err(|e| {

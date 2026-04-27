@@ -113,10 +113,11 @@ async fn list_deployments(
     let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
         .flat_map(|env| {
+            let env_name = env.name;
             env.deployments
                 .into_iter()
-                .map(|deployment| DeploymentOutput {
-                    r#ref: deployment.ref_,
+                .map(move |deployment| DeploymentOutput {
+                    r#ref: env_name.clone(),
                     commit: deployment.commit.hash,
                     created_at: deployment.created_at,
                     state: format!("{:?}", deployment.state),

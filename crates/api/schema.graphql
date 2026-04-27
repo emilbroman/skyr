@@ -91,17 +91,27 @@ type Deployment implements IncidentEntity {
   """
   id: String!
   """
+    Compact, human-readable label of the form `<6-char commit>.<2-char
+    nonce>` — the first 6 characters of the commit hash followed by the
+    first 2 characters of the nonce (lowercase hex). Suitable for tight
+    UI surfaces where the full [`Self::id`] is too long.
+  """
+  shortId: String!
+  """
     Globally-unique deployment identifier (the full QID, including org,
     repo, and environment). Use this when you need a key that is unique
     across the entire system — log subscriptions, status namespaces, etc.
   """
   qid: ID!
-  ref: String!
+  """
+    Back-edge to the owning environment. The environment object is
+    constructed from the deployments currently in CDB.
+  """
+  environment: Environment!
   commit: Commit!
   createdAt: String!
   state: DeploymentState!
   bootstrapped: Boolean!
-  nonce: String!
   """
     Per-deployment health rollup. **Self-only** — does not aggregate child
     resource health. Resource statuses are reached via

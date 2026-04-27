@@ -1,25 +1,23 @@
 use std::{fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};
-use ids::{DeploymentId, DeploymentNonce, DeploymentQid, EnvironmentId, EnvironmentQid, RepoQid};
+use ids::{DeploymentId, DeploymentQid, EnvironmentId, EnvironmentQid, RepoQid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A deployment is a revision of an environment. It represents a specific commit
 /// being applied to a particular environment (Git ref) within a repository.
 ///
-/// The deployment identity is the pair `(commit_hash, nonce)`, allowing the same
-/// commit to be deployed multiple times.
+/// The deployment identity is a [`DeploymentId`] (commit hash + nonce), allowing
+/// the same commit to be deployed multiple times.
 #[derive(Clone, Debug)]
 pub struct Deployment {
     /// The repository this deployment belongs to.
     pub repo: RepoQid,
     /// The environment (Git ref) this deployment targets.
     pub environment: EnvironmentId,
-    /// The deployment ID (commit hash).
+    /// The deployment ID (commit hash + nonce).
     pub deployment: DeploymentId,
-    /// Random nonce distinguishing deployments of the same commit.
-    pub nonce: DeploymentNonce,
     /// When this deployment was created.
     pub created_at: DateTime<Utc>,
     /// Current lifecycle label.
@@ -31,8 +29,7 @@ pub struct Deployment {
 impl Deployment {
     /// Returns the fully qualified deployment identifier.
     pub fn deployment_qid(&self) -> DeploymentQid {
-        self.environment_qid()
-            .deployment(self.deployment.clone(), self.nonce)
+        self.environment_qid().deployment(self.deployment.clone())
     }
 
     /// Returns the fully qualified environment identifier.

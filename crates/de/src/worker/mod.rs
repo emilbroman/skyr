@@ -18,7 +18,7 @@ use crate::reporter::{
     FailureKind, IterationOutcome, SdbPreview, build_deployment_report, probe_deployment,
     probe_resource_open_crash, publish_report,
 };
-use crate::util::{resource_id_from, resource_ref, short_id};
+use crate::util::{resource_id_from, resource_ref};
 
 pub(crate) struct CachedCompile {
     pub(crate) key: BTreeMap<ids::RepoQid, ids::DeploymentQid>,
@@ -276,7 +276,7 @@ impl Worker {
     /// synthetic SystemError once the cadence elapses.
     async fn work(&mut self, preview: &SdbPreview) -> anyhow::Result<WorkResult> {
         let deployment = self.client.get().await?;
-        let sid = short_id(deployment.deployment.as_str()).to_string();
+        let sid = deployment.deployment.short();
         let state = deployment.state;
 
         let work_result = match state {
@@ -340,7 +340,7 @@ impl Worker {
         deployment: &Deployment,
         preview: &SdbPreview,
     ) -> anyhow::Result<WorkResult> {
-        let sid = short_id(deployment.deployment.as_str()).to_string();
+        let sid = deployment.deployment.short();
         let state = DeploymentState::Desired;
         let failure_count = preview.failure_count();
 
@@ -456,13 +456,11 @@ impl Worker {
 
                 let owner_deployment_qid = deployment.deployment_qid().to_string();
                 let deployment_id = deployment.deployment.clone();
-                let deployment_nonce = deployment.nonce;
 
                 if outcome.fully_explored {
                     self.destroy_untouched_resources(
                         &owner_deployment_qid,
                         &deployment_id,
-                        deployment_nonce,
                         &outcome.touched_resource_ids,
                     )
                     .await?;
@@ -530,7 +528,7 @@ impl Worker {
     /// Idle until Current (the unsuperseded deployment) is bootstrapped,
     /// then transition to UNDESIRED.
     async fn run_lingering(&self, deployment: &Deployment) -> anyhow::Result<()> {
-        let sid = short_id(deployment.deployment.as_str()).to_string();
+        let sid = deployment.deployment.short();
         tracing::info!("{sid} lingering...");
 
         // Follow the supersession chain to find Current.
@@ -539,9 +537,9 @@ impl Worker {
 
         while let Some(superseding) = cursor.get_superseding().await? {
             let superseding_deployment = superseding.get().await?;
-            let commit_hash = superseding_deployment.deployment.clone();
+            let dep_id = superseding_deployment.deployment.clone();
 
-            if !seen.insert((commit_hash.clone(), superseding_deployment.nonce)) {
+            if !seen.insert(dep_id.clone()) {
                 tracing::warn!("detected supersession cycle while lingering");
                 break;
             }
@@ -572,7 +570,7 @@ impl Worker {
     /// Destroy resources in Teardown(µ) — resources owned by this deployment
     /// that are no longer needed by Current. Transition to DOWN when complete.
     async fn run_undesired(&self, deployment: &Deployment) -> anyhow::Result<()> {
-        let sid = short_id(deployment.deployment.as_str()).to_string();
+        let sid = deployment.deployment.short();
         tracing::info!("{sid} tearing down");
 
         let owner_deployment_qid = deployment.deployment_qid().to_string();
@@ -625,7 +623,6 @@ impl Worker {
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
                 resource: resource_ref(&self.environment_qid, &resource_id),
                 deployment_id: deployment.deployment.clone(),
-                deployment_nonce: deployment.nonce,
             });
             self.rtq_publisher.enqueue(&message).await?;
             emitted += 1;
@@ -684,7 +681,6 @@ impl Worker {
         &self,
         owner_deployment_qid: &str,
         deployment_id: &ids::DeploymentId,
-        deployment_nonce: ids::DeploymentNonce,
         touched_resource_ids: &HashSet<ids::ResourceId>,
     ) -> anyhow::Result<()> {
         let mut all_resources = Vec::new();
@@ -740,7 +736,6 @@ impl Worker {
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
                 resource: resource_ref(&self.environment_qid, &resource_id),
                 deployment_id: deployment_id.clone(),
-                deployment_nonce,
             });
             self.rtq_publisher.enqueue(&message).await?;
 

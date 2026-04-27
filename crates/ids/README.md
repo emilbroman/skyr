@@ -19,8 +19,10 @@ Skyr organizes infrastructure into four levels:
 | **Organization** | `OrgId` | SCL symbol | `MyOrg` |
 | **Repository** | `RepoId` | SCL symbol | `MyRepo` |
 | **Environment** | `EnvironmentId` | Git ref (stripped) | `main`, `tag:v1.0` |
-| **Deployment** | `DeploymentId` | 40-char hex SHA-1 | `a10fb43f...` |
+| **Deployment** | `DeploymentId` | `CommitHash.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
 | **Resource** | `ResourceId` | `Type:Name` | `Std/Random.Int:seed` |
+
+A `DeploymentId` is the pair `(commit, nonce)`: a `CommitHash` (40-char lowercase hex SHA-1) and a `DeploymentNonce` (16-char lowercase hex `u64`). The nonce distinguishes multiple deployments of the same commit.
 
 SCL symbol validation requires: non-empty, first character alphabetic or `_`, remaining characters alphanumeric or `_`.
 
@@ -32,7 +34,7 @@ Each level also has a qualified form that includes all parent scopes:
 |------|--------|---------|
 | `RepoQid` | `org/repo` | `MyOrg/MyRepo` |
 | `EnvironmentQid` | `org/repo::env` | `MyOrg/MyRepo::main` |
-| `DeploymentQid` | `org/repo::env@deploy` | `MyOrg/MyRepo::main@a10fb43f...` |
+| `DeploymentQid` | `org/repo::env@hash.nonce` | `MyOrg/MyRepo::main@a10fb43f....a1b2c3d4e5f60718` |
 | `ResourceQid` | `org/repo::env::Type:Name` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
 
 ### Separators
@@ -40,6 +42,7 @@ Each level also has a qualified form that includes all parent scopes:
 - `/` between organization and repository
 - `::` between repository QID and environment
 - `@` between environment QID and deployment
+- `.` between commit hash and nonce (within a deployment ID)
 - `:` between resource type and resource name (within a resource ID)
 - `::` between environment QID and resource ID (within a resource QID)
 
@@ -95,10 +98,10 @@ QID types provide accessors for parent scopes:
 
 ### Binary Encoding
 
-`DeploymentId` supports binary encoding for compact storage:
+`CommitHash` supports binary encoding for compact storage:
 
-- `DeploymentId::from_bytes(&[u8])` — decode from 20-byte SHA-1 representation
-- `DeploymentId::to_bytes()` → `[u8; 20]` — encode to bytes
+- `CommitHash::from_bytes(&[u8])` — decode from 20-byte SHA-1 representation
+- `CommitHash::to_bytes()` → `[u8; 20]` — encode to bytes
 
 ## Related Crates
 

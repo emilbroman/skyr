@@ -113,7 +113,6 @@ impl Worker {
         let full_deployment_qid = self.client.deployment_qid();
         let owner_deployment_qid = full_deployment_qid.to_string();
         let deployment_id = full_deployment_qid.deployment.clone();
-        let deployment_nonce = full_deployment_qid.nonce;
 
         let (effects_tx, mut effects_rx) = tokio::sync::mpsc::unbounded_channel();
         let environment_qid_str = self.environment_qid.to_string();
@@ -237,7 +236,6 @@ impl Worker {
                                 let message = rtq::Message::Create(rtq::CreateMessage {
                                     resource: resource_ref(&env_qid, &id),
                                     deployment_id: deployment_id.clone(),
-                                    deployment_nonce,
                                     inputs: inputs_value,
                                     dependencies: map_dependencies(&env_qid, dependencies),
                                     source_trace,
@@ -286,7 +284,7 @@ impl Worker {
                                 let message = if let Some(from_owner_qid) =
                                     unowned_resource_owner_by_id.get(&id).cloned()
                                 {
-                                    let (from_deployment_id, from_deployment_nonce) =
+                                    let from_deployment_id =
                                         match extract_deployment_identity(&from_owner_qid) {
                                             Ok(v) => v,
                                             Err(error) => {
@@ -300,9 +298,7 @@ impl Worker {
                                     rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
-                                        from_deployment_nonce,
                                         to_deployment_id: deployment_id.clone(),
-                                        to_deployment_nonce: deployment_nonce,
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -311,7 +307,6 @@ impl Worker {
                                     rtq::Message::Restore(rtq::RestoreMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
-                                        deployment_nonce,
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -359,25 +354,22 @@ impl Worker {
                                                 continue;
                                             }
                                         };
-                                    let (from_deployment_id, from_deployment_nonce) =
-                                        match extract_deployment_identity(
-                                            &from_owner_deployment_qid,
-                                        ) {
-                                            Ok(v) => v,
-                                            Err(error) => {
-                                                tracing::error!(
-                                                    from_owner = %from_owner_deployment_qid,
-                                                    "{error:#}",
-                                                );
-                                                continue;
-                                            }
-                                        };
+                                    let from_deployment_id = match extract_deployment_identity(
+                                        &from_owner_deployment_qid,
+                                    ) {
+                                        Ok(v) => v,
+                                        Err(error) => {
+                                            tracing::error!(
+                                                from_owner = %from_owner_deployment_qid,
+                                                "{error:#}",
+                                            );
+                                            continue;
+                                        }
+                                    };
                                     let message = rtq::Message::Adopt(rtq::AdoptMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
-                                        from_deployment_nonce,
                                         to_deployment_id: deployment_id.clone(),
-                                        to_deployment_nonce: deployment_nonce,
                                         desired_inputs,
                                         dependencies: map_dependencies(&env_qid, dependencies),
                                         source_trace,
@@ -404,7 +396,6 @@ impl Worker {
                                     let message = rtq::Message::Check(rtq::CheckMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
-                                        deployment_nonce,
                                     });
                                     if !enqueue_message(
                                         &rtq_publisher,

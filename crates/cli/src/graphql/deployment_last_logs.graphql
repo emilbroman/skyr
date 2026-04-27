@@ -6,7 +6,6 @@ query DeploymentLastLogs($amount: Int) {
       qid
       deployments {
         qid
-        ref
         state
         lastLogs(amount: $amount) {
           severity

@@ -356,7 +356,6 @@ impl ContainerPlugin {
         let deployment_client = repo_client.deployment(
             deployment_qid.environment_qid().environment.clone(),
             deployment_qid.deployment.clone(),
-            deployment_qid.nonce,
         );
 
         // Extract the Git context to a temporary directory

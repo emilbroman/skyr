@@ -49,7 +49,7 @@ enum Program {
 
 /// Determines whether the given deployment is owned by this worker.
 ///
-/// Interprets the first 16 hex characters of the deployment (commit hash) ID
+/// Interprets the first 16 hex characters of the deployment's commit hash
 /// as a big-endian u64 and assigns it to a worker via modulo division.
 /// When `worker_count` is 1 every deployment is owned.
 fn deployment_owned_by_worker(
@@ -60,7 +60,7 @@ fn deployment_owned_by_worker(
     if worker_count <= 1 {
         return true;
     }
-    let hex_prefix = &deployment_id.as_str()[..16];
+    let hex_prefix = &deployment_id.commit.as_str()[..16];
     let hash = u64::from_str_radix(hex_prefix, 16).unwrap_or(0);
     (hash % worker_count as u64) == worker_index as u64
 }
@@ -213,7 +213,6 @@ async fn process(
                 let deployment_client = client.repo(deployment.repo.clone()).deployment(
                     deployment.environment.clone(),
                     deployment.deployment.clone(),
-                    deployment.nonce,
                 );
                 deployment_client.get_superseding().await?.is_some()
             }
@@ -247,7 +246,6 @@ async fn process(
             client: client.repo(deployment.repo.clone()).deployment(
                 deployment.environment.clone(),
                 deployment.deployment.clone(),
-                deployment.nonce,
             ),
             cdb_client: client.clone(),
             rdb_client: rdb_client.clone(),

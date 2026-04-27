@@ -194,12 +194,12 @@ impl Repository {
     }
 
     async fn commit(&self, context: &Context, hash: String) -> FieldResult<Commit> {
-        let deployment_id: ids::DeploymentId = hash
+        let commit_hash: ids::CommitHash = hash
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_client = context.cdb_client.repo(self.repository.name.clone());
-        let oid = gix_hash::ObjectId::from_hex(deployment_id.as_str().as_bytes()).map_err(|e| {
-            tracing::error!("Invalid object ID hex for commit {deployment_id}: {e}");
+        let oid = gix_hash::ObjectId::from_hex(commit_hash.as_str().as_bytes()).map_err(|e| {
+            tracing::error!("Invalid object ID hex for commit {commit_hash}: {e}");
             internal_error()
         })?;
         let commit = repo_client.read_commit(oid).await.map_err(|e| {
@@ -271,15 +271,9 @@ impl Environment {
     }
 
     async fn deployment(&self, context: &Context, id: String) -> FieldResult<Deployment> {
-        let (hash_part, nonce_part) = id
-            .rsplit_once('.')
-            .ok_or_else(|| field_error("Invalid deployment ID (expected <hash>.<nonce>)"))?;
-        let deployment_id: ids::DeploymentId = hash_part
+        let deployment_id: ids::DeploymentId = id
             .parse()
-            .map_err(|_| field_error("Invalid deployment ID: bad commit hash"))?;
-        let nonce: ids::DeploymentNonce = nonce_part
-            .parse()
-            .map_err(|_| field_error("Invalid deployment ID: bad nonce"))?;
+            .map_err(|_| field_error("Invalid deployment ID (expected <hash>.<nonce>)"))?;
         let repo_client = context.cdb_client.repo(self.qid.repo.clone());
         let mut stream = repo_client.deployments().await.map_err(|e| {
             tracing::error!("Failed to list deployments in {}: {e}", self.qid);
@@ -291,10 +285,7 @@ impl Environment {
                 tracing::error!("Failed to load deployment in {}: {e}", self.qid);
                 internal_error()
             })?;
-            if dep.environment == self.qid.environment
-                && dep.deployment == deployment_id
-                && dep.nonce == nonce
-            {
+            if dep.environment == self.qid.environment && dep.deployment == deployment_id {
                 found = Some(dep);
                 break;
             }
@@ -644,7 +635,16 @@ impl Deployment {
     /// `<commit-hash>.<nonce>`. This is what `Environment.deployment(id:)`
     /// expects as its argument and what the web UI uses as the URL slug.
     fn id(&self) -> String {
-        format!("{}.{}", self.deployment.deployment, self.deployment.nonce)
+        self.deployment.deployment.to_string()
+    }
+
+    /// Compact, human-readable label of the form `<6-char commit>.<2-char
+    /// nonce>` — the first 6 characters of the commit hash followed by the
+    /// first 2 characters of the nonce (lowercase hex). Suitable for tight
+    /// UI surfaces where the full [`Self::id`] is too long.
+    #[graphql(name = "shortId")]
+    fn short_id(&self) -> String {
+        self.deployment.deployment.short()
     }
 
     /// Globally-unique deployment identifier (the full QID, including org,
@@ -654,21 +654,46 @@ impl Deployment {
         juniper::ID::new(self.deployment.deployment_qid().to_string())
     }
 
-    #[graphql(name = "ref")]
-    fn r#ref(&self) -> String {
-        self.deployment.environment.to_string()
+    /// Back-edge to the owning environment. The environment object is
+    /// constructed from the deployments currently in CDB.
+    async fn environment(&self, context: &Context) -> FieldResult<Environment> {
+        let env_qid = self.deployment.environment_qid();
+        let deployments = context
+            .cdb_client
+            .repo(env_qid.repo.clone())
+            .deployments()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list deployments for deployment env {env_qid}: {e}");
+                internal_error()
+            })?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to read deployments for deployment env {env_qid}: {e}");
+                internal_error()
+            })?;
+        let deployments = deployments
+            .into_iter()
+            .filter(|d| d.environment_qid() == env_qid)
+            .collect();
+        Ok(Environment {
+            qid: env_qid,
+            deployments,
+        })
     }
 
     async fn commit(&self, context: &Context) -> FieldResult<Commit> {
         let repo_client = context.cdb_client.repo(self.deployment.repo.clone());
-        let hash = gix_hash::ObjectId::from_hex(self.deployment.deployment.as_str().as_bytes())
-            .map_err(|e| {
-                tracing::error!(
-                    "Invalid object ID hex for deployment {}: {e}",
-                    self.deployment.deployment
-                );
-                internal_error()
-            })?;
+        let hash =
+            gix_hash::ObjectId::from_hex(self.deployment.deployment.commit.as_str().as_bytes())
+                .map_err(|e| {
+                    tracing::error!(
+                        "Invalid object ID hex for deployment {}: {e}",
+                        self.deployment.deployment
+                    );
+                    internal_error()
+                })?;
         let commit = repo_client.read_commit(hash).await.map_err(|e| {
             tracing::error!("Failed to read commit {hash}: {e}");
             internal_error()
@@ -691,10 +716,6 @@ impl Deployment {
 
     fn bootstrapped(&self) -> bool {
         self.deployment.bootstrapped
-    }
-
-    fn nonce(&self) -> String {
-        self.deployment.nonce.to_string()
     }
 
     /// Per-deployment health rollup. **Self-only** — does not aggregate child

@@ -32,7 +32,7 @@
 //! | Org | `MyOrg` | N/A (top level) | `MyOrg` |
 //! | Repo | `MyRepo` | `OrgId/RepoId` | `MyOrg/MyRepo` |
 //! | Env | `main` | `RepoQid::EnvironmentId` | `MyOrg/MyRepo::main` |
-//! | Deploy | `2cbec...` | `EnvironmentQid@DeploymentId.Nonce` | `MyOrg/MyRepo::main@2cbec....a1b2` |
+//! | Deploy | `2cbec....a1b2` | `EnvironmentQid@DeploymentId` | `MyOrg/MyRepo::main@2cbec....a1b2` |
 //! | Resource | `Std/Random.Int:seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
 //!
 //! ## Separators
@@ -40,6 +40,7 @@
 //! - `/` between organization and repository
 //! - `::` between repository and environment
 //! - `@` between environment and deployment
+//! - `.` between commit hash and nonce (within a deployment ID)
 //! - `:` between resource type and resource name (within a resource ID)
 //! - `::` between environment QID and resource ID (within a resource QID)
 //!
@@ -127,14 +128,17 @@ pub enum ParseIdError {
     #[error("invalid environment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId)")]
     InvalidEnvironmentQid(String),
 
-    #[error("invalid deployment ID: {0:?} (must be 40-char lowercase hex)")]
+    #[error("invalid commit hash: {0:?} (must be 40-char lowercase hex)")]
+    InvalidCommitHash(String),
+
+    #[error("invalid deployment ID: {0:?} (expected format: CommitHash.Nonce)")]
     InvalidDeploymentId(String),
 
     #[error("invalid deployment nonce: {0:?} (must be 16-char lowercase hex)")]
     InvalidDeploymentNonce(String),
 
     #[error(
-        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@DeploymentId.Nonce)"
+        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@CommitHash.Nonce)"
     )]
     InvalidDeploymentQid(String),
 
@@ -532,13 +536,11 @@ impl EnvironmentQid {
         }
     }
 
-    /// Creates a [`DeploymentQid`] by combining this environment QID with a deployment ID
-    /// and nonce.
-    pub fn deployment(&self, deployment: DeploymentId, nonce: DeploymentNonce) -> DeploymentQid {
+    /// Creates a [`DeploymentQid`] by combining this environment QID with a deployment ID.
+    pub fn deployment(&self, deployment: DeploymentId) -> DeploymentQid {
         DeploymentQid {
             environment: self.clone(),
             deployment,
-            nonce,
         }
     }
 }
@@ -588,39 +590,38 @@ impl<'de> Deserialize<'de> for EnvironmentQid {
 }
 
 // ---------------------------------------------------------------------------
-// DeploymentId
+// CommitHash
 // ---------------------------------------------------------------------------
 
-/// Deployment ID. A revision of an environment, identified by a Git commit hash.
-///
-/// This is a 40-character lowercase hexadecimal string (a Git OID / SHA-1 hash).
+/// A Git commit hash. The 40-character lowercase hexadecimal SHA-1 of a commit
+/// object, used as the commit-identity component of a [`DeploymentId`].
 ///
 /// # Examples
 ///
 /// ```
-/// use ids::DeploymentId;
-/// let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
-/// assert_eq!(id.as_str().len(), 40);
+/// use ids::CommitHash;
+/// let h: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+/// assert_eq!(h.as_str().len(), 40);
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct DeploymentId(String);
+pub struct CommitHash(String);
 
-impl DeploymentId {
-    /// Creates a new `DeploymentId` without validation.
+impl CommitHash {
+    /// Creates a new `CommitHash` without validation.
     pub fn new_unchecked(s: impl Into<String>) -> Self {
         Self(s.into())
     }
 
-    /// Returns the deployment ID as a string slice (40-char hex).
+    /// Returns the commit hash as a string slice (40-char hex).
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    /// Creates a `DeploymentId` from raw bytes (20-byte SHA-1 hash), encoding as hex.
+    /// Creates a `CommitHash` from raw bytes (20-byte SHA-1 hash), encoding as hex.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseIdError> {
         if bytes.len() != 20 {
-            return Err(ParseIdError::InvalidDeploymentId(format!(
+            return Err(ParseIdError::InvalidCommitHash(format!(
                 "<{} bytes>",
                 bytes.len()
             )));
@@ -650,44 +651,44 @@ fn hex_digit(b: u8) -> u8 {
         b'0'..=b'9' => b - b'0',
         b'a'..=b'f' => b - b'a' + 10,
         _ => unreachable!(
-            "hex_digit called with non-hex byte 0x{b:02x}; DeploymentId is always validated before use"
+            "hex_digit called with non-hex byte 0x{b:02x}; CommitHash is always validated before use"
         ),
     }
 }
 
-impl fmt::Display for DeploymentId {
+impl fmt::Display for CommitHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl fmt::Debug for DeploymentId {
+impl fmt::Debug for CommitHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "DeploymentId({self})")
+        write!(f, "CommitHash({self})")
     }
 }
 
-impl FromStr for DeploymentId {
+impl FromStr for CommitHash {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if !is_valid_oid_hex(s) {
-            return Err(ParseIdError::InvalidDeploymentId(s.to_string()));
+            return Err(ParseIdError::InvalidCommitHash(s.to_string()));
         }
         Ok(Self(s.to_string()))
     }
 }
 
-impl From<DeploymentId> for String {
-    fn from(id: DeploymentId) -> Self {
+impl From<CommitHash> for String {
+    fn from(id: CommitHash) -> Self {
         id.0
     }
 }
 
-impl TryFrom<String> for DeploymentId {
+impl TryFrom<String> for CommitHash {
     type Error = ParseIdError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         if !is_valid_oid_hex(&s) {
-            return Err(ParseIdError::InvalidDeploymentId(s));
+            return Err(ParseIdError::InvalidCommitHash(s));
         }
         Ok(Self(s))
     }
@@ -772,6 +773,91 @@ impl Serialize for DeploymentNonce {
 }
 
 impl<'de> Deserialize<'de> for DeploymentNonce {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeploymentId
+// ---------------------------------------------------------------------------
+
+/// Deployment ID. A revision of an environment, identified by the pair
+/// `(commit_hash, nonce)`. The nonce distinguishes multiple deployments of
+/// the same commit.
+///
+/// # Format
+///
+/// `<commit-hash>.<nonce>` — for example,
+/// `2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718`.
+///
+/// # Examples
+///
+/// ```
+/// use ids::DeploymentId;
+/// let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718".parse().unwrap();
+/// assert_eq!(id.commit.as_str(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
+/// assert_eq!(id.nonce.as_u64(), 0xa1b2c3d4e5f60718);
+/// ```
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeploymentId {
+    pub commit: CommitHash,
+    pub nonce: DeploymentNonce,
+}
+
+impl DeploymentId {
+    /// Creates a new `DeploymentId` from a commit hash and a nonce.
+    pub fn new(commit: CommitHash, nonce: DeploymentNonce) -> Self {
+        Self { commit, nonce }
+    }
+
+    /// Returns a compact, human-readable label of the form
+    /// `<6-char commit>.<2-char nonce>` (lowercase hex). Suitable for tight
+    /// UI surfaces where the full deployment id is too long.
+    pub fn short(&self) -> String {
+        let hash = self.commit.as_str();
+        let nonce = self.nonce.to_string();
+        format!("{}.{}", &hash[..6], &nonce[..2])
+    }
+}
+
+impl fmt::Display for DeploymentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.commit, self.nonce)
+    }
+}
+
+impl fmt::Debug for DeploymentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "DeploymentId({self})")
+    }
+}
+
+impl FromStr for DeploymentId {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((commit_part, nonce_part)) = s.rsplit_once('.') else {
+            return Err(ParseIdError::InvalidDeploymentId(s.to_string()));
+        };
+        Ok(Self {
+            commit: commit_part
+                .parse()
+                .map_err(|_| ParseIdError::InvalidDeploymentId(s.to_string()))?,
+            nonce: nonce_part
+                .parse()
+                .map_err(|_| ParseIdError::InvalidDeploymentId(s.to_string()))?,
+        })
+    }
+}
+
+impl Serialize for DeploymentId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentId {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
@@ -988,7 +1074,7 @@ impl<'de> Deserialize<'de> for ResourceQid {
 // DeploymentQid
 // ---------------------------------------------------------------------------
 
-/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@DeploymentId.Nonce`.
+/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@CommitHash.Nonce`.
 ///
 /// This is the most specific identifier in the hierarchy, uniquely identifying
 /// a single deployment (revision) of an environment. The nonce distinguishes
@@ -1007,20 +1093,14 @@ impl<'de> Deserialize<'de> for ResourceQid {
 pub struct DeploymentQid {
     pub environment: EnvironmentQid,
     pub deployment: DeploymentId,
-    pub nonce: DeploymentNonce,
 }
 
 impl DeploymentQid {
     /// Creates a new `DeploymentQid`.
-    pub fn new(
-        environment: EnvironmentQid,
-        deployment: DeploymentId,
-        nonce: DeploymentNonce,
-    ) -> Self {
+    pub fn new(environment: EnvironmentQid, deployment: DeploymentId) -> Self {
         Self {
             environment,
             deployment,
-            nonce,
         }
     }
 
@@ -1037,7 +1117,7 @@ impl DeploymentQid {
 
 impl fmt::Display for DeploymentQid {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}.{}", self.environment, self.deployment, self.nonce)
+        write!(f, "{}@{}", self.environment, self.deployment)
     }
 }
 
@@ -1050,12 +1130,9 @@ impl fmt::Debug for DeploymentQid {
 impl FromStr for DeploymentQid {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        // Split on the last "@" — everything after is "DeploymentId.Nonce".
-        let Some((env_part, deploy_nonce_part)) = s.rsplit_once('@') else {
-            return Err(ParseIdError::InvalidDeploymentQid(s.to_string()));
-        };
-        // Split the deployment+nonce part on the last ".".
-        let Some((deploy_part, nonce_part)) = deploy_nonce_part.rsplit_once('.') else {
+        // Split on the last "@" — everything after is the deployment id
+        // (CommitHash.Nonce).
+        let Some((env_part, deploy_part)) = s.rsplit_once('@') else {
             return Err(ParseIdError::InvalidDeploymentQid(s.to_string()));
         };
         Ok(Self {
@@ -1063,9 +1140,6 @@ impl FromStr for DeploymentQid {
                 .parse()
                 .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
             deployment: deploy_part
-                .parse()
-                .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
-            nonce: nonce_part
                 .parse()
                 .map_err(|_| ParseIdError::InvalidDeploymentQid(s.to_string()))?,
         })
@@ -1158,31 +1232,31 @@ mod tests {
     }
 
     #[test]
-    fn deployment_id_valid() {
-        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+    fn commit_hash_valid() {
+        let id: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
         assert_eq!(id.as_str(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
     }
 
     #[test]
-    fn deployment_id_invalid() {
-        assert!("too_short".parse::<DeploymentId>().is_err());
+    fn commit_hash_invalid() {
+        assert!("too_short".parse::<CommitHash>().is_err());
         assert!(
             "2CBECBED4BFA1599EF4CE0DFC542C97A82D79268"
-                .parse::<DeploymentId>()
+                .parse::<CommitHash>()
                 .is_err()
         ); // uppercase
         assert!(
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-                .parse::<DeploymentId>()
+                .parse::<CommitHash>()
                 .is_err()
         ); // non-hex
     }
 
     #[test]
-    fn deployment_id_bytes_roundtrip() {
-        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+    fn commit_hash_bytes_roundtrip() {
+        let id: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
         let bytes = id.to_bytes();
-        let id2 = DeploymentId::from_bytes(&bytes).unwrap();
+        let id2 = CommitHash::from_bytes(&bytes).unwrap();
         assert_eq!(id, id2);
     }
 
@@ -1216,6 +1290,37 @@ mod tests {
     }
 
     #[test]
+    fn deployment_id_roundtrip() {
+        let s = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
+        let id: DeploymentId = s.parse().unwrap();
+        assert_eq!(id.to_string(), s);
+        assert_eq!(
+            id.commit.as_str(),
+            "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
+        );
+        assert_eq!(id.nonce.as_u64(), 0xa1b2c3d4e5f60718);
+    }
+
+    #[test]
+    fn deployment_id_invalid() {
+        assert!("no_separator".parse::<DeploymentId>().is_err());
+        assert!("badhash.a1b2c3d4e5f60718".parse::<DeploymentId>().is_err());
+        assert!(
+            "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.bad"
+                .parse::<DeploymentId>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn deployment_id_short() {
+        let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718"
+            .parse()
+            .unwrap();
+        assert_eq!(id.short(), "2cbecb.a1");
+    }
+
+    #[test]
     fn deployment_qid_roundtrip() {
         let s = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
         let qid: DeploymentQid = s.parse().unwrap();
@@ -1223,10 +1328,10 @@ mod tests {
         assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
         assert_eq!(qid.repo_qid().to_string(), "MyOrg/MyRepo");
         assert_eq!(
-            qid.deployment.as_str(),
+            qid.deployment.commit.as_str(),
             "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
         );
-        assert_eq!(qid.nonce.as_u64(), 0xa1b2c3d4e5f60718);
+        assert_eq!(qid.deployment.nonce.as_u64(), 0xa1b2c3d4e5f60718);
     }
 
     #[test]

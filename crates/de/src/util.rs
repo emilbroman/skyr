@@ -34,19 +34,12 @@ pub(crate) fn serialize_inputs(
     })
 }
 
-/// Parses an owner QID string and extracts its deployment ID and nonce.
-pub(crate) fn extract_deployment_identity(
-    owner_qid: &str,
-) -> anyhow::Result<(ids::DeploymentId, ids::DeploymentNonce)> {
+/// Parses an owner QID string and extracts its deployment ID.
+pub(crate) fn extract_deployment_identity(owner_qid: &str) -> anyhow::Result<ids::DeploymentId> {
     let qid: ids::DeploymentQid = owner_qid
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid owner QID: {owner_qid}"))?;
-    Ok((qid.deployment, qid.nonce))
-}
-
-/// Returns a short (up to 8 char) prefix of the deployment ID for log messages.
-pub(crate) fn short_id(deployment_id: &str) -> &str {
-    deployment_id.get(..8).unwrap_or(deployment_id)
+    Ok(qid.deployment)
 }
 
 pub(crate) fn diag_severity(level: sclc::DiagLevel) -> ldb::Severity {

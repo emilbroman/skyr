@@ -76,7 +76,7 @@ impl<'a> CommandHandler<'a> {
 
             let git_ref = deployment.environment.to_git_ref();
             let commit_oid =
-                gix_hash::ObjectId::from_hex(deployment.deployment.as_str().as_bytes())?;
+                gix_hash::ObjectId::from_hex(deployment.deployment.commit.as_str().as_bytes())?;
             refs.push(Reference {
                 name: gix_ref::FullName::try_from(git_ref.as_str())?,
                 target: gix_ref::Target::Object(commit_oid),

@@ -499,31 +499,30 @@ impl<'a> CommandHandler<'a> {
                 .map_err(|e| anyhow!("invalid git ref '{}': {}", update.name, e))?;
 
             if update.new != null_oid {
-                let deployment_id = ids::DeploymentId::from_bytes(update.new.as_bytes())
-                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+                let commit = ids::CommitHash::from_bytes(update.new.as_bytes())
+                    .map_err(|e| anyhow!("invalid commit hash: {}", e))?;
                 let nonce = ids::DeploymentNonce::random();
-                let deployment =
-                    self.client
-                        .deployment(environment_id.clone(), deployment_id, nonce);
+                let deployment_id = ids::DeploymentId::new(commit, nonce);
+                let deployment = self
+                    .client
+                    .deployment(environment_id.clone(), deployment_id);
                 // make_desired atomically supersedes any active deployment
                 // in the same environment and promotes this one to Desired.
                 deployment.make_desired().await?;
             } else if update.old != null_oid {
                 // Deleting a ref: find the active deployment for this
                 // environment and transition it to Undesired.
-                let old_deployment_id = ids::DeploymentId::from_bytes(update.old.as_bytes())
-                    .map_err(|e| anyhow!("invalid deployment id: {}", e))?;
+                let old_commit = ids::CommitHash::from_bytes(update.old.as_bytes())
+                    .map_err(|e| anyhow!("invalid commit hash: {}", e))?;
                 // Look up the deployment by scanning active deployments
                 // in this environment to find the one with this commit hash.
                 let mut stream = self.client.active_deployments().await?;
                 while let Some(dep) = stream.next().await {
                     let dep = dep?;
-                    if dep.environment == environment_id && dep.deployment == old_deployment_id {
-                        let dc = self.client.deployment(
-                            dep.environment.clone(),
-                            dep.deployment.clone(),
-                            dep.nonce,
-                        );
+                    if dep.environment == environment_id && dep.deployment.commit == old_commit {
+                        let dc = self
+                            .client
+                            .deployment(dep.environment.clone(), dep.deployment.clone());
                         dc.set(DeploymentState::Undesired).await?;
                         break;
                     }
