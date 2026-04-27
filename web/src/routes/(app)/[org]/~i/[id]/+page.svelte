@@ -1,12 +1,7 @@
 <script lang="ts">
 import { page } from "$app/stores";
-import HealthBadge from "$lib/components/HealthBadge.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import {
-    HealthStatus,
-    IncidentCategory,
-    OrganizationIncidentDetailDocument,
-} from "$lib/graphql/generated";
+import { OrganizationIncidentDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import { deploymentHref, envHref, orgHref, orgIncidentsHref } from "$lib/paths";
 
@@ -20,25 +15,6 @@ const detail = graphqlQuery(() => ({
 }));
 
 let incident = $derived(detail.data?.organization.incident ?? null);
-
-function categoryToHealth(category: IncidentCategory): HealthStatus {
-    return category === IncidentCategory.Crash ? HealthStatus.Down : HealthStatus.Degraded;
-}
-
-function categoryLabel(c: IncidentCategory): string {
-    switch (c) {
-        case IncidentCategory.BadConfiguration:
-            return "Bad configuration";
-        case IncidentCategory.CannotProgress:
-            return "Cannot progress";
-        case IncidentCategory.InconsistentState:
-            return "Inconsistent state";
-        case IncidentCategory.SystemError:
-            return "System error";
-        case IncidentCategory.Crash:
-            return "Crash";
-    }
-}
 </script>
 
 <svelte:head>
@@ -69,19 +45,12 @@ function categoryLabel(c: IncidentCategory): string {
 {:else}
     <div class="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
         <div class="flex items-center gap-3">
-            <HealthBadge
-                health={categoryToHealth(incident.category)}
-                worstOpenCategory={incident.category}
-            />
             <span class="text-sm text-gray-500">
                 {incident.closedAt ? "Closed" : "Open"}
             </span>
         </div>
 
         <dl class="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-            <dt class="text-gray-500">Category</dt>
-            <dd>{categoryLabel(incident.category)}</dd>
-
             <dt class="text-gray-500">Entity</dt>
             <dd class="font-mono text-xs break-all">{incident.entityQid}</dd>
 

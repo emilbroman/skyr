@@ -1,12 +1,7 @@
 <script lang="ts">
 import { page } from "$app/stores";
-import HealthBadge from "$lib/components/HealthBadge.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import {
-    HealthStatus,
-    IncidentCategory,
-    OrganizationIncidentsDocument,
-} from "$lib/graphql/generated";
+import { OrganizationIncidentsDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
 import {
     deploymentHref,
@@ -19,14 +14,12 @@ import {
 
 let orgName = $derived($page.params.org ?? "");
 
-let categoryFilter = $state<IncidentCategory | "">("");
 let openOnly = $state(true);
 
 const incidents = graphqlQuery(() => ({
     document: OrganizationIncidentsDocument,
     variables: {
         org: orgName,
-        category: categoryFilter === "" ? null : categoryFilter,
         openOnly,
         limit: 100,
     },
@@ -34,10 +27,6 @@ const incidents = graphqlQuery(() => ({
 }));
 
 let rows = $derived(incidents.data?.organization.incidents ?? []);
-
-function categoryToHealth(category: IncidentCategory): HealthStatus {
-    return category === IncidentCategory.Crash ? HealthStatus.Down : HealthStatus.Degraded;
-}
 
 function entityCell(incident: (typeof rows)[number]): {
     kind: string;
@@ -87,20 +76,6 @@ function entityCell(incident: (typeof rows)[number]): {
         <input type="checkbox" bind:checked={openOnly} />
         Open only
     </label>
-    <label class="text-sm text-gray-600 inline-flex items-center gap-2">
-        Category
-        <select
-            bind:value={categoryFilter}
-            class="border border-gray-200 rounded px-2 py-1 text-sm"
-        >
-            <option value="">All</option>
-            <option value={IncidentCategory.Crash}>Crash</option>
-            <option value={IncidentCategory.SystemError}>System error</option>
-            <option value={IncidentCategory.BadConfiguration}>Bad configuration</option>
-            <option value={IncidentCategory.CannotProgress}>Cannot progress</option>
-            <option value={IncidentCategory.InconsistentState}>Inconsistent state</option>
-        </select>
-    </label>
 </div>
 
 {#if incidents.isPending}
@@ -119,7 +94,6 @@ function entityCell(incident: (typeof rows)[number]): {
                     <th class="py-2 pl-4 pr-4 font-medium"></th>
                     <th class="py-2 pr-4 font-medium">Opened</th>
                     <th class="py-2 pr-4 font-medium">Last error</th>
-                    <th class="py-2 pr-4 font-medium">Type</th>
                     <th class="py-2 pr-4 font-medium">Reports</th>
                     <th class="py-2 pr-4 font-medium">Repository</th>
                     <th class="py-2 pr-4 font-medium">Environment</th>
@@ -152,13 +126,6 @@ function entityCell(incident: (typeof rows)[number]): {
                             >
                                 {incident.summary ?? ""}
                             </a>
-                        </td>
-                        <td class="py-2 pr-4">
-                            <HealthBadge
-                                health={categoryToHealth(incident.category)}
-                                worstOpenCategory={incident.category}
-                                size="small"
-                            />
                         </td>
                         <td class="py-2 pr-4 text-gray-500">{incident.reportCount}</td>
                         <td class="py-2 pr-4">

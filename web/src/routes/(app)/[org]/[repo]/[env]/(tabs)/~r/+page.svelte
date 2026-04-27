@@ -141,7 +141,6 @@ function typeParts(type: string): { prefix: string; tail: string } {
                 <HealthBadge
                   health={resource.status.health}
                   openIncidentCount={resource.status.openIncidentCount}
-                  worstOpenCategory={resource.status.worstOpenCategory}
                   size="small"
                 />
               </td>

@@ -20,7 +20,6 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
             lastReportAt
             lastReportSucceeded
             openIncidentCount
-            worstOpenCategory
             consecutiveFailureCount
           }
           resources {
@@ -69,7 +68,6 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
             lastReportAt
             lastReportSucceeded
             openIncidentCount
-            worstOpenCategory
             consecutiveFailureCount
           }
         }
@@ -120,12 +118,10 @@ query ResourceDetail(
             lastReportAt
             lastReportSucceeded
             openIncidentCount
-            worstOpenCategory
             consecutiveFailureCount
           }
           incidents(limit: 50) {
             id
-            category
             openedAt
             closedAt
             lastReportAt
@@ -199,12 +195,10 @@ query DeploymentDetail(
             lastReportAt
             lastReportSucceeded
             openIncidentCount
-            worstOpenCategory
             consecutiveFailureCount
           }
           incidents(limit: 50) {
             id
-            category
             openedAt
             closedAt
             lastReportAt
@@ -232,7 +226,6 @@ query DeploymentDetail(
             status {
               health
               openIncidentCount
-              worstOpenCategory
             }
           }
           lastLogs(amount: 20) {

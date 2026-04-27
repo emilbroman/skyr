@@ -1,16 +1,14 @@
 <script lang="ts">
-import { HealthStatus, IncidentCategory } from "$lib/graphql/generated";
+import { HealthStatus } from "$lib/graphql/generated";
 
 let {
     health,
     openIncidentCount = 0,
-    worstOpenCategory = null,
     size = "default",
     showLabel = true,
 }: {
     health: HealthStatus;
     openIncidentCount?: number;
-    worstOpenCategory?: IncidentCategory | null | undefined;
     size?: "default" | "small";
     showLabel?: boolean;
 } = $props();
@@ -31,27 +29,9 @@ let dotColor = $derived(
           : "bg-yellow-500",
 );
 
-function categoryLabel(c: IncidentCategory | null | undefined): string {
-    switch (c) {
-        case IncidentCategory.BadConfiguration:
-            return "BAD CONFIG";
-        case IncidentCategory.CannotProgress:
-            return "BLOCKED";
-        case IncidentCategory.InconsistentState:
-            return "DRIFT";
-        case IncidentCategory.SystemError:
-            return "SYSTEM ERR";
-        case IncidentCategory.Crash:
-            return "CRASH";
-        default:
-            return "";
-    }
-}
-
 let label = $derived.by(() => {
     if (health === HealthStatus.Healthy) return "HEALTHY";
     if (health === HealthStatus.Down) return "DOWN";
-    if (worstOpenCategory) return categoryLabel(worstOpenCategory);
     return "DEGRADED";
 });
 </script>

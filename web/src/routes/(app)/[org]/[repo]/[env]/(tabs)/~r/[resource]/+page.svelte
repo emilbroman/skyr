@@ -317,7 +317,6 @@ let aRecordFqdn = $derived.by(() => {
           <HealthBadge
             health={resource.status.health}
             openIncidentCount={resource.status.openIncidentCount}
-            worstOpenCategory={resource.status.worstOpenCategory}
           />
         </dd>
       </div>
@@ -361,7 +360,7 @@ let aRecordFqdn = $derived.by(() => {
                 href={orgIncidentHref(orgName, incident.id)}
                 class="text-orange-600 hover:text-orange-500"
               >
-                {incident.category} · opened {new Date(incident.openedAt).toLocaleString()}
+                Opened {new Date(incident.openedAt).toLocaleString()}
                 {incident.closedAt
                   ? ` · closed ${new Date(incident.closedAt).toLocaleString()}`
                   : " · OPEN"}

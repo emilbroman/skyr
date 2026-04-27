@@ -190,7 +190,7 @@ function onWindowClick(event: MouseEvent) {
             <td class="py-3 pr-4">
               <div class="flex items-center gap-1.5">
                 <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
-                <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} worstOpenCategory={deployment.status.worstOpenCategory} size="small" showLabel={false} />
+                <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" showLabel={false} />
               </div>
             </td>
             <td class="py-3 pr-4 text-gray-500">
@@ -233,7 +233,7 @@ function onWindowClick(event: MouseEvent) {
           </div>
           <div class="mt-3 flex items-center gap-3">
             <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
-            <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} worstOpenCategory={deployment.status.worstOpenCategory} size="small" showLabel={false} />
+            <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" showLabel={false} />
             <span class="text-sm text-gray-500">{deployment.resources.length} resources</span>
             {#if deployment.state !== DeploymentState.Desired}
               <div class="ml-auto" data-menu-root={deployment.id}>

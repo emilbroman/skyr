@@ -1,6 +1,5 @@
 query OrganizationIncidents(
   $org: String!
-  $category: IncidentCategory
   $openOnly: Boolean
   $since: String
   $until: String
@@ -10,7 +9,6 @@ query OrganizationIncidents(
   organization(name: $org) {
     name
     incidents(
-      category: $category
       openOnly: $openOnly
       since: $since
       until: $until
@@ -19,7 +17,6 @@ query OrganizationIncidents(
     ) {
       id
       entityQid
-      category
       openedAt
       closedAt
       lastReportAt
@@ -52,7 +49,6 @@ query OrganizationIncidentDetail($org: String!, $id: ID!) {
     incident(id: $id) {
       id
       entityQid
-      category
       openedAt
       closedAt
       lastReportAt
