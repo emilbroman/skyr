@@ -1,12 +1,15 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+mod api;
 mod auth;
 mod cache;
+mod context;
 mod deployment;
 mod deps;
 mod fmt;
 mod git_client;
+mod git_context;
 mod lsp;
 mod org;
 mod output;
@@ -16,15 +19,31 @@ mod repo;
 mod resolver;
 mod resource;
 mod run;
-mod signin;
-mod signup;
-mod whoami;
 mod ws;
 
 #[derive(Parser)]
+#[command(version, about, long_about = None)]
 struct Program {
+    /// Output format for command results.
     #[arg(long, global = true, value_enum, default_value_t = output::OutputFormat::Text)]
     format: output::OutputFormat,
+    /// Skyr API base URL.
+    #[arg(
+        long,
+        global = true,
+        env = "SKYR_API_URL",
+        default_value = "https://skyr.cloud"
+    )]
+    api_url: String,
+    /// Override the organization (default: parsed from `origin` git remote).
+    #[arg(long, global = true, env = "SKYR_ORG")]
+    org: Option<String>,
+    /// Override the repository (default: parsed from `origin` git remote).
+    #[arg(long, global = true, env = "SKYR_REPO")]
+    repo: Option<String>,
+    /// Override the environment (default: current git branch).
+    #[arg(long, global = true, env = "SKYR_ENV")]
+    env: Option<String>,
     #[command(subcommand)]
     command: Command,
 }
@@ -54,9 +73,10 @@ enum Command {
         #[arg(long, default_value = "skyr.cloud:22")]
         git_server: String,
     },
-    Signin(signin::SigninArgs),
-    Signup(signup::SignupArgs),
-    Whoami(whoami::WhoamiArgs),
+    /// Sign in/up, sign out, or print the current user.
+    Auth(auth::AuthArgs),
+    /// Direct GraphQL query/mutation access.
+    Api(api::ApiArgs),
     Org(org::OrgArgs),
     Repo(repo::RepoArgs),
     Deployments(deployment::DeploymentsArgs),
@@ -76,6 +96,13 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let program = Program::parse();
+    let ctx = context::Context::new(
+        program.api_url,
+        program.format,
+        program.org,
+        program.repo,
+        program.env,
+    );
 
     match program.command {
         Command::Lsp { git_server } => {
@@ -95,29 +122,26 @@ async fn main() -> anyhow::Result<()> {
         } => {
             run::run_program(root, package, git_server).await?;
         }
-        Command::Signin(args) => {
-            signin::run_signin(args, program.format).await?;
+        Command::Auth(args) => {
+            auth::run_auth(args, &ctx).await?;
         }
-        Command::Signup(args) => {
-            signup::run_signup(args, program.format).await?;
-        }
-        Command::Whoami(args) => {
-            whoami::run_whoami(args, program.format).await?;
+        Command::Api(args) => {
+            api::run_api(args, &ctx).await?;
         }
         Command::Org(args) => {
-            org::run_org(args, program.format).await?;
+            org::run_org(args, &ctx).await?;
         }
         Command::Repo(args) => {
-            repo::run_repo(args, program.format).await?;
+            repo::run_repo(args, &ctx).await?;
         }
         Command::Deployments(args) => {
-            deployment::run_deployments(args, program.format).await?;
+            deployment::run_deployments(args, &ctx).await?;
         }
         Command::Deps(args) => {
-            deps::run_deps(args, program.format).await?;
+            deps::run_deps(args, ctx.format).await?;
         }
         Command::Resources(args) => {
-            resource::run_resources(args, program.format).await?;
+            resource::run_resources(args, &ctx).await?;
         }
         Command::PortForward(args) => {
             port_forward::run_port_forward(args).await?;

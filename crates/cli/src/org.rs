@@ -2,29 +2,27 @@ use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
 use serde::Serialize;
 
-use crate::{auth, output::OutputFormat};
+use crate::{auth, context::Context, output::OutputFormat};
 
 #[derive(Args, Debug)]
 pub struct OrgArgs {
     #[command(subcommand)]
     command: OrgCommand,
-    #[arg(long, default_value = "https://skyr.cloud")]
-    api_url: String,
 }
 
 #[derive(Subcommand, Debug)]
 enum OrgCommand {
+    /// List organizations the current user is a member of.
     List,
-    Create {
-        name: String,
-    },
+    /// Create a new organization with the given name.
+    Create { name: String },
+    /// Add a user to an organization.
     AddMember {
         organization: String,
         username: String,
     },
-    Leave {
-        organization: String,
-    },
+    /// Leave an organization.
+    Leave { organization: String },
 }
 
 #[derive(GraphQLQuery)]
@@ -55,31 +53,34 @@ struct AddOrganizationMember;
 )]
 struct LeaveOrganization;
 
-pub async fn run_org(args: OrgArgs, format: OutputFormat) -> anyhow::Result<()> {
+pub async fn run_org(args: OrgArgs, ctx: &Context) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let token = auth::acquire_token(&client, &args.api_url).await?;
-    let endpoint = auth::graphql_endpoint(&args.api_url);
+    let token = auth::acquire_token(&client, ctx.api_url()).await?;
+    let endpoint = auth::graphql_endpoint(ctx.api_url());
 
     match args.command {
-        OrgCommand::List => {
-            list_organizations(&client, &endpoint, &token, format).await?;
-        }
+        OrgCommand::List => list_organizations(&client, &endpoint, &token, ctx.format).await,
         OrgCommand::Create { name } => {
-            create_organization(&client, &endpoint, &token, &name, format).await?;
+            create_organization(&client, &endpoint, &token, &name, ctx.format).await
         }
         OrgCommand::AddMember {
             organization,
             username,
         } => {
-            add_organization_member(&client, &endpoint, &token, &organization, &username, format)
-                .await?;
+            add_organization_member(
+                &client,
+                &endpoint,
+                &token,
+                &organization,
+                &username,
+                ctx.format,
+            )
+            .await
         }
         OrgCommand::Leave { organization } => {
-            leave_organization(&client, &endpoint, &token, &organization, format).await?;
+            leave_organization(&client, &endpoint, &token, &organization, ctx.format).await
         }
     }
-
-    Ok(())
 }
 
 async fn list_organizations(

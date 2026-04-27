@@ -212,9 +212,13 @@ None of the built-in resource types are currently sticky.
 
 Use the CLI to check on your deployments:
 
+From a working tree on the repo, org/repo come from the `origin` remote:
+
 ```bash
-skyr deployments list alice/my-app    # List all deployments
-skyr deployments logs alice/my-app    # Stream deployment logs in real time
-skyr resources list alice/my-app      # List all resources
+skyr deployments list                 # List all deployments
+skyr deployments logs                 # Stream deployment logs in real time
+skyr resources list                   # List all resources
 skyr resources logs <resource-qid>    # Stream resource logs
 ```
+
+Or pass `--org`/`--repo` explicitly to operate on a different repository.

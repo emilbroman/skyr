@@ -5,24 +5,20 @@ use serde::Serialize;
 use serde_json::json;
 use std::{collections::BTreeSet, time::Duration};
 
-use crate::{auth, auth::JSON, output, output::OutputFormat, repo, ws};
+use crate::{auth, auth::JSON, context::Context as CliContext, output, output::OutputFormat, ws};
 
 #[derive(Args, Debug)]
 pub struct DeploymentsArgs {
     #[command(subcommand)]
     command: DeploymentsCommand,
-    #[arg(long, default_value = "https://skyr.cloud")]
-    api_url: String,
 }
 
 #[derive(Subcommand, Debug)]
 enum DeploymentsCommand {
-    List {
-        repository: String,
-    },
-    /// Show or stream deployment logs
+    /// List deployments in the current repository.
+    List,
+    /// Show or stream deployment logs for the current repository.
     Logs {
-        repository: String,
         /// Stream logs continuously
         #[arg(short, long)]
         follow: bool,
@@ -48,30 +44,32 @@ struct ListRepositoryDeployments;
 )]
 struct DeploymentLastLogs;
 
-pub async fn run_deployments(args: DeploymentsArgs, format: OutputFormat) -> anyhow::Result<()> {
+pub async fn run_deployments(args: DeploymentsArgs, ctx: &CliContext) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let token = auth::acquire_token(&client, &args.api_url).await?;
-    let endpoint = auth::graphql_endpoint(&args.api_url);
+    let token = auth::acquire_token(&client, ctx.api_url()).await?;
+    let endpoint = auth::graphql_endpoint(ctx.api_url());
+    let repository = ctx.repo()?.to_owned();
 
     match args.command {
-        DeploymentsCommand::List { repository } => {
-            list_deployments(&client, &endpoint, &token, &repository, format).await?;
+        DeploymentsCommand::List => {
+            list_deployments(&client, &endpoint, &token, &repository, ctx.format).await
         }
-        DeploymentsCommand::Logs {
-            repository,
-            follow,
-            latest,
-        } => {
+        DeploymentsCommand::Logs { follow, latest } => {
             if follow {
-                stream_deployment_logs(&client, &endpoint, &token, &repository, latest).await?;
+                stream_deployment_logs(&client, &endpoint, &token, &repository, latest).await
             } else {
-                print_deployment_last_logs(&client, &endpoint, &token, &repository, latest, format)
-                    .await?;
+                print_deployment_last_logs(
+                    &client,
+                    &endpoint,
+                    &token,
+                    &repository,
+                    latest,
+                    ctx.format,
+                )
+                .await
             }
         }
     }
-
-    Ok(())
 }
 
 #[derive(Serialize)]
@@ -105,10 +103,7 @@ async fn list_deployments(
     repository: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_, repository_name) = repo::parse_repository_path(repository)?;
-
-    let environments =
-        query_repository_environments(client, endpoint, token, repository_name).await?;
+    let environments = query_repository_environments(client, endpoint, token, repository).await?;
 
     let deployments: Vec<DeploymentOutput> = environments
         .into_iter()
@@ -184,8 +179,6 @@ async fn print_deployment_last_logs(
     amount: i64,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_, repository_name) = repo::parse_repository_path(repository)?;
-
     let data = auth::graphql_query::<DeploymentLastLogs>(
         client,
         endpoint,
@@ -199,8 +192,8 @@ async fn print_deployment_last_logs(
     let repo = data
         .repositories
         .into_iter()
-        .find(|r| r.name == repository_name)
-        .ok_or_else(|| anyhow!("repository '{repository_name}' not found"))?;
+        .find(|r| r.name == repository)
+        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
     let deployments: Vec<_> = repo
         .environments
@@ -255,7 +248,6 @@ async fn stream_deployment_logs(
     repository: &str,
     initial_amount: i64,
 ) -> anyhow::Result<()> {
-    let (_, repository_name) = repo::parse_repository_path(repository)?;
     let ws_endpoint = ws::graphql_ws_endpoint(endpoint)?;
     let mut subscribed = BTreeSet::new();
     let mut saw_any = false;
@@ -264,7 +256,7 @@ async fn stream_deployment_logs(
 
     loop {
         let environments =
-            query_repository_environments(client, endpoint, token, repository_name).await?;
+            query_repository_environments(client, endpoint, token, repository).await?;
 
         let environment_qids: BTreeSet<String> = environments
             .into_iter()
@@ -341,7 +333,7 @@ async fn query_repository_environments(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
-    repository_name: &str,
+    repository: &str,
 ) -> anyhow::Result<
     Vec<list_repository_deployments::ListRepositoryDeploymentsRepositoriesEnvironments>,
 > {
@@ -356,8 +348,8 @@ async fn query_repository_environments(
     let repository = data
         .repositories
         .into_iter()
-        .find(|repo| repo.name == repository_name)
-        .ok_or_else(|| anyhow!("repository '{repository_name}' not found"))?;
+        .find(|repo| repo.name == repository)
+        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
     Ok(repository.environments)
 }
