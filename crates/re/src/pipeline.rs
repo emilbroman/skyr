@@ -38,7 +38,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::entity::{operational_state_str, scope_keys};
+use crate::entity::{env_qid_string, operational_state_str};
 use crate::thresholds::{ThresholdConfig, ThresholdTracker};
 
 /// Errors arising from the per-report pipeline. All of these warrant a `nack`
@@ -119,7 +119,7 @@ impl HeartbeatCache {
 pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<(), PipelineError> {
     let entity_qid_string = report.entity_qid.as_string();
     let now = Utc::now();
-    let scopes = scope_keys(&report.entity_qid);
+    let env_qid = env_qid_string(&report.entity_qid);
     let op_state = operational_state_str(&report.extension);
 
     // Load current summary so we can compute deltas (consecutive failure
@@ -142,16 +142,16 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
             handle_failure(
                 ctx,
                 &entity_qid_string,
+                &env_qid,
                 *category,
                 error_message,
                 report.timestamp,
                 now,
-                &scopes,
             )
             .await?;
         }
         Outcome::Success => {
-            handle_success(ctx, &entity_qid_string, report.timestamp, &scopes).await?;
+            handle_success(ctx, &entity_qid_string, &env_qid, report.timestamp).await?;
             // Reset any pre-open accounting; producer is reporting success.
             ctx.tracker.lock().await.forget_entity(&entity_qid_string);
         }
@@ -211,14 +211,14 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
 async fn handle_failure(
     ctx: &PipelineContext,
     entity_qid: &str,
+    env_qid: &str,
     category: IncidentCategory,
     error_message: &str,
     report_at: DateTime<Utc>,
     now: DateTime<Utc>,
-    scopes: &sdb::ScopeKeys,
 ) -> Result<(), PipelineError> {
     // 1. Already open? Append.
-    if let Some((id, opened_at)) = ctx.sdb.find_open_incident_id(entity_qid, category).await? {
+    if let Some(id) = ctx.sdb.find_open_incident_id(entity_qid, category).await? {
         debug!(
             entity_qid = %entity_qid,
             category = %category,
@@ -227,20 +227,21 @@ async fn handle_failure(
         );
         // We do not have a stored count for the next bump value; the SDB
         // record holds it. Fetch fresh to bump precisely.
-        let existing = ctx.sdb.get_incident(id).await?;
-        let next_count = existing.map(|inc| inc.report_count + 1).unwrap_or(1);
+        let existing = ctx.sdb.incident_in_env(env_qid, id).await?;
+        let (next_count, opened_at) = match &existing {
+            Some(inc) => (inc.report_count + 1, inc.opened_at),
+            None => (1, report_at),
+        };
         ctx.sdb
             .append_failure_to_open_incident(
                 id,
                 entity_qid,
+                env_qid,
                 category,
                 opened_at,
                 report_at,
                 next_count,
                 error_message,
-                &scopes.org_scope,
-                &scopes.repo_scope,
-                &scopes.env_scope,
             )
             .await?;
         return Ok(());
@@ -266,15 +267,7 @@ async fn handle_failure(
     // 3. Threshold tripped: try to open.
     let outcome = ctx
         .sdb
-        .open_incident(
-            entity_qid,
-            category,
-            report_at,
-            error_message,
-            &scopes.org_scope,
-            &scopes.repo_scope,
-            &scopes.env_scope,
-        )
+        .open_incident(entity_qid, env_qid, category, report_at, error_message)
         .await?;
 
     match outcome {
@@ -299,20 +292,18 @@ async fn handle_failure(
         OpenIncidentOutcome::AlreadyOpen { existing_id } => {
             // Another worker (or a concurrent retry) won the LWT race. Treat
             // this report as a bump on the existing incident.
-            let existing = ctx.sdb.get_incident(existing_id).await?;
+            let existing = ctx.sdb.incident_in_env(env_qid, existing_id).await?;
             if let Some(inc) = existing {
                 ctx.sdb
                     .append_failure_to_open_incident(
                         inc.id,
                         entity_qid,
+                        env_qid,
                         category,
                         inc.opened_at,
                         report_at,
                         inc.report_count + 1,
                         error_message,
-                        &scopes.org_scope,
-                        &scopes.repo_scope,
-                        &scopes.env_scope,
                     )
                     .await?;
             } else {
@@ -332,8 +323,8 @@ async fn handle_failure(
 async fn handle_success(
     ctx: &PipelineContext,
     entity_qid: &str,
+    env_qid: &str,
     report_at: DateTime<Utc>,
-    scopes: &sdb::ScopeKeys,
 ) -> Result<(), PipelineError> {
     // Close every currently-open incident for this entity. Each open slot is
     // closed independently; NQ Closed is emitted per actually-closed
@@ -344,16 +335,14 @@ async fn handle_success(
             .sdb
             .close_incident(
                 entity_qid,
+                env_qid,
                 category,
                 report_at,
                 report_at,
                 // close_incident reads the current report_count and stamps
                 // it; passing the existing count keeps it monotonic. We
                 // re-read to obtain the running total.
-                running_count_for(ctx, entity_qid, category).await,
-                &scopes.org_scope,
-                &scopes.repo_scope,
-                &scopes.env_scope,
+                running_count_for(ctx, entity_qid, env_qid, category).await,
             )
             .await?;
 
@@ -384,14 +373,19 @@ async fn handle_success(
     Ok(())
 }
 
-async fn running_count_for(ctx: &PipelineContext, entity_qid: &str, category: Category) -> u64 {
+async fn running_count_for(
+    ctx: &PipelineContext,
+    entity_qid: &str,
+    env_qid: &str,
+    category: Category,
+) -> u64 {
     // Best-effort lookup. If the read fails, fall back to 1 — the close path
     // is otherwise correct and a slight count error is preferable to failing
     // the close.
-    let Ok(Some((id, _))) = ctx.sdb.find_open_incident_id(entity_qid, category).await else {
+    let Ok(Some(id)) = ctx.sdb.find_open_incident_id(entity_qid, category).await else {
         return 1;
     };
-    match ctx.sdb.get_incident(id).await {
+    match ctx.sdb.incident_in_env(env_qid, id).await {
         Ok(Some(inc)) => inc.report_count,
         _ => 1,
     }

@@ -3,8 +3,8 @@
 //! The bulk of the RE pipeline operates on the report's common base — entity
 //! QID, outcome, timestamp, metrics. Two pieces of logic must, however, look
 //! at the entity-scoped extension: deciding what reporting cadence the
-//! watchdog should expect, and computing the denormalized scope keys SDB needs
-//! when writing an incident.
+//! watchdog should expect, and computing the environment QID partition key
+//! SDB needs when writing an incident.
 //!
 //! All such logic lives here, deliberately quarantined from the transport and
 //! pipeline layers so the abstraction does not leak.
@@ -15,7 +15,6 @@ use rq::{
     DeploymentExtension, DeploymentOperationalState, EntityExtension, EntityQid, ResourceExtension,
     ResourceOperationalState,
 };
-use sdb::{ScopeKeys, scope_keys_for_deployment, scope_keys_for_resource};
 
 /// Per-state cadence configuration. The watchdog uses these durations as the
 /// "no report received in over X" trigger threshold.
@@ -107,11 +106,12 @@ fn resource_state_str(state: ResourceOperationalState) -> &'static str {
     }
 }
 
-/// Computes the denormalized SDB scope keys for an entity QID.
-pub fn scope_keys(qid: &EntityQid) -> ScopeKeys {
+/// Returns the canonical string form of the environment QID containing this
+/// entity. Used as the SDB `incidents` partition key.
+pub fn env_qid_string(qid: &EntityQid) -> String {
     match qid {
-        EntityQid::Deployment(d) => scope_keys_for_deployment(d),
-        EntityQid::Resource(r) => scope_keys_for_resource(r),
+        EntityQid::Deployment(d) => d.environment_qid().to_string(),
+        EntityQid::Resource(r) => r.environment_qid().to_string(),
     }
 }
 
@@ -185,25 +185,19 @@ mod tests {
     }
 
     #[test]
-    fn scope_keys_for_deployment_qid() {
+    fn env_qid_for_deployment_qid() {
         let qid: ids::DeploymentQid =
             "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718"
                 .parse()
                 .unwrap();
         let entity = EntityQid::Deployment(qid);
-        let keys = scope_keys(&entity);
-        assert_eq!(keys.org_scope, "MyOrg");
-        assert_eq!(keys.repo_scope, "MyOrg/MyRepo");
-        assert_eq!(keys.env_scope, "MyOrg/MyRepo::main");
+        assert_eq!(env_qid_string(&entity), "MyOrg/MyRepo::main");
     }
 
     #[test]
-    fn scope_keys_for_resource_qid() {
+    fn env_qid_for_resource_qid() {
         let qid: ids::ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
         let entity = EntityQid::Resource(qid);
-        let keys = scope_keys(&entity);
-        assert_eq!(keys.org_scope, "MyOrg");
-        assert_eq!(keys.repo_scope, "MyOrg/MyRepo");
-        assert_eq!(keys.env_scope, "MyOrg/MyRepo::main");
+        assert_eq!(env_qid_string(&entity), "MyOrg/MyRepo::main");
     }
 }

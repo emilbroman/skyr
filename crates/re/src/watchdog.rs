@@ -28,7 +28,7 @@ use std::time::Duration;
 use chrono::Utc;
 use ids::{DeploymentQid, ResourceQid};
 use rq::IncidentCategory;
-use sdb::{EntityRef, OpenIncidentOutcome};
+use sdb::OpenIncidentOutcome;
 use tokio::time::{MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
@@ -116,10 +116,10 @@ async fn try_open_watchdog_incident(
     entity_qid: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<WatchdogOutcome, crate::pipeline::PipelineError> {
-    // We need scope keys, but the watchdog only carries the QID string.
-    // Parse it back into a typed QID to derive the scopes; if parsing fails
-    // (corrupt cache entry) we skip rather than crash the loop.
-    let Some(scopes) = scope_keys_from_string(entity_qid) else {
+    // The watchdog only carries the QID string; parse it back into a typed
+    // QID to derive the env partition key. If parsing fails (corrupt cache
+    // entry) we skip rather than crash the loop.
+    let Some(env_qid) = env_qid_from_string(entity_qid) else {
         warn!(
             entity_qid,
             "watchdog skipping entry with unparseable entity qid",
@@ -131,12 +131,10 @@ async fn try_open_watchdog_incident(
         .sdb
         .open_incident(
             entity_qid,
+            &env_qid,
             IncidentCategory::SystemError,
             now,
             WATCHDOG_ERROR_MESSAGE,
-            &scopes.org_scope,
-            &scopes.repo_scope,
-            &scopes.env_scope,
         )
         .await?;
     match outcome {
@@ -178,15 +176,15 @@ fn expected_cadence(entry: &HeartbeatEntry, cadence: &CadenceConfig) -> Option<D
     cadence.for_state_str(state)
 }
 
-/// Reverses [`crate::entity::scope_keys`] given only the canonical string
-/// form of an entity QID. Returns `None` for strings that are neither a valid
-/// deployment QID nor a valid resource QID.
-fn scope_keys_from_string(entity_qid: &str) -> Option<sdb::ScopeKeys> {
+/// Returns the canonical string form of the environment QID for an entity,
+/// given only the entity's own QID string. Returns `None` for strings that
+/// are neither a valid deployment QID nor a valid resource QID.
+fn env_qid_from_string(entity_qid: &str) -> Option<String> {
     if let Ok(qid) = entity_qid.parse::<DeploymentQid>() {
-        return Some(sdb::Client::scope_keys_for(EntityRef::Deployment(&qid)));
+        return Some(qid.environment_qid().to_string());
     }
     if let Ok(qid) = entity_qid.parse::<ResourceQid>() {
-        return Some(sdb::Client::scope_keys_for(EntityRef::Resource(&qid)));
+        return Some(qid.environment_qid().to_string());
     }
     None
 }
@@ -196,26 +194,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_scope_keys_from_deployment_string() {
+    fn parse_env_qid_from_deployment_string() {
         let qid = "MyOrg/MyRepo::main@2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718";
-        let keys = scope_keys_from_string(qid).expect("deployment QID parses");
-        assert_eq!(keys.org_scope, "MyOrg");
-        assert_eq!(keys.repo_scope, "MyOrg/MyRepo");
-        assert_eq!(keys.env_scope, "MyOrg/MyRepo::main");
+        let env = env_qid_from_string(qid).expect("deployment QID parses");
+        assert_eq!(env, "MyOrg/MyRepo::main");
     }
 
     #[test]
-    fn parse_scope_keys_from_resource_string() {
+    fn parse_env_qid_from_resource_string() {
         let qid = "MyOrg/MyRepo::main::Std/Random.Int:seed";
-        let keys = scope_keys_from_string(qid).expect("resource QID parses");
-        assert_eq!(keys.org_scope, "MyOrg");
-        assert_eq!(keys.repo_scope, "MyOrg/MyRepo");
-        assert_eq!(keys.env_scope, "MyOrg/MyRepo::main");
+        let env = env_qid_from_string(qid).expect("resource QID parses");
+        assert_eq!(env, "MyOrg/MyRepo::main");
     }
 
     #[test]
-    fn parse_scope_keys_rejects_garbage() {
-        assert!(scope_keys_from_string("not a qid").is_none());
+    fn parse_env_qid_rejects_garbage() {
+        assert!(env_qid_from_string("not a qid").is_none());
     }
 
     fn entry(state: &str, volatile: bool) -> HeartbeatEntry {
