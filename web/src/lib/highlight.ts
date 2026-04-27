@@ -1,5 +1,6 @@
 import { createHighlighter, type Highlighter, type ThemedToken } from "shiki";
 import sclGrammar from "$lib/scl.tmLanguage.json";
+import semanticCommitGrammar from "$lib/semantic-commit.tmLanguage.json";
 
 let highlighterPromise: Promise<Highlighter> | null = null;
 
@@ -7,6 +8,12 @@ const SCL_LANG = {
     ...sclGrammar,
     id: "scl",
     scopeName: "source.scl",
+} as const;
+
+const SEMANTIC_COMMIT_LANG = {
+    ...semanticCommitGrammar,
+    id: "semantic-commit",
+    scopeName: "text.semantic-commit",
 } as const;
 
 function getHighlighter(): Promise<Highlighter> {
@@ -35,6 +42,7 @@ function getHighlighter(): Promise<Highlighter> {
                 "diff",
                 "plaintext",
                 SCL_LANG,
+                SEMANTIC_COMMIT_LANG,
             ],
         });
     }
@@ -95,8 +103,14 @@ export async function highlight(
     code: string,
     filename: string,
 ): Promise<{ lines: ThemedToken[][]; bg: string }> {
+    return highlightAs(code, detectLanguage(filename));
+}
+
+export async function highlightAs(
+    code: string,
+    lang: string,
+): Promise<{ lines: ThemedToken[][]; bg: string }> {
     const hl = await getHighlighter();
-    const lang = detectLanguage(filename);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = hl.codeToTokens(code, {

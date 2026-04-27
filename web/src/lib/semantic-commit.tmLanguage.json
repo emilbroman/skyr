@@ -1,0 +1,50 @@
+{
+    "displayName": "Semantic Commit Message",
+    "name": "semantic-commit",
+    "scopeName": "text.semantic-commit",
+    "patterns": [
+        {
+            "begin": "\\A",
+            "end": "$",
+            "name": "meta.scope.subject.semantic-commit",
+            "patterns": [
+                {
+                    "match": "\\G(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)(?:(\\()([^)]+)(\\)))?(!)?(:)",
+                    "captures": {
+                        "1": { "name": "keyword.other.type.semantic-commit" },
+                        "2": { "name": "punctuation.section.parens.begin.semantic-commit" },
+                        "3": { "name": "entity.name.tag.scope.semantic-commit" },
+                        "4": { "name": "punctuation.section.parens.end.semantic-commit" },
+                        "5": { "name": "keyword.operator.breaking.semantic-commit" },
+                        "6": { "name": "punctuation.separator.colon.semantic-commit" }
+                    }
+                }
+            ]
+        },
+        {
+            "match": "^#.*$",
+            "name": "comment.line.number-sign.semantic-commit"
+        },
+        {
+            "match": "^(BREAKING[ -]CHANGE)(:)(.*)$",
+            "captures": {
+                "1": { "name": "keyword.other.breaking-change.semantic-commit" },
+                "2": { "name": "punctuation.separator.colon.semantic-commit" },
+                "3": { "name": "string.unquoted.trailer-value.semantic-commit" }
+            }
+        },
+        {
+            "match": "^([A-Z][A-Za-z]+(?:-[A-Z][A-Za-z]+)*)(:)(.*)$",
+            "captures": {
+                "1": { "name": "support.type.property-name.trailer.semantic-commit" },
+                "2": { "name": "punctuation.separator.colon.semantic-commit" },
+                "3": { "name": "string.unquoted.trailer-value.semantic-commit" }
+            }
+        },
+        {
+            "match": "#[0-9]+",
+            "name": "constant.numeric.issue-reference.semantic-commit"
+        }
+    ],
+    "repository": {}
+}

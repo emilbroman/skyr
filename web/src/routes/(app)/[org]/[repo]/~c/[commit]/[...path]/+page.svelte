@@ -5,6 +5,7 @@ import { untrack } from "svelte";
 import DirectoryView from "$lib/components/DirectoryView.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import FileView from "$lib/components/FileView.svelte";
+import CommitMessage from "$lib/components/CommitMessage.svelte";
 import { ChevronDown, Rocket } from "lucide-svelte";
 import { execute, query } from "$lib/graphql/client";
 import {
@@ -229,7 +230,7 @@ let highlightLine = $derived.by(() => {
     <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-4 flex items-start gap-4">
       <div class="flex-1 min-w-0">
         <p class="font-mono text-xs text-gray-400 mb-1">{commitHash.substring(0, 8)}</p>
-        <p class="text-gray-700 whitespace-pre-line">{commitMessage}</p>
+        <CommitMessage message={commitMessage} />
         {#if parents.length > 0}
           <p class="font-mono text-xs text-gray-400 mt-2">
             {parents.length > 1 ? "Parents:" : "Parent:"}

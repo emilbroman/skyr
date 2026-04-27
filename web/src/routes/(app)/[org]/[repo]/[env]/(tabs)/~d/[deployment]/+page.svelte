@@ -6,6 +6,8 @@ import { envIncidentHref } from "$lib/paths";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import ResourceDag from "$lib/components/ResourceDag.svelte";
+import CommitMessage from "$lib/components/CommitMessage.svelte";
+import { ArrowUpRight } from "lucide-svelte";
 import {
     CreateDeploymentDocument,
     DeploymentDetailDocument,
@@ -85,18 +87,26 @@ function onRedeploy() {
       {deploymentDetail.error.message}
     </div>
   {:else if deployment}
+    <!-- Commit -->
+    <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+      <div class="text-xs mb-2">
+        <a
+          href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
+          class="text-orange-600 hover:text-orange-500 transition-colors inline-flex items-center gap-0.5"
+        >
+          <span class="font-mono">{deployment.commit.hash.slice(0, 8)}</span>
+          <ArrowUpRight class="w-3 h-3" />
+        </a>
+      </div>
+      <CommitMessage message={deployment.commit.message} />
+    </div>
+
     <!-- Metadata -->
     <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
       <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
         <div>
           <dt class="text-gray-400">Ref</dt>
           <dd class="text-gray-700">{envName}</dd>
-        </div>
-        <div>
-          <dt class="text-gray-400">Commit</dt>
-          <dd class="text-gray-700 font-mono text-xs" title={deployment.commit.message}>
-            {deployment.shortId} &mdash; {deployment.commit.message}
-          </dd>
         </div>
         <div>
           <dt class="text-gray-400">Created</dt>
@@ -147,14 +157,8 @@ function onRedeploy() {
           </ul>
         </div>
       {/if}
-      <div class="mt-3 flex items-center gap-4">
-        <a
-          href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
-          class="text-orange-600 hover:text-orange-500 transition-colors"
-        >
-          View files &rarr;
-        </a>
-        {#if canRedeploy}
+      {#if canRedeploy}
+        <div class="mt-3 flex items-center gap-4">
           <button
             type="button"
             onclick={onRedeploy}
@@ -163,8 +167,8 @@ function onRedeploy() {
           >
             {createDeployment.isPending ? "Deploying..." : "Deploy"}
           </button>
-        {/if}
-      </div>
+        </div>
+      {/if}
       {#if createDeploymentError}
         <div
           class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-600"
