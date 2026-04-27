@@ -5,7 +5,7 @@ import HealthBadge from "$lib/components/HealthBadge.svelte";
 import { envIncidentHref } from "$lib/paths";
 import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import ResourceDag from "$lib/components/ResourceDag.svelte";
+import ResourceList from "$lib/components/ResourceList.svelte";
 import CommitMessage from "$lib/components/CommitMessage.svelte";
 import { ArrowUpRight } from "lucide-svelte";
 import {
@@ -217,18 +217,22 @@ function onRedeploy() {
 
     <!-- Resources -->
     <section>
-      <h2 class="font-medium text-gray-600 mb-3">
-        Resources
-        <span class="text-gray-400 font-normal ml-1"
-          >({deployment.resources.length})</span
-        >
-      </h2>
-      <ResourceDag
+      <ResourceList
         resources={deployment.resources}
         org={orgName}
         repo={repoName}
         env={envName}
-      />
+        emptyMessage="No resources in this deployment."
+      >
+        {#snippet header()}
+          <h2 class="font-medium text-gray-600">
+            Resources
+            <span class="text-gray-400 font-normal ml-1"
+              >({deployment.resources.length})</span
+            >
+          </h2>
+        {/snippet}
+      </ResourceList>
     </section>
   {/if}
 </div>

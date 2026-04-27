@@ -98,21 +98,21 @@ function closeDropdown() {
               aria-label="Close menu"
             ></button>
             <div
-              class="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-20"
+              class="absolute right-0 mt-2 w-44 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-20"
             >
               <a
                 href="/~settings"
                 onclick={closeDropdown}
-                class="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                class="flex items-center gap-2 px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-100"
               >
-                <Settings class="w-4 h-4" />
+                <Settings class="w-3.5 h-3.5" />
                 Settings
               </a>
               <button
                 onclick={signOut}
-                class="flex items-center gap-2 w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 cursor-pointer"
+                class="flex items-center gap-2 w-full text-left px-3 py-1.5 text-xs text-gray-700 hover:bg-gray-100 cursor-pointer"
               >
-                <LogOut class="w-4 h-4" />
+                <LogOut class="w-3.5 h-3.5" />
                 Sign Out
               </button>
             </div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 import { ResourceMarker } from "$lib/graphql/generated";
 import { resourceHref } from "$lib/paths";
+import ResourceCardContent from "./ResourceCardContent.svelte";
 
 type ResourceInput = {
     type: string;
@@ -23,7 +24,7 @@ let {
 } = $props();
 
 const NODE_W = 200;
-const NODE_H = 72;
+const NODE_H = 96;
 const LAYER_GAP = 120;
 const NODE_GAP = 24;
 
@@ -426,17 +427,6 @@ function zoomOutCenter() {
 function isEdgeHighlighted(edge: DagEdge): boolean {
     return hoveredNode !== null && (edge.from === hoveredNode || edge.to === hoveredNode);
 }
-
-function typeParts(type: string): { prefix: string; last: string } {
-    const parts = type.split(".");
-    if (parts.length > 1) {
-        return {
-            prefix: `${parts.slice(0, -1).join(".")}.`,
-            last: parts[parts.length - 1],
-        };
-    }
-    return { prefix: "", last: type };
-}
 </script>
 
 <svelte:window onmousemove={onMouseMove} onmouseup={onMouseUp} />
@@ -509,13 +499,12 @@ function typeParts(type: string): { prefix: string; last: string } {
         {/each}
 
         {#each dag.nodes as node}
-          {@const tp = typeParts(node.type)}
           <foreignObject x={node.x} y={node.y} width={NODE_W} height={NODE_H}>
             <div xmlns="http://www.w3.org/1999/xhtml" class="w-full h-full">
               {#if node.href}
                 <a
                   href={node.href}
-                  class="flex flex-col justify-center w-full h-full rounded-lg border px-3 py-2 transition-all duration-150
+                  class="flex flex-col w-full h-full rounded-lg border p-3 transition-all duration-150
 										{node.isShadow
                     ? 'border-dashed border-amber-300/60 bg-white/60'
                     : 'border-gray-200 bg-white hover:border-blue-500'}
@@ -528,37 +517,9 @@ function typeParts(type: string): { prefix: string; last: string } {
                   onmouseenter={() => (hoveredNode = node.id)}
                   onmouseleave={() => (hoveredNode = null)}
                 >
-                  <div
-                    class="truncate {node.isShadow
-                      ? 'text-gray-400'
-                      : 'text-gray-400'}"
-                  >
-                    {#if tp.prefix}<span>{tp.prefix}</span>{/if}
-                    <span
-                      class={node.isShadow
-                        ? "text-gray-500"
-                        : "text-gray-800 font-medium"}>{tp.last}</span
-                    >
-                  </div>
-                  <div class="flex items-center gap-1.5 mt-0.5">
-                    <span
-                      class="truncate {node.isShadow
-                        ? 'text-gray-400'
-                        : 'text-gray-600'}">{node.name}</span
-                    >
-                    {#each node.markers as marker}
-                      <span
-                        class="px-1 py-px rounded border shrink-0 {marker ===
-                        ResourceMarker.Volatile
-                          ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
-                          : 'bg-blue-50 text-blue-700 border border-blue-200'}"
-                      >
-                        {marker}
-                      </span>
-                    {/each}
-                  </div>
+                  <ResourceCardContent resource={node} />
                   {#if node.isShadow}
-                    <div class="text-amber-500/70 mt-0.5">
+                    <div class="text-amber-500/70 mt-0.5 text-xs">
                       External
                     </div>
                   {/if}
@@ -566,7 +527,7 @@ function typeParts(type: string): { prefix: string; last: string } {
               {:else}
                 <!-- svelte-ignore a11y_no_static_element_interactions -->
                 <div
-                  class="flex flex-col justify-center w-full h-full rounded-lg border border-dashed px-3 py-2 transition-all duration-150
+                  class="flex flex-col w-full h-full rounded-lg border border-dashed p-3 transition-all duration-150
 										border-amber-300/60 bg-white/60
 										{hoveredNode === node.id
                     ? 'border-amber-500 shadow-sm shadow-amber-500/10'
@@ -575,16 +536,8 @@ function typeParts(type: string): { prefix: string; last: string } {
                   onmouseenter={() => (hoveredNode = node.id)}
                   onmouseleave={() => (hoveredNode = null)}
                 >
-                  <div class="text-gray-400 truncate">
-                    {#if tp.prefix}<span>{tp.prefix}</span>{/if}
-                    <span class="text-gray-500">{tp.last}</span>
-                  </div>
-                  <div class="flex items-center gap-1.5 mt-0.5">
-                    <span class="text-gray-400 truncate"
-                      >{node.name}</span
-                    >
-                  </div>
-                  <div class="text-amber-500/70 mt-0.5">
+                  <ResourceCardContent resource={node} />
+                  <div class="text-amber-500/70 mt-0.5 text-xs">
                     External
                   </div>
                 </div>

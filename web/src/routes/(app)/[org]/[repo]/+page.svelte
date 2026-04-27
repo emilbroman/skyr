@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { page } from "$app/stores";
+import { copyText as copyToClipboard } from "$lib/clipboard";
 import Spinner from "$lib/components/Spinner.svelte";
 import { RepositoryDetailDocument } from "$lib/graphql/generated";
 import { graphqlQuery } from "$lib/graphql/query";
@@ -15,7 +16,7 @@ let copiedClone = $state(false);
 let copiedRemote = $state(false);
 
 function copyText(text: string, which: "clone" | "remote") {
-    navigator.clipboard.writeText(text);
+    copyToClipboard(text);
     if (which === "clone") {
         copiedClone = true;
         setTimeout(() => (copiedClone = false), 2000);

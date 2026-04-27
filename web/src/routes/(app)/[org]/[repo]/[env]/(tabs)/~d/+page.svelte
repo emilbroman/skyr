@@ -1,6 +1,6 @@
 <script lang="ts">
 import { page } from "$app/stores";
-import { MoreVertical } from "lucide-svelte";
+import { Box, MoreVertical } from "lucide-svelte";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import HealthBadge from "$lib/components/HealthBadge.svelte";
 import {
@@ -192,11 +192,21 @@ function onWindowClick(event: MouseEvent) {
             <td class="py-2 pr-4">
               <div class="flex items-center gap-1.5">
                 <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
-                <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" showLabel={false} />
+                {#if deployment.state !== DeploymentState.Down}
+                  <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" />
+                {/if}
               </div>
             </td>
-            <td class="py-2 pr-4 text-gray-500">
-              {deployment.resources.length}
+            <td class="py-2 pr-4">
+              {#if deployment.resources.length > 0}
+                <span
+                  class="inline-flex items-center gap-1 rounded text-xs font-medium border bg-gray-100 border-gray-300 text-gray-500 px-1.5 py-px"
+                  title="{deployment.resources.length} resource{deployment.resources.length === 1 ? '' : 's'}"
+                >
+                  <Box class="w-2.5 h-2.5" />
+                  {deployment.resources.length}
+                </span>
+              {/if}
             </td>
             <td class="py-2 pr-4 text-right">
               {#if deployment.state !== DeploymentState.Desired}
@@ -218,14 +228,14 @@ function onWindowClick(event: MouseEvent) {
     </table>
     </div>
 
-    <div class="md:hidden space-y-3">
+    <div class="md:hidden space-y-2">
       {#each sortedDeployments as deployment}
-        <div class="relative bg-white border border-gray-200 rounded-lg p-4">
+        <div class="relative bg-white border border-gray-200 rounded-lg p-3">
           <div class="flex items-center justify-between text-xs text-gray-500">
             <span class="font-mono">{deployment.shortId}</span>
             <span>{new Date(deployment.createdAt).toLocaleString()}</span>
           </div>
-          <div class="mt-2 truncate">
+          <div class="mt-1 truncate">
             <a
               href={deploymentHref(orgName, repoName, envName, deployment.id)}
               class="text-blue-600 hover:text-blue-500"
@@ -233,12 +243,22 @@ function onWindowClick(event: MouseEvent) {
               {deployment.commit.message.split("\n")[0]}
             </a>
           </div>
-          <div class="mt-3 flex items-center gap-3">
+          <div class="mt-2 flex items-center gap-3">
             <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
-            <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" showLabel={false} />
-            <span class="text-sm text-gray-500">{deployment.resources.length} resources</span>
+            {#if deployment.state !== DeploymentState.Down}
+              <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" />
+            {/if}
+            {#if deployment.resources.length > 0}
+              <span
+                class="inline-flex items-center gap-1 rounded text-xs font-medium border bg-gray-100 border-gray-300 text-gray-500 px-1.5 py-px"
+                title="{deployment.resources.length} resource{deployment.resources.length === 1 ? '' : 's'}"
+              >
+                <Box class="w-2.5 h-2.5" />
+                {deployment.resources.length}
+              </span>
+            {/if}
             {#if deployment.state !== DeploymentState.Desired}
-              <div class="ml-auto" data-menu-root={deployment.id}>
+              <div class="ml-auto -my-1" data-menu-root={deployment.id}>
                 <button
                   type="button"
                   onclick={() => toggleMenu(deployment.id)}

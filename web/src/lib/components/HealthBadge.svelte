@@ -36,20 +36,26 @@ let label = $derived.by(() => {
 });
 </script>
 
-<span
-    class="inline-flex items-center gap-1 rounded text-xs font-medium border {style.bg} {style.text} {size ===
-    'small'
-        ? 'px-1.5 py-px'
-        : 'px-2 py-0.5'}"
-    title={openIncidentCount > 0
-        ? `${openIncidentCount} open incident${openIncidentCount === 1 ? "" : "s"}`
-        : undefined}
->
-    <span class="inline-block rounded-full {dotColor} {size === 'small' ? 'w-1.5 h-1.5' : 'w-2 h-2'}"
-    ></span>
-    {#if showLabel}
+{#if showLabel}
+    <span
+        class="inline-flex items-center gap-1 rounded text-xs font-medium border {style.bg} {style.text} {size ===
+        'small'
+            ? 'px-1.5 py-px'
+            : 'px-2 py-0.5'}"
+        title={openIncidentCount > 0
+            ? `${openIncidentCount} open incident${openIncidentCount === 1 ? "" : "s"}`
+            : undefined}
+    >
+        <span
+            class="inline-block rounded-full {dotColor} {size === 'small' ? 'w-1.5 h-1.5' : 'w-2 h-2'}"
+        ></span>
         {label}{#if openIncidentCount > 0}
             <span class="opacity-70">·{openIncidentCount}</span>
         {/if}
-    {/if}
-</span>
+    </span>
+{:else}
+    <span
+        class="inline-block rounded-full {dotColor} {size === 'small' ? 'w-1.5 h-1.5' : 'w-2 h-2'}"
+        title={`${label}${openIncidentCount > 0 ? ` · ${openIncidentCount} open incident${openIncidentCount === 1 ? "" : "s"}` : ""}`}
+    ></span>
+{/if}

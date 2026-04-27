@@ -2,6 +2,7 @@
 import { Check, Copy } from "lucide-svelte";
 import { onDestroy } from "svelte";
 import { page } from "$app/stores";
+import { copyText } from "$lib/clipboard";
 import IncidentEntityLink from "$lib/components/IncidentEntityLink.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import { EnvironmentIncidentDetailDocument } from "$lib/graphql/generated";
@@ -30,7 +31,7 @@ onDestroy(() => clearInterval(tick));
 
 let copied = $state(false);
 function copyId() {
-    navigator.clipboard.writeText(incidentId);
+    copyText(incidentId);
     copied = true;
     setTimeout(() => (copied = false), 2000);
 }
@@ -57,7 +58,7 @@ let elapsedMs = $derived.by(() => {
     <p class="text-gray-500">Incident not found.</p>
 {:else}
     <div class="bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-        <div class="flex items-baseline justify-between gap-3">
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
             <div
                 class="flex items-center gap-2 text-sm font-bold {incident.closedAt
                     ? ''
@@ -88,7 +89,7 @@ let elapsedMs = $derived.by(() => {
             </button>
         </div>
 
-        <div class="flex items-baseline justify-between gap-3">
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
             {#if incident.entity}
                 <p class="text-xs text-gray-500">
                     Observed on

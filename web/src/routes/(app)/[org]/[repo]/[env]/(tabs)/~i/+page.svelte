@@ -47,7 +47,55 @@ function timeframe(openedAt: string, closedAt: string | null | undefined): strin
 {:else if rows.length === 0}
     <p class="text-gray-500">No incidents in this environment.</p>
 {:else}
-    <div class="bg-white border border-gray-200 rounded-lg overflow-x-auto">
+    <div class="md:hidden space-y-2">
+        {#each rows as incident}
+            {@const entity = incident.entity}
+            {@const isOpen = incident.closedAt == null}
+            <a
+                href={envIncidentHref(orgName, repoName, envName, incident.id)}
+                class="block bg-white border border-gray-200 rounded-lg p-3 hover:bg-gray-50 transition-colors"
+            >
+                <div class="flex items-center justify-between text-xs text-gray-500">
+                    <span class="font-mono">{incident.id.slice(-8)}</span>
+                    <span
+                        class="tabular-nums {isOpen ? 'text-red-600 font-bold' : ''}"
+                        title={`${new Date(incident.openedAt).toLocaleString()}${incident.closedAt ? ` → ${new Date(incident.closedAt).toLocaleString()}` : ""}`}
+                    >
+                        {timeframe(incident.openedAt, incident.closedAt)}
+                    </span>
+                </div>
+                <div class="mt-1 text-blue-600 break-words line-clamp-3 whitespace-pre-line">
+                    {incident.summary ?? ""}
+                </div>
+                <div class="mt-2 flex items-center gap-2 text-xs flex-wrap">
+                    <span
+                        class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium border {isOpen
+                            ? 'bg-red-50 text-red-700 border-red-200'
+                            : 'bg-gray-100 text-gray-500 border-gray-300'}"
+                    >
+                        <span
+                            class="inline-block w-1.5 h-1.5 rounded-full {isOpen
+                                ? 'bg-red-500 animate-pulse'
+                                : 'bg-gray-400'}"
+                        ></span>
+                        {isOpen ? "OPEN" : "CLOSED"}
+                    </span>
+                    {#if entity}
+                        <IncidentEntityLink
+                            {entity}
+                            org={orgName}
+                            repo={repoName}
+                            env={envName}
+                        />
+                    {:else}
+                        <span class="text-gray-500 font-mono text-xs">(destroyed)</span>
+                    {/if}
+                </div>
+            </a>
+        {/each}
+    </div>
+
+    <div class="hidden md:block bg-white border border-gray-200 rounded-lg overflow-x-auto">
         <table class="w-full text-left text-sm">
             <thead>
                 <tr class="border-b border-gray-200 text-gray-500 whitespace-nowrap">

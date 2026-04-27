@@ -1,11 +1,13 @@
 <script lang="ts">
 import { page } from "$app/stores";
+import { copyText } from "$lib/clipboard";
 import DeploymentStateBadge from "$lib/components/DeploymentState.svelte";
 import HealthBadge from "$lib/components/HealthBadge.svelte";
 import JsonTree from "$lib/components/JsonTree.svelte";
 import LogStream from "$lib/components/LogStream.svelte";
+import ResourceCardCompact from "$lib/components/ResourceCardCompact.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
-import { Copy, ExternalLink, Loader2, Trash2 } from "lucide-svelte";
+import { Activity, Copy, ExternalLink, Loader2, Trash2 } from "lucide-svelte";
 import {
     DeleteResourceDocument,
     ResourceDetailDocument,
@@ -79,8 +81,6 @@ let envQid = $derived(resourceDetail.data?.organization.repository.environment.q
 let resource = $derived(resourceDetail.data?.organization.repository.environment.resource ?? null);
 let resourceQid = $derived(envQid && resourceId ? `${envQid}::${resourceId}` : "");
 
-let typeParts = $derived(resource?.type.split(".") ?? []);
-
 function moduleIdToLocalPath(moduleId: string): string {
     const segments = moduleId.split("/");
     return segments.length > 2 ? segments.slice(2).join("/") : moduleId;
@@ -139,6 +139,10 @@ let aRecordFqdn = $derived.by(() => {
     if (!isDnsARecord || !resource?.outputs) return null;
     return extractStr(getField(resource.outputs, "fqdn"));
 });
+
+let inRepoSourceFrame = $derived(
+    resource?.sourceTrace.find((f) => f.moduleId.startsWith(`${orgName}/${repoName}/`)) ?? null,
+);
 </script>
 
 <svelte:head>
@@ -155,66 +159,253 @@ let aRecordFqdn = $derived.by(() => {
   </div>
 {:else if resource}
   <!-- Header -->
-  <div class="mb-6 flex items-start gap-4">
-    <div class="flex-1">
-      <div class="mb-1">
-        {#if typeParts.length > 1}
-          <span class="text-gray-400 font-mono"
-            >{typeParts.slice(0, -1).join(".")}.</span
-          >
-        {/if}
-        <span class="text-gray-700 font-mono font-medium">{typeParts[typeParts.length - 1]}</span>
-      </div>
-      <h2 class="font-bold text-gray-900 flex items-center gap-2">
-        {resource.name}
+  <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+    <div class="text-xs font-mono text-gray-500 truncate">{resource.type}</div>
+    <h2 class="mt-1 font-bold text-gray-900 break-all">{resource.name}</h2>
+    {#if resource.markers.length > 0 || isDestroying}
+      <div class="mt-2 flex items-center gap-1 flex-wrap">
         {#each resource.markers as marker}
           <span
-            class="px-1.5 py-0.5 rounded text-xs {marker === 'VOLATILE'
-              ? 'bg-yellow-50 text-yellow-700 border border-yellow-200'
-              : 'bg-blue-50 text-blue-700 border border-blue-200'}"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium border {marker === 'VOLATILE'
+              ? 'bg-orange-50 text-orange-700 border-orange-200'
+              : 'bg-blue-50 text-blue-700 border-blue-200'}"
           >
+            {#if marker === 'VOLATILE'}<Activity class="w-3 h-3" />{/if}
             {marker}
           </span>
         {/each}
         {#if isDestroying}
           <span
-            class="px-1.5 py-px rounded border border-red-300 text-red-700 inline-flex items-center gap-1"
+            class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium border border-red-300 bg-red-50 text-red-700"
             title="Destroy message enqueued; waiting for plugin confirmation"
           >
             <Loader2 class="w-3 h-3 animate-spin" />
             Destroying…
           </span>
         {/if}
-      </h2>
-    </div>
+      </div>
+    {/if}
+  </div>
 
-    <div class="delete-dropdown relative inline-block">
-      <button
-        type="button"
-        class="inline-flex items-center gap-1.5 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-gray-600 font-medium cursor-pointer hover:border-red-400 hover:text-red-600 transition-colors focus:outline-none focus:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
-        disabled={isDestroying}
-        onclick={() => {
-            deleteConfirmOpen = !deleteConfirmOpen;
-            deleteConfirmInput = "";
-            deleteError = null;
-        }}
+  <!-- Metadata -->
+  <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
+    <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
+      {#if resourceQid}
+        <div class="col-span-2 min-w-0">
+          <dt class="text-gray-400">QID</dt>
+          <dd class="font-mono text-xs text-gray-600 flex items-start gap-1.5">
+            <span class="break-all min-w-0 flex-1">{resourceQid}</span>
+            <button
+              type="button"
+              class="shrink-0 text-gray-400 hover:text-gray-600 transition-colors"
+              title="Copy QID"
+              onclick={() => copyText(resourceQid)}
+            >
+              <Copy class="w-3.5 h-3.5" />
+            </button>
+          </dd>
+        </div>
+      {/if}
+      {#if resource.owner}
+        <div class="col-span-2 min-w-0">
+          <dt class="text-gray-400">Owner</dt>
+          <dd class="flex items-baseline gap-2 min-w-0">
+            <a
+              href={deploymentHref(orgName, repoName, envName, resource.owner.id)}
+              class="shrink-0 text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
+            >
+              {resource.owner.shortId}
+            </a>
+            <span class="text-gray-500 truncate"
+              >{resource.owner.commit.message.split("\n")[0]}</span
+            >
+          </dd>
+        </div>
+        <div>
+          <dt class="text-gray-400">Deployment State</dt>
+          <dd><DeploymentStateBadge state={resource.owner.state} bootstrapped={resource.owner.bootstrapped} /></dd>
+        </div>
+      {/if}
+      <div>
+        <dt class="text-gray-400">Health</dt>
+        <dd>
+          <HealthBadge
+            health={resource.status.health}
+            openIncidentCount={resource.status.openIncidentCount}
+          />
+        </dd>
+      </div>
+      <div>
+        <dt class="text-gray-400">Last report</dt>
+        <dd class="text-gray-700">
+          {new Date(resource.status.lastReportAt).getTime() === 0
+            ? "Never"
+            : new Date(resource.status.lastReportAt).toLocaleString()}
+        </dd>
+      </div>
+      {#if inRepoSourceFrame}
+        {@const filePath = moduleIdToLocalPath(inRepoSourceFrame.moduleId) + ".scl"}
+        {@const line = parseSpanStartLine(inRepoSourceFrame.span)}
+        <div>
+          <dt class="text-gray-400">Source</dt>
+          <dd>
+            <a
+              href={commitTreeHref(
+                orgName,
+                repoName,
+                resource.owner?.commit.hash ?? "",
+                filePath,
+              ) + `#line-${line}`}
+              class="text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
+            >
+              {filePath}:{line}
+            </a>
+          </dd>
+        </div>
+      {/if}
+    </dl>
+    {#if resource.openIncidents.length > 0}
+      <div class="mt-4">
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Open incidents</h3>
+        <ul class="space-y-1 text-sm">
+          {#each resource.openIncidents as incident}
+            <li>
+              <a
+                href={envIncidentHref(orgName, repoName, envName, incident.id)}
+                class="text-blue-600 hover:text-blue-500"
+              >
+                Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
+              </a>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+  </div>
+
+  <!-- Resource Widgets -->
+  {#if isPortResource && resourceQid && portForwardPort != null}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Port Forward</h3>
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="flex items-center gap-2 font-mono text-xs text-gray-600 bg-gray-50 rounded px-3 py-2">
+          <code class="flex-1 select-all">skyr port-forward {resourceQid} {portForwardPort}</code>
+          <button
+            type="button"
+            class="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
+            title="Copy command"
+            onclick={() => copyText(`skyr port-forward ${resourceQid} ${portForwardPort}`)}
+          >
+            <Copy class="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+    </section>
+  {/if}
+  {#if isDnsARecord && aRecordFqdn}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">DNS</h3>
+      <div class="bg-white border border-gray-200 rounded-lg p-4">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-sm text-gray-600">{aRecordFqdn}</span>
+          <a
+            href="http://{aRecordFqdn}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="text-blue-600 hover:text-blue-500 transition-colors"
+            title="Open in browser"
+          >
+            <ExternalLink class="w-4 h-4" />
+          </a>
+        </div>
+      </div>
+    </section>
+  {/if}
+
+  <!-- Dependencies -->
+  {#if resource.dependencies.length > 0}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Dependencies</h3>
+      <div class="space-y-2">
+        {#each resource.dependencies as dep}
+          <ResourceCardCompact
+            resource={{ type: dep.type, name: dep.name, markers: [] }}
+            href={resourceHref(orgName, repoName, envName, `${dep.type}:${dep.name}`)}
+          />
+        {/each}
+      </div>
+    </section>
+  {/if}
+
+  <!-- Inputs -->
+  {#if resource.inputs != null}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Inputs</h3>
+      <div
+        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
       >
-        <Trash2 class="w-4 h-4" />
-        Delete
-      </button>
+        <JsonTree value={resource.inputs} />
+      </div>
+    </section>
+  {/if}
+
+  <!-- Outputs -->
+  {#if resource.outputs != null}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Outputs</h3>
+      <div
+        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
+      >
+        <JsonTree value={resource.outputs} />
+      </div>
+    </section>
+  {/if}
+
+  <!-- Logs -->
+  {#if resourceQid}
+    <section class="mb-6">
+      <h3 class="font-medium text-gray-600 mb-3">Logs</h3>
+      <div
+        class="h-96 bg-white border border-gray-200 rounded-lg overflow-hidden"
+      >
+        <LogStream
+          document={ResourceLogsDocument}
+          variables={{ resourceQid, initialAmount: 100 }}
+          logField="resourceLogs"
+        />
+      </div>
+    </section>
+  {/if}
+
+  <!-- Danger zone -->
+  <section class="delete-dropdown mt-12">
+    <h3 class="font-medium text-red-600 mb-3">Danger zone</h3>
+    <div class="bg-white border border-red-200 rounded-lg p-4">
+      <div class="flex items-start justify-between gap-3 flex-wrap">
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-medium text-gray-700">Delete resource</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            Ask the resource's plugin to destroy this resource. If the owning deployment is still
+            <span class="font-medium">Desired</span>, the next evaluation tick may recreate it.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="shrink-0 inline-flex items-center gap-1.5 bg-white border border-red-200 rounded px-2.5 py-1 text-xs text-red-600 font-medium cursor-pointer hover:border-red-400 hover:bg-red-50 transition-colors focus:outline-none focus:border-red-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          disabled={isDestroying}
+          onclick={() => {
+              deleteConfirmOpen = !deleteConfirmOpen;
+              deleteConfirmInput = "";
+              deleteError = null;
+          }}
+        >
+          <Trash2 class="w-3.5 h-3.5" />
+          Delete
+        </button>
+      </div>
 
       {#if deleteConfirmOpen}
-        <div
-          class="absolute right-0 mt-1 z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-4 w-96"
-        >
-          <p class="text-sm font-medium text-gray-700 mb-2">Delete resource?</p>
-          <p class="text-sm text-gray-500 mb-3">
-            This will ask the resource's plugin to destroy
-            <code class="bg-gray-100 px-1 py-0.5 rounded text-xs">{resource.type}:{resource.name}</code>.
-            If the owning deployment is still
-            <span class="font-medium">Desired</span>, the next evaluation tick
-            may recreate the resource.
-          </p>
+        <div class="mt-4 pt-4 border-t border-red-100">
           {#if resource.markers.includes(ResourceMarker.Sticky)}
             <p class="text-sm text-blue-700 mb-3">
               This resource is marked <code class="bg-blue-50 px-1 py-0.5 rounded text-xs">STICKY</code>
@@ -265,205 +456,7 @@ let aRecordFqdn = $derived.by(() => {
         </div>
       {/if}
     </div>
-  </div>
-
-  <!-- Metadata -->
-  <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-    <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
-      {#if resourceQid}
-        <div>
-          <dt class="text-gray-400">QID</dt>
-          <dd class="font-mono text-xs text-gray-600 flex items-center gap-1.5">
-            {resourceQid}
-            <button
-              type="button"
-              class="text-gray-400 hover:text-gray-600 transition-colors"
-              title="Copy QID"
-              onclick={() => navigator.clipboard.writeText(resourceQid)}
-            >
-              <Copy class="w-3.5 h-3.5" />
-            </button>
-          </dd>
-        </div>
-      {/if}
-      {#if resource.owner}
-        <div>
-          <dt class="text-gray-400">Owner</dt>
-          <dd>
-            <a
-              href={deploymentHref(orgName, repoName, envName, resource.owner.id)}
-              class="text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
-            >
-              {resource.owner.shortId}
-            </a>
-            <span class="text-gray-500 ml-2"
-              >{resource.owner.commit.message.split("\n")[0]}</span
-            >
-          </dd>
-        </div>
-        <div>
-          <dt class="text-gray-400">Deployment State</dt>
-          <dd><DeploymentStateBadge state={resource.owner.state} bootstrapped={resource.owner.bootstrapped} /></dd>
-        </div>
-      {/if}
-      <div>
-        <dt class="text-gray-400">Health</dt>
-        <dd>
-          <HealthBadge
-            health={resource.status.health}
-            openIncidentCount={resource.status.openIncidentCount}
-          />
-        </dd>
-      </div>
-      <div>
-        <dt class="text-gray-400">Last report</dt>
-        <dd class="text-gray-700">
-          {new Date(resource.status.lastReportAt).getTime() === 0
-            ? "Never"
-            : new Date(resource.status.lastReportAt).toLocaleString()}
-        </dd>
-      </div>
-      {#if resource.sourceTrace.length > 0}
-        {@const frame = resource.sourceTrace[0]}
-        {@const filePath = moduleIdToLocalPath(frame.moduleId) + ".scl"}
-        {@const line = parseSpanStartLine(frame.span)}
-        <div>
-          <dt class="text-gray-400">Source</dt>
-          <dd>
-            <a
-              href={commitTreeHref(
-                orgName,
-                repoName,
-                resource.owner?.commit.hash ?? "",
-                filePath,
-              ) + `#line-${line}`}
-              class="text-blue-600 hover:text-blue-500 font-mono text-xs transition-colors"
-            >
-              {filePath}:{line}
-            </a>
-          </dd>
-        </div>
-      {/if}
-    </dl>
-    {#if resource.openIncidents.length > 0}
-      <div class="mt-4">
-        <h3 class="text-sm font-medium text-gray-700 mb-2">Open incidents</h3>
-        <ul class="space-y-1 text-sm">
-          {#each resource.openIncidents as incident}
-            <li>
-              <a
-                href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                class="text-blue-600 hover:text-blue-500"
-              >
-                Opened {new Date(incident.openedAt).toLocaleString()} · OPEN
-              </a>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-  </div>
-
-  <!-- Resource Widgets -->
-  {#if isPortResource && resourceQid && portForwardPort != null}
-    <section class="mb-6">
-      <h3 class="font-medium text-gray-600 mb-3">Port Forward</h3>
-      <div class="bg-white border border-gray-200 rounded-lg p-4">
-        <div class="flex items-center gap-2 font-mono text-xs text-gray-600 bg-gray-50 rounded px-3 py-2">
-          <code class="flex-1 select-all">skyr port-forward {resourceQid} {portForwardPort}</code>
-          <button
-            type="button"
-            class="text-gray-400 hover:text-gray-600 transition-colors shrink-0"
-            title="Copy command"
-            onclick={() => navigator.clipboard.writeText(`skyr port-forward ${resourceQid} ${portForwardPort}`)}
-          >
-            <Copy class="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-    </section>
-  {/if}
-  {#if isDnsARecord && aRecordFqdn}
-    <section class="mb-6">
-      <h3 class="font-medium text-gray-600 mb-3">DNS</h3>
-      <div class="bg-white border border-gray-200 rounded-lg p-4">
-        <div class="flex items-center gap-2">
-          <span class="font-mono text-sm text-gray-600">{aRecordFqdn}</span>
-          <a
-            href="http://{aRecordFqdn}"
-            target="_blank"
-            rel="noopener noreferrer"
-            class="text-blue-600 hover:text-blue-500 transition-colors"
-            title="Open in browser"
-          >
-            <ExternalLink class="w-4 h-4" />
-          </a>
-        </div>
-      </div>
-    </section>
-  {/if}
-
-  <!-- Dependencies -->
-  {#if resource.dependencies.length > 0}
-    <section class="mb-6">
-      <h3 class="font-medium text-gray-600 mb-3">Dependencies</h3>
-      <div class="flex flex-wrap gap-1.5">
-        {#each resource.dependencies as dep}
-          <a
-            href={resourceHref(
-              orgName,
-              repoName,
-              envName,
-              `${dep.type}:${dep.name}`,
-            )}
-            class="px-2 py-1 bg-gray-100 border border-gray-300 rounded text-gray-600 hover:text-gray-900 hover:border-gray-400 transition-colors"
-          >
-            {dep.type}::{dep.name}
-          </a>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  <!-- Inputs -->
-  {#if resource.inputs != null}
-    <section class="mb-6">
-      <h3 class="font-medium text-gray-600 mb-3">Inputs</h3>
-      <div
-        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
-      >
-        <JsonTree value={resource.inputs} />
-      </div>
-    </section>
-  {/if}
-
-  <!-- Outputs -->
-  {#if resource.outputs != null}
-    <section class="mb-6">
-      <h3 class="font-medium text-gray-600 mb-3">Outputs</h3>
-      <div
-        class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
-      >
-        <JsonTree value={resource.outputs} />
-      </div>
-    </section>
-  {/if}
-
-  <!-- Logs -->
-  {#if resourceQid}
-    <section>
-      <h3 class="font-medium text-gray-600 mb-3">Logs</h3>
-      <div
-        class="h-96 bg-white border border-gray-200 rounded-lg overflow-hidden"
-      >
-        <LogStream
-          document={ResourceLogsDocument}
-          variables={{ resourceQid, initialAmount: 100 }}
-          logField="resourceLogs"
-        />
-      </div>
-    </section>
-  {/if}
+  </section>
 {:else}
   <p class="text-gray-500">Resource not found.</p>
 {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+import { copyText } from "$lib/clipboard";
 import { Info } from "lucide-svelte";
 
 let {
@@ -34,7 +35,7 @@ function handleSubmit() {
 }
 
 function copyToClipboard(text: string) {
-    navigator.clipboard.writeText(text);
+    copyText(text);
 }
 
 const clipboardSuffix = $derived.by(() => {

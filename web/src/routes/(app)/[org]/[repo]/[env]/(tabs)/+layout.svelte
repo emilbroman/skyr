@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { page } from "$app/stores";
+import { copyText } from "$lib/clipboard";
 import {
     EnvironmentDetailDocument,
     RepositoryDetailDocument,
@@ -42,7 +43,7 @@ let cloneUrl = $derived(
 let copied = $state(false);
 
 function copyCloneUrl() {
-    navigator.clipboard.writeText(`git clone -o skyr ${cloneUrl}`);
+    copyText(`git clone -o skyr ${cloneUrl}`);
     copied = true;
     setTimeout(() => (copied = false), 2000);
 }
@@ -258,75 +259,78 @@ function switchEnv(newEnv: string) {
     </div>
   {:else if env}
     <!-- Tabs -->
-    <div class="flex gap-1 border-b border-gray-200 mb-3 overflow-x-auto overflow-y-hidden">
-      <a
-        href={envBase}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'files'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <Folder class="w-4 h-4" />
-        Files
-      </a>
-      <a
-        href={deploymentsPath}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'deployments'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <RefreshCw class="w-4 h-4" />
-        Deployments <span class="text-gray-400 ml-1"
-          >({env.deployments.length})</span
+    <div class="relative mb-3 -mx-6">
+      <div class="absolute bottom-0 left-0 right-0 h-px bg-gray-200"></div>
+      <div class="flex gap-1 px-6 overflow-x-auto relative">
+        <a
+          href={envBase}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'files'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
         >
-      </a>
-      <a
-        href={resPath}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'resources'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <Box class="w-4 h-4" />
-        Resources <span class="text-gray-400 ml-1"
-          >({env.resources.length})</span
+          <Folder class="w-4 h-4" />
+          Files
+        </a>
+        <a
+          href={deploymentsPath}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'deployments'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
         >
-      </a>
-      <a
-        href={artifactsPath}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'artifacts'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <Archive class="w-4 h-4" />
-        Artifacts {#if env.artifacts.length > 0}<span class="text-gray-400 ml-1"
-          >({env.artifacts.length})</span
-        >{/if}
-      </a>
-      <a
-        href={logsPath}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'logs'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <AlignJustify class="w-4 h-4" />
-        Logs
-      </a>
-      <a
-        href={incidentsPath}
-        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 -mb-px {activeTab ===
-        'incidents'
-          ? 'border-blue-500 text-blue-600'
-          : 'border-transparent text-gray-500 hover:text-gray-700'}"
-      >
-        <AlertTriangle class="w-4 h-4" />
-        Incidents {#if openIncidentCount > 0}<span class="text-red-500 ml-1"
-          >({openIncidentCount})</span
-        >{/if}
-      </a>
+          <RefreshCw class="w-4 h-4" />
+          Deployments <span class="text-gray-400 ml-1"
+            >({env.deployments.length})</span
+          >
+        </a>
+        <a
+          href={resPath}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'resources'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+        >
+          <Box class="w-4 h-4" />
+          Resources <span class="text-gray-400 ml-1"
+            >({env.resources.length})</span
+          >
+        </a>
+        <a
+          href={artifactsPath}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'artifacts'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+        >
+          <Archive class="w-4 h-4" />
+          Artifacts {#if env.artifacts.length > 0}<span class="text-gray-400 ml-1"
+            >({env.artifacts.length})</span
+          >{/if}
+        </a>
+        <a
+          href={logsPath}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'logs'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+        >
+          <AlignJustify class="w-4 h-4" />
+          Logs
+        </a>
+        <a
+          href={incidentsPath}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium whitespace-nowrap transition-colors border-b-2 {activeTab ===
+          'incidents'
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700'}"
+        >
+          <AlertTriangle class="w-4 h-4" />
+          Incidents {#if openIncidentCount > 0}<span class="text-red-500 ml-1"
+            >({openIncidentCount})</span
+          >{/if}
+        </a>
+      </div>
     </div>
 
     {@render children()}
