@@ -1349,18 +1349,16 @@ impl Incident {
         }
     }
 
-    #[graphql(name = "lastErrorMessage")]
-    fn last_error_message(&self) -> Option<&str> {
-        if self.inner.last_error_message.is_empty() {
+    /// The incident's projected summary: the union of distinct error
+    /// messages observed across all reports attributed to this incident, in
+    /// first-seen order, joined by `\n\n`. `null` if no error-bearing reports
+    /// have been recorded yet.
+    fn summary(&self) -> Option<&str> {
+        if self.inner.summary.is_empty() {
             None
         } else {
-            Some(self.inner.last_error_message.as_str())
+            Some(self.inner.summary.as_str())
         }
-    }
-
-    #[graphql(name = "triggeringReportSummary")]
-    fn triggering_report_summary(&self) -> Option<&str> {
-        self.inner.triggering_report_summary.as_deref()
     }
 
     /// Back-edge to the owning organization. Always populated.

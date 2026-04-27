@@ -135,8 +135,13 @@ type Incident {
   closedAt: String
   lastReportAt: String!
   reportCount: Int!
-  lastErrorMessage: String
-  triggeringReportSummary: String
+  """
+    The incident's projected summary: the union of distinct error
+    messages observed across all reports attributed to this incident, in
+    first-seen order, joined by `\n\n`. `null` if no error-bearing reports
+    have been recorded yet.
+  """
+  summary: String
   "Back-edge to the owning organization. Always populated."
   organization: Organization
   """

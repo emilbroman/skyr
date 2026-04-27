@@ -75,7 +75,7 @@ The schema exposes a nested hierarchy:
 - **StatusSummary** — `health` (HEALTHY/DEGRADED/DOWN), `lastReportAt`, `lastReportSucceeded`, `openIncidentCount`, `worstOpenCategory`, `consecutiveFailureCount`. Read directly from SDB.
 - **HealthStatus** — UI-friendly rollup. `HEALTHY` iff no open incidents; `DOWN` iff the worst open category is `CRASH`; `DEGRADED` otherwise.
 - **IncidentCategory** — `BAD_CONFIGURATION`, `CANNOT_PROGRESS`, `INCONSISTENT_STATE`, `SYSTEM_ERROR`, `CRASH`. Mirrors the producer-classified severity from `rq::IncidentCategory` / `sdb::Category`.
-- **Incident** — `id`, `entityQid`, `category`, `openedAt`, `closedAt`, `lastReportAt`, `reportCount`, `lastErrorMessage`, `triggeringReportSummary`, plus back-edges (`organization`, `repository`, `environment`, `deployment`, `resource`).
+- **Incident** — `id`, `entityQid`, `category`, `openedAt`, `closedAt`, `lastReportAt`, `reportCount`, `summary` (projected: distinct error messages observed across all reports, joined by `\n\n`), plus back-edges (`organization`, `repository`, `environment`, `deployment`, `resource`).
 
 `Deployment.status` and `Resource.status` are **self-only** rollups — they reflect only the entity's own incidents. Resource health is reached explicitly via `Deployment.resources -> Resource.status`. This keeps "is the deployment itself failing" and "is one of its resources failing" as distinct, separately-actionable signals.
 
