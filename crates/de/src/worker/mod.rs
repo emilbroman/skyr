@@ -438,7 +438,7 @@ impl Worker {
         // Compile and evaluate.
         match self.compile_and_evaluate().await {
             Ok(outcome) => {
-                if outcome.had_fatal_errors {
+                if let Some(compile_error_message) = outcome.compile_error_message {
                     tracing::warn!("{sid} fatal compile errors");
                     self.log_publisher
                         .error(format!("{sid} compile errors"))
@@ -448,7 +448,7 @@ impl Worker {
                         state,
                         outcome: IterationOutcome::Failure {
                             kind: FailureKind::BadConfiguration,
-                            error_message: format!("{sid} compile errors"),
+                            error_message: compile_error_message,
                         },
                         is_backoff_replay: false,
                     });
@@ -498,8 +498,8 @@ impl Worker {
                     keep_running: true,
                     state,
                     outcome: IterationOutcome::Failure {
-                        kind: FailureKind::SystemError,
-                        error_message: format!("{sid} transient error: {error:#}"),
+                        kind: FailureKind::CannotProgress,
+                        error_message: format!("{error:#}"),
                     },
                     is_backoff_replay: false,
                 })

@@ -29,9 +29,11 @@ pub(crate) struct EvalOutcome {
     /// tag) cross-repo pins. Preserved for observability.
     #[allow(dead_code)]
     pub(crate) has_volatile_cross_repo_pins: bool,
-    /// True when compilation produced one or more `Error`-severity
-    /// diagnostics.
-    pub(crate) had_fatal_errors: bool,
+    /// `Some(message)` when compilation produced one or more `Error`-severity
+    /// diagnostics. The message is the full DiagList rendered as one
+    /// `LEVEL: <module>:<span>: <diag>` line per diagnostic, joined by `\n`,
+    /// suitable for surfacing to end users via the RQ failure report.
+    pub(crate) compile_error_message: Option<String>,
 }
 
 impl Worker {
@@ -77,6 +79,19 @@ impl Worker {
             if diagnosed.diags().has_errors() {
                 self.cached_compile = None;
                 tracing::info!("compile produced errors; skipping evaluation");
+                let compile_error_message = diagnosed
+                    .diags()
+                    .iter()
+                    .map(|diag| {
+                        let (module_id, span) = diag.locate();
+                        let level = match diag.level() {
+                            sclc::DiagLevel::Error => "ERROR",
+                            sclc::DiagLevel::Warning => "WARNING",
+                        };
+                        format!("{level}: {module_id}:{span}: {diag}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 return Ok(EvalOutcome {
                     touched_resource_ids: HashSet::new(),
                     fully_explored: false,
@@ -84,7 +99,7 @@ impl Worker {
                     has_volatile_cross_repo_pins: cross_repo_finder
                         .as_ref()
                         .is_some_and(|f| f.has_volatile_pins()),
-                    had_fatal_errors: true,
+                    compile_error_message: Some(compile_error_message),
                 });
             }
 
@@ -418,7 +433,7 @@ impl Worker {
                         fully_explored: !had_mutation,
                         had_effect,
                         has_volatile_cross_repo_pins,
-                        had_fatal_errors: false,
+                        compile_error_message: None,
                     }
                 }
             }

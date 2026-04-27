@@ -48,6 +48,10 @@ use rq::{
 pub(crate) enum FailureKind {
     /// User-supplied SCL configuration is invalid (compile errors).
     BadConfiguration,
+    /// The deployment itself is stable, but reconciliation could not progress
+    /// because a derived/dependent input could not be evaluated (cross-repo
+    /// dep unresolved, RTP plugin error during eval, etc.).
+    CannotProgress,
     /// A failure in Skyr's own infrastructure (CDB / RDB / RTQ / LDB / SDB
     /// unavailable, broker outage, etc.). Used as the safe default for
     /// otherwise-unclassified errors so threshold tuning in the RE can
@@ -59,6 +63,7 @@ impl FailureKind {
     pub(crate) fn category(self) -> IncidentCategory {
         match self {
             FailureKind::BadConfiguration => IncidentCategory::BadConfiguration,
+            FailureKind::CannotProgress => IncidentCategory::CannotProgress,
             FailureKind::SystemError => IncidentCategory::SystemError,
         }
     }
@@ -263,6 +268,10 @@ mod tests {
         assert_eq!(
             FailureKind::BadConfiguration.category(),
             IncidentCategory::BadConfiguration,
+        );
+        assert_eq!(
+            FailureKind::CannotProgress.category(),
+            IncidentCategory::CannotProgress,
         );
         assert_eq!(
             FailureKind::SystemError.category(),
