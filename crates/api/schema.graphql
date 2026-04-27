@@ -13,28 +13,15 @@ enum DeploymentState {
 
 """
   UI-friendly rolled-up health enum, computed from the underlying counters
-  in [`StatusSummary`]:
-
-  - `Healthy` iff `openIncidentCount == 0`
-  - `Down` iff `worstOpenCategory == Crash`
-  - `Degraded` otherwise
+  in [`StatusSummary`]. `Down` if any open incident is at the `Crash`
+  severity tier, `Healthy` if there are no open incidents, `Degraded`
+  otherwise. The underlying severity tier is internal to the
+  status-reporting subsystem and not exposed in the API.
 """
 enum HealthStatus {
   HEALTHY
   DEGRADED
   DOWN
-}
-
-"""
-  Producer-classified failure category. Mirrors [`sdb::Category`] /
-  [`rq::IncidentCategory`].
-"""
-enum IncidentCategory {
-  BAD_CONFIGURATION
-  CANNOT_PROGRESS
-  INCONSISTENT_STATE
-  SYSTEM_ERROR
-  CRASH
 }
 
 enum ResourceMarker {
@@ -46,6 +33,19 @@ enum Severity {
   INFO
   WARNING
   ERROR
+}
+
+"""
+  Common shape of any entity an incident can be attached to. Currently
+  implemented by [`Resource`] and [`Deployment`]; the only field on the
+  interface is the entity's canonical QID, so type-specific data must be
+  reached through inline fragments. Each implementor exposes a `qid` field
+  of its own via its `graphql_object` impl, which juniper uses to satisfy
+  the interface contract — the trait below exists only to declare the
+  interface to the schema.
+"""
+interface IncidentEntity {
+  qid: ID!
 }
 
 scalar JSON
@@ -83,7 +83,7 @@ type Commit {
   treeEntry(path: String!): TreeEntry
 }
 
-type Deployment {
+type Deployment implements IncidentEntity {
   """
     Local identifier within the deployment's environment, in the form
     `<commit-hash>.<nonce>`. This is what `Environment.deployment(id:)`
@@ -95,7 +95,7 @@ type Deployment {
     repo, and environment). Use this when you need a key that is unique
     across the entire system — log subscriptions, status namespaces, etc.
   """
-  qid: String!
+  qid: ID!
   ref: String!
   commit: Commit!
   createdAt: String!
@@ -108,8 +108,8 @@ type Deployment {
     `Deployment.resources -> Resource.status`.
   """
   status: StatusSummary!
-  "Incidents scoped to this deployment (newest first)."
-  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
+  "Currently-open incidents about this deployment."
+  openIncidents: [Incident!]!
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
 }
@@ -123,14 +123,17 @@ type Environment {
   resources: [Resource!]!
   lastLogs(amount: Int): [Log!]!
   artifacts: [Artifact!]!
-  "Incidents scoped to this environment (newest first)."
-  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
+  "Every incident in this environment, newest first."
+  incidents: [Incident!]!
+  """
+    Look up a single incident by id within this environment. Returns
+    `None` if no such incident exists in this environment.
+  """
+  incident(id: ID!): Incident
 }
 
 type Incident {
   id: ID!
-  entityQid: String!
-  category: IncidentCategory!
   openedAt: String!
   closedAt: String
   lastReportAt: String!
@@ -142,32 +145,22 @@ type Incident {
     have been recorded yet.
   """
   summary: String
-  "Back-edge to the owning organization. Always populated."
-  organization: Organization
+  "Back-edge to the owning organization."
+  organization: Organization!
+  "Back-edge to the owning repository."
+  repository: Repository!
   """
-    Back-edge to the owning repository. Always populated when the entity
-    QID is parseable.
+    Back-edge to the owning environment. The environment object is
+    constructed from the deployments currently in CDB; if there are no
+    deployments left the returned `Environment` will have an empty
+    `deployments` list.
   """
-  repository: Repository
+  environment: Environment!
   """
-    Back-edge to the owning environment. Always populated when the entity
-    QID is parseable. Note that the environment object is constructed from
-    the deployments currently in CDB; if there are no deployments left the
-    returned `Environment` will have an empty `deployments` list.
+    The deployment or resource this incident is about. `null` if the
+    underlying entity has since been destroyed.
   """
-  environment: Environment
-  """
-    Back-edge to the owning deployment. Populated only for incidents about
-    deployments. `null` for resource-scoped incidents.
-  """
-  deployment: Deployment
-  """
-    Back-edge to the owning resource. Populated only for incidents about
-    resources. `null` for deployment-scoped incidents. The resource may
-    have been destroyed since the incident was opened, in which case this
-    resolves to `null`.
-  """
-  resource: Resource
+  entity: IncidentEntity
 }
 
 type Log {
@@ -226,14 +219,6 @@ type Organization {
   members: [User!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
-  "Incidents scoped to this organization (newest first)."
-  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
-  """
-    Look up a single incident by id, scoped to this organization. Returns
-    `None` if no such incident exists, or if it exists but does not belong
-    to this organization (ACL via scope traversal).
-  """
-  incident(id: ID!): Incident
 }
 
 type Query {
@@ -252,11 +237,14 @@ type Repository {
   environment(name: String!): Environment!
   commit(hash: String!): Commit!
   environments: [Environment!]!
-  "Incidents scoped to this repository (newest first)."
-  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
 }
 
-type Resource {
+type Resource implements IncidentEntity {
+  """
+    Globally-unique resource identifier (the full QID, including
+    org/repo/env/type/name).
+  """
+  qid: ID!
   type: String!
   name: String!
   inputs: JSON
@@ -268,8 +256,8 @@ type Resource {
   lastLogs(amount: Int): [Log!]!
   "Per-resource health rollup."
   status: StatusSummary!
-  "Incidents scoped to this resource (newest first)."
-  incidents(entityQid: String, category: IncidentCategory, openOnly: Boolean, since: String, until: String, limit: Int, offset: Int): [Incident!]!
+  "Currently-open incidents about this resource."
+  openIncidents: [Incident!]!
 }
 
 type SignedInUser {
@@ -291,7 +279,6 @@ type StatusSummary {
   lastReportAt: String!
   lastReportSucceeded: Boolean!
   openIncidentCount: Int!
-  worstOpenCategory: IncidentCategory
   consecutiveFailureCount: Int!
 }
 

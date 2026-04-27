@@ -146,63 +146,6 @@ impl Organization {
                 internal_error()
             })
     }
-
-    /// Incidents scoped to this organization (newest first).
-    #[allow(clippy::too_many_arguments)]
-    async fn incidents(
-        &self,
-        context: &Context,
-        #[graphql(name = "entityQid")] entity_qid: Option<String>,
-        category: Option<IncidentCategory>,
-        #[graphql(name = "openOnly")] open_only: Option<bool>,
-        since: Option<String>,
-        until: Option<String>,
-        limit: Option<i32>,
-        offset: Option<i32>,
-    ) -> FieldResult<Vec<Incident>> {
-        let scope = self.name.to_string();
-        list_incidents(
-            context,
-            IncidentScope::Org(scope),
-            entity_qid,
-            category,
-            open_only,
-            since,
-            until,
-            limit,
-            offset,
-        )
-        .await
-    }
-
-    /// Look up a single incident by id, scoped to this organization. Returns
-    /// `None` if no such incident exists, or if it exists but does not belong
-    /// to this organization (ACL via scope traversal).
-    async fn incident(&self, context: &Context, id: juniper::ID) -> FieldResult<Option<Incident>> {
-        let incident_id: sdb::IncidentId = (*id)
-            .parse()
-            .map_err(|_| field_error("Invalid incident id"))?;
-
-        let incident = context
-            .sdb_client
-            .get_incident(incident_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to fetch incident {incident_id}: {e}");
-                internal_error()
-            })?;
-
-        let Some(incident) = incident else {
-            return Ok(None);
-        };
-
-        // ACL: only return the incident if it belongs to this organization.
-        if !incident_belongs_to_org(&incident, &self.name) {
-            return Ok(None);
-        }
-
-        Ok(Some(Incident { inner: incident }))
-    }
 }
 
 pub(crate) struct Repository {
@@ -309,34 +252,6 @@ impl Repository {
                 Environment { qid, deployments }
             })
             .collect())
-    }
-
-    /// Incidents scoped to this repository (newest first).
-    #[allow(clippy::too_many_arguments)]
-    async fn incidents(
-        &self,
-        context: &Context,
-        #[graphql(name = "entityQid")] entity_qid: Option<String>,
-        category: Option<IncidentCategory>,
-        #[graphql(name = "openOnly")] open_only: Option<bool>,
-        since: Option<String>,
-        until: Option<String>,
-        limit: Option<i32>,
-        offset: Option<i32>,
-    ) -> FieldResult<Vec<Incident>> {
-        let scope = self.repository.name.to_string();
-        list_incidents(
-            context,
-            IncidentScope::Repo(scope),
-            entity_qid,
-            category,
-            open_only,
-            since,
-            until,
-            limit,
-            offset,
-        )
-        .await
     }
 }
 
@@ -480,32 +395,39 @@ impl Environment {
             .collect())
     }
 
-    /// Incidents scoped to this environment (newest first).
-    #[allow(clippy::too_many_arguments)]
-    async fn incidents(
-        &self,
-        context: &Context,
-        #[graphql(name = "entityQid")] entity_qid: Option<String>,
-        category: Option<IncidentCategory>,
-        #[graphql(name = "openOnly")] open_only: Option<bool>,
-        since: Option<String>,
-        until: Option<String>,
-        limit: Option<i32>,
-        offset: Option<i32>,
-    ) -> FieldResult<Vec<Incident>> {
-        let scope = self.qid.to_string();
-        list_incidents(
-            context,
-            IncidentScope::Env(scope),
-            entity_qid,
-            category,
-            open_only,
-            since,
-            until,
-            limit,
-            offset,
-        )
-        .await
+    /// Every incident in this environment, newest first.
+    async fn incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
+        let env_qid = self.qid.to_string();
+        let incidents = context
+            .sdb_client
+            .incidents_in_env(&env_qid)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list incidents for env {env_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(incidents
+            .into_iter()
+            .map(|inner| Incident { inner })
+            .collect())
+    }
+
+    /// Look up a single incident by id within this environment. Returns
+    /// `None` if no such incident exists in this environment.
+    async fn incident(&self, context: &Context, id: juniper::ID) -> FieldResult<Option<Incident>> {
+        let incident_id: sdb::IncidentId = (*id)
+            .parse()
+            .map_err(|_| field_error("Invalid incident id"))?;
+        let env_qid = self.qid.to_string();
+        let incident = context
+            .sdb_client
+            .incident_in_env(&env_qid, incident_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to fetch incident {incident_id} in env {env_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(incident.map(|inner| Incident { inner }))
     }
 }
 
@@ -716,7 +638,7 @@ pub(crate) struct Deployment {
     pub(crate) deployment: cdb::Deployment,
 }
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(Context = Context, impl = IncidentEntityValue)]
 impl Deployment {
     /// Local identifier within the deployment's environment, in the form
     /// `<commit-hash>.<nonce>`. This is what `Environment.deployment(id:)`
@@ -728,8 +650,8 @@ impl Deployment {
     /// Globally-unique deployment identifier (the full QID, including org,
     /// repo, and environment). Use this when you need a key that is unique
     /// across the entire system — log subscriptions, status namespaces, etc.
-    fn qid(&self) -> String {
-        self.deployment.deployment_qid().to_string()
+    fn qid(&self) -> juniper::ID {
+        juniper::ID::new(self.deployment.deployment_qid().to_string())
     }
 
     #[graphql(name = "ref")]
@@ -783,32 +705,24 @@ impl Deployment {
         load_status_summary(context, &entity_qid).await
     }
 
-    /// Incidents scoped to this deployment (newest first).
-    #[allow(clippy::too_many_arguments)]
-    async fn incidents(
-        &self,
-        context: &Context,
-        #[graphql(name = "entityQid")] entity_qid: Option<String>,
-        category: Option<IncidentCategory>,
-        #[graphql(name = "openOnly")] open_only: Option<bool>,
-        since: Option<String>,
-        until: Option<String>,
-        limit: Option<i32>,
-        offset: Option<i32>,
-    ) -> FieldResult<Vec<Incident>> {
-        let scope_qid = self.deployment.deployment_qid().to_string();
-        list_incidents(
-            context,
-            IncidentScope::Entity(scope_qid),
-            entity_qid,
-            category,
-            open_only,
-            since,
-            until,
-            limit,
-            offset,
-        )
-        .await
+    /// Currently-open incidents about this deployment.
+    #[graphql(name = "openIncidents")]
+    async fn open_incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
+        let deployment_qid = self.deployment.deployment_qid();
+        let entity_qid = deployment_qid.to_string();
+        let env_qid = deployment_qid.environment.to_string();
+        let incidents = context
+            .sdb_client
+            .open_incidents_for_entity(&entity_qid, &env_qid)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list open incidents for deployment {entity_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(incidents
+            .into_iter()
+            .map(|inner| Incident { inner })
+            .collect())
     }
 
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
@@ -913,8 +827,14 @@ impl Resource {
     }
 }
 
-#[juniper::graphql_object(Context = Context)]
+#[juniper::graphql_object(Context = Context, impl = IncidentEntityValue)]
 impl Resource {
+    /// Globally-unique resource identifier (the full QID, including
+    /// org/repo/env/type/name).
+    fn qid(&self) -> FieldResult<juniper::ID> {
+        Ok(juniper::ID::new(self.resource_qid()?.to_string()))
+    }
+
     #[graphql(name = "type")]
     fn r#type(&self) -> &str {
         &self.resource.resource_type
@@ -1057,32 +977,24 @@ impl Resource {
         load_status_summary(context, &entity_qid).await
     }
 
-    /// Incidents scoped to this resource (newest first).
-    #[allow(clippy::too_many_arguments)]
-    async fn incidents(
-        &self,
-        context: &Context,
-        #[graphql(name = "entityQid")] entity_qid: Option<String>,
-        category: Option<IncidentCategory>,
-        #[graphql(name = "openOnly")] open_only: Option<bool>,
-        since: Option<String>,
-        until: Option<String>,
-        limit: Option<i32>,
-        offset: Option<i32>,
-    ) -> FieldResult<Vec<Incident>> {
-        let scope_qid = self.resource_qid()?.to_string();
-        list_incidents(
-            context,
-            IncidentScope::Entity(scope_qid),
-            entity_qid,
-            category,
-            open_only,
-            since,
-            until,
-            limit,
-            offset,
-        )
-        .await
+    /// Currently-open incidents about this resource.
+    #[graphql(name = "openIncidents")]
+    async fn open_incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
+        let resource_qid = self.resource_qid()?;
+        let entity_qid = resource_qid.to_string();
+        let env_qid = resource_qid.environment.to_string();
+        let incidents = context
+            .sdb_client
+            .open_incidents_for_entity(&entity_qid, &env_qid)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to list open incidents for resource {entity_qid}: {e}");
+                internal_error()
+            })?;
+        Ok(incidents
+            .into_iter()
+            .map(|inner| Incident { inner })
+            .collect())
     }
 }
 
@@ -1201,11 +1113,10 @@ impl AuthChallenge {
 // ---------------------------------------------------------------------------
 
 /// UI-friendly rolled-up health enum, computed from the underlying counters
-/// in [`StatusSummary`]:
-///
-/// - `Healthy` iff `openIncidentCount == 0`
-/// - `Down` iff `worstOpenCategory == Crash`
-/// - `Degraded` otherwise
+/// in [`StatusSummary`]. `Down` if any open incident is at the `Crash`
+/// severity tier, `Healthy` if there are no open incidents, `Degraded`
+/// otherwise. The underlying severity tier is internal to the
+/// status-reporting subsystem and not exposed in the API.
 #[derive(Clone, Copy, juniper::GraphQLEnum)]
 pub(crate) enum HealthStatus {
     #[graphql(name = "HEALTHY")]
@@ -1214,46 +1125,6 @@ pub(crate) enum HealthStatus {
     Degraded,
     #[graphql(name = "DOWN")]
     Down,
-}
-
-/// Producer-classified failure category. Mirrors [`sdb::Category`] /
-/// [`rq::IncidentCategory`].
-#[derive(Clone, Copy, juniper::GraphQLEnum)]
-pub(crate) enum IncidentCategory {
-    #[graphql(name = "BAD_CONFIGURATION")]
-    BadConfiguration,
-    #[graphql(name = "CANNOT_PROGRESS")]
-    CannotProgress,
-    #[graphql(name = "INCONSISTENT_STATE")]
-    InconsistentState,
-    #[graphql(name = "SYSTEM_ERROR")]
-    SystemError,
-    #[graphql(name = "CRASH")]
-    Crash,
-}
-
-impl From<sdb::Category> for IncidentCategory {
-    fn from(c: sdb::Category) -> Self {
-        match c {
-            sdb::Category::BadConfiguration => IncidentCategory::BadConfiguration,
-            sdb::Category::CannotProgress => IncidentCategory::CannotProgress,
-            sdb::Category::InconsistentState => IncidentCategory::InconsistentState,
-            sdb::Category::SystemError => IncidentCategory::SystemError,
-            sdb::Category::Crash => IncidentCategory::Crash,
-        }
-    }
-}
-
-impl From<IncidentCategory> for sdb::Category {
-    fn from(c: IncidentCategory) -> Self {
-        match c {
-            IncidentCategory::BadConfiguration => sdb::Category::BadConfiguration,
-            IncidentCategory::CannotProgress => sdb::Category::CannotProgress,
-            IncidentCategory::InconsistentState => sdb::Category::InconsistentState,
-            IncidentCategory::SystemError => sdb::Category::SystemError,
-            IncidentCategory::Crash => sdb::Category::Crash,
-        }
-    }
 }
 
 /// Per-entity rollup surfaced on `Deployment.status` and `Resource.status`.
@@ -1293,11 +1164,6 @@ impl StatusSummary {
         self.inner.open_incident_count.min(i32::MAX as u32) as i32
     }
 
-    #[graphql(name = "worstOpenCategory")]
-    fn worst_open_category(&self) -> Option<IncidentCategory> {
-        self.inner.worst_open_category.map(IncidentCategory::from)
-    }
-
     #[graphql(name = "consecutiveFailureCount")]
     fn consecutive_failure_count(&self) -> i32 {
         self.inner.consecutive_failure_count.min(i32::MAX as u32) as i32
@@ -1313,15 +1179,6 @@ pub(crate) struct Incident {
 impl Incident {
     fn id(&self) -> juniper::ID {
         juniper::ID::new(self.inner.id.to_string())
-    }
-
-    #[graphql(name = "entityQid")]
-    fn entity_qid(&self) -> &str {
-        &self.inner.entity_qid
-    }
-
-    fn category(&self) -> IncidentCategory {
-        self.inner.category.into()
     }
 
     #[graphql(name = "openedAt")]
@@ -1361,27 +1218,29 @@ impl Incident {
         }
     }
 
-    /// Back-edge to the owning organization. Always populated.
-    fn organization(&self) -> Option<Organization> {
-        let qid = self.inner.entity_qid.parse::<ids::DeploymentQid>().ok();
-        if let Some(qid) = qid {
-            return Some(Organization {
-                name: qid.environment.repo.org,
-            });
-        }
-        let qid = self.inner.entity_qid.parse::<ids::ResourceQid>().ok()?;
-        Some(Organization {
-            name: qid.environment.repo.org,
-        })
+    /// Back-edge to the owning organization.
+    fn organization(&self) -> FieldResult<Organization> {
+        let org = incident_org_id(&self.inner).ok_or_else(|| {
+            tracing::error!(
+                "Incident {} has unparseable entity_qid {:?}",
+                self.inner.id,
+                self.inner.entity_qid,
+            );
+            internal_error()
+        })?;
+        Ok(Organization { name: org })
     }
 
-    /// Back-edge to the owning repository. Always populated when the entity
-    /// QID is parseable.
-    async fn repository(&self, context: &Context) -> FieldResult<Option<Repository>> {
-        let repo_qid = match incident_repo_qid(&self.inner) {
-            Some(qid) => qid,
-            None => return Ok(None),
-        };
+    /// Back-edge to the owning repository.
+    async fn repository(&self, context: &Context) -> FieldResult<Repository> {
+        let repo_qid = incident_repo_qid(&self.inner).ok_or_else(|| {
+            tracing::error!(
+                "Incident {} has unparseable entity_qid {:?}",
+                self.inner.id,
+                self.inner.entity_qid,
+            );
+            internal_error()
+        })?;
         let repository = context
             .cdb_client
             .repository(&repo_qid)
@@ -1390,18 +1249,22 @@ impl Incident {
                 tracing::error!("Failed to load incident repository {repo_qid}: {e}");
                 internal_error()
             })?;
-        Ok(Some(Repository { repository }))
+        Ok(Repository { repository })
     }
 
-    /// Back-edge to the owning environment. Always populated when the entity
-    /// QID is parseable. Note that the environment object is constructed from
-    /// the deployments currently in CDB; if there are no deployments left the
-    /// returned `Environment` will have an empty `deployments` list.
-    async fn environment(&self, context: &Context) -> FieldResult<Option<Environment>> {
-        let env_qid = match incident_env_qid(&self.inner) {
-            Some(qid) => qid,
-            None => return Ok(None),
-        };
+    /// Back-edge to the owning environment. The environment object is
+    /// constructed from the deployments currently in CDB; if there are no
+    /// deployments left the returned `Environment` will have an empty
+    /// `deployments` list.
+    async fn environment(&self, context: &Context) -> FieldResult<Environment> {
+        let env_qid = incident_env_qid(&self.inner).ok_or_else(|| {
+            tracing::error!(
+                "Incident {} has unparseable entity_qid {:?}",
+                self.inner.id,
+                self.inner.entity_qid,
+            );
+            internal_error()
+        })?;
 
         let deployments = context
             .cdb_client
@@ -1424,66 +1287,79 @@ impl Incident {
             .filter(|d| d.environment_qid() == env_qid)
             .collect();
 
-        Ok(Some(Environment {
+        Ok(Environment {
             qid: env_qid,
             deployments,
-        }))
+        })
     }
 
-    /// Back-edge to the owning deployment. Populated only for incidents about
-    /// deployments. `null` for resource-scoped incidents.
-    async fn deployment(&self, context: &Context) -> FieldResult<Option<Deployment>> {
-        let Ok(deployment_qid) = self.inner.entity_qid.parse::<ids::DeploymentQid>() else {
-            return Ok(None);
-        };
-
-        let repo_client = context.cdb_client.repo(deployment_qid.repo_qid().clone());
-        let mut stream = repo_client.deployments().await.map_err(|e| {
-            tracing::error!(
-                "Failed to list deployments for incident deployment {deployment_qid}: {e}"
-            );
-            internal_error()
-        })?;
-        while let Some(dep) = stream.next().await {
-            let dep = dep.map_err(|e| {
-                tracing::error!("Failed to read deployment for incident {deployment_qid}: {e}");
-                internal_error()
-            })?;
-            if dep.deployment_qid() == deployment_qid {
-                return Ok(Some(Deployment { deployment: dep }));
-            }
-        }
-        Ok(None)
-    }
-
-    /// Back-edge to the owning resource. Populated only for incidents about
-    /// resources. `null` for deployment-scoped incidents. The resource may
-    /// have been destroyed since the incident was opened, in which case this
-    /// resolves to `null`.
-    async fn resource(&self, context: &Context) -> FieldResult<Option<Resource>> {
-        let Ok(resource_qid) = self.inner.entity_qid.parse::<ids::ResourceQid>() else {
-            return Ok(None);
-        };
-
-        let namespace = resource_qid.environment.to_string();
-        let resource = context
-            .rdb_client
-            .namespace(namespace.clone())
-            .resource(
-                resource_qid.resource.resource_type().to_string(),
-                resource_qid.resource.resource_name().to_string(),
-            )
-            .get()
-            .await
-            .map_err(|e| {
+    /// The deployment or resource this incident is about. `null` if the
+    /// underlying entity has since been destroyed.
+    async fn entity(&self, context: &Context) -> FieldResult<Option<IncidentEntityValue>> {
+        if let Ok(deployment_qid) = self.inner.entity_qid.parse::<ids::DeploymentQid>() {
+            let repo_client = context.cdb_client.repo(deployment_qid.repo_qid().clone());
+            let mut stream = repo_client.deployments().await.map_err(|e| {
                 tracing::error!(
-                    "Failed to fetch incident resource {resource_qid} in namespace {namespace}: {e}"
+                    "Failed to list deployments for incident entity {deployment_qid}: {e}"
                 );
                 internal_error()
             })?;
-
-        Ok(resource.map(|resource| Resource { resource }))
+            while let Some(dep) = stream.next().await {
+                let dep = dep.map_err(|e| {
+                    tracing::error!("Failed to read deployment for incident {deployment_qid}: {e}");
+                    internal_error()
+                })?;
+                if dep.deployment_qid() == deployment_qid {
+                    return Ok(Some(IncidentEntityValue::from(Deployment {
+                        deployment: dep,
+                    })));
+                }
+            }
+            return Ok(None);
+        }
+        if let Ok(resource_qid) = self.inner.entity_qid.parse::<ids::ResourceQid>() {
+            let namespace = resource_qid.environment.to_string();
+            let resource = context
+                .rdb_client
+                .namespace(namespace.clone())
+                .resource(
+                    resource_qid.resource.resource_type().to_string(),
+                    resource_qid.resource.resource_name().to_string(),
+                )
+                .get()
+                .await
+                .map_err(|e| {
+                    tracing::error!(
+                        "Failed to fetch incident resource {resource_qid} in {namespace}: {e}"
+                    );
+                    internal_error()
+                })?;
+            return Ok(resource.map(|resource| IncidentEntityValue::from(Resource { resource })));
+        }
+        tracing::error!(
+            "Incident {} has unparseable entity_qid {:?}",
+            self.inner.id,
+            self.inner.entity_qid,
+        );
+        Ok(None)
     }
+}
+
+// ---------------------------------------------------------------------------
+// IncidentEntity interface
+// ---------------------------------------------------------------------------
+
+/// Common shape of any entity an incident can be attached to. Currently
+/// implemented by [`Resource`] and [`Deployment`]; the only field on the
+/// interface is the entity's canonical QID, so type-specific data must be
+/// reached through inline fragments. Each implementor exposes a `qid` field
+/// of its own via its `graphql_object` impl, which juniper uses to satisfy
+/// the interface contract — the trait below exists only to declare the
+/// interface to the schema.
+#[allow(dead_code)]
+#[juniper::graphql_interface(Context = Context, for = [Resource, Deployment])]
+pub(crate) trait IncidentEntity {
+    fn qid(&self) -> juniper::ID;
 }
 
 // ---------------------------------------------------------------------------
@@ -1519,104 +1395,6 @@ async fn load_status_summary(context: &Context, entity_qid: &str) -> FieldResult
     Ok(StatusSummary { inner })
 }
 
-#[derive(Clone)]
-enum IncidentScope {
-    Org(String),
-    Repo(String),
-    Env(String),
-    Entity(String),
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn list_incidents(
-    context: &Context,
-    scope: IncidentScope,
-    entity_qid_filter: Option<String>,
-    category: Option<IncidentCategory>,
-    open_only: Option<bool>,
-    since: Option<String>,
-    until: Option<String>,
-    limit: Option<i32>,
-    offset: Option<i32>,
-) -> FieldResult<Vec<Incident>> {
-    let since = match since {
-        Some(s) => Some(parse_rfc3339(&s, "since")?),
-        None => None,
-    };
-    let until = match until {
-        Some(s) => Some(parse_rfc3339(&s, "until")?),
-        None => None,
-    };
-
-    let filter = sdb::IncidentFilter {
-        category: category.map(sdb::Category::from),
-        open_only: open_only.unwrap_or(false),
-        since,
-        until,
-    };
-
-    let pagination = sdb::Pagination {
-        offset: offset.unwrap_or(0).max(0) as usize,
-        limit: limit.map(|l| l.max(0) as usize),
-    };
-
-    let incidents = match scope {
-        IncidentScope::Org(scope) => context
-            .sdb_client
-            .incidents_by_org(&scope, &filter, pagination)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list incidents for org scope {scope}: {e}");
-                internal_error()
-            })?,
-        IncidentScope::Repo(scope) => context
-            .sdb_client
-            .incidents_by_repo(&scope, &filter, pagination)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list incidents for repo scope {scope}: {e}");
-                internal_error()
-            })?,
-        IncidentScope::Env(scope) => context
-            .sdb_client
-            .incidents_by_env(&scope, &filter, pagination)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list incidents for env scope {scope}: {e}");
-                internal_error()
-            })?,
-        IncidentScope::Entity(scope) => context
-            .sdb_client
-            .incidents_by_entity(&scope, &filter, pagination)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list incidents for entity scope {scope}: {e}");
-                internal_error()
-            })?,
-    };
-
-    let result = if let Some(needle) = entity_qid_filter {
-        incidents
-            .into_iter()
-            .filter(|i| i.entity_qid == needle)
-            .map(|inner| Incident { inner })
-            .collect()
-    } else {
-        incidents
-            .into_iter()
-            .map(|inner| Incident { inner })
-            .collect()
-    };
-
-    Ok(result)
-}
-
-fn parse_rfc3339(value: &str, arg_name: &str) -> FieldResult<chrono::DateTime<chrono::Utc>> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&chrono::Utc))
-        .map_err(|_| field_error(&format!("Invalid RFC3339 timestamp for `{arg_name}`")))
-}
-
 /// Determine the org QID owning an incident, given its entity QID. Tries
 /// deployment-QID parsing first (the more specific form) and falls back to
 /// resource-QID parsing.
@@ -1628,10 +1406,6 @@ fn incident_org_id(incident: &sdb::Incident) -> Option<ids::OrgId> {
         return Some(qid.environment.repo.org);
     }
     None
-}
-
-fn incident_belongs_to_org(incident: &sdb::Incident, org: &ids::OrgId) -> bool {
-    incident_org_id(incident).as_ref() == Some(org)
 }
 
 fn incident_repo_qid(incident: &sdb::Incident) -> Option<ids::RepoQid> {
