@@ -150,11 +150,13 @@ pub struct NotificationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<DateTime<Utc>>,
 
-    /// Most recent error message associated with the incident, used in the
-    /// email body. May be empty for opens that carry no producer error blurb,
-    /// or for closes triggered by a successful heartbeat.
+    /// The incident's projected summary at the time this notification was
+    /// emitted — the union of distinct error messages observed across all
+    /// reports attributed to this incident, joined by `\n\n`. `None` when the
+    /// incident has no recorded errors (e.g., a watchdog-driven close before
+    /// any failure-classified reports landed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_error_message: Option<String>,
+    pub summary: Option<String>,
 }
 
 impl NotificationRequest {
@@ -528,7 +530,7 @@ mod tests {
                 .unwrap()
                 .with_timezone(&Utc),
             closed_at: None,
-            last_error_message: Some("plugin returned EOF".to_string()),
+            summary: Some("plugin returned EOF".to_string()),
         }
     }
 
@@ -548,7 +550,7 @@ mod tests {
                     .unwrap()
                     .with_timezone(&Utc),
             ),
-            last_error_message: None,
+            summary: None,
         }
     }
 
@@ -598,13 +600,13 @@ mod tests {
     }
 
     #[test]
-    fn last_error_message_is_omitted_when_none() {
+    fn summary_is_omitted_when_none() {
         let close = sample_close_request();
         let v: serde_json::Value = serde_json::from_slice(&close.encode_json().unwrap()).unwrap();
         let obj = v.as_object().unwrap();
         assert!(
-            !obj.contains_key("last_error_message"),
-            "None last_error_message must be omitted on the wire: {obj:?}",
+            !obj.contains_key("summary"),
+            "None summary must be omitted on the wire: {obj:?}",
         );
     }
 

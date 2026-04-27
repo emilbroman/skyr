@@ -24,7 +24,7 @@ A single message type, `NotificationRequest`, with the following fields:
 | `category` | Severity category — one of `SYSTEM_ERROR`, `BAD_CONFIGURATION`, `CANNOT_PROGRESS`, `INCONSISTENT_STATE`, `CRASH` |
 | `opened_at` | RFC3339 timestamp when the incident was opened |
 | `closed_at` | RFC3339 timestamp when the incident closed (only on `CLOSED` events) |
-| `last_error_message` | Most recent error blurb for the email body (optional) |
+| `summary` | Projected incident summary — distinct error messages joined by `\n\n` — for the email body (optional) |
 
 The pair `(incident_id, event_type)` is the **stable idempotency key**, exposed via `NotificationRequest::idempotency_key()`. NQ also stamps that key into the AMQP `message_id` property of every published delivery.
 
