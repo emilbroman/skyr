@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -469,9 +470,11 @@ impl ClientBuilder {
 
 /// Apply the v2 schema delta: drop `last_error_message` and
 /// `triggering_report_summary` from each incident table; add `summary` if not
-/// already present. Each ALTER is independently idempotent — `IF EXISTS` /
-/// `IF NOT EXISTS` make the migration safe to re-run on already-migrated
-/// keyspaces and on fresh keyspaces alike.
+/// already present. Idempotent across fresh and already-migrated keyspaces:
+/// the current column set is read from `system_schema.columns` so each ALTER
+/// only runs when it would actually change the schema. ScyllaDB does not
+/// support the `IF EXISTS` / `IF NOT EXISTS` clauses on column-level ALTERs
+/// (those are Cassandra 4.0+ syntax), hence the explicit existence check.
 async fn migrate_v2(session: &Session) -> Result<(), ConnectError> {
     const TABLES: &[&str] = &[
         "incidents_by_id",
@@ -481,15 +484,57 @@ async fn migrate_v2(session: &Session) -> Result<(), ConnectError> {
         "incidents_by_env",
     ];
     for table in TABLES {
-        for stmt in [
-            format!("ALTER TABLE sdb.{table} DROP IF EXISTS last_error_message"),
-            format!("ALTER TABLE sdb.{table} DROP IF EXISTS triggering_report_summary"),
-            format!("ALTER TABLE sdb.{table} ADD IF NOT EXISTS summary TEXT"),
-        ] {
-            session.query_unpaged(stmt, ()).await?;
+        let columns = list_columns(session, "sdb", table).await?;
+
+        if columns.contains("last_error_message") {
+            session
+                .query_unpaged(
+                    format!("ALTER TABLE sdb.{table} DROP last_error_message"),
+                    (),
+                )
+                .await?;
+        }
+        if columns.contains("triggering_report_summary") {
+            session
+                .query_unpaged(
+                    format!("ALTER TABLE sdb.{table} DROP triggering_report_summary"),
+                    (),
+                )
+                .await?;
+        }
+        if !columns.contains("summary") {
+            session
+                .query_unpaged(format!("ALTER TABLE sdb.{table} ADD summary TEXT"), ())
+                .await?;
         }
     }
     Ok(())
+}
+
+async fn list_columns(
+    session: &Session,
+    keyspace: &str,
+    table: &str,
+) -> Result<HashSet<String>, ConnectError> {
+    let result = session
+        .query_unpaged(
+            "SELECT column_name FROM system_schema.columns \
+             WHERE keyspace_name = ? AND table_name = ?",
+            (keyspace, table),
+        )
+        .await?;
+    let rows = result
+        .into_rows_result()
+        .map_err(|e| ConnectError::Migrate(e.to_string()))?;
+    let typed = rows
+        .rows::<(String,)>()
+        .map_err(|e| ConnectError::Migrate(e.to_string()))?;
+    let mut columns = HashSet::new();
+    for row in typed {
+        let (name,) = row.map_err(|e| ConnectError::Migrate(e.to_string()))?;
+        columns.insert(name);
+    }
+    Ok(columns)
 }
 
 // ---------------------------------------------------------------------------
