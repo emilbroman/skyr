@@ -1,9 +1,13 @@
 use anyhow::{Context, anyhow};
+use clap::{Args, Subcommand};
 use graphql_client::GraphQLQuery;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
+
+use crate::context::Context as CliContext;
+use crate::output::OutputFormat;
 
 /// Custom scalar required by `graphql_client` derive for the `JSON` scalar in the schema.
 #[allow(clippy::upper_case_acronyms)]
@@ -372,4 +376,239 @@ pub(crate) fn home_dir() -> anyhow::Result<PathBuf> {
     std::env::var("HOME")
         .map(PathBuf::from)
         .context("HOME is not set")
+}
+
+// --- subcommand entry points -------------------------------------------------
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/signup.graphql",
+    response_derives = "Debug, serde::Serialize"
+)]
+struct Signup;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "../api/schema.graphql",
+    query_path = "src/graphql/me.graphql",
+    response_derives = "Debug, serde::Serialize"
+)]
+struct Me;
+
+#[derive(Args, Debug)]
+pub struct AuthArgs {
+    #[command(subcommand)]
+    command: AuthCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum AuthCommand {
+    /// Sign in to Skyr using an SSH private key.
+    Signin {
+        #[arg(long)]
+        username: String,
+        #[arg(long, default_value = "~/.ssh/id_ed25519")]
+        key: String,
+    },
+    /// Create a new Skyr account using an SSH private key.
+    Signup {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        fullname: Option<String>,
+        #[arg(long, default_value = "~/.ssh/id_ed25519")]
+        key: String,
+    },
+    /// Forget the cached token and stored user config.
+    Signout,
+    /// Show the currently signed-in user.
+    Whoami,
+}
+
+pub async fn run_auth(args: AuthArgs, ctx: &CliContext) -> anyhow::Result<()> {
+    match args.command {
+        AuthCommand::Signin { username, key } => run_signin(ctx, &username, &key).await,
+        AuthCommand::Signup {
+            username,
+            email,
+            fullname,
+            key,
+        } => run_signup(ctx, &username, &email, fullname.as_deref(), &key).await,
+        AuthCommand::Signout => run_signout(ctx.format).await,
+        AuthCommand::Whoami => run_whoami(ctx).await,
+    }
+}
+
+async fn run_signin(ctx: &CliContext, username: &str, key: &str) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let endpoint = graphql_endpoint(ctx.api_url());
+    let key_path = expand_tilde(key)?;
+
+    let token = signin_with_key(&client, &endpoint, username, &key_path).await?;
+    persist_auth_state(username, &key_path, &token).await?;
+
+    #[derive(Serialize)]
+    struct SigninOutput<'a> {
+        username: &'a str,
+    }
+    let output = SigninOutput { username };
+
+    match ctx.format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}");
+            table.add_row(crate::output::row(vec!["FIELD".into(), "VALUE".into()]));
+            table.add_row(crate::output::row(vec![
+                "username".into(),
+                output.username.to_owned(),
+            ]));
+            println!("Token saved to credentials file.");
+            print!("{table}");
+        }
+    }
+    Ok(())
+}
+
+async fn run_signup(
+    ctx: &CliContext,
+    username: &str,
+    email: &str,
+    fullname: Option<&str>,
+    key: &str,
+) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let endpoint = graphql_endpoint(ctx.api_url());
+    let key_path = expand_tilde(key)?;
+
+    let proof = build_auth_proof(&client, &endpoint, username, &key_path).await?;
+
+    let data = graphql_query_unauth::<Signup>(
+        &client,
+        &endpoint,
+        signup::Variables {
+            username: username.to_owned(),
+            email: email.to_owned(),
+            proof: serde_json::Value::String(proof),
+            fullname: fullname.map(str::to_owned),
+        },
+        "signup",
+    )
+    .await?;
+    persist_auth_state(&data.signup.user.username, &key_path, &data.signup.token).await?;
+
+    #[derive(Serialize)]
+    struct SignupUserOutput {
+        username: String,
+        email: String,
+        fullname: Option<String>,
+    }
+    #[derive(Serialize)]
+    struct SignupOutput {
+        user: SignupUserOutput,
+    }
+
+    let output = SignupOutput {
+        user: SignupUserOutput {
+            username: data.signup.user.username,
+            email: data.signup.user.email,
+            fullname: data.signup.user.fullname,
+        },
+    };
+
+    match ctx.format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}");
+            table.add_row(crate::output::row(vec!["FIELD".into(), "VALUE".into()]));
+            table.add_row(crate::output::row(vec![
+                "username".into(),
+                output.user.username,
+            ]));
+            table.add_row(crate::output::row(vec!["email".into(), output.user.email]));
+            table.add_row(crate::output::row(vec![
+                "fullname".into(),
+                output.user.fullname.unwrap_or_default(),
+            ]));
+            println!("Token saved to credentials file.");
+            print!("{table}");
+        }
+    }
+    Ok(())
+}
+
+async fn run_signout(format: OutputFormat) -> anyhow::Result<()> {
+    let token_path = token_cache_path()?;
+    let user_config_path = user_config_path()?;
+    let mut removed: Vec<String> = Vec::new();
+
+    for path in [&token_path, &user_config_path] {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => removed.push(path.display().to_string()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(anyhow!("failed to remove {}: {e}", path.display()));
+            }
+        }
+    }
+
+    #[derive(Serialize)]
+    struct SignoutOutput {
+        removed: Vec<String>,
+    }
+    let output = SignoutOutput { removed };
+
+    match format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            if output.removed.is_empty() {
+                println!("Already signed out.");
+            } else {
+                println!("Signed out. Removed:");
+                for path in &output.removed {
+                    println!("  {path}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn run_whoami(ctx: &CliContext) -> anyhow::Result<()> {
+    let client = reqwest::Client::new();
+    let token = acquire_token(&client, ctx.api_url()).await?;
+    let endpoint = graphql_endpoint(ctx.api_url());
+
+    let data = graphql_query::<Me>(&client, &endpoint, &token, me::Variables {}, "whoami").await?;
+
+    #[derive(Serialize)]
+    struct WhoamiOutput {
+        username: String,
+        email: String,
+        fullname: Option<String>,
+    }
+
+    let output = WhoamiOutput {
+        username: data.me.username,
+        email: data.me.email,
+        fullname: data.me.fullname,
+    };
+
+    match ctx.format {
+        OutputFormat::Json => crate::output::print_json(&output)?,
+        OutputFormat::Text => {
+            let mut table = crate::output::table("{:<}  {:<}");
+            table.add_row(crate::output::row(vec!["FIELD".into(), "VALUE".into()]));
+            table.add_row(crate::output::row(vec!["username".into(), output.username]));
+            table.add_row(crate::output::row(vec!["email".into(), output.email]));
+            table.add_row(crate::output::row(vec![
+                "fullname".into(),
+                output.fullname.unwrap_or_default(),
+            ]));
+            print!("{table}");
+        }
+    }
+    Ok(())
 }

@@ -118,19 +118,64 @@ git push skyr main
 The `skyr` CLI helps you work with SCL locally and interact with Skyr servers.
 
 ```bash
-skyr repl                              # Interactive SCL REPL
-skyr run                               # Evaluate Main.scl in the current directory
-skyr run --root ./app                  # Evaluate Main.scl in a specific directory
-skyr fmt Main.scl                      # Format an SCL file
-skyr signup --username alice --email alice@example.com  # Create a new account
-skyr signin --username alice           # Sign in to Skyr
-skyr whoami                            # Show current user
-skyr repo list                         # List repositories
-skyr repo create alice/my-app          # Create a repository
-skyr deployments list alice/my-app     # List deployments
-skyr deployments logs alice/my-app     # Stream deployment logs
-skyr resources list alice/my-app       # List resources
-skyr resources logs alice/my-app::main::Std/Random.Int:dice  # Stream resource logs
+# Local
+skyr repl                                   # Interactive SCL REPL
+skyr run                                    # Evaluate Main.scl in the current directory
+skyr run --root ./app                       # Evaluate Main.scl in a specific directory
+skyr fmt Main.scl                           # Format an SCL file
+
+# Auth
+skyr auth signup --username alice --email alice@example.com
+skyr auth signin --username alice
+skyr auth whoami
+skyr auth signout
+
+# Tier-2 commands. From a working tree on the `main` branch of `alice/my-app`,
+# org/repo come from the `origin` remote and env from the current branch.
+skyr repo list
+skyr repo create my-app                     # creates alice/my-app from current org
+skyr deployments list                       # alice/my-app
+skyr deployments logs --follow              # alice/my-app, all envs
+skyr resources list                         # alice/my-app, env=main
+skyr resources list --env staging           # alice/my-app, env=staging
+skyr resources logs alice/my-app::main::Std/Random.Int:dice
+skyr resources delete Std/Random.Int:dice   # alice/my-app, env=main
+
+# Direct GraphQL access
+skyr api query  '{ me { username } }'
+skyr api mut    '{ createOrganization(name: $name) { name } }' --arg=name=acme
 ```
 
-Use `--format json` with any command to get machine-readable output. Use `--api-url` to point at a different Skyr server.
+Global flags can be set via env vars: `SKYR_API_URL`, `SKYR_ORG`, `SKYR_REPO`,
+`SKYR_ENV`. Use `--format json` with any command to get machine-readable
+output. The org/repo/env defaults can be overridden per-invocation with
+`--org`, `--repo`, `--env`.
+
+### `api query` / `api mut`
+
+The body you pass is just a GraphQL selection set; the CLI wraps it into a
+named operation, generating the variable signature from your `--arg` flags.
+
+A spec is `<name>(:<type>)?(=<value>)?`:
+
+- `--arg=enabled`                 → `$enabled: Boolean!`, value `true`
+- `--arg=name=alice`              → `$name: String!`, value `"alice"`
+- `--arg=count=42`                → `$count: Int!`, value `42`
+- `--arg=filter='{"k":1}'`        → `$filter: JSON!`, value `{"k":1}`
+- `--arg=input:UserInput='{...}'` → `$input: UserInput!`, value parsed as JSON
+- `--arg=tag:Tag`                 → `$tag: Tag!`, value `true` (sentinel)
+- `--arg=name:String=42`          → `$name: String!`, value `"42"` (forced)
+- `--arg=parent:User=null`        → `$parent: User`, value `null`
+
+Resolution rules:
+
+1. If the value is omitted, value = `true`.
+2. With explicit type `String` (or `String!`), the raw value is taken
+   literally — never JSON-parsed.
+3. Otherwise the value is JSON-parsed; if no type was given and parsing
+   fails, it is taken as a string.
+4. If no type was given, derive: `bool`→`Boolean`, integer JSON number→`Int`,
+   non-integer JSON number→`Float`, JSON string→`String`, object/array→`JSON`.
+   `null` requires an explicit type.
+5. The CLI appends `!` to make the type non-null, unless the resolved value
+   is JSON `null`.

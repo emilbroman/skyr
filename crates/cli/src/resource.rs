@@ -6,26 +6,19 @@ use graphql_client::GraphQLQuery;
 use serde::Serialize;
 use serde_json::json;
 
-use crate::{auth, auth::JSON, output, output::OutputFormat, repo, ws};
+use crate::{auth, auth::JSON, context::Context as CliContext, output, output::OutputFormat, ws};
 
 #[derive(Args, Debug)]
 pub struct ResourcesArgs {
     #[command(subcommand)]
     command: ResourcesCommand,
-    #[arg(long, default_value = "https://skyr.cloud")]
-    api_url: String,
 }
 
 #[derive(Subcommand, Debug)]
 enum ResourcesCommand {
-    /// List resources for a repository, optionally filtered by environment
-    List {
-        repository: String,
-        /// Filter resources by environment name
-        #[arg(long)]
-        environment: Option<String>,
-    },
-    /// Show or stream logs for one or more resources (interlaced)
+    /// List resources for the current repository, optionally filtered by env.
+    List,
+    /// Show or stream logs for one or more resources (interlaced).
     Logs {
         /// Resource QIDs (e.g. org/repo::env::Type:name), at least one required
         #[arg(required = true, num_args = 1..)]
@@ -37,16 +30,11 @@ enum ResourcesCommand {
         #[arg(short = 'n', long, default_value = "200")]
         latest: i64,
     },
-    /// Request deletion of a single resource.  The server enqueues a
-    /// Destroy message for the RTE worker pool and returns immediately;
-    /// the plugin-side delete runs asynchronously.
+    /// Request deletion of a single resource. The server enqueues a Destroy
+    /// message for the RTE worker pool and returns immediately; the
+    /// plugin-side delete runs asynchronously.
     Delete {
-        /// Repository path, `<organization>/<repository>`
-        repository: String,
-        /// Environment name
-        #[arg(long)]
-        environment: String,
-        /// Resource ID in `Type:name` form (e.g. `Std/Random.Int:seed`)
+        /// Resource ID in `Type:name` form (e.g. `Std/Random.Int:seed`).
         resource: String,
     },
 }
@@ -75,25 +63,24 @@ struct ResourceLastLogs;
 )]
 struct DeleteResource;
 
-pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow::Result<()> {
+pub async fn run_resources(args: ResourcesArgs, ctx: &CliContext) -> anyhow::Result<()> {
     let client = reqwest::Client::new();
-    let token = auth::acquire_token(&client, &args.api_url).await?;
-    let endpoint = auth::graphql_endpoint(&args.api_url);
+    let token = auth::acquire_token(&client, ctx.api_url()).await?;
+    let endpoint = auth::graphql_endpoint(ctx.api_url());
 
     match args.command {
-        ResourcesCommand::List {
-            repository,
-            environment,
-        } => {
+        ResourcesCommand::List => {
+            let repository = ctx.repo()?.to_owned();
+            let environment = ctx.env().ok().map(str::to_owned);
             list_resources(
                 &client,
                 &endpoint,
                 &token,
                 &repository,
                 environment.as_deref(),
-                format,
+                ctx.format,
             )
-            .await?;
+            .await
         }
         ResourcesCommand::Logs {
             resource_qids,
@@ -101,7 +88,7 @@ pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow:
             latest,
         } => {
             if follow {
-                stream_resource_logs(&endpoint, &token, &resource_qids, latest).await?;
+                stream_resource_logs(&endpoint, &token, &resource_qids, latest).await
             } else {
                 print_resource_last_logs(
                     &client,
@@ -109,50 +96,48 @@ pub async fn run_resources(args: ResourcesArgs, format: OutputFormat) -> anyhow:
                     &token,
                     &resource_qids,
                     latest,
-                    format,
+                    ctx.format,
                 )
-                .await?;
+                .await
             }
         }
-        ResourcesCommand::Delete {
-            repository,
-            environment,
-            resource,
-        } => {
+        ResourcesCommand::Delete { resource } => {
+            let organization = ctx.org()?.to_owned();
+            let repository = ctx.repo()?.to_owned();
+            let environment = ctx.env()?.to_owned();
             delete_resource(
                 &client,
                 &endpoint,
                 &token,
+                &organization,
                 &repository,
                 &environment,
                 &resource,
-                format,
+                ctx.format,
             )
-            .await?;
+            .await
         }
     }
-
-    Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn delete_resource(
     client: &reqwest::Client,
     endpoint: &str,
     token: &str,
+    organization: &str,
     repository: &str,
     environment: &str,
     resource: &str,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let (organization, repository_name) = repo::parse_repository_path(repository)?;
-
     auth::graphql_query::<DeleteResource>(
         client,
         endpoint,
         token,
         delete_resource::Variables {
             organization: organization.to_owned(),
-            repository: repository_name.to_owned(),
+            repository: repository.to_owned(),
             environment: environment.to_owned(),
             resource: resource.to_owned(),
         },
@@ -170,7 +155,7 @@ async fn delete_resource(
 
     let output = DeleteResourceOutput {
         organization: organization.to_owned(),
-        repository: repository_name.to_owned(),
+        repository: repository.to_owned(),
         environment: environment.to_owned(),
         resource: resource.to_owned(),
     };
@@ -206,8 +191,6 @@ async fn list_resources(
     environment: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
-    let (_, repository_name) = repo::parse_repository_path(repository)?;
-
     let data = auth::graphql_query::<ListRepositoryResources>(
         client,
         endpoint,
@@ -219,8 +202,8 @@ async fn list_resources(
     let repo = data
         .repositories
         .into_iter()
-        .find(|r| r.name == repository_name)
-        .ok_or_else(|| anyhow!("repository '{repository_name}' not found"))?;
+        .find(|r| r.name == repository)
+        .ok_or_else(|| anyhow!("repository '{repository}' not found"))?;
 
     let environments: Vec<_> = repo
         .environments
@@ -322,7 +305,6 @@ async fn print_resource_last_logs(
     )
     .await?;
 
-    // Index all resources by QID for O(1) lookups instead of nested iteration.
     let mut resource_logs: HashMap<String, Vec<output::LogOutput>> = HashMap::new();
     for repo in &data.repositories {
         for env in &repo.environments {

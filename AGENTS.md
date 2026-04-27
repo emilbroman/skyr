@@ -148,8 +148,8 @@ For manual testing:
 - Run `make up`
 - Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222` for the repo `test/test`.
 - Run `git push`
-- The server will be protected by key auth, so if the server rejects the SSH connection, run `skyr signup --username test --email test@test.com` (`skyr` will be at `target/debug/skyr`)
-- The server also requires creating the repo before making the first push, so if it rejects a push for that reason, run `skyr repo create test/test`
+- The server will be protected by key auth, so if the server rejects the SSH connection, run `skyr auth signup --username test --email test@test.com` (`skyr` will be at `target/debug/skyr`)
+- The server also requires creating the repo before making the first push. From inside `test-repo/` run `skyr repo create test`; the org comes from the `origin` remote. (Outside a git repo, pass `--org test`.)
 - Make any changes you want to the `.scl` files in `test-repo` (they aren't checked into Git)
 - Make any commits and pushes you want in `test-repo` too
 
