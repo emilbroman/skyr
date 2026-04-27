@@ -42,7 +42,7 @@ let cloneUrl = $derived(
 let copied = $state(false);
 
 function copyCloneUrl() {
-    navigator.clipboard.writeText(`git clone ${cloneUrl}`);
+    navigator.clipboard.writeText(`git clone -o skyr ${cloneUrl}`);
     copied = true;
     setTimeout(() => (copied = false), 2000);
 }
@@ -231,7 +231,7 @@ function switchEnv(newEnv: string) {
             <code
               class="flex-1 text-xs bg-gray-50 border border-gray-200 rounded px-2 py-1.5 text-gray-800 overflow-x-auto whitespace-nowrap"
             >
-              git clone {cloneUrl}
+              git clone -o skyr {cloneUrl}
             </code>
             <button
               class="shrink-0 p-1.5 rounded hover:bg-gray-100 transition-colors text-gray-500 hover:text-gray-700"
