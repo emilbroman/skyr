@@ -1,0 +1,3 @@
+import Std/Encoding
+
+export let s = Encoding.toYaml({ name: "test", count: 42 })

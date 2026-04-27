@@ -260,3 +260,173 @@ Str.padEnd("7", 3, "0")      // "700"
 Str.padStart("12", 5, nil)   // "   12"
 Str.padStart("x", 5, "ab")   // "ababx"
 ```
+
+## Std/Encoding
+
+Encoding and decoding functions for JSON, YAML, TOML, base64, hex, and URL formats. All functions treating binary data as UTF-8 strings; decoding functions raise a runtime error when the decoded bytes are not valid UTF-8.
+
+```scl
+import Std/Encoding
+```
+
+### Encoding.toJson
+
+Serialize any value to a JSON string.
+
+Value mappings:
+- `Int` / `Float` → JSON number
+- `Str` → JSON string
+- `Bool` → JSON `true` / `false`
+- `nil` → JSON `null`
+- `List` → JSON array
+- `Record` / `Dict` → JSON object (non-string dict keys are stringified)
+
+Functions and exceptions cannot be serialized and will raise a runtime error.
+
+```scl
+Encoding.toJson(42)              // "42"
+Encoding.toJson("hello")         // "\"hello\""
+Encoding.toJson({ key: "val" })  // "{\"key\":\"val\"}"
+```
+
+### Encoding.fromJson
+
+Parse a JSON string into a value.
+
+Value mappings:
+- JSON number → `Float`
+- JSON string → `Str`
+- JSON `true` / `false` → `Bool`
+- JSON `null` → `nil`
+- JSON array → `List`
+- JSON object → `Dict` (with `Str` keys)
+
+Note: JSON numbers always become `Float`, not `Int`.
+
+```scl
+Encoding.fromJson("42")            // 42.0
+Encoding.fromJson("{\"a\": 1}")    // #{"a": 1.0}
+```
+
+### Encoding.toBase64
+
+Encode a string as standard base64 (padded, standard alphabet). The input is treated as UTF-8 bytes.
+
+```scl
+Encoding.toBase64("hello")  // "aGVsbG8="
+Encoding.toBase64("")       // ""
+```
+
+### Encoding.fromBase64
+
+Decode a standard base64 string back to a UTF-8 string. Raises if the input is not valid base64 or the decoded bytes are not valid UTF-8.
+
+```scl
+Encoding.fromBase64("aGVsbG8=")  // "hello"
+```
+
+### Encoding.toBase64Url
+
+Encode a string as URL-safe base64 (unpadded, URL-safe alphabet). Uses `-` and `_` instead of `+` and `/`, and omits `=` padding.
+
+```scl
+Encoding.toBase64Url("hello")  // "aGVsbG8"
+```
+
+### Encoding.fromBase64Url
+
+Decode a URL-safe base64 string back to a UTF-8 string. Accepts both padded and unpadded input. Raises if the input is malformed or decoded bytes are not valid UTF-8.
+
+```scl
+Encoding.fromBase64Url("aGVsbG8")   // "hello"
+Encoding.fromBase64Url("aGVsbG8=")  // "hello"
+```
+
+### Encoding.toHex
+
+Encode a string as lowercase hexadecimal. Each byte of the UTF-8 input becomes two hex digits.
+
+```scl
+Encoding.toHex("hi")  // "6869"
+Encoding.toHex("")    // ""
+```
+
+### Encoding.fromHex
+
+Decode a hexadecimal string back to a UTF-8 string. Accepts both uppercase and lowercase hex digits. Raises if the input has an odd number of characters, contains non-hex characters, or decoded bytes are not valid UTF-8.
+
+```scl
+Encoding.fromHex("6869")  // "hi"
+Encoding.fromHex("4869")  // "Hi"
+```
+
+### Encoding.toYaml
+
+Serialize any value to a YAML string. Value mappings follow the same conventions as `toJson`.
+
+```scl
+Encoding.toYaml({ name: "test", count: 42 })
+// "count: 42\nname: test\n"
+```
+
+### Encoding.fromYaml
+
+Parse a YAML string into a value.
+
+Value mappings:
+- YAML integer → `Int`
+- YAML float → `Float`
+- YAML bool → `Bool`
+- YAML string → `Str`
+- YAML null → `nil`
+- YAML sequence → `List`
+- YAML mapping → `Dict` (keys must be strings; raises otherwise)
+
+```scl
+Encoding.fromYaml("count: 42\nname: test\n")
+// #{"count": 42, "name": "test"}
+```
+
+### Encoding.toToml
+
+Serialize a `Record` or `Dict` value to a TOML string. The top-level value must be a record or dict; raises otherwise.
+
+```scl
+Encoding.toToml({ name: "test", count: 42 })
+// "count = 42\nname = \"test\"\n"
+```
+
+### Encoding.fromToml
+
+Parse a TOML string into a value.
+
+Value mappings:
+- TOML integer → `Int`
+- TOML float → `Float`
+- TOML boolean → `Bool`
+- TOML string → `Str`
+- TOML datetime → `Str` (ISO 8601 / RFC 3339 format)
+- TOML array → `List`
+- TOML table → `Dict` (with `Str` keys)
+
+```scl
+Encoding.fromToml("name = \"test\"\ncount = 42\n")
+// #{"count": 42, "name": "test"}
+```
+
+### Encoding.urlEncode
+
+Percent-encode a string for use as a URL component. All characters that are not unreserved URL characters (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`) are percent-encoded. Spaces become `%20`.
+
+```scl
+Encoding.urlEncode("hello world")  // "hello%20world"
+Encoding.urlEncode("a/b?c=d")      // "a%2Fb%3Fc%3Dd"
+```
+
+### Encoding.urlDecode
+
+Decode a percent-encoded URL component string. Raises if the input contains malformed percent-encoding or if the decoded bytes are not valid UTF-8.
+
+```scl
+Encoding.urlDecode("hello%20world")  // "hello world"
+```

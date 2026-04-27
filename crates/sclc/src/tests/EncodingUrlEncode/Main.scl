@@ -1,0 +1,5 @@
+import Std/Encoding
+
+export let a = Encoding.urlEncode("hello world")
+export let b = Encoding.urlEncode("a/b?c=d")
+export let c = Encoding.urlDecode("hello%20world")

@@ -39,3 +39,170 @@ export let toJson = extern "Std/Encoding.toJson": fn(Any) Str
 /// let port = data.port   // Dynamically typed
 /// ```
 export let fromJson = extern "Std/Encoding.fromJson": fn(Str) Any
+
+/// Encode a string as standard base64 (padded, standard alphabet).
+///
+/// The input is treated as UTF-8 bytes. The output uses the standard
+/// base64 alphabet (`A-Z`, `a-z`, `0-9`, `+`, `/`) and is padded with `=`.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let encoded = Encoding.toBase64("hello")  // "aGVsbG8="
+/// ```
+export let toBase64 = extern "Std/Encoding.toBase64": fn(Str) Str
+
+/// Decode a standard base64 string back to a UTF-8 string.
+///
+/// Raises if the input is not valid base64 or the decoded bytes are not valid UTF-8.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let decoded = Encoding.fromBase64("aGVsbG8=")  // "hello"
+/// ```
+export let fromBase64 = extern "Std/Encoding.fromBase64": fn(Str) Str
+
+/// Encode a string as URL-safe base64 (unpadded, URL-safe alphabet).
+///
+/// Uses the URL-safe alphabet (`A-Z`, `a-z`, `0-9`, `-`, `_`) and omits `=` padding.
+/// Suitable for use in URLs and filenames.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let encoded = Encoding.toBase64Url("hello")  // "aGVsbG8"
+/// ```
+export let toBase64Url = extern "Std/Encoding.toBase64Url": fn(Str) Str
+
+/// Decode a URL-safe base64 string back to a UTF-8 string.
+///
+/// Accepts both padded and unpadded input. Raises if the input is not valid
+/// URL-safe base64 or the decoded bytes are not valid UTF-8.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let decoded = Encoding.fromBase64Url("aGVsbG8")  // "hello"
+/// ```
+export let fromBase64Url = extern "Std/Encoding.fromBase64Url": fn(Str) Str
+
+/// Encode a string as lowercase hexadecimal.
+///
+/// Each byte of the UTF-8 input is encoded as two lowercase hex digits.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let encoded = Encoding.toHex("hi")  // "6869"
+/// ```
+export let toHex = extern "Std/Encoding.toHex": fn(Str) Str
+
+/// Decode a hexadecimal string back to a UTF-8 string.
+///
+/// Accepts both uppercase and lowercase hex digits. Raises if the input has an odd
+/// number of characters, contains non-hex characters, or the decoded bytes are not
+/// valid UTF-8.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let decoded = Encoding.fromHex("6869")  // "hi"
+/// ```
+export let fromHex = extern "Std/Encoding.fromHex": fn(Str) Str
+
+/// Convert any value to a YAML string.
+///
+/// Value mappings follow the same conventions as `toJson`:
+/// - `Int` → YAML integer
+/// - `Float` → YAML float
+/// - `Str` → YAML string
+/// - `Bool` → YAML `true` / `false`
+/// - `Never?` (`nil`) → YAML `null`
+/// - `List` → YAML sequence
+/// - `Record` / `Dict` → YAML mapping
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let yaml = Encoding.toYaml({ name: "test", count: 42 })
+/// ```
+export let toYaml = extern "Std/Encoding.toYaml": fn(Any) Str
+
+/// Parse a YAML string into a value.
+///
+/// Value mappings:
+/// - YAML integer → `Int`
+/// - YAML float → `Float`
+/// - YAML bool → `Bool`
+/// - YAML string → `Str`
+/// - YAML null → `Never?` (`nil`)
+/// - YAML sequence → `List`
+/// - YAML mapping → `Dict` (keys must be strings, raises otherwise)
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let data = Encoding.fromYaml("name: test\ncount: 42\n")
+/// ```
+export let fromYaml = extern "Std/Encoding.fromYaml": fn(Str) Any
+
+/// Convert a Record or Dict to a TOML string.
+///
+/// The top-level value must be a `Record` or `Dict`; raises otherwise.
+/// Value mappings:
+/// - `Int` → TOML integer
+/// - `Float` → TOML float
+/// - `Str` → TOML string
+/// - `Bool` → TOML boolean
+/// - `List` → TOML array
+/// - `Record` / `Dict` → TOML table
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let toml = Encoding.toToml({ name: "test", count: 42 })
+/// ```
+export let toToml = extern "Std/Encoding.toToml": fn(Any) Str
+
+/// Parse a TOML string into a value.
+///
+/// Value mappings:
+/// - TOML integer → `Int`
+/// - TOML float → `Float`
+/// - TOML boolean → `Bool`
+/// - TOML string → `Str`
+/// - TOML datetime → `Str` (ISO 8601 / RFC 3339 format)
+/// - TOML array → `List`
+/// - TOML table → `Dict` (with `Str` keys)
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let data = Encoding.fromToml("name = \"test\"\ncount = 42\n")
+/// ```
+export let fromToml = extern "Std/Encoding.fromToml": fn(Str) Any
+
+/// Percent-encode a string for use as a URL component.
+///
+/// Encodes all characters that are not unreserved URL characters
+/// (`A-Z`, `a-z`, `0-9`, `-`, `_`, `.`, `~`). Spaces become `%20`.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let encoded = Encoding.urlEncode("hello world")  // "hello%20world"
+/// ```
+export let urlEncode = extern "Std/Encoding.urlEncode": fn(Str) Str
+
+/// Decode a percent-encoded URL component string.
+///
+/// Raises if the input contains malformed percent-encoding or if the decoded
+/// bytes are not valid UTF-8.
+///
+/// ```scl
+/// import Std/Encoding
+///
+/// let decoded = Encoding.urlDecode("hello%20world")  // "hello world"
+/// ```
+export let urlDecode = extern "Std/Encoding.urlDecode": fn(Str) Str

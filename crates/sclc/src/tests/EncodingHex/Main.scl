@@ -1,0 +1,6 @@
+import Std/Encoding
+
+export let a = Encoding.toHex("hi")
+export let b = Encoding.toHex("")
+export let c = Encoding.fromHex("6869")
+export let d = Encoding.fromHex("4869")
