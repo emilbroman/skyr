@@ -1,8 +1,10 @@
 use std::collections::BTreeSet;
+use std::str::FromStr;
 
 use anyhow::Context;
 use clap::Parser;
-use sclc::ValueAssertions;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use sclc::{Value, ValueAssertions};
 use tracing::debug;
 
 const GET_RESOURCE_TYPE: &str = "Std/HTTP.Get";
@@ -35,6 +37,8 @@ impl HttpPlugin {
             .get("url")
             .assert_str_ref()
             .context("missing or invalid 'url' input")?;
+        let request_headers =
+            extract_headers(inputs.get("headers")).context("invalid 'headers' input")?;
 
         let user_agent = format!("Skyr/{SKYR_VERSION} ({deployment_qid})");
 
@@ -43,14 +47,29 @@ impl HttpPlugin {
             .client
             .get(url)
             .header(reqwest::header::USER_AGENT, &user_agent)
+            .headers(request_headers)
             .send()
             .await
             .with_context(|| format!("HTTP GET failed for {url}"))?;
         let status = response.status().as_u16() as i64;
+        let response_headers = response.headers().clone();
+        let body = response
+            .text()
+            .await
+            .with_context(|| format!("failed to read body for {url}"))?;
         debug!(url, status, "HTTP GET completed");
 
+        let mut headers_dict = sclc::Dict::default();
+        for (name, value) in response_headers.iter() {
+            let key = name.as_str().to_lowercase();
+            let val = value.to_str().unwrap_or("").to_owned();
+            headers_dict.insert(Value::Str(key), Value::Str(val));
+        }
+
         let mut outputs = sclc::Record::default();
-        outputs.insert(String::from("status"), sclc::Value::Int(status));
+        outputs.insert(String::from("status"), Value::Int(status));
+        outputs.insert(String::from("body"), Value::Str(body));
+        outputs.insert(String::from("headers"), Value::Dict(headers_dict));
         Ok(sclc::Resource {
             inputs,
             outputs,
@@ -70,6 +89,29 @@ impl HttpPlugin {
             _ => anyhow::bail!("unsupported resource type: {}", id.typ),
         }
     }
+}
+
+fn extract_headers(value: &Value) -> anyhow::Result<HeaderMap> {
+    let mut map = HeaderMap::new();
+    let Value::Dict(dict) = value else {
+        anyhow::bail!("expected Dict, got {value}");
+    };
+    for (k, v) in dict.iter() {
+        let key = match k {
+            Value::Str(s) => s,
+            other => anyhow::bail!("header name: expected Str, got {other}"),
+        };
+        let val = match v {
+            Value::Str(s) => s,
+            other => anyhow::bail!("header value for {key}: expected Str, got {other}"),
+        };
+        let name =
+            HeaderName::from_str(key).with_context(|| format!("invalid header name {key:?}"))?;
+        let value = HeaderValue::from_str(val)
+            .with_context(|| format!("invalid header value for {key:?}"))?;
+        map.append(name, value);
+    }
+    Ok(map)
 }
 
 #[async_trait::async_trait]

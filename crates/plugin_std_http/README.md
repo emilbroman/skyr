@@ -8,12 +8,15 @@ This is one of Skyr's standard library plugins, invoked by the [RTE](../rte/) wh
 
 ## Resource: `Std/HTTP.Get`
 
-Performs an HTTP GET request and exposes the response status.
+Performs an HTTP GET request and exposes the response status, headers, and body.
 
 | | Fields |
 |---|--------|
 | **Inputs** | `url` (string) |
+| | `headers` (optional dict of string to string) — request headers to send |
 | **Outputs** | `status` (HTTP status code) |
+| | `headers` (dict of string to string) — response headers, names lowercased |
+| | `body` (string) — response body |
 
 ## Running
 
