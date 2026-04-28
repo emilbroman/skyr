@@ -2,6 +2,7 @@
 import { marked } from "marked";
 import type { ThemedToken } from "shiki";
 import { highlight } from "$lib/highlight";
+import { commitTreeHref } from "$lib/paths";
 
 type SourceFrame = {
     moduleId: string;
@@ -25,6 +26,12 @@ type Props = {
     size: number;
     resources?: ResourceInfo[];
     highlightLine?: number | null;
+    /**
+     * Base URL used to resolve relative `href`/`src` in rendered markdown.
+     * Defaults to the file's own commit-tree URL, so README links keep
+     * working when rendered inside a different page (e.g. the environment tab).
+     */
+    baseUrl?: string;
 };
 
 let {
@@ -36,7 +43,12 @@ let {
     size,
     resources = [],
     highlightLine = null,
+    baseUrl,
 }: Props = $props();
+
+let effectiveBaseUrl = $derived(
+    baseUrl ?? commitTreeHref(orgName, repoName, commitHash, path.join("/")),
+);
 
 let highlightedLines = $state<ThemedToken[][] | null>(null);
 let highlightBg = $state<string>("#ffffff");
@@ -44,9 +56,43 @@ let highlightBg = $state<string>("#ffffff");
 let filename = $derived(path[path.length - 1] ?? "");
 let isMarkdown = $derived(/\.md$/i.test(filename));
 let showSource = $state(false);
-let renderedMarkdown = $derived(
-    isMarkdown && content != null ? (marked.parse(content, { async: false }) as string) : "",
-);
+let renderedMarkdown = $derived.by(() => {
+    if (!isMarkdown || content == null) return "";
+    const html = marked.parse(content, { async: false }) as string;
+    return rewriteRelativeUrls(html, effectiveBaseUrl);
+});
+
+/**
+ * Rewrite relative `href` and `src` attributes in the rendered HTML so that
+ * they resolve against `base` rather than the document URL.
+ * Leaves anchor-only (`#…`), absolute (`scheme:…`), and protocol-relative
+ * (`//…`) URLs untouched.
+ */
+function rewriteRelativeUrls(html: string, base: string): string {
+    if (typeof DOMParser === "undefined" || typeof window === "undefined") return html;
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const absoluteBase = new URL(base, window.location.origin);
+    const rewriteAttr = (el: Element, attr: string) => {
+        const value = el.getAttribute(attr);
+        if (!value || !shouldRewriteUrl(value)) return;
+        const resolved = new URL(value, absoluteBase);
+        if (resolved.origin === window.location.origin) {
+            el.setAttribute(attr, resolved.pathname + resolved.search + resolved.hash);
+        } else {
+            el.setAttribute(attr, resolved.toString());
+        }
+    };
+    for (const a of doc.querySelectorAll("a[href]")) rewriteAttr(a, "href");
+    for (const img of doc.querySelectorAll("img[src]")) rewriteAttr(img, "src");
+    return doc.body.innerHTML;
+}
+
+function shouldRewriteUrl(url: string): boolean {
+    if (url.startsWith("#")) return false;
+    if (url.startsWith("//")) return false;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return false;
+    return true;
+}
 
 $effect(() => {
     highlightedLines = null;
@@ -121,7 +167,7 @@ $effect(() => {
 
 <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
   <div
-    class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50"
+    class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50 text-xs font-bold"
   >
     <span class="text-gray-500">{formatSize(size)}</span>
     {#if isMarkdown && content != null}

@@ -6,7 +6,7 @@ import DirectoryView from "$lib/components/DirectoryView.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import FileView from "$lib/components/FileView.svelte";
 import CommitMessage from "$lib/components/CommitMessage.svelte";
-import { ChevronDown, Rocket } from "lucide-svelte";
+import { ChevronDown, GitCommit, Rocket } from "lucide-svelte";
 import { execute, query } from "$lib/graphql/client";
 import {
     CommitPageEnvironmentsDocument,
@@ -225,8 +225,8 @@ let highlightLine = $derived.by(() => {
 <svelte:window onmousedown={handleDeployMousedownOutside} />
 
 <div>
-  <!-- Commit message -->
-  {#if commitMessage}
+  <!-- Commit message (only at the repo root) -->
+  {#if commitMessage && isRoot}
     <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-4 flex items-start gap-4">
       <div class="flex-1 min-w-0">
         <p class="font-mono text-xs text-gray-400 mb-1">{commitHash.substring(0, 8)}</p>
@@ -334,26 +334,22 @@ let highlightLine = $derived.by(() => {
 
   <!-- Breadcrumb -->
   {#if pathSegments.length > 0}
-    <nav class="text-gray-400 mb-4">
+    <nav class="text-gray-400 mb-4 font-mono text-xs">
       <a
         href={commitTreeHref(orgName, repoName, commitHash)}
-        class="hover:text-gray-700">/</a
-      >
-      {#each pathSegments as segment, i}
-        {#if i < pathSegments.length - 1}
-          <a
+        class="hover:text-gray-700"
+        ><GitCommit
+          class="w-3.5 h-3.5 inline-block align-text-bottom mr-1"
+        />{commitHash.substring(0, 8)}</a
+      ><span class="mx-1">/</span>{#each pathSegments as segment, i}{#if i < pathSegments.length - 1}<a
             href={commitTreeHref(
               orgName,
               repoName,
               commitHash,
               pathSegments.slice(0, i + 1).join("/") + "/",
             )}
-            class="hover:text-gray-700">{segment}</a
-          ><span class="mx-1">/</span>
-        {:else}
-          <span class="text-gray-600">{segment}</span>
-        {/if}
-      {/each}
+            class="hover:text-gray-700">{segment}</a><span class="mx-1">/</span>{:else}<span
+            class="text-gray-600">{segment}</span>{/if}{/each}
     </nav>
   {/if}
 
