@@ -21,6 +21,25 @@ let unsubscribe: (() => void) | null = null;
 
 const MAX_LOGS = 1000;
 
+function insertSorted(list: Log[], log: Log): Log[] {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (list[mid].timestamp <= log.timestamp) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    const next = list.slice();
+    next.splice(lo, 0, log);
+    if (next.length > MAX_LOGS) {
+        next.splice(0, next.length - MAX_LOGS);
+    }
+    return next;
+}
+
 function handleScroll() {
     if (!container) return;
     const { scrollTop, scrollHeight, clientHeight } = container;
@@ -58,7 +77,7 @@ function startSubscription() {
         (data: any) => {
             const log = data[logField] as Log;
             if (log) {
-                logs = [...logs.slice(-MAX_LOGS + 1), log];
+                logs = insertSorted(logs, log);
                 scrollToBottom();
             }
         },
