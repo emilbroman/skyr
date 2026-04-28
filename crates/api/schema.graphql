@@ -127,7 +127,14 @@ type Deployment implements IncidentEntity {
 type Environment {
   name: String!
   qid: String!
-  deployment(id: String!): Deployment!
+  """
+    Look up a deployment in this environment. If `id` is omitted, returns
+    the current deployment — the active deployment that has not been
+    superseded by another — or `null` if there is none. If `id` is
+    provided, returns the deployment with that `<commit-hash>.<nonce>`
+    identifier, or `null` if no such deployment exists.
+  """
+  deployment(id: String): Deployment
   deployments: [Deployment!]!
   resource(id: String!): Resource
   resources: [Resource!]!

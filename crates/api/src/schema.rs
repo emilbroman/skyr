@@ -270,30 +270,46 @@ impl Environment {
         self.qid.to_string()
     }
 
-    async fn deployment(&self, context: &Context, id: String) -> FieldResult<Deployment> {
+    /// Look up a deployment in this environment. If `id` is omitted, returns
+    /// the current deployment — the active deployment that has not been
+    /// superseded by another — or `null` if there is none. If `id` is
+    /// provided, returns the deployment with that `<commit-hash>.<nonce>`
+    /// identifier, or `null` if no such deployment exists.
+    async fn deployment(
+        &self,
+        context: &Context,
+        id: Option<String>,
+    ) -> FieldResult<Option<Deployment>> {
+        let repo_client = context.cdb_client.repo(self.qid.repo.clone());
+
+        let Some(id) = id else {
+            return repo_client
+                .current_deployment(&self.qid.environment)
+                .await
+                .map(|d| d.map(|deployment| Deployment { deployment }))
+                .map_err(|e| {
+                    tracing::error!("Failed to load current deployment in {}: {e}", self.qid);
+                    internal_error()
+                });
+        };
+
         let deployment_id: ids::DeploymentId = id
             .parse()
             .map_err(|_| field_error("Invalid deployment ID (expected <hash>.<nonce>)"))?;
-        let repo_client = context.cdb_client.repo(self.qid.repo.clone());
         let mut stream = repo_client.deployments().await.map_err(|e| {
             tracing::error!("Failed to list deployments in {}: {e}", self.qid);
             internal_error()
         })?;
-        let mut found: Option<cdb::Deployment> = None;
         while let Some(dep) = stream.next().await {
             let dep = dep.map_err(|e| {
                 tracing::error!("Failed to load deployment in {}: {e}", self.qid);
                 internal_error()
             })?;
             if dep.environment == self.qid.environment && dep.deployment == deployment_id {
-                found = Some(dep);
-                break;
+                return Ok(Some(Deployment { deployment: dep }));
             }
         }
-        match found {
-            Some(deployment) => Ok(Deployment { deployment }),
-            None => Err(field_error("Deployment not found")),
-        }
+        Ok(None)
     }
 
     fn deployments(&self) -> Vec<Deployment> {
