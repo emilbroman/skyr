@@ -256,6 +256,14 @@ impl Handler for ConfigHandler {
                     (Some(user), Some(ChannelMessage::Command(Ok(cmd)))) => match cmd {
                         ChannelCommand::ReceivePack { ref repo }
                         | ChannelCommand::UploadPack { ref repo } => {
+                            // Git commands read SSH channel data directly via
+                            // `channel.make_reader()`; the per-channel mpsc is only
+                            // used by port-forward. Drop `rx` so `data()` callbacks'
+                            // `tx.send().await` returns immediately (closed receiver)
+                            // instead of blocking the russh session loop once the
+                            // 32-message buffer fills, which otherwise deadlocks any
+                            // push or fetch larger than ~32 SSH data packets.
+                            drop(rx);
                             if let Err(err) = ensure_repo_access(user, repo, &udb_client).await {
                                 Err(err)
                             } else if let Err(err) = ensure_repo_exists(&client, repo).await {
