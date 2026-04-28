@@ -240,14 +240,6 @@ fn deployment_qid(
         .to_string()
 }
 
-/// Safely truncate a deployment's commit hash to at most 8 characters for
-/// display (3.6).
-fn deployment_short(deployment_id: &ids::DeploymentId) -> &str {
-    let s = deployment_id.commit.as_str();
-    let end = s.char_indices().nth(8).map_or(s.len(), |(i, _)| i);
-    &s[..end]
-}
-
 /// Check that a JSON value's serialized size is within the given limit.
 fn check_json_size(value: &serde_json::Value, limit: usize) -> bool {
     value.to_string().len() <= limit
@@ -449,7 +441,7 @@ async fn handle_create(
     let id = resource_id_from_ref(&message.resource);
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = deployment_short(&message.deployment_id);
+    let dep_short = message.deployment_id.short();
 
     tracing::info!(
         plugin = %plugin_name,
@@ -763,7 +755,7 @@ async fn handle_destroy(
 
     let id = resource_id_from_ref(&message.resource);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = deployment_short(&message.deployment_id);
+    let dep_short = message.deployment_id.short();
 
     tracing::info!(
         plugin = %plugin_name,
@@ -1088,7 +1080,7 @@ async fn handle_update_inputs(
     };
 
     let res_qid = resource_qid_string(resource);
-    let dep_short = deployment_short(target_deployment_id);
+    let dep_short = target_deployment_id.short();
 
     let mut inputs_to_persist = prev_inputs.clone();
     let mut outputs_to_persist = current.outputs.clone();
@@ -1330,8 +1322,8 @@ async fn handle_adopt(
 
     let res_qid = resource_qid_string(&message.resource);
     let resource_id = message.resource.resource_id.clone();
-    let to_short = deployment_short(&message.to_deployment_id);
-    let from_short = deployment_short(&message.from_deployment_id);
+    let to_short = message.to_deployment_id.short();
+    let from_short = message.from_deployment_id.short();
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
@@ -1404,7 +1396,7 @@ async fn handle_restore(
     } = success;
 
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = deployment_short(&message.deployment_id);
+    let dep_short = message.deployment_id.short();
 
     tracing::info!(
         environment_qid = %message.resource.environment_qid,
@@ -1592,7 +1584,7 @@ async fn handle_check(
 
     let id = resource_id_from_ref(&message.resource);
     let res_qid = resource_qid_string(&message.resource);
-    let dep_short = deployment_short(&message.deployment_id);
+    let dep_short = message.deployment_id.short();
     let resource = sclc::Resource {
         inputs,
         outputs,
