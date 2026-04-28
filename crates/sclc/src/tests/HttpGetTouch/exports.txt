@@ -1,1 +1,1 @@
-{probe: {status: 200, url: "https://example.com"}}
+{probe: {body: "<html></html>", headers: #{"content-type": "text/html"}, status: 200, url: "https://example.com"}}

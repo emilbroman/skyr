@@ -10,9 +10,14 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         };
 
         let url = config.get("url").assert_str_ref()?;
+        let headers = match config.get("headers") {
+            crate::Value::Nil => crate::Value::Dict(crate::Dict::default()),
+            other => other.clone(),
+        };
 
         let mut inputs = crate::Record::default();
         inputs.insert(String::from("url"), crate::Value::Str(url.to_owned()));
+        inputs.insert(String::from("headers"), headers);
 
         let resource_id = ids::ResourceId {
             typ: GET_RESOURCE_TYPE.to_owned(),

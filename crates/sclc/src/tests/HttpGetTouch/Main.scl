@@ -1,2 +1,5 @@
 import Std/HTTP
-export let probe = HTTP.Get({ url: "https://example.com" })
+export let probe = HTTP.Get({
+    url: "https://example.com",
+    headers: #{ "Accept": "text/html" },
+})

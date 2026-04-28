@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use ids::ResourceId;
 
-use crate::{Effect, EvalCtx, ModuleId, PackageId, Record, Resource, TrackedValue, Value};
+use crate::{Dict, Effect, EvalCtx, ModuleId, PackageId, Record, Resource, TrackedValue, Value};
 
 /// Format an effect in compact form.
 fn format_effect(effect: &Effect) -> String {
@@ -82,6 +82,9 @@ fn format_effect(effect: &Effect) -> String {
 }
 
 /// Convert a serde_json::Value into an SCL Value.
+///
+/// Objects are converted to records, except for the special form
+/// `{ "$dict": { ... } }` which produces a `Value::Dict` with string keys.
 fn json_to_value(json: &serde_json::Value) -> Value {
     match json {
         serde_json::Value::Null => Value::Nil,
@@ -97,6 +100,15 @@ fn json_to_value(json: &serde_json::Value) -> Value {
         }
         serde_json::Value::String(s) => Value::Str(s.clone()),
         serde_json::Value::Object(map) => {
+            if map.len() == 1
+                && let Some(serde_json::Value::Object(entries)) = map.get("$dict")
+            {
+                let mut dict = Dict::default();
+                for (key, val) in entries {
+                    dict.insert(Value::Str(key.clone()), json_to_value(val));
+                }
+                return Value::Dict(dict);
+            }
             let mut record = Record::default();
             for (key, val) in map {
                 record.insert(key.clone(), json_to_value(val));

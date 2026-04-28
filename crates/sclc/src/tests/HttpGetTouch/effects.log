@@ -1,1 +1,1 @@
-TouchResource ty=Std/HTTP.Get name=https://example.com inputs={url: "https://example.com"}
+TouchResource ty=Std/HTTP.Get name=https://example.com inputs={headers: #{"Accept": "text/html"}, url: "https://example.com"}

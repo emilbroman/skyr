@@ -1,23 +1,32 @@
 /// Perform an HTTP GET request.
 ///
 /// The request is performed when the resource is created and re-performed
-/// on updates (e.g., when `url` changes).
+/// on updates (e.g., when `url` or `headers` changes).
 ///
 /// ```scl
 /// import Std/HTTP
 ///
 /// let probe = HTTP.Get({
 ///     url: "https://example.com",
+///     headers: #{ "Accept": "text/html" },
 /// })
 /// ```
 export let Get = extern "Std/HTTP.Get": fn({
 	/// URL to fetch
 	url: Str,
+	/// Request headers to send. Defaults to an empty dict.
+	/// These are merged with default headers (e.g. `User-Agent`) and
+	/// override them on key conflict.
+	headers: #{Str: Str}?,
 }) HttpGet
 
 export type HttpGet {
 	/// Input URL
 	url: Str,
+	/// Response headers, with names lowercased.
+	headers: #{Str: Str},
 	/// HTTP response status code
 	status: Int,
+	/// Response body
+	body: Str,
 }

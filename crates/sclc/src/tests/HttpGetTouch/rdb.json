@@ -2,8 +2,16 @@
   "resources": {
     "Std/HTTP.Get": {
       "https://example.com": {
-        "inputs": { "url": "https://example.com" },
-        "outputs": { "url": "https://example.com", "status": 200 }
+        "inputs": {
+          "url": "https://example.com",
+          "headers": { "$dict": { "Accept": "text/html" } }
+        },
+        "outputs": {
+          "url": "https://example.com",
+          "headers": { "$dict": { "content-type": "text/html" } },
+          "status": 200,
+          "body": "<html></html>"
+        }
       }
     }
   }

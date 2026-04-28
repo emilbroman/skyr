@@ -257,14 +257,18 @@ import Std/HTTP
 
 let probe = HTTP.Get({
     url: "https://example.com",
+    headers: #{ "Accept": "text/html" },
 })
 ```
 
 | | Fields |
 |---|--------|
 | **Inputs** | `url: Str` — URL to fetch |
+| | `headers: #{Str: Str}?` — Request headers to send (defaults to empty) |
 | **Outputs** | `url: Str` |
+| | `headers: #{Str: Str}` — Response headers, with names lowercased |
 | | `status: Int` — HTTP response status code |
+| | `body: Str` — Response body |
 
 ## Std/Package
 
