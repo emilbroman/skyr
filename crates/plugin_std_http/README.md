@@ -18,6 +18,14 @@ Performs an HTTP GET request and exposes the response status, headers, and body.
 | | `headers` (dict of string to string) — response headers, names lowercased |
 | | `body` (string) — response body |
 
+### Caching
+
+The `check` lifecycle method honors `cache-control` (`max-age=N`,
+`no-store`/`no-cache`/`must-revalidate`) on the previous response together
+with the `date` header. While `now − date ≤ max-age`, `check` returns the
+stored outputs without re-issuing the request. Unrecognised directives are
+skipped; missing or malformed `cache-control`/`date` causes a refetch.
+
 ## Running
 
 ```sh

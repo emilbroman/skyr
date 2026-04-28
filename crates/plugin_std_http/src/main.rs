@@ -1,11 +1,16 @@
+mod cache;
+
 use std::collections::BTreeSet;
 use std::str::FromStr;
+use std::time::SystemTime;
 
 use anyhow::Context;
 use clap::Parser;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use sclc::{Value, ValueAssertions};
-use tracing::debug;
+use tracing::{debug, warn};
+
+use crate::cache::{CacheDecision, is_fresh, parse_cache_control};
 
 const GET_RESOURCE_TYPE: &str = "Std/HTTP.Get";
 const SKYR_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -146,10 +151,44 @@ impl rtp::Plugin for HttpPlugin {
     ) -> anyhow::Result<sclc::Resource> {
         debug!(resource_type = %id.typ, "checking http resource");
         match id.typ.as_str() {
-            GET_RESOURCE_TYPE => self.get_resource(deployment_qid, resource.inputs).await,
+            GET_RESOURCE_TYPE => {
+                if cache_is_fresh(&resource.outputs) {
+                    debug!(resource = %id, "cache fresh, skipping HTTP GET");
+                    return Ok(resource);
+                }
+                self.get_resource(deployment_qid, resource.inputs).await
+            }
             _ => Ok(resource),
         }
     }
+}
+
+/// Inspect previous-fetch outputs for `cache-control` + `date` and decide
+/// whether the cached response is still fresh.
+fn cache_is_fresh(outputs: &sclc::Record) -> bool {
+    let Value::Dict(headers) = outputs.get("headers") else {
+        return false;
+    };
+    let cache_control = match headers.get(&Value::Str("cache-control".to_owned())) {
+        Some(Value::Str(s)) => s.as_str(),
+        _ => return false,
+    };
+    let max_age = match parse_cache_control(cache_control) {
+        CacheDecision::Fresh { max_age } => max_age,
+        CacheDecision::Refetch | CacheDecision::Unknown => return false,
+    };
+    let date_str = match headers.get(&Value::Str("date".to_owned())) {
+        Some(Value::Str(s)) => s.as_str(),
+        _ => return false,
+    };
+    let date = match httpdate::parse_http_date(date_str) {
+        Ok(d) => d,
+        Err(err) => {
+            warn!(date = %date_str, error = %err, "failed to parse Date header; refetching");
+            return false;
+        }
+    };
+    is_fresh(date, max_age, SystemTime::now())
 }
 
 #[tokio::main]
