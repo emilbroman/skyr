@@ -120,6 +120,7 @@ The RTQ carries four message types:
 | [plugin_std_artifact](crates/plugin_std_artifact/) | `Std/Artifact.File` | Artifact file storage via ADB |
 | [plugin_std_crypto](crates/plugin_std_crypto/) | `Std/Crypto.ED25519PrivateKey`, `ECDSAPrivateKey`, `RSAPrivateKey` | Cryptographic key pair generation |
 | [plugin_std_dns](crates/plugin_std_dns/) | `Std/DNS.ARecord` | DNS record management |
+| [plugin_std_http](crates/plugin_std_http/) | `Std/HTTP.Get` | HTTP requests |
 | [plugin_std_container](crates/plugin_std_container/) | `Std/Container.Image`, `Pod`, `Pod.Port` | Container management via SCOP/SCOC |
 
 ### Container Infrastructure
@@ -159,6 +160,7 @@ Application services:
 | plugin-std-artifact | 50052 | Artifact plugin |
 | plugin-std-crypto | 50055 | Crypto plugin |
 | plugin-std-dns | 50057 | DNS plugin |
+| plugin-std-http | 50058 | HTTP plugin |
 | plugin-std-container | 50053 | Container plugin |
 | scoc-{1,2,3} | — | Container orchestrator conduit nodes |
 

@@ -264,6 +264,12 @@ services:
     command: ["--bind", "tcp://0.0.0.0:50056"]
     restart: always
 
+  plugin-std-http:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_http"]
+    command: ["--bind", "tcp://0.0.0.0:50058"]
+    restart: always
+
   plugin-std-container:
     image: skyr:latest
     entrypoint: ["/plugin_std_container"]
@@ -319,6 +325,8 @@ services:
         "Std/Time@tcp://plugin-std-time:50056",
         "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
+        "--plugin",
+        "Std/HTTP@tcp://plugin-std-http:50058",
         "--worker-index",
         "0",
         "--worker-count",
@@ -352,6 +360,8 @@ services:
         "Std/Time@tcp://plugin-std-time:50056",
         "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
+        "--plugin",
+        "Std/HTTP@tcp://plugin-std-http:50058",
         "--worker-index",
         "1",
         "--worker-count",
@@ -385,6 +395,8 @@ services:
         "Std/Time@tcp://plugin-std-time:50056",
         "--plugin",
         "Std/Container@tcp://plugin-std-container:50054",
+        "--plugin",
+        "Std/HTTP@tcp://plugin-std-http:50058",
         "--worker-index",
         "2",
         "--worker-count",

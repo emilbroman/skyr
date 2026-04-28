@@ -56,4 +56,5 @@ Follow the pattern in [plugin_std_random](../plugin_std_random/) or [plugin_std_
 - [plugin_std_time](../plugin_std_time/) — example volatile resource plugin
 - [plugin_std_artifact](../plugin_std_artifact/) — example plugin with external storage
 - [plugin_std_dns](../plugin_std_dns/) — example stub plugin (no external deps)
+- [plugin_std_http](../plugin_std_http/) — example stub plugin for HTTP requests
 - [plugin_std_container](../plugin_std_container/) — example complex plugin with SCOP integration

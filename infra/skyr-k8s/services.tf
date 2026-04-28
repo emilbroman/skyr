@@ -367,6 +367,7 @@ resource "kubernetes_deployment_v1" "rte" {
             "--plugin", "Std/Crypto@unix://_/var/run/plugins/crypto.sock",
             "--plugin", "Std/DNS@tcp://plugin-std-dns.${local.namespace}.svc.cluster.local:50057",
             "--plugin", "Std/Time@unix://_/var/run/plugins/time.sock",
+            "--plugin", "Std/HTTP@unix://_/var/run/plugins/http.sock",
             "--plugin", "Std/Container@tcp://plugin-std-container.${local.namespace}.svc.cluster.local:50054",
             "--worker-index", tostring(count.index),
             "--worker-count", tostring(var.rte_worker_count),
@@ -458,6 +459,21 @@ resource "kubernetes_deployment_v1" "rte" {
 
           command = ["/plugin_std_time"]
           args    = ["--bind", "unix://_/var/run/plugins/time.sock"]
+
+          volume_mount {
+            name       = "plugin-sockets"
+            mount_path = "/var/run/plugins"
+          }
+        }
+
+        # --- Sidecar: plugin-std-http ---
+        container {
+          name              = "plugin-std-http"
+          image             = "ghcr.io/emilbroman/skyr-plugin_std_http:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/plugin_std_http"]
+          args    = ["--bind", "unix://_/var/run/plugins/http.sock"]
 
           volume_mount {
             name       = "plugin-sockets"

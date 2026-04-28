@@ -13,6 +13,7 @@ members = [
   "crates/plugin_std_container",
   "crates/plugin_std_crypto",
   "crates/plugin_std_dns",
+  "crates/plugin_std_http",
   "crates/plugin_std_random",
   "crates/plugin_std_time",
   "crates/rdb",
