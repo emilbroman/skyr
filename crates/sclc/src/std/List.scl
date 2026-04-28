@@ -22,3 +22,59 @@ export let filter = fn<T>(list: [T], predicate: fn(T) Bool)
 /// Map each element to a list, then flatten the results into a single list.
 export let flatMap = fn<T, U>(list: [T], transform: fn(T) [U])
 	[for (t in list) for (u in transform(t)) u]
+
+/// Number of elements in the list.
+export let length = extern "Std/List.length": fn<T>([T]) Int
+
+/// Whether the list is empty (`length == 0`).
+export let isEmpty = fn<T>(list: [T]) length<T>(list) == 0
+
+/// Reverse the order of elements.
+export let reverse = extern "Std/List.reverse": fn<T>([T]) [T]
+
+/// First element, or `nil` if the list is empty.
+export let first = extern "Std/List.first": fn<T>([T]) T?
+
+/// Last element, or `nil` if the list is empty.
+export let last = extern "Std/List.last": fn<T>([T]) T?
+
+/// Sublist by index. Pass `nil` for `end` to mean the list's length.
+///
+/// Indices are clamped to `[0, length]`. If `end <= start`, returns `[]`.
+/// Raises an error if `start` or `end` is negative.
+export let slice = extern "Std/List.slice": fn<T>([T], Int, Int?) [T]
+
+/// First `n` elements, or fewer if the list is shorter. Raises an error if `n` is negative.
+export let take = fn<T>(list: [T], n: Int) slice<T>(list, 0, n)
+
+/// All but the first `n` elements. Raises an error if `n` is negative.
+export let drop = fn<T>(list: [T], n: Int) slice<T>(list, n, nil)
+
+/// Whether `needle` occurs anywhere in the list. Uses value equality.
+export let contains = extern "Std/List.contains": fn<T>([T], T) Bool
+
+/// Index of the first occurrence of `needle`, or `nil` if absent. Uses value equality.
+export let indexOf = extern "Std/List.indexOf": fn<T>([T], T) Int?
+
+/// Whether at least one element satisfies the predicate.
+export let any = fn<T>(list: [T], predicate: fn(T) Bool)
+	length<T>(filter<T>(list, predicate)) > 0
+
+/// Whether every element satisfies the predicate. True for an empty list.
+export let all = fn<T>(list: [T], predicate: fn(T) Bool)
+	length<T>(list) == length<T>(filter<T>(list, predicate))
+
+/// First element matching the predicate, or `nil` if none match.
+export let find = fn<T>(list: [T], predicate: fn(T) Bool)
+	first<T>(filter<T>(list, predicate))
+
+/// Add an element to the front of a list.
+export let prepend = fn<T>(list: [T], newItem: T)
+	[newItem, for (t in list) t]
+
+/// Pair up two lists element-wise into records `{a, b}`. Result length is the
+/// shorter of the two inputs.
+export let zip = extern "Std/List.zip": fn<A, B>([A], [B]) [{a: A, b: B}]
+
+/// Remove duplicate elements, preserving the order of first occurrence. Uses value equality.
+export let unique = extern "Std/List.unique": fn<T>([T]) [T]

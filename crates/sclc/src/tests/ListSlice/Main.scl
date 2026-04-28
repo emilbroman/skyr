@@ -1,0 +1,6 @@
+import Std/List
+export let a = List.slice([1, 2, 3, 4, 5], 1, 4)
+export let b = List.slice([1, 2, 3], 0, nil)
+export let c = List.slice([1, 2, 3], 0, 100)
+export let d = List.slice([1, 2, 3], 10, nil)
+export let e = List.slice([1, 2, 3], 3, 1)

@@ -1,0 +1,4 @@
+import Std/List
+export let a = List.all([2, 4, 6], fn(x: Int) x > 1)
+export let b = List.all([2, 3, 4], fn(x: Int) x > 3)
+export let c = List.all<Int>([], fn(x: Int) false)

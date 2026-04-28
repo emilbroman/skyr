@@ -437,6 +437,22 @@ test_case!(ListConcat);
 test_case!(ListFilter);
 test_case!(ListFlatMap);
 test_case!(ListMapEmpty);
+test_case!(ListAll);
+test_case!(ListAny);
+test_case!(ListContains);
+test_case!(ListDrop);
+test_case!(ListFind);
+test_case!(ListFirst);
+test_case!(ListIndexOf);
+test_case!(ListIsEmpty);
+test_case!(ListLast);
+test_case!(ListLength);
+test_case!(ListPrepend);
+test_case!(ListReverse);
+test_case!(ListSlice);
+test_case!(ListTake);
+test_case!(ListUnique);
+test_case!(ListZip);
 
 // Std/Num
 test_case!(NumToHex);
