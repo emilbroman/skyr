@@ -86,9 +86,10 @@ export type Deployment = IncidentEntity & {
   qid: Scalars['ID']['output'];
   resources: Array<Resource>;
   /**
-   * First 8 characters of [`Self::id`] — a short, human-readable label
-   * suitable for compact UI rendering. Since the deployment id begins
-   * with the commit hash, this is also the abbreviated commit hash.
+   * Compact, human-readable label of the form `<6-char commit>.<2-char
+   * nonce>` — the first 6 characters of the commit hash followed by the
+   * first 2 characters of the nonce (lowercase hex). Suitable for tight
+   * UI surfaces where the full [`Self::id`] is too long.
    */
   shortId: Scalars['String']['output'];
   state: DeploymentState;
@@ -115,7 +116,14 @@ export enum DeploymentState {
 export type Environment = {
   __typename?: 'Environment';
   artifacts: Array<Artifact>;
-  deployment: Deployment;
+  /**
+   * Look up a deployment in this environment. If `id` is omitted, returns
+   * the current deployment — the active deployment that has not been
+   * superseded by another — or `null` if there is none. If `id` is
+   * provided, returns the deployment with that `<commit-hash>.<nonce>`
+   * identifier, or `null` if no such deployment exists.
+   */
+  deployment?: Maybe<Deployment>;
   deployments: Array<Deployment>;
   /**
    * Look up a single incident by id within this environment. Returns
@@ -133,7 +141,7 @@ export type Environment = {
 
 
 export type EnvironmentDeploymentArgs = {
-  id: Scalars['String']['input'];
+  id?: InputMaybe<Scalars['String']['input']>;
 };
 
 
@@ -357,7 +365,6 @@ export type Query = {
   organization: Organization;
   organizations: Array<Organization>;
   refreshToken: AuthSuccess;
-  repositories: Array<Repository>;
 };
 
 
@@ -584,7 +591,7 @@ export type DeploymentDetailQueryVariables = Exact<{
 }>;
 
 
-export type DeploymentDetailQuery = { __typename?: 'Query', organization: { __typename?: 'Organization', repository: { __typename?: 'Repository', environment: { __typename?: 'Environment', deployment: { __typename?: 'Deployment', id: string, shortId: string, qid: string, createdAt: string, state: DeploymentState, bootstrapped: boolean, commit: { __typename?: 'Commit', hash: string, message: string }, status: { __typename?: 'StatusSummary', health: HealthStatus, lastReportAt: string, lastReportSucceeded: boolean, openIncidentCount: number, consecutiveFailureCount: number }, openIncidents: Array<{ __typename?: 'Incident', id: string, openedAt: string, lastReportAt: string, reportCount: number, summary?: string | null }>, resources: Array<{ __typename?: 'Resource', type: string, name: string, inputs?: any | null, outputs?: any | null, markers: Array<ResourceMarker>, owner?: { __typename?: 'Deployment', id: string } | null, dependencies: Array<{ __typename?: 'Resource', type: string, name: string }>, sourceTrace: Array<{ __typename?: 'SourceFrame', moduleId: string, span: string, name: string }>, status: { __typename?: 'StatusSummary', health: HealthStatus, openIncidentCount: number } }>, lastLogs: Array<{ __typename?: 'Log', severity: Severity, timestamp: string, message: string }> } } } } };
+export type DeploymentDetailQuery = { __typename?: 'Query', organization: { __typename?: 'Organization', repository: { __typename?: 'Repository', environment: { __typename?: 'Environment', deployment?: { __typename?: 'Deployment', id: string, shortId: string, qid: string, createdAt: string, state: DeploymentState, bootstrapped: boolean, commit: { __typename?: 'Commit', hash: string, message: string }, status: { __typename?: 'StatusSummary', health: HealthStatus, lastReportAt: string, lastReportSucceeded: boolean, openIncidentCount: number, consecutiveFailureCount: number }, openIncidents: Array<{ __typename?: 'Incident', id: string, openedAt: string, lastReportAt: string, reportCount: number, summary?: string | null }>, resources: Array<{ __typename?: 'Resource', type: string, name: string, inputs?: any | null, outputs?: any | null, markers: Array<ResourceMarker>, owner?: { __typename?: 'Deployment', id: string } | null, dependencies: Array<{ __typename?: 'Resource', type: string, name: string }>, sourceTrace: Array<{ __typename?: 'SourceFrame', moduleId: string, span: string, name: string }>, status: { __typename?: 'StatusSummary', health: HealthStatus, openIncidentCount: number } }>, lastLogs: Array<{ __typename?: 'Log', severity: Severity, timestamp: string, message: string }> } | null } } } };
 
 export type EnvironmentIncidentsQueryVariables = Exact<{
   org: Scalars['String']['input'];
