@@ -115,6 +115,7 @@ std_modules! {
     crypto => "Crypto.scl",
     dns => "DNS.scl",
     encoding => "Encoding.scl",
+    http => "HTTP.scl",
     list => "List.scl",
     num => "Num.scl",
     option => "Option.scl",

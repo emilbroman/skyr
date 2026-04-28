@@ -244,6 +244,28 @@ let digest = Crypto.hmacSha512("key", "The quick brown fox jumps over the lazy d
 // "b42af09057bac1e2d41708e48a902e09b5ff7f12ab428a4fe86653c73dd248fb82f948a549f7b791a5b41915ee4d1ec3935357e4e2317250d0372afa2ebeeb3a"
 ```
 
+## Std/HTTP
+
+HTTP requests as resources.
+
+### HTTP.Get
+
+Perform an HTTP GET request.
+
+```scl
+import Std/HTTP
+
+let probe = HTTP.Get({
+    url: "https://example.com",
+})
+```
+
+| | Fields |
+|---|--------|
+| **Inputs** | `url: Str` — URL to fetch |
+| **Outputs** | `url: Str` |
+| | `status: Int` — HTTP response status code |
+
 ## Std/Package
 
 Types describing a repository's cross-repo dependency manifest. Used in `Package.scle` files at the root of a repository — see [Cross-Repo Imports](../cross-repo-imports.md).

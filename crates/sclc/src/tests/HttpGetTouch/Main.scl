@@ -1,0 +1,2 @@
+import Std/HTTP
+export let probe = HTTP.Get({ url: "https://example.com" })

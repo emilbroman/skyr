@@ -410,6 +410,10 @@ test_case!(RandomInt);
 test_case!(RandomIntUpdate);
 test_case!(RandomIntTouch);
 
+// Std/HTTP
+test_case!(HttpGet);
+test_case!(HttpGetTouch);
+
 // Std/List
 test_case!(ListRange);
 test_case!(ListRangeEmpty);

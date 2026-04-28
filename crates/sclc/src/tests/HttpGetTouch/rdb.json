@@ -1,0 +1,10 @@
+{
+  "resources": {
+    "Std/HTTP.Get": {
+      "https://example.com": {
+        "inputs": { "url": "https://example.com" },
+        "outputs": { "url": "https://example.com", "status": 200 }
+      }
+    }
+  }
+}

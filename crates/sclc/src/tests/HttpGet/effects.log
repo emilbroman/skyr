@@ -1,0 +1,1 @@
+CreateResource ty=Std/HTTP.Get name=https://example.com inputs={url: "https://example.com"}

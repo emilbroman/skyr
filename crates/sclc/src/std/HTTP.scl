@@ -1,0 +1,23 @@
+/// Perform an HTTP GET request.
+///
+/// The request is performed when the resource is created and re-performed
+/// on updates (e.g., when `url` changes).
+///
+/// ```scl
+/// import Std/HTTP
+///
+/// let probe = HTTP.Get({
+///     url: "https://example.com",
+/// })
+/// ```
+export let Get = extern "Std/HTTP.Get": fn({
+	/// URL to fetch
+	url: Str,
+}) HttpGet
+
+export type HttpGet {
+	/// Input URL
+	url: Str,
+	/// HTTP response status code
+	status: Int,
+}
