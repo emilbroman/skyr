@@ -1,0 +1,2 @@
+import Std/Dict
+export let r = Dict.merge(#{"a": 1, "b": 2}, #{"b": 99, "c": 3})

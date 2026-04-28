@@ -112,6 +112,7 @@ pub(crate) fn extract_config_arg(
 std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",
+    dict => "Dict.scl",
     crypto => "Crypto.scl",
     dns => "DNS.scl",
     encoding => "Encoding.scl",

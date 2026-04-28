@@ -1,0 +1,3 @@
+import Std/Dict
+export let a = Dict.has(#{"x": 1, "y": 2}, "x")
+export let b = Dict.has(#{"x": 1, "y": 2}, "z")

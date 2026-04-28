@@ -454,6 +454,21 @@ test_case!(ListSlice);
 test_case!(ListTake);
 test_case!(ListZip);
 
+// Std/Dict
+test_case!(DictSize);
+test_case!(DictIsEmpty);
+test_case!(DictKeys);
+test_case!(DictValues);
+test_case!(DictEntries);
+test_case!(DictHas);
+test_case!(DictGet);
+test_case!(DictInsert);
+test_case!(DictRemove);
+test_case!(DictMerge);
+test_case!(DictMap);
+test_case!(DictFilter);
+test_case!(DictFromList);
+
 // Std/Num
 test_case!(NumToHex);
 

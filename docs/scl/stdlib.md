@@ -582,6 +582,128 @@ Remove duplicate elements, preserving the order of first occurrence. Uses value 
 List.distinct([1, 2, 1, 3, 2, 4])  // [1, 2, 3, 4]
 ```
 
+## Std/Dict
+
+Dict manipulation functions for `#{K: V}` values — the type used for environment variables, labels, and other key-value configuration.
+
+```scl
+import Std/Dict
+```
+
+### Dict.size
+
+Returns the number of entries in the dict.
+
+```scl
+Dict.size<Str, Int>(#{})           // 0
+Dict.size(#{"a": 1, "b": 2})      // 2
+```
+
+### Dict.isEmpty
+
+Returns `true` if the dict has zero entries.
+
+```scl
+Dict.isEmpty<Str, Int>(#{})   // true
+Dict.isEmpty(#{"a": 1})       // false
+```
+
+### Dict.keys
+
+Returns all keys in insertion order.
+
+```scl
+Dict.keys(#{"a": 1, "b": 2})  // ["a", "b"]
+```
+
+### Dict.values
+
+Returns all values in insertion order.
+
+```scl
+Dict.values(#{"a": 1, "b": 2})  // [1, 2]
+```
+
+### Dict.entries
+
+Returns all entries as `{key, value}` records in insertion order.
+
+```scl
+Dict.entries(#{"a": 1})  // [{key: "a", value: 1}]
+```
+
+### Dict.has
+
+Returns `true` if the dict contains an entry for `key`. Uses value equality.
+
+```scl
+Dict.has(#{"x": 1, "y": 2}, "x")  // true
+Dict.has(#{"x": 1, "y": 2}, "z")  // false
+```
+
+### Dict.get
+
+Returns the value for `key`, or `nil` if absent.
+
+```scl
+Dict.get(#{"x": 1, "y": 2}, "x")  // 1
+Dict.get(#{"x": 1, "y": 2}, "z")  // nil
+```
+
+### Dict.insert
+
+Returns a new dict with `key` mapped to `value`. If `key` already exists, the entry is updated in place (preserving its insertion-order position); otherwise the entry is appended.
+
+```scl
+Dict.insert(#{"x": 1}, "y", 2)         // #{"x": 1, "y": 2}
+Dict.insert(#{"x": 1, "y": 2}, "x", 9) // #{"x": 9, "y": 2}
+```
+
+### Dict.remove
+
+Returns a new dict without `key`. No-op if `key` is absent.
+
+```scl
+Dict.remove(#{"x": 1, "y": 2}, "x")  // #{"y": 2}
+Dict.remove(#{"x": 1}, "missing")     // #{"x": 1}
+```
+
+### Dict.merge
+
+Merges two dicts, with right-side entries winning on key conflicts. Left-side ordering is preserved for keys that appear in both.
+
+```scl
+Dict.merge(#{"a": 1, "b": 2}, #{"b": 99, "c": 3})
+// #{"a": 1, "b": 99, "c": 3}
+```
+
+### Dict.fromList
+
+Builds a dict from a list of `{key, value}` records. On duplicate keys, the last occurrence wins.
+
+```scl
+Dict.fromList<Str, Int>([{key: "a", value: 1}, {key: "b", value: 2}])
+// #{"a": 1, "b": 2}
+```
+
+### Dict.map
+
+Applies a function to each value, returning a new dict with the same keys and transformed values.
+
+```scl
+Dict.map(#{"a": 1, "b": 2}, fn(k: Str, v: Int) v * 10)
+// #{"a": 10, "b": 20}
+```
+
+### Dict.filter
+
+Keeps only entries that satisfy a predicate.
+
+```scl
+Dict.filter(#{"a": 1, "b": 2, "c": 3}, fn(k: Str, v: Int) v > 1)
+// #{"b": 2, "c": 3}
+```
+
 ## Std/Encoding
 
 Encoding and decoding functions for JSON, YAML, TOML, base64, hex, and URL formats. All functions treating binary data as UTF-8 strings; decoding functions raise a runtime error when the decoded bytes are not valid UTF-8.
