@@ -143,6 +143,12 @@ let aRecordFqdn = $derived.by(() => {
 let inRepoSourceFrame = $derived(
     resource?.sourceTrace.find((f) => f.moduleId.startsWith(`${orgName}/${repoName}/`)) ?? null,
 );
+
+let pathLinkBase = $derived(
+    resource?.owner?.commit.hash
+        ? commitTreeHref(orgName, repoName, resource.owner.commit.hash)
+        : undefined,
+);
 </script>
 
 <svelte:head>
@@ -344,7 +350,7 @@ let inRepoSourceFrame = $derived(
       <div
         class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
       >
-        <JsonTree value={resource.inputs} />
+        <JsonTree value={resource.inputs} {pathLinkBase} />
       </div>
     </section>
   {/if}
@@ -356,7 +362,7 @@ let inRepoSourceFrame = $derived(
       <div
         class="bg-white border border-gray-200 rounded-lg p-4 text-gray-600 font-mono text-xs overflow-x-auto"
       >
-        <JsonTree value={resource.outputs} />
+        <JsonTree value={resource.outputs} {pathLinkBase} />
       </div>
     </section>
   {/if}
