@@ -16,7 +16,7 @@ use tokio::{
 use crate::backoff::backoff_duration;
 use crate::reporter::{
     FailureKind, IterationOutcome, SdbPreview, build_deployment_report, probe_deployment,
-    probe_resource_open_crash, publish_report,
+    probe_resource_open_crash, publish_report, publish_terminal_report,
 };
 use crate::util::{resource_id_from, resource_ref};
 
@@ -51,6 +51,13 @@ pub(crate) struct Worker {
     /// because the worker has nothing left to do (no `Main.scl`) and is going
     /// idle until an external trigger (e.g. supersession) respawns it.
     pub(crate) terminal_reported: bool,
+    /// Last [`DeploymentState`] observed at the end of a successful
+    /// [`Worker::work`] iteration. Used by the error fallback in
+    /// [`Worker::work_and_report`] so a transient CDB read failure mid-loop
+    /// does not falsely report `Desired` (and silently downgrade the RE's
+    /// heartbeat-cache entry), which would then leave the watchdog firing on
+    /// a deployment that has actually moved on to e.g. `Undesired` or `Down`.
+    pub(crate) last_observed_state: Option<DeploymentState>,
 }
 
 /// What a single worker iteration observed and decided.
@@ -132,10 +139,13 @@ impl Worker {
             Err(error) => {
                 // Any propagated `?` error (CDB / RDB / RTQ / LDB / similar
                 // infrastructure failures) is classified as `SystemError`.
-                // The state may be unknown if the very first read failed; in
-                // that case fall back to `Desired` for reporting purposes —
-                // we still want a heartbeat to go out so the RE can detect
-                // a stuck worker.
+                // We still emit a heartbeat so the RE can detect a stuck
+                // worker — but use the last state we successfully observed
+                // rather than always reporting `Desired`. Reporting a
+                // fabricated `Desired` after the deployment has already moved
+                // to e.g. `Undesired` would refresh the RE heartbeat cache
+                // under the wrong state, and the watchdog would later open a
+                // synthetic SystemError on the wrong cadence.
                 tracing::error!("{error}");
                 let outcome = IterationOutcome::Failure {
                     kind: FailureKind::SystemError,
@@ -143,7 +153,7 @@ impl Worker {
                 };
                 WorkResult {
                     keep_running: true,
-                    state: DeploymentState::Desired,
+                    state: self.last_observed_state.unwrap_or(DeploymentState::Desired),
                     outcome,
                     is_backoff_replay: false,
                 }
@@ -185,8 +195,12 @@ impl Worker {
         let is_terminal =
             matches!(work_result.state, DeploymentState::Down) || !work_result.keep_running;
 
-        // Build & publish the report. Reporting failures are logged but never
-        // propagate — the DE keeps reconciling regardless of broker health.
+        // Build & publish the report. Per-iteration heartbeats are
+        // fire-and-forget — a missed one is replaced by the next iteration in
+        // 5s — but the terminal report is the last one this worker will emit
+        // and its loss leaves the RE's heartbeat cache stale (watchdog
+        // misfires on an actually-DOWN deployment), so retry past transient
+        // broker outages.
         let report = build_deployment_report(
             deployment_qid.clone(),
             work_result.state,
@@ -194,7 +208,11 @@ impl Worker {
             elapsed,
             work_result.outcome,
         );
-        publish_report(&self.rq_publisher, &report).await;
+        if is_terminal {
+            publish_terminal_report(&self.rq_publisher, &report).await;
+        } else {
+            publish_report(&self.rq_publisher, &report).await;
+        }
 
         if is_terminal {
             self.terminal_reported = true;
@@ -314,6 +332,7 @@ impl Worker {
         };
 
         let final_state = self.client.get().await?.state;
+        self.last_observed_state = Some(final_state);
         Ok(WorkResult {
             state: final_state,
             ..work_result

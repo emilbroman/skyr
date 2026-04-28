@@ -140,6 +140,58 @@ pub(crate) async fn publish_report(publisher: &rq::Publisher, report: &Report) {
     }
 }
 
+/// Publish a terminal [`Report`] with bounded exponential-backoff retries.
+///
+/// The terminal flag is the only signal that lets the RE drop an entity from
+/// heartbeat tracking. A lost terminal report leaves a stale cache entry that
+/// the watchdog will eventually misfire on — opening a synthetic SystemError
+/// incident on a deployment that is actually DOWN. Unlike the per-iteration
+/// heartbeat (which gets another shot in 5s), this is the *last* report the
+/// worker will emit, so we retry past a transient broker outage instead of
+/// fire-and-forget.
+///
+/// Retries are bounded so a sustained outage cannot block worker exit
+/// indefinitely; if the budget is exhausted, an error is logged and the worker
+/// proceeds to shut down anyway.
+pub(crate) async fn publish_terminal_report(publisher: &rq::Publisher, report: &Report) {
+    const INITIAL_DELAY: Duration = Duration::from_millis(250);
+    const MAX_DELAY: Duration = Duration::from_secs(30);
+    const MAX_ATTEMPTS: u32 = 12;
+
+    let mut delay = INITIAL_DELAY;
+    for attempt in 1..=MAX_ATTEMPTS {
+        match publisher.enqueue(report).await {
+            Ok(()) => {
+                if attempt > 1 {
+                    tracing::info!(
+                        attempts = attempt,
+                        "terminal status report published after retries",
+                    );
+                }
+                return;
+            }
+            Err(error) if attempt == MAX_ATTEMPTS => {
+                tracing::error!(
+                    error = %error,
+                    attempts = attempt,
+                    "giving up on terminal status report; RE watchdog may misfire on this entity",
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    attempt,
+                    next_retry_in_ms = delay.as_millis() as u64,
+                    "failed to publish terminal status report; retrying",
+                );
+                tokio::time::sleep(delay).await;
+                delay = std::cmp::min(delay * 2, MAX_DELAY);
+            }
+        }
+    }
+}
+
 /// SDB-derived signals read at the top of every worker iteration to drive
 /// backoff and eligibility decisions.
 #[derive(Debug, Clone, Default)]

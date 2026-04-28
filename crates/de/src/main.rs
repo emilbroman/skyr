@@ -258,6 +258,7 @@ async fn process(
             last_failure: None,
             cached_compile: None,
             terminal_reported: false,
+            last_observed_state: None,
         };
 
         let span = tracing::info_span!("worker", dep = %deployment_qid);
