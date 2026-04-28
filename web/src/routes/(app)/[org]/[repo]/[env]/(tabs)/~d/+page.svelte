@@ -24,7 +24,7 @@ const envDetail = graphqlQuery(() => ({
 
 let env = $derived(envDetail.data?.organization.repository.environment ?? null);
 
-type SortColumn = "id" | "commit" | "deployedAt" | "state" | "resources";
+type SortColumn = "id" | "deployedAt" | "state" | "resources";
 type SortDirection = "asc" | "desc";
 
 let sortColumn: SortColumn = $state("deployedAt");
@@ -47,8 +47,6 @@ let sortedDeployments = $derived.by(() => {
         switch (sortColumn) {
             case "id":
                 return dir * a.commit.hash.localeCompare(b.commit.hash);
-            case "commit":
-                return dir * a.commit.message.localeCompare(b.commit.message);
             case "deployedAt":
                 return dir * a.createdAt.localeCompare(b.createdAt);
             case "state":
@@ -129,20 +127,13 @@ function onWindowClick(event: MouseEvent) {
     <table class="w-full text-left text-xs">
       <thead>
         <tr class="border-b border-gray-200 text-gray-500 bg-gray-50">
-          <th class="py-2 pl-4 pr-4 font-medium">
+          <th class="py-2 pl-4 pr-4 font-semibold text-xs text-gray-700"></th>
+          <th class="py-2 pr-4 font-medium">
             <button
               class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
               onclick={() => toggleSort("id")}
             >
-              ID{sortIndicator("id")}
-            </button>
-          </th>
-          <th class="py-2 pr-4 font-medium">
-            <button
-              class="font-semibold text-xs text-gray-700 hover:text-gray-900 transition-colors cursor-pointer"
-              onclick={() => toggleSort("commit")}
-            >
-              Commit{sortIndicator("commit")}
+              Deployment{sortIndicator("id")}
             </button>
           </th>
           <th class="py-2 pr-4 font-medium">
@@ -175,27 +166,33 @@ function onWindowClick(event: MouseEvent) {
       <tbody class="divide-y divide-gray-100">
         {#each sortedDeployments as deployment}
           <tr class="hover:bg-gray-50">
-            <td class="py-2 pl-4 pr-4 font-mono text-gray-500">
-              {deployment.shortId}
+            <td class="py-2 pl-4 pr-4">
+              {#if deployment.state === DeploymentState.Down}
+                <span class="inline-block w-2 h-2 rounded-full bg-gray-400" aria-label="Down"></span>
+              {:else}
+                <HealthBadge
+                  health={deployment.status.health}
+                  openIncidentCount={deployment.status.openIncidentCount}
+                  showLabel={false}
+                />
+              {/if}
             </td>
-            <td class="py-2 pr-4 truncate max-w-md">
+            <td class="py-2 pr-4">
               <a
                 href={deploymentHref(orgName, repoName, envName, deployment.id)}
-                class="text-gray-800 hover:text-blue-600"
+                class="group flex items-baseline gap-3 max-w-xl"
               >
-                {deployment.commit.message.split("\n")[0]}
+                <span class="font-mono text-gray-500 shrink-0 group-hover:text-gray-700">{deployment.shortId}</span>
+                <span class="text-gray-800 group-hover:text-blue-600 truncate min-w-0">
+                  {deployment.commit.message.split("\n")[0]}
+                </span>
               </a>
             </td>
             <td class="py-2 pr-4 text-gray-500">
               {new Date(deployment.createdAt).toLocaleString()}
             </td>
             <td class="py-2 pr-4">
-              <div class="flex items-center gap-1.5">
-                <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
-                {#if deployment.state !== DeploymentState.Down}
-                  <HealthBadge health={deployment.status.health} openIncidentCount={deployment.status.openIncidentCount} size="small" />
-                {/if}
-              </div>
+              <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={deployment.resources.some((r) => r.markers.includes(ResourceMarker.Volatile))} size="small" />
             </td>
             <td class="py-2 pr-4">
               {#if deployment.resources.length > 0}
@@ -214,7 +211,7 @@ function onWindowClick(event: MouseEvent) {
                   type="button"
                   onclick={() => onDeploy(deployment.commit.hash)}
                   disabled={createDeployment.isPending && pendingCommit === deployment.commit.hash}
-                  class="px-2.5 py-1 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  class="inline-flex items-center gap-1.5 -my-1 bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-700 font-medium cursor-pointer hover:border-gray-300 hover:text-gray-900 transition-colors focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {createDeployment.isPending && pendingCommit === deployment.commit.hash
                     ? "Deploying..."

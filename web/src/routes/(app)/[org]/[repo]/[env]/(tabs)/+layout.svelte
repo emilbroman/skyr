@@ -118,6 +118,10 @@ let activeTab = $derived(
 );
 let openIncidentCount = $derived((env?.incidents ?? []).filter((i) => i.closedAt == null).length);
 
+function truncateMid(name: string): string {
+    return name.length > 40 ? `${name.slice(0, 16)}…${name.slice(-16)}` : name;
+}
+
 function switchEnv(newEnv: string) {
     const tabHref =
         activeTab === "deployments"
@@ -146,9 +150,9 @@ function switchEnv(newEnv: string) {
         value={envName}
         onchange={(e) => switchEnv(e.currentTarget.value)}
       >
-        <option value={envName}>{envName}</option>
+        <option value={envName} title={envName}>{truncateMid(envName)}</option>
         {#each siblingEnvs.filter((n) => n !== envName) as name}
-          <option value={name}>{name}</option>
+          <option value={name} title={name}>{truncateMid(name)}</option>
         {/each}
       </select>
       <ChevronDown class="w-3 h-3 text-gray-400 absolute right-2 pointer-events-none" />

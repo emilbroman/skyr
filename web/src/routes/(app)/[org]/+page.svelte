@@ -3,8 +3,9 @@ import { page } from "$app/stores";
 import { OrganizationDetailDocument, AddOrganizationMemberDocument } from "$lib/graphql/generated";
 import { graphqlQuery, graphqlMutation } from "$lib/graphql/query";
 import Spinner from "$lib/components/Spinner.svelte";
-import { Plus } from "lucide-svelte";
-import { newRepoHref, repoHref, newOrgHref } from "$lib/paths";
+import { Plus, GitBranch } from "lucide-svelte";
+import Avatar from "$lib/components/Avatar.svelte";
+import { newRepoHref, repoHref, newOrgHref, orgHref } from "$lib/paths";
 import { user } from "$lib/stores/auth";
 
 let orgName = $derived($page.params.org ?? "");
@@ -43,17 +44,10 @@ function submitAddMember() {
     <title>{orgName} – Skyr</title>
 </svelte:head>
 
-<div class="max-w-4xl mx-auto px-6 py-8">
-  <div class="flex items-end justify-between mb-6 pb-3 border-b border-gray-200">
-    <h1 class="text-sm font-semibold text-gray-900">{orgName}</h1>
-    <a
-      href={newRepoHref(orgName)}
-      class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors"
-    >
-      <Plus class="w-3.5 h-3.5" />
-      New repository
-    </a>
-  </div>
+<div class="max-w-6xl mx-auto px-6 py-6">
+  <h1 class="text-lg mb-4">
+    <a href={orgHref(orgName)} class="text-gray-900 font-semibold hover:text-blue-600 transition-colors">{orgName}</a>
+  </h1>
 
   {#if orgDetail.isPending}
     <Spinner />
@@ -64,8 +58,18 @@ function submitAddMember() {
   {:else}
     {@const org = orgDetail.data.organization}
 
-    <div class="mb-8">
-      <h2 class="text-xs font-semibold text-gray-700 mb-2">Repositories</h2>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-semibold text-gray-700">Repositories</h2>
+        <a
+          href={newRepoHref(orgName)}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded hover:border-gray-300 hover:text-gray-900 transition-colors"
+        >
+          <Plus class="w-3.5 h-3.5" />
+          New repository
+        </a>
+      </div>
 
       {#if org.repositories.length === 0}
         <div class="text-center py-12 border border-dashed border-gray-200 rounded">
@@ -79,23 +83,30 @@ function submitAddMember() {
               href={repoHref(orgName, repo.name)}
               class="block px-4 py-2.5 hover:bg-gray-50 transition-colors group"
             >
-              <div class="flex items-center justify-between">
+              <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
                 <h3 class="text-xs font-medium text-gray-900 group-hover:text-blue-600">{repo.name}</h3>
-                <span class="text-xs text-gray-400"
-                  >{repo.environments.length} environment{repo.environments.length !== 1 ? "s" : ""}</span
-                >
+                {#if repo.environments.length > 0}
+                  <div class="flex flex-wrap items-center gap-1">
+                    <GitBranch class="w-3.5 h-3.5 text-gray-400" />
+                    {#if repo.environments.length > 3}
+                      <span
+                        title={repo.environments.map((e) => e.name).join(", ")}
+                        class="text-xs text-gray-500"
+                      >{repo.environments.length}</span>
+                    {:else}
+                      {#each repo.environments as env}
+                        {@const display = env.name.length > 16
+                          ? `${env.name.slice(0, 6)}…${env.name.slice(-8)}`
+                          : env.name}
+                        <span
+                          title={env.name}
+                          class="-my-0.5 px-1.5 py-0.5 text-xs bg-gray-100 rounded text-gray-600 whitespace-nowrap"
+                        >{display}</span>
+                      {/each}
+                    {/if}
+                  </div>
+                {/if}
               </div>
-              {#if repo.environments.length > 0}
-                <div class="mt-1.5 flex flex-wrap gap-1">
-                  {#each repo.environments as env}
-                    <span
-                      class="px-1.5 py-0.5 text-xs bg-gray-100 rounded text-gray-600"
-                    >
-                      {env.name}
-                    </span>
-                  {/each}
-                </div>
-              {/if}
             </a>
           {/each}
         </div>
@@ -155,11 +166,20 @@ function submitAddMember() {
 
       <div class="bg-white border border-gray-200 rounded overflow-hidden divide-y divide-gray-100">
         {#each org.members as member}
-          <div class="px-4 py-2 text-xs text-gray-900">{member.username}</div>
+          <div class="flex items-center gap-2 px-4 py-2">
+            <Avatar username={member.username} fullname={member.fullname} size="sm" />
+            {#if member.fullname}
+              <span class="text-xs font-semibold text-gray-900">{member.fullname}</span>
+              <span class="text-xs text-gray-400">@{member.username}</span>
+            {:else}
+              <span class="text-xs font-semibold text-gray-900">@{member.username}</span>
+            {/if}
+          </div>
         {:else}
           <div class="px-4 py-2 text-xs text-gray-400">No members</div>
         {/each}
       </div>
+    </div>
     </div>
   {/if}
 </div>

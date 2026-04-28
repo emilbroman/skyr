@@ -3,6 +3,7 @@ query Organizations {
     name
     members {
       username
+      fullname
     }
     repositories {
       name
@@ -15,6 +16,7 @@ query OrganizationDetail($org: String!) {
     name
     members {
       username
+      fullname
     }
     repositories {
       name
@@ -46,6 +48,7 @@ mutation AddOrganizationMember($organization: String!, $username: String!) {
     name
     members {
       username
+      fullname
     }
   }
 }

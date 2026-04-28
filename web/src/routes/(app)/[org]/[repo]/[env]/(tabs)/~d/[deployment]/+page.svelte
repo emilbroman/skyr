@@ -7,7 +7,8 @@ import LogStream from "$lib/components/LogStream.svelte";
 import Spinner from "$lib/components/Spinner.svelte";
 import ResourceList from "$lib/components/ResourceList.svelte";
 import CommitMessage from "$lib/components/CommitMessage.svelte";
-import { ArrowUpRight } from "lucide-svelte";
+import { Check, Copy, GitCommit } from "lucide-svelte";
+import { copyText } from "$lib/clipboard";
 import {
     CreateDeploymentDocument,
     DeploymentDetailDocument,
@@ -63,6 +64,13 @@ const createDeployment = graphqlMutation(CreateDeploymentDocument, {
 
 let canRedeploy = $derived(deployment != null && deployment.state !== DeploymentState.Desired);
 
+let copied = $state(false);
+function copyId() {
+    copyText(deploymentId);
+    copied = true;
+    setTimeout(() => (copied = false), 2000);
+}
+
 function onRedeploy() {
     if (!deployment) return;
     createDeploymentError = null;
@@ -87,37 +95,63 @@ function onRedeploy() {
       {deploymentDetail.error.message}
     </div>
   {:else if deployment}
-    <!-- Commit -->
+    <!-- Commit + Metadata -->
     <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-      <div class="text-xs mb-2">
+      <div class="flex items-center gap-3 mb-2">
+        <DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={hasVolatile} />
+        <span class="text-xs text-gray-500">
+          {new Date(deployment.createdAt).toLocaleString()}
+        </span>
+        <button
+          type="button"
+          onclick={copyId}
+          title="Copy ID"
+          class="ml-auto inline-flex items-center gap-1.5 font-mono text-xs text-gray-500 hover:text-gray-700 break-all cursor-pointer"
+        >
+          {deploymentId}
+          {#if copied}
+            <Check class="w-3.5 h-3.5 text-green-500" />
+          {:else}
+            <Copy class="w-3.5 h-3.5" />
+          {/if}
+        </button>
+      </div>
+      <div class="flex items-start gap-3">
+        <div class="flex-1 min-w-0">
+          <CommitMessage message={deployment.commit.message} />
+        </div>
         <a
           href={commitTreeHref(orgName, repoName, deployment.commit.hash)}
-          class="text-blue-600 hover:text-blue-500 transition-colors inline-flex items-center gap-0.5"
+          class="shrink-0 text-xs text-blue-600 hover:text-blue-500 transition-colors inline-flex items-center gap-1"
         >
+          <GitCommit class="w-3.5 h-3.5" />
           <span class="font-mono">{deployment.commit.hash.slice(0, 8)}</span>
-          <ArrowUpRight class="w-3 h-3" />
         </a>
       </div>
-      <CommitMessage message={deployment.commit.message} />
+      {#if canRedeploy}
+        <div class="mt-3 flex items-center gap-4">
+          <button
+            type="button"
+            onclick={onRedeploy}
+            disabled={createDeployment.isPending}
+            class="px-3 py-1 text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {createDeployment.isPending ? "Deploying..." : "Deploy"}
+          </button>
+        </div>
+      {/if}
+      {#if createDeploymentError}
+        <div
+          class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-600"
+        >
+          {createDeploymentError}
+        </div>
+      {/if}
     </div>
 
-    <!-- Metadata -->
+    <!-- Health -->
     <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
       <dl class="grid grid-cols-2 gap-x-6 gap-y-3">
-        <div>
-          <dt class="text-gray-400">Ref</dt>
-          <dd class="text-gray-700">{envName}</dd>
-        </div>
-        <div>
-          <dt class="text-gray-400">Created</dt>
-          <dd class="text-gray-700">
-            {new Date(deployment.createdAt).toLocaleString()}
-          </dd>
-        </div>
-        <div>
-          <dt class="text-gray-400">State</dt>
-          <dd><DeploymentStateBadge state={deployment.state} bootstrapped={deployment.bootstrapped} volatile={hasVolatile} /></dd>
-        </div>
         <div>
           <dt class="text-gray-400">Health</dt>
           <dd>
@@ -155,25 +189,6 @@ function onRedeploy() {
               </li>
             {/each}
           </ul>
-        </div>
-      {/if}
-      {#if canRedeploy}
-        <div class="mt-3 flex items-center gap-4">
-          <button
-            type="button"
-            onclick={onRedeploy}
-            disabled={createDeployment.isPending}
-            class="px-3 py-1 text-xs font-medium text-white bg-gray-900 hover:bg-gray-800 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {createDeployment.isPending ? "Deploying..." : "Deploy"}
-          </button>
-        </div>
-      {/if}
-      {#if createDeploymentError}
-        <div
-          class="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-600"
-        >
-          {createDeploymentError}
         </div>
       {/if}
     </div>

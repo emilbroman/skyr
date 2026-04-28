@@ -13,6 +13,7 @@ import {
 } from "$lib/stores/auth";
 import { ChevronDown, LogIn, LogOut, Settings } from "lucide-svelte";
 import SkyrLogo from "$lib/components/SkyrLogo.svelte";
+import Avatar from "$lib/components/Avatar.svelte";
 
 let { children } = $props();
 
@@ -77,7 +78,7 @@ function closeDropdown() {
         <div class="relative">
           <button
             onclick={toggleDropdown}
-            class="flex items-center gap-1 text-gray-500 hover:text-gray-800 transition-colors cursor-pointer"
+            class="flex items-center gap-2 text-gray-500 hover:text-gray-800 transition-colors cursor-pointer"
           >
             {#if $user?.fullname}
               <div class="flex flex-col items-end leading-tight">
@@ -87,6 +88,7 @@ function closeDropdown() {
             {:else}
               <span class="text-gray-800 font-semibold">@{$user?.username ?? ""}</span>
             {/if}
+            <Avatar username={$user?.username ?? ""} fullname={$user?.fullname} size="md" />
             <ChevronDown class="w-4 h-4" />
           </button>
 

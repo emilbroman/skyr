@@ -1,5 +1,4 @@
 <script lang="ts">
-import { ArrowUpRight } from "lucide-svelte";
 import { onDestroy } from "svelte";
 import { page } from "$app/stores";
 import IncidentEntityLink from "$lib/components/IncidentEntityLink.svelte";
@@ -96,21 +95,20 @@ function timeframe(openedAt: string, closedAt: string | null | undefined): strin
     </div>
 
     <div class="hidden md:block bg-white border border-gray-200 rounded-lg overflow-x-auto">
-        <table class="w-full text-left text-sm">
+        <table class="w-full text-left text-xs">
             <thead>
-                <tr class="border-b border-gray-200 text-gray-500 whitespace-nowrap">
-                    <th class="py-2 pl-4 pr-4 font-medium"></th>
-                    <th class="py-2 pr-4 font-medium">ID</th>
-                    <th class="py-2 pr-4 font-medium">Observed on</th>
-                    <th class="py-2 pr-4 font-medium w-full">Summary</th>
-                    <th class="py-2 pr-4 font-medium">Timeframe</th>
+                <tr class="border-b border-gray-200 text-gray-500 bg-gray-50 whitespace-nowrap">
+                    <th class="py-2 pl-4 pr-4 font-semibold text-xs text-gray-700"></th>
+                    <th class="py-2 pr-4 font-semibold text-xs text-gray-700 w-full">Incident</th>
+                    <th class="py-2 pr-4 font-semibold text-xs text-gray-700">Observed on</th>
+                    <th class="py-2 pr-4 font-semibold text-xs text-gray-700">Timeframe</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody class="divide-y divide-gray-100">
                 {#each rows as incident}
                     {@const entity = incident.entity}
                     {@const isOpen = incident.closedAt == null}
-                    <tr class="border-b border-gray-200 hover:bg-gray-50 align-baseline">
+                    <tr class="hover:bg-gray-50 align-baseline">
                         <td class="py-2 pl-4 pr-4">
                             <span
                                 class="inline-block w-2 h-2 rounded-full {isOpen
@@ -119,16 +117,16 @@ function timeframe(openedAt: string, closedAt: string | null | undefined): strin
                                 aria-label={isOpen ? "Open" : "Closed"}
                             ></span>
                         </td>
-                        <td class="py-2 pr-4 font-mono text-xs whitespace-nowrap">
+                        <td class="py-2 pr-4 w-full">
                             <a
                                 href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                                class="text-gray-900 hover:text-gray-600"
+                                class="group flex items-baseline gap-3"
                                 title={incident.id}
                             >
-                                {incident.id.slice(-8)}
-                                <ArrowUpRight
-                                    class="w-3.5 h-3.5 inline-block align-text-bottom -ml-0.5"
-                                />
+                                <span class="font-mono text-gray-500 shrink-0 group-hover:text-gray-700">{incident.id.slice(-8)}</span>
+                                <span class="text-gray-800 group-hover:text-blue-600 break-words line-clamp-3 whitespace-pre-line min-w-0">
+                                    {incident.summary ?? ""}
+                                </span>
                             </a>
                         </td>
                         <td class="py-2 pr-4 max-w-[40ch]">
@@ -143,15 +141,6 @@ function timeframe(openedAt: string, closedAt: string | null | undefined): strin
                             {:else}
                                 <span class="text-gray-500 font-mono text-xs">(destroyed)</span>
                             {/if}
-                        </td>
-                        <td class="py-2 pr-4 w-full">
-                            <a
-                                href={envIncidentHref(orgName, repoName, envName, incident.id)}
-                                class="text-gray-900 hover:text-gray-600 break-words line-clamp-3 whitespace-pre-line"
-                                title={incident.summary ?? ""}
-                            >
-                                {incident.summary ?? ""}
-                            </a>
                         </td>
                         <td
                             class="py-2 pr-4 whitespace-nowrap tabular-nums {isOpen
