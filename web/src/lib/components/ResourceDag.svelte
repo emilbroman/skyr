@@ -308,25 +308,17 @@ function edgePath(edge: DagEdge): string {
     // Single segment: one cubic bezier
     if (!hasWaypoints) {
         const [p0, p1] = points;
-        const dx = Math.abs(p1.x - p0.x) * 0.4;
+        const dx = Math.abs(p1.x - p0.x) * 0.5;
         return `M ${p0.x} ${p0.y} C ${p0.x + dx} ${p0.y}, ${p1.x - dx} ${p1.y}, ${p1.x} ${p1.y}`;
     }
 
-    // Multiple segments: use tight control points so the edge converges
-    // to each waypoint's Y quickly, staying clear of intermediate nodes.
+    // Multiple segments: same sharp-S shape per segment as single-segment edges.
     let d = `M ${points[0].x} ${points[0].y}`;
     for (let i = 0; i < points.length - 1; i++) {
         const p0 = points[i];
         const p1 = points[i + 1];
-        const segDx = Math.abs(p1.x - p0.x);
-        // First segment: leave source briefly then snap to waypoint Y
-        // Last segment: arrive at target Y early then coast in
-        // Middle segments: stay at waypoint Y throughout
-        const isFirst = i === 0;
-        const isLast = i === points.length - 2;
-        const outDx = segDx * (isFirst ? 0.15 : 0.4);
-        const inDx = segDx * (isLast ? 0.15 : 0.4);
-        d += ` C ${p0.x + outDx} ${p0.y}, ${p1.x - inDx} ${p1.y}, ${p1.x} ${p1.y}`;
+        const segDx = Math.abs(p1.x - p0.x) * 0.5;
+        d += ` C ${p0.x + segDx} ${p0.y}, ${p1.x - segDx} ${p1.y}, ${p1.x} ${p1.y}`;
     }
     return d;
 }
@@ -453,32 +445,15 @@ function isEdgeHighlighted(edge: DagEdge): boolean {
           viewBox="0 0 8 8"
           refX="8"
           refY="4"
-          markerWidth="8"
-          markerHeight="8"
+          markerWidth="12"
+          markerHeight="12"
+          markerUnits="userSpaceOnUse"
           orient="auto"
         >
           <path
             d="M 0 1 L 7 4 L 0 7"
             fill="none"
-            stroke="#9ca3af"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </marker>
-        <marker
-          id="arrow-hl"
-          viewBox="0 0 8 8"
-          refX="8"
-          refY="4"
-          markerWidth="8"
-          markerHeight="8"
-          orient="auto"
-        >
-          <path
-            d="M 0 1 L 7 4 L 0 7"
-            fill="none"
-            stroke="#3b82f6"
+            stroke="context-stroke"
             stroke-width="1.5"
             stroke-linecap="round"
             stroke-linejoin="round"
@@ -494,7 +469,8 @@ function isEdgeHighlighted(edge: DagEdge): boolean {
             stroke={isEdgeHighlighted(edge) ? "#3b82f6" : "#d1d5db"}
             stroke-width={isEdgeHighlighted(edge) ? 2 : 1.5}
             opacity={hoveredNode && !isEdgeHighlighted(edge) ? 0.15 : 1}
-            marker-end="url(#{isEdgeHighlighted(edge) ? 'arrow-hl' : 'arrow'})"
+            style="transition: stroke 150ms ease, stroke-width 150ms ease, opacity 150ms ease;"
+            marker-end="url(#arrow)"
           />
         {/each}
 
