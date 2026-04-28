@@ -34,7 +34,7 @@ web/
 ├── svelte.config.js          # SvelteKit config (static adapter)
 ├── codegen.ts                # GraphQL codegen config
 ├── tsconfig.json
-├── static/                   # Static assets (favicon)
+├── static/                   # Static assets
 └── src/
     ├── app.html              # HTML shell
     ├── app.css               # Tailwind CSS import
