@@ -478,7 +478,7 @@ function isEdgeHighlighted(edge: DagEdge): boolean {
           <path
             d="M 0 1 L 7 4 L 0 7"
             fill="none"
-            stroke="#ea580c"
+            stroke="#3b82f6"
             stroke-width="1.5"
             stroke-linecap="round"
             stroke-linejoin="round"
