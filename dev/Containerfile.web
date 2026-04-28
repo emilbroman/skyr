@@ -18,6 +18,7 @@ COPY crates/plugin_std_artifact/Cargo.toml crates/plugin_std_artifact/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 COPY crates/plugin_std_crypto/Cargo.toml crates/plugin_std_crypto/Cargo.toml
 COPY crates/plugin_std_dns/Cargo.toml crates/plugin_std_dns/Cargo.toml
+COPY crates/plugin_std_http/Cargo.toml crates/plugin_std_http/Cargo.toml
 COPY crates/plugin_std_random/Cargo.toml crates/plugin_std_random/Cargo.toml
 COPY crates/plugin_std_time/Cargo.toml crates/plugin_std_time/Cargo.toml
 COPY crates/rdb/Cargo.toml crates/rdb/Cargo.toml
@@ -42,6 +43,7 @@ RUN set -eu; \
       crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src \
       crates/plugin_std_artifact/src crates/plugin_std_container/src \
       crates/plugin_std_crypto/src crates/plugin_std_dns/src \
+      crates/plugin_std_http/src \
       crates/plugin_std_random/src crates/plugin_std_time/src \
       crates/rdb/src crates/re/src crates/rq/src crates/rtp/src crates/rte/src crates/rtq/src crates/sdb/src \
       crates/cli/src crates/sclc/src crates/sclc-docgen/src crates/sclc-wasm/src \
@@ -60,6 +62,7 @@ RUN set -eu; \
     printf 'fn main() {}\n' > crates/plugin_std_container/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_crypto/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_dns/src/main.rs; \
+    printf 'fn main() {}\n' > crates/plugin_std_http/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_random/src/main.rs; \
     printf 'fn main() {}\n' > crates/plugin_std_time/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/rdb/src/lib.rs; \
