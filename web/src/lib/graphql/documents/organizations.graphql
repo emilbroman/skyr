@@ -23,6 +23,21 @@ query OrganizationDetail($org: String!) {
       environments {
         name
         qid
+        currentDeployment: deployment {
+          id
+          state
+          status {
+            health
+            openIncidentCount
+          }
+          openIncidents {
+            id
+            openedAt
+            lastReportAt
+            reportCount
+            summary
+          }
+        }
         deployments {
           id
           shortId

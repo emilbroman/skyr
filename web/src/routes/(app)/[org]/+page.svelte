@@ -1,11 +1,14 @@
 <script lang="ts">
+import { onDestroy } from "svelte";
 import { page } from "$app/stores";
 import { OrganizationDetailDocument, AddOrganizationMemberDocument } from "$lib/graphql/generated";
 import { graphqlQuery, graphqlMutation } from "$lib/graphql/query";
 import Spinner from "$lib/components/Spinner.svelte";
-import { Plus, GitBranch } from "lucide-svelte";
+import { Plus, GitBranch, AlertCircle } from "lucide-svelte";
 import Avatar from "$lib/components/Avatar.svelte";
-import { newRepoHref, repoHref, newOrgHref, orgHref } from "$lib/paths";
+import HealthBadge from "$lib/components/HealthBadge.svelte";
+import { newRepoHref, repoHref, newOrgHref, orgHref, envIncidentHref, envHref } from "$lib/paths";
+import { formatCompactTimestamp, formatDuration } from "$lib/timestamps";
 import { user } from "$lib/stores/auth";
 
 let orgName = $derived($page.params.org ?? "");
@@ -38,6 +41,12 @@ function submitAddMember() {
     addMemberError = null;
     addMember.mutate({ organization: orgName, username });
 }
+
+let now = $state(Date.now());
+const tick = setInterval(() => {
+    now = Date.now();
+}, 1000);
+onDestroy(() => clearInterval(tick));
 </script>
 
 <svelte:head>
@@ -57,6 +66,54 @@ function submitAddMember() {
     </div>
   {:else}
     {@const org = orgDetail.data.organization}
+    {@const alerts = org.repositories.flatMap((repo) =>
+      repo.environments.flatMap((env) =>
+        (env.currentDeployment?.openIncidents ?? []).map((incident) => ({
+          repo: repo.name,
+          env: env.name,
+          deploymentId: env.currentDeployment?.id ?? "",
+          incident,
+        })),
+      ),
+    )}
+
+    {#if alerts.length > 0}
+      <div class="mb-6 space-y-2">
+        {#each alerts as alert (alert.incident.id)}
+          <div class="p-3 bg-red-50 border border-red-200 rounded">
+            <div class="flex items-start gap-2">
+              <AlertCircle class="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+              <div class="flex-1 min-w-0">
+                <div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-xs">
+                  <span class="font-semibold text-red-900">
+                    <a href={repoHref(orgName, alert.repo)} class="hover:underline">{alert.repo}</a>
+                    <span class="text-red-400">/</span>
+                    <a href={envHref(orgName, alert.repo, alert.env)} class="hover:underline">{alert.env}</a>
+                  </span>
+                  <a
+                    href={envIncidentHref(orgName, alert.repo, alert.env, alert.incident.id)}
+                    class="font-mono text-red-500 hover:text-red-700 hover:underline"
+                  >{alert.incident.id.slice(-8)}</a>
+                  <span class="ml-auto tabular-nums text-red-600 font-medium">
+                    {formatCompactTimestamp(alert.incident.openedAt)}
+                    <span class="text-red-400">·</span>
+                    {formatDuration(now - new Date(alert.incident.openedAt).getTime())}
+                  </span>
+                </div>
+                {#if alert.incident.summary}
+                  <a
+                    href={envIncidentHref(orgName, alert.repo, alert.env, alert.incident.id)}
+                    class="block mt-1 text-xs text-red-800 hover:text-red-900 break-words line-clamp-2 whitespace-pre-line"
+                  >
+                    {alert.incident.summary}
+                  </a>
+                {/if}
+              </div>
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
 
     <div class="grid grid-cols-1 md:grid-cols-2 gap-8 items-start">
     <div>
@@ -100,8 +157,18 @@ function submitAddMember() {
                           : env.name}
                         <span
                           title={env.name}
-                          class="-my-0.5 px-1.5 py-0.5 text-xs bg-gray-100 rounded text-gray-600 whitespace-nowrap"
-                        >{display}</span>
+                          class="-my-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 text-xs bg-gray-100 rounded text-gray-600 whitespace-nowrap"
+                        >
+                          {#if env.currentDeployment?.status}
+                            <HealthBadge
+                              health={env.currentDeployment.status.health}
+                              openIncidentCount={env.currentDeployment.status.openIncidentCount}
+                              size="small"
+                              showLabel={false}
+                            />
+                          {/if}
+                          {display}
+                        </span>
                       {/each}
                     {/if}
                   </div>
