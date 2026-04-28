@@ -17,9 +17,15 @@ type Props = {
     key?: string;
     depth?: number;
     defaultExpanded?: number;
+    pathLinkBase?: string;
 };
 
-let { value, key, depth = 0, defaultExpanded = 2 }: Props = $props();
+let { value, key, depth = 0, defaultExpanded = 2, pathLinkBase }: Props = $props();
+
+function joinPathLink(base: string, path: string): string {
+    const trimmedBase = base.endsWith("/") ? base.slice(0, -1) : base;
+    return trimmedBase + path;
+}
 
 let expandedOverride: boolean | null = $state(null);
 let isExpanded = $derived(expandedOverride ?? depth < defaultExpanded);
@@ -223,7 +229,7 @@ let resolved = $derived(resolve(value));
         <div class="ml-4 border-l border-gray-200 pl-3">
           {#each entries as [k, v]}
             <div class="leading-6">
-              <JsonTree value={v} key={k} depth={depth + 1} {defaultExpanded} />
+              <JsonTree value={v} key={k} depth={depth + 1} {defaultExpanded} {pathLinkBase} />
             </div>
           {/each}
         </div>
@@ -265,7 +271,7 @@ let resolved = $derived(resolve(value));
         <div class="ml-4 border-l border-gray-200 pl-3">
           {#each items as item}
             <div class="leading-6">
-              <JsonTree value={item} depth={depth + 1} {defaultExpanded} />
+              <JsonTree value={item} depth={depth + 1} {defaultExpanded} {pathLinkBase} />
             </div>
           {/each}
         </div>
@@ -294,7 +300,14 @@ let resolved = $derived(resolve(value));
     {:else if resolved.kind === "null"}
       <span class="text-gray-400 italic">{resolved.display}</span>
     {:else if resolved.kind === "path"}
-      <span class="text-green-700">{resolved.path}</span>{" "}<span class="text-gray-400">{resolved.hash}</span>
+      {#if pathLinkBase}
+        <a
+          href={joinPathLink(pathLinkBase, resolved.path)}
+          class="text-blue-600 hover:text-blue-500 transition-colors"
+        >{resolved.path}</a>{" "}<span class="text-gray-400">{resolved.hash}</span>
+      {:else}
+        <span class="text-green-700">{resolved.path}</span>{" "}<span class="text-gray-400">{resolved.hash}</span>
+      {/if}
     {:else if resolved.kind === "special"}
       <span class="text-blue-600 italic">{resolved.display}</span>
     {/if}
