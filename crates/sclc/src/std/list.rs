@@ -209,7 +209,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         Ok(TrackedValue::new(Value::List(result)).with_dependencies(deps))
     });
 
-    eval.add_extern_fn("Std/List.unique", |args, _ctx| {
+    eval.add_extern_fn("Std/List.distinct", |args, _ctx| {
         let (mut values, deps) = match collect_args(args, 1)? {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),

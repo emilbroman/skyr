@@ -48,7 +48,7 @@ export let slice = extern "Std/List.slice": fn<T>([T], Int, Int?) [T]
 export let take = fn<T>(list: [T], n: Int) slice<T>(list, 0, n)
 
 /// All but the first `n` elements. Raises an error if `n` is negative.
-export let drop = fn<T>(list: [T], n: Int) slice<T>(list, n, nil)
+export let skip = fn<T>(list: [T], n: Int) slice<T>(list, n, nil)
 
 /// Whether `needle` occurs anywhere in the list. Uses value equality.
 export let contains = extern "Std/List.contains": fn<T>([T], T) Bool
@@ -77,4 +77,4 @@ export let prepend = fn<T>(list: [T], newItem: T)
 export let zip = extern "Std/List.zip": fn<A, B>([A], [B]) [{a: A, b: B}]
 
 /// Remove duplicate elements, preserving the order of first occurrence. Uses value equality.
-export let unique = extern "Std/List.unique": fn<T>([T]) [T]
+export let distinct = extern "Std/List.distinct": fn<T>([T]) [T]

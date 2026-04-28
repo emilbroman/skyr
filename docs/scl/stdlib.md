@@ -520,13 +520,13 @@ List.slice([1, 2, 3], 2, nil)        // [3]
 List.slice([1, 2, 3], 0, 100)        // [1, 2, 3]
 ```
 
-### List.take / List.drop
+### List.take / List.skip
 
-`take` returns the first `n` elements (or fewer if the list is shorter). `drop` skips the first `n` elements. Both raise an error if `n` is negative.
+`take` returns the first `n` elements (or fewer if the list is shorter). `skip` returns all but the first `n` elements. Both raise an error if `n` is negative.
 
 ```scl
 List.take([1, 2, 3, 4, 5], 3)  // [1, 2, 3]
-List.drop([1, 2, 3, 4, 5], 2)  // [3, 4, 5]
+List.skip([1, 2, 3, 4, 5], 2)  // [3, 4, 5]
 ```
 
 ### List.contains
@@ -574,12 +574,12 @@ Pair up two lists element-wise into records `{a, b}`. The result length is the s
 List.zip([1, 2], ["x", "y"])  // [{a: 1, b: "x"}, {a: 2, b: "y"}]
 ```
 
-### List.unique
+### List.distinct
 
 Remove duplicate elements, preserving the order of first occurrence. Uses value equality.
 
 ```scl
-List.unique([1, 2, 1, 3, 2, 4])  // [1, 2, 3, 4]
+List.distinct([1, 2, 1, 3, 2, 4])  // [1, 2, 3, 4]
 ```
 
 ## Std/Encoding
