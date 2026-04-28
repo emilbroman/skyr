@@ -1,0 +1,48 @@
+/// Number of entries in the dict.
+export let size = extern "Std/Dict.size": fn<K, V>(#{K: V}) Int
+
+/// Whether the dict has no entries (`size == 0`).
+export let isEmpty = fn<K, V>(d: #{K: V}) size<K, V>(d) == 0
+
+/// All keys in insertion order.
+export let keys = extern "Std/Dict.keys": fn<K, V>(#{K: V}) [K]
+
+/// All values in insertion order.
+export let values = extern "Std/Dict.values": fn<K, V>(#{K: V}) [V]
+
+/// All entries as `{key, value}` records, in insertion order.
+export let entries = extern "Std/Dict.entries": fn<K, V>(#{K: V}) [{key: K, value: V}]
+
+/// Whether the dict contains an entry for `key`. Uses value equality.
+export let has = extern "Std/Dict.has": fn<K, V>(#{K: V}, K) Bool
+
+/// Value for `key`, or `nil` if absent.
+export let get = extern "Std/Dict.get": fn<K, V>(#{K: V}, K) V?
+
+/// Return a new dict with `key` mapped to `value`.
+///
+/// If `key` already exists, the existing entry is updated in place
+/// (preserving its position); otherwise the entry is appended.
+export let insert = extern "Std/Dict.insert": fn<K, V>(#{K: V}, K, V) #{K: V}
+
+/// Return a new dict without `key`. No-op if `key` is absent.
+export let remove = extern "Std/Dict.remove": fn<K, V>(#{K: V}, K) #{K: V}
+
+/// Merge two dicts, with right-side entries winning on key conflicts.
+///
+/// Useful for composing layered configuration like pod-level and
+/// container-level environment variables.
+export let merge = extern "Std/Dict.merge": fn<K, V>(#{K: V}, #{K: V}) #{K: V}
+
+/// Build a dict from a list of `{key, value}` records. On duplicate keys,
+/// the last occurrence wins.
+export let fromList = extern "Std/Dict.fromList": fn<K, V>([{key: K, value: V}]) #{K: V}
+
+/// Apply a function to each value, returning a new dict with the same
+/// keys and transformed values.
+export let map = fn<K, V, U>(d: #{K: V}, transform: fn(K, V) U)
+	fromList<K, U>([for (e in entries<K, V>(d)) {key: e.key, value: transform(e.key, e.value)}])
+
+/// Keep only entries that satisfy a predicate.
+export let filter = fn<K, V>(d: #{K: V}, predicate: fn(K, V) Bool)
+	fromList<K, V>([for (e in entries<K, V>(d)) if (predicate(e.key, e.value)) e])

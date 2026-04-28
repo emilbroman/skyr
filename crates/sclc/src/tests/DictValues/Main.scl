@@ -1,0 +1,2 @@
+import Std/Dict
+export let r = Dict.values(#{"a": 1, "b": 2})
