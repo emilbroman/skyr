@@ -861,6 +861,36 @@ impl RepositoryClient {
             .boxed())
     }
 
+    /// Returns the current deployment for the given environment, if any.
+    ///
+    /// "Current" is defined by supersession: among the non-`Down`
+    /// deployments in the environment, the one that has not been
+    /// superseded by another deployment. There is at most one such
+    /// deployment per environment, since [`DeploymentClient::make_desired`]
+    /// records a supersession row for the previously-current deployment
+    /// before promoting the new one.
+    pub async fn current_deployment(
+        &self,
+        environment: &EnvironmentId,
+    ) -> Result<Option<Deployment>, DeploymentQueryError> {
+        let mut stream = self.active_deployments().await?;
+        let mut candidates: Vec<Deployment> = Vec::new();
+        while let Some(dep) = stream.next().await {
+            let dep = dep?;
+            if dep.environment == *environment {
+                candidates.push(dep);
+            }
+        }
+
+        for dep in candidates {
+            let dc = self.deployment(dep.environment.clone(), dep.deployment.clone());
+            if dc.get_superseding().await?.is_none() {
+                return Ok(Some(dep));
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn deployments(
         &self,
     ) -> Result<impl Stream<Item = Result<Deployment, DeploymentQueryError>>, DeploymentQueryError>
