@@ -383,6 +383,179 @@ Str.padStart("12", 5, nil)   // "   12"
 Str.padStart("x", 5, "ab")   // "ababx"
 ```
 
+## Std/List
+
+List manipulation functions covering creation, transformation, filtering, searching, and structural operations.
+
+```scl
+import Std/List
+```
+
+### List.range
+
+Generate a list of integers from `0` up to (but not including) `n`. Returns `[]` when `n` is zero. Raises an error if `n` is negative.
+
+```scl
+List.range(5)  // [0, 1, 2, 3, 4]
+List.range(0)  // []
+```
+
+### List.map
+
+Apply a function to each element, returning a new list of transformed values.
+
+```scl
+List.map([1, 2, 3], fn(x: Int) x * 2)  // [2, 4, 6]
+```
+
+### List.append
+
+Add an element to the end of a list.
+
+```scl
+List.append([1, 2], 3)  // [1, 2, 3]
+```
+
+### List.prepend
+
+Add an element to the front of a list.
+
+```scl
+List.prepend([2, 3], 1)  // [1, 2, 3]
+```
+
+### List.concat
+
+Flatten a list of lists into a single list.
+
+```scl
+List.concat([[1, 2], [3], [4, 5]])  // [1, 2, 3, 4, 5]
+```
+
+### List.filter
+
+Keep only elements that satisfy a predicate.
+
+```scl
+List.filter([1, 2, 3, 4], fn(x: Int) x > 2)  // [3, 4]
+```
+
+### List.flatMap
+
+Map each element to a list, then flatten the results into a single list.
+
+```scl
+List.flatMap([1, 2, 3], fn(x: Int) [x, x * 10])  // [1, 10, 2, 20, 3, 30]
+```
+
+### List.length
+
+Returns the number of elements in the list.
+
+```scl
+List.length([1, 2, 3])  // 3
+List.length<Int>([])    // 0
+```
+
+### List.isEmpty
+
+Returns `true` if the list has zero elements.
+
+```scl
+List.isEmpty<Int>([])  // true
+List.isEmpty([1, 2])   // false
+```
+
+### List.reverse
+
+Return a new list with the elements in reverse order.
+
+```scl
+List.reverse([1, 2, 3])  // [3, 2, 1]
+```
+
+### List.first / List.last
+
+Return the first or last element, or `nil` if the list is empty.
+
+```scl
+List.first([1, 2, 3])    // 1
+List.last([1, 2, 3])     // 3
+List.first<Int>([])      // nil
+```
+
+### List.slice
+
+Return a sublist by index. Pass `nil` for `end` to slice to the end. Indices are clamped to `[0, length]`; if `end <= start`, returns `[]`. Raises an error if either index is negative.
+
+```scl
+List.slice([1, 2, 3, 4, 5], 1, 4)   // [2, 3, 4]
+List.slice([1, 2, 3], 2, nil)        // [3]
+List.slice([1, 2, 3], 0, 100)        // [1, 2, 3]
+```
+
+### List.take / List.drop
+
+`take` returns the first `n` elements (or fewer if the list is shorter). `drop` skips the first `n` elements. Both raise an error if `n` is negative.
+
+```scl
+List.take([1, 2, 3, 4, 5], 3)  // [1, 2, 3]
+List.drop([1, 2, 3, 4, 5], 2)  // [3, 4, 5]
+```
+
+### List.contains
+
+Returns `true` if the needle occurs anywhere in the list. Uses value equality.
+
+```scl
+List.contains([1, 2, 3], 2)  // true
+List.contains([1, 2, 3], 5)  // false
+```
+
+### List.indexOf
+
+Returns the index of the first occurrence of the needle, or `nil` if not found. Uses value equality.
+
+```scl
+List.indexOf([10, 20, 30], 20)     // 1
+List.indexOf<Int>([10, 20, 30], 99)  // nil
+```
+
+### List.any / List.all
+
+`any` returns `true` if at least one element satisfies the predicate. `all` returns `true` if every element does (vacuously `true` for an empty list).
+
+```scl
+List.any([1, 2, 3], fn(x: Int) x > 2)    // true
+List.all([2, 4, 6], fn(x: Int) x > 1)    // true
+List.all<Int>([], fn(x: Int) false)      // true
+```
+
+### List.find
+
+Return the first element matching the predicate, or `nil` if none match.
+
+```scl
+List.find([1, 2, 3, 4], fn(x: Int) x > 2)   // 3
+List.find<Int>([1, 2, 3], fn(x: Int) x > 10)  // nil
+```
+
+### List.zip
+
+Pair up two lists element-wise into records `{a, b}`. The result length is the shorter of the two inputs.
+
+```scl
+List.zip([1, 2], ["x", "y"])  // [{a: 1, b: "x"}, {a: 2, b: "y"}]
+```
+
+### List.unique
+
+Remove duplicate elements, preserving the order of first occurrence. Uses value equality.
+
+```scl
+List.unique([1, 2, 1, 3, 2, 4])  // [1, 2, 3, 4]
+```
+
 ## Std/Encoding
 
 Encoding and decoding functions for JSON, YAML, TOML, base64, hex, and URL formats. All functions treating binary data as UTF-8 strings; decoding functions raise a runtime error when the decoded bytes are not valid UTF-8.

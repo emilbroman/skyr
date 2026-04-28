@@ -1,0 +1,3 @@
+import Std/List
+export let a = List.find([1, 2, 3, 4], fn(x: Int) x > 2)
+export let b = List.find<Int>([1, 2, 3], fn(x: Int) x > 10)
