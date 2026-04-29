@@ -25,10 +25,6 @@ pub(crate) struct EvalOutcome {
     pub(crate) fully_explored: bool,
     /// True when at least one effect was emitted (Create, Update, Adopt, etc).
     pub(crate) had_effect: bool,
-    /// Whether the deployment's manifest declares any volatile (branch or
-    /// tag) cross-repo pins. Preserved for observability.
-    #[allow(dead_code)]
-    pub(crate) has_volatile_cross_repo_pins: bool,
     /// `Some(message)` when compilation produced one or more `Error`-severity
     /// diagnostics. The message is the full DiagList rendered as one
     /// `LEVEL: <module>:<span>: <diag>` line per diagnostic, joined by `\n`,
@@ -96,9 +92,6 @@ impl Worker {
                     touched_resource_ids: HashSet::new(),
                     fully_explored: false,
                     had_effect: false,
-                    has_volatile_cross_repo_pins: cross_repo_finder
-                        .as_ref()
-                        .is_some_and(|f| f.has_volatile_pins()),
                     compile_error_message: Some(compile_error_message),
                 });
             }
@@ -194,9 +187,6 @@ impl Worker {
         let env_qid = self.environment_qid.clone();
         let rtq_publisher = self.rtq_publisher.clone();
         let local_deployment_qid_for_drain = local_deployment_qid.clone();
-        let has_volatile_cross_repo_pins = cross_repo_finder
-            .as_ref()
-            .is_some_and(|f| f.has_volatile_pins());
         let effects_task = task::spawn(
             {
                 async move {
@@ -423,7 +413,6 @@ impl Worker {
                         touched_resource_ids,
                         fully_explored: !had_mutation,
                         had_effect,
-                        has_volatile_cross_repo_pins,
                         compile_error_message: None,
                     }
                 }
