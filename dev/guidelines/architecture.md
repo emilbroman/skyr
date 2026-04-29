@@ -15,12 +15,6 @@ To keep a design of this shape legible, think of every component in terms of fou
 
 Example: the DE (deployment engine) is responsible for compiling and executing SCL code. It is *not* responsible for state reconciliation. That responsibility is handed off to the RTE via a queue.
 
-## Sharding
-
-Components are sharded on the smallest fundamental unit of namespace in Skyr: **org/repo/env**. This lets every component scale independently — 3 DE replicas with 10 RTE replicas is just as coherent as 250 DE replicas with 50 RTE replicas.
-
-When introducing a new scaled-out component, sharding on org/repo/env should be the default.
-
 ## Coherence Through Redundancy and Idempotency
 
 In the presence of instability across both sides of a handoff, coherence is maintained by two principles working together:
@@ -75,7 +69,6 @@ Before introducing a new service, queue, or protocol, work through:
 1. What is the **contract** — what does it accept and produce?
 2. What are its **responsibilities**, and what is explicitly *outside* them?
 3. What are the **synchronization points** with neighboring components?
-4. How does it **shard** — does org/repo/env apply, or does it need a different axis?
-5. For each handoff: is this a write (push) or a read (pull)?
-6. For each push: is the right transport a queue or gRPC, by the rule of thumb above?
-7. For each handoff: what happens on crash? What pushes the retry?
+4. For each handoff: is this a write (push) or a read (pull)?
+5. For each push: is the right transport a queue or gRPC, by the rule of thumb above?
+6. For each handoff: what happens on crash? What pushes the retry?
