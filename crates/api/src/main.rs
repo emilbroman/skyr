@@ -927,7 +927,7 @@ struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:9000")]
     adb_endpoint_url: String,
     #[arg(long)]
-    adb_presign_endpoint_url: Option<String>,
+    adb_external_url: Option<String>,
     #[arg(long, default_value = "skyr-artifacts")]
     adb_bucket: String,
     #[arg(long, env = "SKYR_ADB_ACCESS_KEY_ID")]
@@ -991,8 +991,8 @@ async fn main() -> anyhow::Result<()> {
         .access_key_id(cli.adb_access_key_id)
         .secret_access_key(cli.adb_secret_access_key)
         .create_bucket_if_missing(true);
-    if let Some(adb_presign_endpoint_url) = cli.adb_presign_endpoint_url {
-        adb_builder = adb_builder.presign_endpoint_url(adb_presign_endpoint_url);
+    if let Some(adb_external_url) = cli.adb_external_url {
+        adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb_client = adb_builder.build().await?;
     let ldb_brokers = format!("{}:9092", cli.ldb_hostname);

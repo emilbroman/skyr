@@ -56,7 +56,7 @@ pub struct Client {
     s3: S3Client,
     presign_s3: S3Client,
     bucket: String,
-    private_endpoint_url: Option<String>,
+    external_url: Option<String>,
     force_path_style: bool,
 }
 
@@ -64,7 +64,7 @@ pub struct Client {
 pub struct ClientBuilder {
     bucket: Option<String>,
     endpoint_url: Option<String>,
-    presign_endpoint_url: Option<String>,
+    external_url: Option<String>,
     region: Option<String>,
     access_key_id: Option<String>,
     secret_access_key: Option<String>,
@@ -91,8 +91,8 @@ impl ClientBuilder {
         self
     }
 
-    pub fn presign_endpoint_url(mut self, endpoint_url: impl Into<String>) -> Self {
-        self.presign_endpoint_url = Some(endpoint_url.into());
+    pub fn external_url(mut self, external_url: impl Into<String>) -> Self {
+        self.external_url = Some(external_url.into());
         self
     }
 
@@ -144,21 +144,19 @@ impl ClientBuilder {
             }
         };
 
-        let presign_endpoint_url = self
-            .presign_endpoint_url
-            .or_else(|| self.endpoint_url.clone());
+        let external_url = self.external_url.or_else(|| self.endpoint_url.clone());
 
         let s3 = build_s3_client(
             &region,
             credentials.clone(),
-            self.endpoint_url.clone(),
+            self.endpoint_url,
             self.force_path_style,
         );
 
         let presign_s3 = build_s3_client(
             &region,
             credentials,
-            presign_endpoint_url,
+            external_url.clone(),
             self.force_path_style,
         );
 
@@ -166,7 +164,7 @@ impl ClientBuilder {
             s3,
             presign_s3,
             bucket,
-            private_endpoint_url: self.endpoint_url,
+            external_url,
             force_path_style: self.force_path_style,
         };
 
@@ -469,13 +467,13 @@ impl Client {
         Ok(request.uri().to_string())
     }
 
-    pub fn private_read_url(
+    pub fn read_url(
         &self,
         namespace: impl AsRef<str>,
         name: impl AsRef<str>,
     ) -> Result<String, UrlError> {
         let endpoint_url = self
-            .private_endpoint_url
+            .external_url
             .as_ref()
             .ok_or(UrlError::MissingEndpoint)?;
         let key = key(namespace.as_ref(), name.as_ref());

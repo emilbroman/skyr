@@ -19,7 +19,7 @@ struct Args {
     adb_endpoint_url: String,
 
     #[arg(long)]
-    adb_presign_endpoint_url: Option<String>,
+    adb_external_url: Option<String>,
 
     #[arg(long, default_value = "skyr-artifacts")]
     adb_bucket: String,
@@ -160,12 +160,10 @@ impl ArtifactPlugin {
             "artifact resource materialized"
         );
 
-        let private_url = self
-            .adb
-            .private_read_url(header.namespace(), header.name())?;
+        let url = self.adb.read_url(header.namespace(), header.name())?;
 
         let mut outputs = sclc::Record::default();
-        outputs.insert(String::from("url"), sclc::Value::Str(private_url));
+        outputs.insert(String::from("url"), sclc::Value::Str(url));
 
         let mut markers = std::collections::BTreeSet::new();
         markers.insert(sclc::Marker::Sticky);
@@ -268,8 +266,8 @@ async fn main() -> anyhow::Result<()> {
         .access_key_id(args.adb_access_key_id)
         .secret_access_key(args.adb_secret_access_key)
         .create_bucket_if_missing(true);
-    if let Some(adb_presign_endpoint_url) = args.adb_presign_endpoint_url {
-        adb_builder = adb_builder.presign_endpoint_url(adb_presign_endpoint_url);
+    if let Some(adb_external_url) = args.adb_external_url {
+        adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb = adb_builder.build().await?;
 

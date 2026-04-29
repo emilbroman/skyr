@@ -19,7 +19,7 @@ Plugin → ADB (S3/MinIO) ← API
 | `read_header` | Read artifact metadata without the body |
 | `list` | List all artifacts in a namespace |
 | `presign_read_url` | Generate a time-limited presigned URL for external access |
-| `private_read_url` | Generate an internal URL for service-to-service access |
+| `read_url` | Generate the public (non-presigned) URL for an artifact |
 
 Writes support `if-none-match` for idempotent creates (conditional write).
 
@@ -28,8 +28,8 @@ Writes support `if-none-match` for idempotent creates (conditional write).
 Clients are created via `ClientBuilder` with the following configuration:
 
 - `bucket()` — S3 bucket name
-- `endpoint_url()` — S3 endpoint URL
-- `presign_endpoint_url()` — separate endpoint for presigned URLs (optional)
+- `endpoint_url()` — internal S3 endpoint used for read/write SDK calls
+- `external_url()` — public-facing base URL surfaced to users (used by both `presign_read_url` and `read_url`); defaults to `endpoint_url()` when unset
 - `region()`, `access_key_id()`, `secret_access_key()` — AWS credentials
 - `force_path_style()` — use path-style addressing (required for MinIO)
 - `create_bucket_if_missing()` — auto-create the bucket on startup
