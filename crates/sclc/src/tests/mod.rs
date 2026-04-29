@@ -469,6 +469,17 @@ test_case!(DictMap);
 test_case!(DictFilter);
 test_case!(DictFromList);
 
+// Std/Path
+test_case!(PathJoin);
+test_case!(PathParent);
+test_case!(PathBasename);
+test_case!(PathExtname);
+test_case!(PathStem);
+test_case!(PathSegments);
+test_case!(PathIsRoot);
+test_case!(PathToStr);
+test_case!(PathFromStr);
+
 // Std/Num
 test_case!(NumToHex);
 

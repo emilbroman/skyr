@@ -1,0 +1,1 @@
+{a: /foo/bar, b: /foo/baz, c: nil, d: nil, e: nil}

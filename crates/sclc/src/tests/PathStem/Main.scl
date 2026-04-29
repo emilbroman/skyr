@@ -1,0 +1,5 @@
+import Std/Path
+export let a = Path.stem(/foo/bar.txt)
+export let b = Path.stem(/foo/bar)
+export let c = Path.stem(/foo/.dotfile)
+export let d = Path.stem(/foo/archive.tar.gz)

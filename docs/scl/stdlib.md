@@ -704,6 +704,105 @@ Dict.filter(#{"a": 1, "b": 2, "c": 3}, fn(k: Str, v: Int) v > 1)
 // #{"b": 2, "c": 3}
 ```
 
+## Std/Path
+
+Functions for inspecting and composing repo-rooted `Path` values. Synthesized paths (results of these functions) do not carry the content hash of any underlying file.
+
+```scl
+import Std/Path
+```
+
+### Path.join
+
+Append a string segment to a path. The segment may contain `/` separators; `.` and `..` are normalized away. A leading `/` in the segment is treated as a separator (relative).
+
+```scl
+Path.join(/foo, "bar")       // /foo/bar
+Path.join(/foo/bar, "..")    // /foo
+Path.join(/foo, "bar/baz")   // /foo/bar/baz
+```
+
+### Path.parent
+
+Return the parent directory of the path, or `nil` at the root.
+
+```scl
+Path.parent(/foo/bar)  // /foo
+Path.parent(/foo)      // /
+Path.parent(/)         // nil
+```
+
+### Path.basename
+
+Return the final segment of the path. Returns `""` at the root.
+
+```scl
+Path.basename(/foo/bar.txt)  // "bar.txt"
+Path.basename(/foo)          // "foo"
+Path.basename(/)             // ""
+```
+
+### Path.extname
+
+Return the file extension including the leading dot (e.g. `".txt"`), or `nil` if none. A leading dot in a dotfile does not count as an extension.
+
+```scl
+Path.extname(/foo/bar.txt)        // ".txt"
+Path.extname(/foo/bar)            // nil
+Path.extname(/foo/.bashrc)        // nil
+Path.extname(/foo/archive.tar.gz) // ".gz"
+```
+
+### Path.stem
+
+Return the basename without its extension. For dotfiles, the whole basename is returned.
+
+```scl
+Path.stem(/foo/bar.txt)        // "bar"
+Path.stem(/foo/bar)            // "bar"
+Path.stem(/foo/.bashrc)        // ".bashrc"
+Path.stem(/foo/archive.tar.gz) // "archive.tar"
+```
+
+### Path.segments
+
+Return the path components in order. Returns `[]` for the root.
+
+```scl
+Path.segments(/foo/bar/baz)  // ["foo", "bar", "baz"]
+Path.segments(/)             // []
+```
+
+### Path.isRoot
+
+Return `true` if the path is the root `/`.
+
+```scl
+Path.isRoot(/)     // true
+Path.isRoot(/foo)  // false
+```
+
+### Path.toStr
+
+Return the canonical string form of the path (always begins with `/`).
+
+```scl
+Path.toStr(/foo/bar)  // "/foo/bar"
+Path.toStr(/)         // "/"
+```
+
+### Path.fromStr
+
+Parse a string as an absolute, repo-rooted path. Returns `nil` on invalid input. The string must start with `/`; components are normalized (`.` dropped, `..` pops a segment, empty segments from doubled slashes are dropped). A `..` that would escape the root makes the input invalid.
+
+```scl
+Path.fromStr("/foo/bar")          // /foo/bar
+Path.fromStr("/foo/./bar/../baz") // /foo/baz
+Path.fromStr("foo")               // nil
+Path.fromStr("/..")               // nil
+Path.fromStr("")                  // nil
+```
+
 ## Std/Encoding
 
 Encoding and decoding functions for JSON, YAML, TOML, base64, hex, and URL formats. All functions treating binary data as UTF-8 strings; decoding functions raise a runtime error when the decoded bytes are not valid UTF-8.
