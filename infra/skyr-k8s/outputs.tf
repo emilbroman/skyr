@@ -18,6 +18,21 @@ output "scs_service_name" {
   description = "Name of the SCS (SSH) Kubernetes Service."
 }
 
+output "minio_service_name" {
+  value       = try(kubernetes_service_v1.minio[0].metadata[0].name, null)
+  description = "Name of the MinIO Kubernetes Service, or null when minio_endpoint_url is set (MinIO not provisioned internally)."
+}
+
+output "plugin_std_container_service_name" {
+  value       = kubernetes_service_v1.plugin_std_container.metadata[0].name
+  description = "Name of the container orchestrator plugin Kubernetes Service."
+}
+
+output "plugin_std_dns_service_name" {
+  value       = kubernetes_service_v1.plugin_std_dns.metadata[0].name
+  description = "Name of the DNS plugin Kubernetes Service."
+}
+
 output "scylladb_hostname" {
   value       = local.scylladb_hostname
   description = "Effective ScyllaDB hostname (internal or external)."
