@@ -125,24 +125,23 @@ async fn main() -> anyhow::Result<()> {
                 .build_publisher()
                 .await?;
 
+            let daemon = Daemon {
+                cdb_client,
+                rdb_client,
+                rtq_publisher,
+                rq_publisher,
+                sdb_client,
+                ldb_publisher,
+                worker_index,
+                worker_count,
+            };
+
             let mut workers = BTreeMap::new();
 
             loop {
                 let next_loop = Instant::now() + Duration::from_secs(20);
 
-                if let Err(e) = process(
-                    cdb_client.clone(),
-                    rdb_client.clone(),
-                    rtq_publisher.clone(),
-                    rq_publisher.clone(),
-                    sdb_client.clone(),
-                    ldb_publisher.clone(),
-                    &mut workers,
-                    worker_index,
-                    worker_count,
-                )
-                .await
-                {
+                if let Err(e) = daemon.process(&mut workers).await {
                     tracing::error!("{e}")
                 }
 
@@ -156,121 +155,136 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn process(
-    client: cdb::Client,
+/// Static daemon configuration: the per-replica clients and worker-sharding
+/// parameters. Cloned per spawned worker; otherwise borrowed.
+struct Daemon {
+    cdb_client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
     rq_publisher: rq::Publisher,
     sdb_client: sdb::Client,
     ldb_publisher: ldb::Publisher,
-    // `Some(sender)` = worker is running. `None` = the worker's loop has
-    // exited (e.g. a no-Main.scl deployment that's already bootstrapped)
-    // and is idle; we only respawn it when a supersession appears, since
-    // that's the only external event that can require it to do more work.
-    workers: &mut BTreeMap<String, Option<oneshot::Sender<()>>>,
     worker_index: u16,
     worker_count: u16,
-) -> anyhow::Result<()> {
-    let all_deployments = client.active_deployments().await?.collect::<Vec<_>>().await;
+}
 
-    let deployments: Vec<_> = all_deployments
-        .into_iter()
-        .filter(|d| match d {
-            Ok(d) => deployment_owned_by_worker(&d.deployment, worker_index, worker_count),
-            Err(_) => true, // propagate errors
-        })
-        .collect();
+impl Daemon {
+    async fn process(
+        &self,
+        // `Some(sender)` = worker is running. `None` = the worker's loop has
+        // exited (e.g. a no-Main.scl deployment that's already bootstrapped)
+        // and is idle; we only respawn it when a supersession appears, since
+        // that's the only external event that can require it to do more work.
+        workers: &mut BTreeMap<String, Option<oneshot::Sender<()>>>,
+    ) -> anyhow::Result<()> {
+        let all_deployments = self
+            .cdb_client
+            .active_deployments()
+            .await?
+            .collect::<Vec<_>>()
+            .await;
 
-    tracing::debug!(
-        "found {} deployments for this worker (index={}, count={})",
-        deployments.len(),
-        worker_index,
-        worker_count,
-    );
+        let deployments: Vec<_> = all_deployments
+            .into_iter()
+            .filter(|d| match d {
+                Ok(d) => {
+                    deployment_owned_by_worker(&d.deployment, self.worker_index, self.worker_count)
+                }
+                Err(_) => true, // propagate errors
+            })
+            .collect();
 
-    // Flip workers whose loop has exited to idle.
-    for (id, slot) in workers.iter_mut() {
-        if let Some(sender) = slot
-            && sender.is_closed()
-        {
-            tracing::debug!(dep = %id, "worker exited; marking idle");
-            *slot = None;
-        }
-    }
+        tracing::debug!(
+            "found {} deployments for this worker (index={}, count={})",
+            deployments.len(),
+            self.worker_index,
+            self.worker_count,
+        );
 
-    let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
-    for deployment in deployments {
-        let deployment = deployment?;
-        let deployment_qid = deployment.deployment_qid().to_string();
-        untouched.remove(&deployment_qid);
-
-        let should_spawn = match workers.get(&deployment_qid) {
-            Some(Some(_)) => false,
-            Some(None) => {
-                // Idle. Respawn only if the deployment has been superseded,
-                // which is the only external trigger for further work.
-                let deployment_client = client.repo(deployment.repo.clone()).deployment(
-                    deployment.environment.clone(),
-                    deployment.deployment.clone(),
-                );
-                deployment_client.get_superseding().await?.is_some()
+        // Flip workers whose loop has exited to idle.
+        for (id, slot) in workers.iter_mut() {
+            if let Some(sender) = slot
+                && sender.is_closed()
+            {
+                tracing::debug!(dep = %id, "worker exited; marking idle");
+                *slot = None;
             }
-            None => true,
-        };
-
-        if !should_spawn {
-            continue;
         }
 
-        tracing::debug!(dep = %deployment_qid, "spawning worker");
+        let mut untouched = workers.keys().cloned().collect::<BTreeSet<_>>();
+        for deployment in deployments {
+            let deployment = deployment?;
+            let deployment_qid = deployment.deployment_qid().to_string();
+            untouched.remove(&deployment_qid);
 
-        let (tx, rx) = oneshot::channel();
-        // Resources are namespaced by environment QID.
-        let environment_qid = deployment.environment_qid().to_string();
+            let should_spawn = match workers.get(&deployment_qid) {
+                Some(Some(_)) => false,
+                Some(None) => {
+                    // Idle. Respawn only if the deployment has been superseded,
+                    // which is the only external trigger for further work.
+                    let deployment_client =
+                        self.cdb_client.repo(deployment.repo.clone()).deployment(
+                            deployment.environment.clone(),
+                            deployment.deployment.clone(),
+                        );
+                    deployment_client.get_superseding().await?.is_some()
+                }
+                None => true,
+            };
 
-        let log_publisher = match ldb_publisher.namespace(deployment_qid.clone()).await {
-            Ok(log_publisher) => log_publisher,
-            Err(error) => {
-                tracing::error!(
-                    dep = %deployment_qid,
-                    error = %error,
-                    "failed to create deployment log publisher topic",
-                );
+            if !should_spawn {
                 continue;
             }
-        };
 
-        let env_qid = deployment.environment_qid();
-        let worker = Worker {
-            client: client.repo(deployment.repo.clone()).deployment(
-                deployment.environment.clone(),
-                deployment.deployment.clone(),
-            ),
-            cdb_client: client.clone(),
-            rdb_client: rdb_client.clone(),
-            environment_qid: env_qid.clone(),
-            namespace: rdb_client.namespace(environment_qid),
-            rtq_publisher: rtq_publisher.clone(),
-            rq_publisher: rq_publisher.clone(),
-            sdb_client: sdb_client.clone(),
-            log_publisher,
-            last_failure: None,
-            cached_compile: None,
-            terminal_reported: false,
-            last_observed_state: None,
-        };
+            tracing::debug!(dep = %deployment_qid, "spawning worker");
 
-        let span = tracing::info_span!("worker", dep = %deployment_qid);
-        task::spawn(worker.run_loop(rx).instrument(span));
+            let (tx, rx) = oneshot::channel();
+            // Resources are namespaced by environment QID.
+            let environment_qid = deployment.environment_qid().to_string();
 
-        workers.insert(deployment_qid, Some(tx));
+            let log_publisher = match self.ldb_publisher.namespace(deployment_qid.clone()).await {
+                Ok(log_publisher) => log_publisher,
+                Err(error) => {
+                    tracing::error!(
+                        dep = %deployment_qid,
+                        error = %error,
+                        "failed to create deployment log publisher topic",
+                    );
+                    continue;
+                }
+            };
+
+            let env_qid = deployment.environment_qid();
+            let worker = Worker {
+                client: self.cdb_client.repo(deployment.repo.clone()).deployment(
+                    deployment.environment.clone(),
+                    deployment.deployment.clone(),
+                ),
+                cdb_client: self.cdb_client.clone(),
+                rdb_client: self.rdb_client.clone(),
+                environment_qid: env_qid.clone(),
+                namespace: self.rdb_client.namespace(environment_qid),
+                rtq_publisher: self.rtq_publisher.clone(),
+                rq_publisher: self.rq_publisher.clone(),
+                sdb_client: self.sdb_client.clone(),
+                log_publisher,
+                last_failure: None,
+                cached_compile: None,
+                terminal_reported: false,
+                last_observed_state: None,
+            };
+
+            let span = tracing::info_span!("worker", dep = %deployment_qid);
+            task::spawn(worker.run_loop(rx).instrument(span));
+
+            workers.insert(deployment_qid, Some(tx));
+        }
+
+        for id in untouched {
+            tracing::debug!(dep = %id, "no longer watching");
+            workers.remove(&id);
+        }
+
+        Ok(())
     }
-
-    for id in untouched {
-        tracing::debug!(dep = %id, "no longer watching");
-        workers.remove(&id);
-    }
-
-    Ok(())
 }
