@@ -116,7 +116,7 @@ services:
         "rabbitmq",
         "--adb-endpoint-url",
         "http://minio:9000",
-        "--adb-presign-endpoint-url",
+        "--adb-external-url",
         "http://localhost:9000",
         "--adb-bucket",
         "skyr-artifacts",

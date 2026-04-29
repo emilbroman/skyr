@@ -58,9 +58,9 @@ output "minio_endpoint" {
   description = "Effective MinIO/S3 endpoint URL (internal or external)."
 }
 
-output "minio_external_endpoint" {
-  value       = local.minio_external_endpoint
-  description = "Public-facing MinIO/S3 base URL used for ADB presigned URLs. Falls back to minio_endpoint when minio_external_endpoint_url is unset."
+output "minio_external_url" {
+  value       = local.minio_external_url
+  description = "Public-facing MinIO/S3 base URL ADB surfaces to users (presigned and non-presigned). Falls back to minio_endpoint when minio_external_url is unset."
 }
 
 output "oci_registry_url" {

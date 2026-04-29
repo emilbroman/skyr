@@ -47,7 +47,7 @@ resource "kubernetes_deployment_v1" "minio" {
           }
 
           dynamic "env" {
-            for_each = var.minio_external_endpoint_url != null ? [var.minio_external_endpoint_url] : []
+            for_each = var.minio_external_url != null ? [var.minio_external_url] : []
             content {
               name  = "MINIO_SERVER_URL"
               value = env.value
