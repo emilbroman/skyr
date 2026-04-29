@@ -52,6 +52,21 @@ variable "minio_endpoint_url" {
   default     = null
 }
 
+variable "minio_external_endpoint_url" {
+  type        = string
+  description = <<-EOT
+    Public-facing MinIO/S3 base URL used when ADB hands out presigned
+    URLs to end users (e.g. https://s3.example.com). S3 presigned URLs
+    are signed client-side by the AWS SDK against a specific endpoint,
+    so the in-cluster endpoint cannot be reused if it differs from
+    what users can reach. When null, defaults to `minio_endpoint_url`
+    (or the in-cluster service URL when MinIO is deployed internally).
+    Also exposed to MinIO via `MINIO_SERVER_URL` so the server accepts
+    requests signed for this hostname.
+  EOT
+  default     = null
+}
+
 variable "minio_bucket" {
   type        = string
   description = "S3 bucket name for artifacts."

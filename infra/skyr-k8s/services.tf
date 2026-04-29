@@ -105,6 +105,7 @@ resource "kubernetes_deployment_v1" "api" {
             "--ldb-hostname", local.redpanda_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
             "--adb-endpoint-url", local.minio_endpoint,
+            "--adb-presign-endpoint-url", local.minio_external_endpoint,
             "--adb-bucket", var.minio_bucket,
             "--adb-access-key-id", "$(MINIO_ACCESS_KEY)",
             "--adb-secret-access-key", "$(MINIO_SECRET_KEY)",
@@ -405,6 +406,7 @@ resource "kubernetes_deployment_v1" "rte" {
           args = [
             "--bind", "unix://_/var/run/plugins/artifact.sock",
             "--adb-endpoint-url", local.minio_endpoint,
+            "--adb-presign-endpoint-url", local.minio_external_endpoint,
             "--adb-bucket", var.minio_bucket,
             "--adb-access-key-id", "$(MINIO_ACCESS_KEY)",
             "--adb-secret-access-key", "$(MINIO_SECRET_KEY)",
