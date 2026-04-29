@@ -18,11 +18,11 @@ This table tracks when each component was last audited for compliance with the g
 
 | Component             | Last audit date |
 | --------------------- | --------------- |
+| de                    | 2026-04-29 @ f9fd633 |
 | adb                   |                 |
 | api                   |                 |
 | cdb                   |                 |
 | cli                   |                 |
-| de                    |                 |
 | ids                   |                 |
 | ldb                   |                 |
 | lsp                   |                 |
