@@ -1,0 +1,5 @@
+import Std/Path
+export let a = Path.extname(/foo/bar.txt)
+export let b = Path.extname(/foo/bar)
+export let c = Path.extname(/foo/.dotfile)
+export let d = Path.extname(/foo/archive.tar.gz)

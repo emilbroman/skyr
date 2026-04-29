@@ -122,6 +122,7 @@ std_modules! {
     num => "Num.scl",
     option => "Option.scl",
     package => "Package.scl",
+    path => "Path.scl",
     random => "Random.scl",
     str => "Str.scl",
     time => "Time.scl",

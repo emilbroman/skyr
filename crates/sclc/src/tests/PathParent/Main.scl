@@ -1,0 +1,4 @@
+import Std/Path
+export let a = Path.parent(/foo/bar)
+export let b = Path.parent(/foo)
+export let c = Path.parent(/)
