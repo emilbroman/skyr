@@ -7,10 +7,10 @@ name = "adb"
 version = "0.1.0"
 dependencies = [
  "aws-sdk-s3",
+ "percent-encoding",
  "thiserror 2.0.18",
  "tracing",
  "url",
- "urlencoding",
 ]
 
 [[package]]

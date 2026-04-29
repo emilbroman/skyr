@@ -13,6 +13,7 @@ use aws_sdk_s3::{
     primitives::ByteStream,
     types::BucketCannedAcl,
 };
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use thiserror::Error;
 use url::Url;
 
@@ -378,7 +379,7 @@ impl Client {
 
     pub async fn list(&self, namespace: impl AsRef<str>) -> Result<Vec<ArtifactHeader>, ListError> {
         let namespace = namespace.as_ref();
-        let prefix = format!("{}/", escaped_segment(namespace));
+        let prefix = format!("{namespace}/");
         let mut continuation_token = None;
         let mut names = Vec::new();
 
@@ -478,12 +479,14 @@ impl Client {
             .ok_or(UrlError::MissingEndpoint)?;
         let key = key(namespace.as_ref(), name.as_ref());
 
+        let encoded_key = encode_key_path(&key);
+
         if self.force_path_style {
             let mut endpoint = endpoint_url.trim_end_matches('/').to_owned();
             endpoint.push('/');
             endpoint.push_str(&self.bucket);
             endpoint.push('/');
-            endpoint.push_str(&key);
+            endpoint.push_str(&encoded_key);
             return Ok(endpoint);
         }
 
@@ -499,7 +502,7 @@ impl Client {
             url.push_str(path);
         }
         url.push('/');
-        url.push_str(&key);
+        url.push_str(&encoded_key);
         Ok(url)
     }
 }
@@ -574,15 +577,83 @@ pub enum UrlError {
 }
 
 fn key(namespace: &str, name: &str) -> String {
-    format!("{}/{}", escaped_segment(namespace), escaped_segment(name))
+    format!("{namespace}/{name}")
 }
 
 fn name_from_key(namespace: &str, key: &str) -> Option<String> {
-    let prefix = escaped_segment(namespace);
-    let encoded_name = key.strip_prefix(prefix.as_str())?.strip_prefix('/')?;
-    urlencoding::decode(encoded_name).ok().map(Into::into)
+    key.strip_prefix(namespace)?
+        .strip_prefix('/')
+        .map(str::to_owned)
 }
 
-fn escaped_segment(value: &str) -> String {
-    urlencoding::encode(value).into_owned()
+/// Percent-encoding set for embedding S3 object keys into URL paths.
+///
+/// Preserves characters that are safe in URL path segments per RFC 3986
+/// (`pchar = unreserved / sub-delims / ":" / "@"`) plus the `/` separator,
+/// and percent-encodes everything else (controls, whitespace, fragment/query
+/// delimiters, and bracket/brace/backtick characters that some servers reject).
+const KEY_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'\\')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+fn encode_key_path(key: &str) -> String {
+    utf8_percent_encode(key, KEY_PATH_ENCODE_SET).to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_concatenates_raw_namespace_and_name() {
+        assert_eq!(
+            key(
+                "Demo/HelloService::main",
+                "ip-9283206015f9865eae5471979fe60583"
+            ),
+            "Demo/HelloService::main/ip-9283206015f9865eae5471979fe60583",
+        );
+    }
+
+    #[test]
+    fn name_from_key_strips_namespace_prefix() {
+        let key = "Demo/HelloService::main/ip-9283206015f9865eae5471979fe60583";
+        assert_eq!(
+            name_from_key("Demo/HelloService::main", key).as_deref(),
+            Some("ip-9283206015f9865eae5471979fe60583"),
+        );
+    }
+
+    #[test]
+    fn name_from_key_rejects_non_matching_prefix() {
+        assert_eq!(name_from_key("Other", "Demo/foo"), None);
+        assert_eq!(name_from_key("Demo", "DemoFoo/bar"), None);
+    }
+
+    #[test]
+    fn encode_key_path_preserves_path_safe_characters() {
+        assert_eq!(
+            encode_key_path("Demo/HelloService::main/ip-9283206015f9865eae5471979fe60583"),
+            "Demo/HelloService::main/ip-9283206015f9865eae5471979fe60583",
+        );
+    }
+
+    #[test]
+    fn encode_key_path_encodes_unsafe_characters() {
+        assert_eq!(encode_key_path("a b"), "a%20b");
+        assert_eq!(encode_key_path("a?b"), "a%3Fb");
+        assert_eq!(encode_key_path("a#b"), "a%23b");
+        assert_eq!(encode_key_path("100%"), "100%25");
+    }
 }
