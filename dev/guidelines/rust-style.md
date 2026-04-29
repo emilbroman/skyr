@@ -119,6 +119,12 @@ Don't pre-emptively create `src/foo/mod.rs` for an empty or single-file module.
 
 The half-and-half state — meaningful logic in `lib.rs` *plus* other modules — is the configuration to avoid.
 
+### File size
+
+**Files larger than ~1000 lines should be considered candidates for breakup.** A file that big usually means the module has grown more than one cohesive responsibility, and splitting it tends to clarify structure.
+
+There is **no inherent goal in keeping files small**, though. Don't fragment a coherent module across multiple files just to drive line counts down — a 600-line file that reads as one thing is fine. The 1000-line mark is a prompt to look, not a hard limit.
+
 ## Macros
 
 Don't use macros excessively. They're not a default tool.
