@@ -8,6 +8,8 @@ For broader conventions and design principles, see:
 - **[README](README.md)** and individual crate READMEs — architecture and crate descriptions.
 - **[docs/](docs/index.md)** — end-user documentation.
 
+The guidelines page also hosts the [component audit log](dev/guidelines/index.md#audit-log), which records when each crate (and `web`) was last audited for guideline compliance. Before performing an audit, update the row per the instructions in that section.
+
 ### Before Committing
 
 Always run formatting and linting before committing:
