@@ -196,3 +196,5 @@ Before committing, run formatting and linting checks:
 cargo fmt
 cargo clippy --all-targets
 ```
+
+See [dev/guidelines/](dev/guidelines/index.md) for developer guidelines and conventions.

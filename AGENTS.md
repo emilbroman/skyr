@@ -1,6 +1,12 @@
 # Skyr Agent Notes
 
-This file contains guidance for AI agents working on the Skyr codebase. For architecture and crate descriptions, see the [README](README.md) and individual crate READMEs. For end-user documentation, see [docs/](docs/index.md).
+This file contains operational guidance for AI agents working on the Skyr codebase — checklists, project-specific procedures, and gotchas that are particular to Skyr.
+
+For broader conventions and design principles, see:
+
+- **[dev/guidelines/](dev/guidelines/index.md)** — architectural principles, boundaries, storage, naming, Rust style. Read these before making non-trivial design decisions.
+- **[README](README.md)** and individual crate READMEs — architecture and crate descriptions.
+- **[docs/](docs/index.md)** — end-user documentation.
 
 ### Before Committing
 
@@ -24,7 +30,7 @@ npm run check         # svelte-kit sync && svelte-check
 
 In CI, the web frontend runs `npx biome ci .` (which checks formatting, linting, and import sorting in one pass) followed by `npm run check` (svelte-check for type checking).
 
-Fix any warnings or errors before pushing.
+Fix any warnings or errors before pushing. See [Rust Style: Clippy and Lint Posture](dev/guidelines/rust-style.md#clippy-and-lint-posture) for the policy on warnings and `#[allow(...)]`.
 
 ### Web Frontend Formatting and Linting
 
@@ -52,7 +58,7 @@ The `web/` directory uses [Biome](https://biomejs.dev/) for formatting and linti
 - When writing new RTP plugins, follow the pattern in `plugin_std_random` or `plugin_std_artifact`.
 - For ADB operations, configure endpoint/bucket via CLI args or environment variables.
 - For LDB logging, use `NamespacePublisher` with deployment QID as namespace.
-- The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Use its typed IDs and QIDs rather than raw strings when working with identifiers. Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces.
+- The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces. (See [Rust Style: Newtypes and Typed Wrappers](dev/guidelines/rust-style.md#newtypes-and-typed-wrappers) on using typed IDs/QIDs rather than raw strings.)
 - Note: spelling is consistently `supersede/supersession` in schema/API names.
 - READMEs and crate-level docs are **internal documentation** aimed at developers working on the codebase. The `docs/` directory contains **external documentation** aimed at end users. When making changes, update the relevant docs to reflect them — but internal-only changes (refactors, internal API changes, implementation details) should **not** be added to external docs.
 - When adding new SCL language features (syntax, types, standard library modules/functions, etc.), update the corresponding end-user documentation in `docs/scl/`:
@@ -81,6 +87,8 @@ The SCL language has two sources of truth that must stay in sync: the reference 
 - Before committing spec changes, render the PDF to make sure the Typst sources still compile: `make spec` (or `typst compile spec/main.typ spec/scl-spec.pdf` directly). `make spec-watch` is useful while iterating.
 
 ### Adding a New RTP Plugin
+
+RTP plugins are the canonical example of "gRPC at a protocol boundary" — see [Architecture: Queue vs gRPC](dev/guidelines/architecture.md#queue-vs-grpc) and [Boundaries](dev/guidelines/boundaries.md) for the design rationale.
 
 When adding a new standard library RTP plugin (e.g., `plugin_std_foo` for `Std/Foo`), update the following locations:
 
@@ -113,6 +121,8 @@ When adding a new standard library RTP plugin (e.g., `plugin_std_foo` for `Std/F
     - **External docs** — add user-facing documentation in `docs/scl/stdlib.md` for the new resource types
 
 ### Adding Standard Library Tests
+
+The compiler is the textbook case where fixture-based tests pay their keep — see [Rust Style: Testing](dev/guidelines/rust-style.md#testing) for the broader rule.
 
 When adding or modifying standard library functions/modules in `sclc`, add fixture-based integration tests under `crates/sclc/src/tests/`:
 
