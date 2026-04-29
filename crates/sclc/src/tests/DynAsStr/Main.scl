@@ -1,0 +1,4 @@
+import Std/Dyn
+export let a = Dyn.asStr("hello")
+export let b = Dyn.asOptStr(nil)
+export let c = Dyn.asOptStr("world")

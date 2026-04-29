@@ -1,0 +1,9 @@
+import Std/Dyn
+
+let UnexpectedType = Dyn.UnexpectedType
+let badValue = "not an int"
+
+export let r = try
+	"{Dyn.asInt(badValue)}"
+catch UnexpectedType(msg):
+	msg

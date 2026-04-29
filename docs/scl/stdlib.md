@@ -704,6 +704,58 @@ Dict.filter(#{"a": 1, "b": 2, "c": 3}, fn(k: Str, v: Int) v > 1)
 // #{"b": 2, "c": 3}
 ```
 
+## Std/Dyn
+
+Coerce dynamically-typed values (typically the result of decoding JSON or YAML into `Any`) into concrete types. Each `as*` function raises `Dyn.UnexpectedType` if the value's runtime type doesn't match the requested type. Each has an `asOpt*` variant that returns `nil` when the input is `nil` and otherwise behaves identically.
+
+```scl
+import Std/Dyn
+import Std/Encoding
+
+let data = Encoding.fromJson("{\"port\": 8080, \"host\": \"localhost\"}")
+let port = Dyn.asInt(data.port)     // 8080
+let host = Dyn.asStr(data.host)     // "localhost"
+```
+
+### Dyn.UnexpectedType
+
+Exception raised by the `as*` functions when the dynamic value's type does not match the requested type. The payload is a human-readable description of the mismatch.
+
+```scl
+try
+    Dyn.asInt("not an int")
+catch Dyn.UnexpectedType(msg):
+    msg  // "expected Int, got: Str not an int"
+```
+
+### Dyn.asInt / Dyn.asOptInt
+
+Coerce a dynamic value to `Int`. Raises `UnexpectedType` if the value isn't an `Int`.
+
+### Dyn.asFloat / Dyn.asOptFloat
+
+Coerce a dynamic value to `Float`. Raises `UnexpectedType` if the value isn't a `Float`.
+
+### Dyn.asBool / Dyn.asOptBool
+
+Coerce a dynamic value to `Bool`. Raises `UnexpectedType` if the value isn't a `Bool`.
+
+### Dyn.asStr / Dyn.asOptStr
+
+Coerce a dynamic value to `Str`. Raises `UnexpectedType` if the value isn't a `Str`.
+
+### Dyn.asPath / Dyn.asOptPath
+
+Coerce a dynamic value to `Path`. Raises `UnexpectedType` if the value isn't a `Path`.
+
+### Dyn.asList / Dyn.asOptList
+
+Coerce a dynamic value to `[Any]`. Raises `UnexpectedType` if the value isn't a list. Element types are not checked — call further `as*` functions on each element.
+
+### Dyn.asDict / Dyn.asOptDict
+
+Coerce a dynamic value to `#{Any: Any}`. Raises `UnexpectedType` if the value isn't a dict. Key and value types are not checked — call further `as*` functions on each entry.
+
 ## Std/Encoding
 
 Encoding and decoding functions for JSON, YAML, TOML, base64, hex, and URL formats. All functions treating binary data as UTF-8 strings; decoding functions raise a runtime error when the decoded bytes are not valid UTF-8.

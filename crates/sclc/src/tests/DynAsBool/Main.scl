@@ -1,0 +1,4 @@
+import Std/Dyn
+export let a = Dyn.asBool(true)
+export let b = Dyn.asOptBool(nil)
+export let c = Dyn.asOptBool(false)

@@ -501,6 +501,16 @@ test_case!(OptionIsNoneIsSome);
 test_case!(OptionDefault);
 test_case!(OptionUnwrapSome);
 
+// Std/Dyn
+test_case!(DynAsInt);
+test_case!(DynAsFloat);
+test_case!(DynAsBool);
+test_case!(DynAsStr);
+test_case!(DynAsPath);
+test_case!(DynAsList);
+test_case!(DynAsDict);
+test_case!(DynUnexpectedType);
+
 // Std/Encoding
 test_case!(EncodingBase64);
 test_case!(EncodingBase64Url);

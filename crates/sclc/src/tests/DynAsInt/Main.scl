@@ -1,0 +1,4 @@
+import Std/Dyn
+export let a = Dyn.asInt(42)
+export let b = Dyn.asOptInt(nil)
+export let c = Dyn.asOptInt(7)

@@ -115,6 +115,7 @@ std_modules! {
     dict => "Dict.scl",
     crypto => "Crypto.scl",
     dns => "DNS.scl",
+    r#dyn => "Dyn.scl",
     encoding => "Encoding.scl",
     http => "HTTP.scl",
     list => "List.scl",

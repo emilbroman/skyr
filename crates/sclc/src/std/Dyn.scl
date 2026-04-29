@@ -1,0 +1,111 @@
+/// Result of a dynamic cast. The `typeTag` field identifies which underlying
+/// type the value held, and the matching field carries its concrete value.
+/// Fields that don't match `typeTag` are unset and must not be read.
+type UncheckedCastResult {
+	typeTag: Str,
+	int: Int,
+	float: Float,
+	bool: Bool,
+	str: Str,
+	path: Path,
+	list: [Any],
+	dict: #{Any: Any},
+}
+
+let cast = extern "Std/Dyn.cast": fn(Any) UncheckedCastResult
+
+/// Exception raised by the `as*` functions when the dynamic value's type
+/// does not match the requested type. The payload describes the mismatch.
+export let UnexpectedType = exception(Str)
+
+let castTo = fn<T>(tag: Str, f: fn(UncheckedCastResult) T)
+	fn(value: Any)
+		let result = cast(value);
+		if (result.typeTag == tag)
+			f(result)
+		else
+			raise UnexpectedType("expected {tag}, got: {result.typeTag} {value}")
+
+let asOpt = fn<T>(f: fn(Any) T)
+	fn(value: Any)
+		if (value != nil)
+			f(value) as T?
+		else
+			nil
+
+/// Coerce a dynamic value to `Int`, or raise `UnexpectedType` if it isn't one.
+///
+/// ```scl
+/// import Std/Dyn
+/// import Std/Encoding
+///
+/// let data = Encoding.fromJson("{\"port\": 8080}")
+/// let port = Dyn.asInt(data.port)   // 8080
+/// ```
+export let asInt = castTo("Int", fn(r) r.int)
+
+/// Like `asInt`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not an `Int`.
+export let asOptInt = asOpt(asInt)
+
+/// Coerce a dynamic value to `Float`, or raise `UnexpectedType` if it isn't one.
+export let asFloat = castTo("Float", fn(r) r.float)
+
+/// Like `asFloat`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a `Float`.
+export let asOptFloat = asOpt(asFloat)
+
+/// Coerce a dynamic value to `Bool`, or raise `UnexpectedType` if it isn't one.
+export let asBool = castTo("Bool", fn(r) r.bool)
+
+/// Like `asBool`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a `Bool`.
+export let asOptBool = asOpt(asBool)
+
+/// Coerce a dynamic value to `Str`, or raise `UnexpectedType` if it isn't one.
+export let asStr = castTo("Str", fn(r) r.str)
+
+/// Like `asStr`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a `Str`.
+export let asOptStr = asOpt(asStr)
+
+/// Coerce a dynamic value to `Path`, or raise `UnexpectedType` if it isn't one.
+export let asPath = castTo("Path", fn(r) r.path)
+
+/// Like `asPath`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a `Path`.
+export let asOptPath = asOpt(asPath)
+
+/// Coerce a dynamic value to a list of `Any`, or raise `UnexpectedType` if it
+/// isn't a list. Element types are not checked — use further `as*` calls on
+/// each element.
+///
+/// ```scl
+/// import Std/Dyn
+/// import Std/Encoding
+///
+/// let data = Encoding.fromJson("[1, 2, 3]")
+/// let items = Dyn.asList(data)
+/// ```
+export let asList = castTo("List", fn(r) r.list)
+
+/// Like `asList`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a list.
+export let asOptList = asOpt(asList)
+
+/// Coerce a dynamic value to a dict of `Any` to `Any`, or raise `UnexpectedType`
+/// if it isn't a dict. Key and value types are not checked — use further `as*`
+/// calls on each entry.
+///
+/// ```scl
+/// import Std/Dyn
+/// import Std/Encoding
+///
+/// let data = Encoding.fromJson("{\"key\": \"value\"}")
+/// let entries = Dyn.asDict(data)
+/// ```
+export let asDict = castTo("Dict", fn(r) r.dict)
+
+/// Like `asDict`, but returns `nil` when the input is `nil` instead of raising.
+/// Raises `UnexpectedType` if the value is non-`nil` but not a dict.
+export let asOptDict = asOpt(asDict)

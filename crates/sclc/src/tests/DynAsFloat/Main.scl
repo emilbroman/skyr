@@ -1,0 +1,4 @@
+import Std/Dyn
+export let a = Dyn.asFloat(3.14)
+export let b = Dyn.asOptFloat(nil)
+export let c = Dyn.asOptFloat(2.5)
