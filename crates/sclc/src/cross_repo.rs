@@ -115,8 +115,16 @@ impl CrossRepoPackageFinder {
     /// The DE registers each with `EvalCtx::set_package_orphan` so effects
     /// emitted from their globals are flagged as orphan and surfaced as
     /// errors instead of being silently attributed to the local deployment.
-    pub async fn resolved_orphans(&self) -> HashSet<RepoQid> {
-        self.resolved_orphans.read().await.clone()
+    pub async fn resolved_orphans(&self) -> HashMap<RepoQid, CommitHash> {
+        let (orphans, commits) =
+            tokio::join!(self.resolved_orphans.read(), self.resolved_commits.read());
+        orphans
+            .iter()
+            .filter_map(|k| {
+                let commit = commits.get(k)?;
+                Some((k.clone(), commit.clone()))
+            })
+            .collect()
     }
 
     /// Whether any of the manifest's dependencies use a volatile (branch or
