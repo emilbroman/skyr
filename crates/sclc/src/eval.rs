@@ -372,33 +372,46 @@ pub enum Effect {
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
         /// The deployment that owns this effect — i.e. the deployment whose
-        /// code path produced it. The DE drops effects whose owner is not
-        /// the local deployment.
-        owner: ids::DeploymentQid,
+        /// code path produced it. `None` means the effect is orphaned: it
+        /// was produced inside a package with no deployment owner (e.g. a
+        /// hash-pinned cross-repo dependency). The DE logs orphan effects
+        /// as errors and drops them; foreign-owned effects are silently
+        /// dropped; only effects matching the local owner are processed.
+        owner: Option<ids::DeploymentQid>,
     },
     UpdateResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
-        owner: ids::DeploymentQid,
+        owner: Option<ids::DeploymentQid>,
     },
     TouchResource {
         id: ResourceId,
         inputs: crate::Record,
         dependencies: Vec<ResourceId>,
         source_trace: ids::SourceTrace,
-        owner: ids::DeploymentQid,
+        owner: Option<ids::DeploymentQid>,
     },
 }
 
 impl Effect {
-    /// The owning deployment of this effect.
-    pub fn owner(&self) -> &ids::DeploymentQid {
+    /// The owning deployment of this effect, or `None` if it was emitted
+    /// from an orphan package scope (no deployment owner).
+    pub fn owner(&self) -> Option<&ids::DeploymentQid> {
         match self {
             Effect::CreateResource { owner, .. }
             | Effect::UpdateResource { owner, .. }
-            | Effect::TouchResource { owner, .. } => owner,
+            | Effect::TouchResource { owner, .. } => owner.as_ref(),
+        }
+    }
+
+    /// The resource this effect targets.
+    pub fn id(&self) -> &ResourceId {
+        match self {
+            Effect::CreateResource { id, .. }
+            | Effect::UpdateResource { id, .. }
+            | Effect::TouchResource { id, .. } => id,
         }
     }
 }
@@ -412,15 +425,16 @@ pub struct EvalCtx {
     /// fallback when no scope has been pushed.
     local_owner: ids::DeploymentQid,
     /// Stack of effect-owner overrides. The current owner is the top of the
-    /// stack, or `local_owner` if the stack is empty. Pushed only when
-    /// entering a global expression defined by a foreign package; function
-    /// calls do not push (closures are ownership-transparent).
-    owner_stack: Mutex<Vec<ids::DeploymentQid>>,
-    /// Map from package id to the deployment that owns globals defined in
-    /// that package. Populated by the caller (typically the DE) after
-    /// resolving cross-repo dependencies. Local globals are absent from this
-    /// map and fall through to `local_owner`.
-    package_owner: HashMap<crate::PackageId, ids::DeploymentQid>,
+    /// stack, or `Some(local_owner)` if the stack is empty. `None` on top of
+    /// the stack means "orphan scope": effects emitted here have no owner.
+    /// Pushed only when entering a global expression defined by a foreign
+    /// package; function calls do not push (closures are
+    /// ownership-transparent).
+    owner_stack: Mutex<Vec<Option<ids::DeploymentQid>>>,
+    /// Map from package id to its registered owner. Populated by the caller
+    /// (typically the DE) after resolving cross-repo dependencies. Local
+    /// globals are absent from this map and fall through to `local_owner`.
+    package_owner: HashMap<crate::PackageId, PackageOwner>,
     /// Pre-loaded foreign resources, keyed by the foreign deployment's QID
     /// and the resource id within that deployment. The DE populates this
     /// from each foreign environment's RDB namespace before evaluation.
@@ -437,6 +451,19 @@ pub struct EvalCtx {
 pub(crate) enum ListItemOutcome {
     Complete,
     Pending(BTreeSet<ResourceId>),
+}
+
+/// Registered owner for a package, as recorded in [`EvalCtx::package_owner`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PackageOwner {
+    /// Foreign-owned: globals defined in the package emit effects stamped
+    /// with this deployment QID.
+    Foreign(ids::DeploymentQid),
+    /// Orphan: globals defined in the package emit effects with no owner.
+    /// Hash-pinned cross-repo dependencies are registered this way — they
+    /// address an exact commit and have no associated deployment, so the DE
+    /// has nothing to attribute their effects to.
+    Orphan,
 }
 
 impl EvalCtx {
@@ -488,7 +515,16 @@ impl EvalCtx {
     /// evaluated with `owner` on top of the owner stack and emit
     /// foreign-owned effects.
     pub fn set_package_owner(&mut self, package: crate::PackageId, owner: ids::DeploymentQid) {
-        self.package_owner.insert(package, owner);
+        self.package_owner
+            .insert(package, PackageOwner::Foreign(owner));
+    }
+
+    /// Register a package as orphan — globals defined in `package` will be
+    /// evaluated with no owner (the owner stack carries `None`) and emit
+    /// orphan effects. Used for hash-pinned cross-repo dependencies, which
+    /// have no associated deployment.
+    pub fn set_package_orphan(&mut self, package: crate::PackageId) {
+        self.package_owner.insert(package, PackageOwner::Orphan);
     }
 
     /// The local deployment QID. Used by callers (e.g. the DE) to compare
@@ -498,28 +534,33 @@ impl EvalCtx {
     }
 
     /// The owner of effects emitted right now — top of the owner stack, or
-    /// the local owner if the stack is empty.
-    pub fn current_owner(&self) -> ids::DeploymentQid {
+    /// `Some(local_owner)` if the stack is empty. `None` means the effect is
+    /// orphaned (emitted in a package with no deployment owner).
+    pub fn current_owner(&self) -> Option<ids::DeploymentQid> {
         self.owner_stack
             .lock()
             .unwrap()
             .last()
             .cloned()
-            .unwrap_or_else(|| self.local_owner.clone())
+            .unwrap_or_else(|| Some(self.local_owner.clone()))
     }
 
-    /// The owner of globals defined by `package`, falling back to the local
-    /// deployment when the package isn't a registered foreign package.
-    pub fn owner_for_package(&self, package: &crate::PackageId) -> ids::DeploymentQid {
-        self.package_owner
-            .get(package)
-            .cloned()
-            .unwrap_or_else(|| self.local_owner.clone())
+    /// The owner of globals defined by `package`. Returns `Some(local_owner)`
+    /// for unregistered packages, `Some(foreign_qid)` for packages registered
+    /// via [`Self::set_package_owner`], and `None` for packages registered as
+    /// orphan via [`Self::set_package_orphan`].
+    pub fn owner_for_package(&self, package: &crate::PackageId) -> Option<ids::DeploymentQid> {
+        match self.package_owner.get(package) {
+            Some(PackageOwner::Foreign(qid)) => Some(qid.clone()),
+            Some(PackageOwner::Orphan) => None,
+            None => Some(self.local_owner.clone()),
+        }
     }
 
-    /// Run `f` with `owner` pushed on the owner stack. The owner is popped
-    /// when `f` returns (success or panic).
-    pub fn with_owner<R>(&self, owner: ids::DeploymentQid, f: impl FnOnce() -> R) -> R {
+    /// Run `f` with `owner` pushed on the owner stack. `Some(qid)` scopes
+    /// emits to that deployment; `None` scopes them as orphan. The frame is
+    /// popped when `f` returns (success or panic).
+    pub fn with_owner<R>(&self, owner: Option<ids::DeploymentQid>, f: impl FnOnce() -> R) -> R {
         self.owner_stack.lock().unwrap().push(owner);
         let guard = OwnerStackGuard { ctx: self };
         let result = f();
@@ -565,7 +606,24 @@ impl EvalCtx {
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         let source_trace = self.source_trace.lock().unwrap().clone();
         let owner = self.current_owner();
-        let is_foreign = owner != self.local_owner;
+
+        // Orphan-owner path: the resource was emitted from a package with no
+        // deployment owner (e.g. a hash-pinned cross-repo dep). There is no
+        // backing state to consult, so we always emit a Create with `None`
+        // owner and return `<pending>`. The DE turns this into an LDB error
+        // and drops it.
+        let Some(owner_qid) = owner else {
+            self.emit(Effect::CreateResource {
+                id: resource_id,
+                inputs: inputs.clone(),
+                dependencies,
+                source_trace,
+                owner: None,
+            })?;
+            return Ok(None);
+        };
+
+        let is_foreign = owner_qid != self.local_owner;
 
         // Foreign-owner path: read remote state from the foreign deployment's
         // RDB namespace if available. Always emit the foreign-owned effect
@@ -574,7 +632,7 @@ impl EvalCtx {
         if is_foreign {
             let foreign_resource = self
                 .foreign_resources
-                .get(&owner)
+                .get(&owner_qid)
                 .and_then(|map| map.get(&resource_id))
                 .cloned();
 
@@ -582,7 +640,7 @@ impl EvalCtx {
             self.foreign_deps
                 .lock()
                 .unwrap()
-                .insert((owner.environment.clone(), resource_id.clone()));
+                .insert((owner_qid.environment.clone(), resource_id.clone()));
 
             // Emit the appropriate foreign-owned effect (the DE drops it).
             let effect = match &foreign_resource {
@@ -591,7 +649,7 @@ impl EvalCtx {
                     inputs: inputs.clone(),
                     dependencies,
                     source_trace,
-                    owner,
+                    owner: Some(owner_qid),
                 },
                 Some(existing)
                     if existing.inputs != *inputs || existing.dependencies != dependencies =>
@@ -601,7 +659,7 @@ impl EvalCtx {
                         inputs: inputs.clone(),
                         dependencies,
                         source_trace,
-                        owner,
+                        owner: Some(owner_qid),
                     }
                 }
                 Some(_) => Effect::TouchResource {
@@ -609,7 +667,7 @@ impl EvalCtx {
                     inputs: inputs.clone(),
                     dependencies,
                     source_trace,
-                    owner,
+                    owner: Some(owner_qid),
                 },
             };
             self.emit(effect)?;
@@ -626,14 +684,14 @@ impl EvalCtx {
             }));
         }
 
-        // Local-owner path (unchanged).
+        // Local-owner path.
         let Some(resource) = self.get_resource(ty, name) else {
             self.emit(Effect::CreateResource {
                 id: resource_id,
                 inputs: inputs.clone(),
                 dependencies,
                 source_trace,
-                owner,
+                owner: Some(owner_qid),
             })?;
             return Ok(None);
         };
@@ -644,7 +702,7 @@ impl EvalCtx {
                 inputs: inputs.clone(),
                 dependencies,
                 source_trace,
-                owner,
+                owner: Some(owner_qid),
             })?;
             return Ok(None);
         }
@@ -654,7 +712,7 @@ impl EvalCtx {
             inputs: inputs.clone(),
             dependencies,
             source_trace,
-            owner,
+            owner: Some(owner_qid),
         })?;
 
         Ok(Some(resource.outputs.clone()))

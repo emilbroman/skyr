@@ -26,7 +26,7 @@
 
 #![cfg(feature = "cdb")]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
@@ -51,10 +51,13 @@ pub struct CrossRepoPackageFinder {
     resolved_commits: RwLock<HashMap<RepoQid, CommitHash>>,
     /// Deployment QIDs for dependencies that resolved through an active
     /// deployment (branch or tag specifiers). Hash-pinned dependencies do
-    /// not appear here, so their effects fall back to the local owner —
-    /// pinning by hash means "this exact code, on me", not "delegate to the
-    /// foreign owner".
+    /// not appear here — see [`Self::resolved_orphans`].
     resolved_owners: RwLock<HashMap<RepoQid, DeploymentQid>>,
+    /// Repos resolved via a hash specifier — they have no deployment owner.
+    /// The DE registers these with `EvalCtx::set_package_orphan` so any
+    /// effects emitted from globals defined in them are flagged as orphan
+    /// (no owner) rather than silently attributed to the local deployment.
+    resolved_orphans: RwLock<HashSet<RepoQid>>,
 }
 
 /// Errors produced while resolving a foreign repo.
@@ -96,15 +99,24 @@ impl CrossRepoPackageFinder {
             cache: RwLock::new(HashMap::new()),
             resolved_commits: RwLock::new(HashMap::new()),
             resolved_owners: RwLock::new(HashMap::new()),
+            resolved_orphans: RwLock::new(HashSet::new()),
         }
     }
 
     /// All currently-resolved foreign packages that have a deployment owner,
-    /// keyed by their `Org/Repo`. Hash-pinned dependencies are absent — they
-    /// have no deployment owner and their effects fall back to the local
-    /// owner. Used by the DE to populate `EvalCtx::set_package_owner`.
+    /// keyed by their `Org/Repo`. Hash-pinned dependencies are absent — see
+    /// [`Self::resolved_orphans`]. Used by the DE to populate
+    /// `EvalCtx::set_package_owner`.
     pub async fn resolved_owners(&self) -> HashMap<RepoQid, DeploymentQid> {
         self.resolved_owners.read().await.clone()
+    }
+
+    /// Repos resolved via a hash specifier — they have no deployment owner.
+    /// The DE registers each with `EvalCtx::set_package_orphan` so effects
+    /// emitted from their globals are flagged as orphan and surfaced as
+    /// errors instead of being silently attributed to the local deployment.
+    pub async fn resolved_orphans(&self) -> HashSet<RepoQid> {
+        self.resolved_orphans.read().await.clone()
     }
 
     /// Whether any of the manifest's dependencies use a volatile (branch or
@@ -165,11 +177,16 @@ impl CrossRepoPackageFinder {
             .write()
             .await
             .insert(repo.clone(), resolution.commit);
-        if let Some(owner) = resolution.owner {
-            self.resolved_owners
-                .write()
-                .await
-                .insert(repo.clone(), owner);
+        match resolution.owner {
+            Some(owner) => {
+                self.resolved_owners
+                    .write()
+                    .await
+                    .insert(repo.clone(), owner);
+            }
+            None => {
+                self.resolved_orphans.write().await.insert(repo.clone());
+            }
         }
         Ok(Some(pkg))
     }

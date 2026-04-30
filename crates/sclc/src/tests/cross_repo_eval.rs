@@ -46,7 +46,7 @@ async fn foreign_global_emits_foreign_owned_create_when_unmaterialised() {
     assert!(result.is_none(), "expected pending output");
     let effect = rx.try_recv().expect("expected an effect");
     assert!(matches!(effect, Effect::CreateResource { .. }));
-    assert_eq!(effect.owner(), &foreign);
+    assert_eq!(effect.owner(), Some(&foreign));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -89,7 +89,7 @@ async fn foreign_global_returns_concrete_outputs_when_materialised() {
         matches!(effect, Effect::TouchResource { .. }),
         "got {effect:?}"
     );
-    assert_eq!(effect.owner(), &foreign);
+    assert_eq!(effect.owner(), Some(&foreign));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -129,7 +129,7 @@ async fn foreign_resource_with_changed_inputs_yields_pending_and_update() {
         matches!(effect, Effect::UpdateResource { .. }),
         "got {effect:?}"
     );
-    assert_eq!(effect.owner(), &foreign);
+    assert_eq!(effect.owner(), Some(&foreign));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -172,5 +172,35 @@ async fn local_resource_unaffected_by_foreign_scope_outside_it() {
 
     let effect = rx.try_recv().expect("expected an effect");
     assert!(matches!(effect, Effect::CreateResource { .. }));
-    assert_eq!(effect.owner(), &local);
+    assert_eq!(effect.owner(), Some(&local));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn orphan_package_emits_unowned_create_and_pending_output() {
+    let local = placeholder_deployment_qid();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut ctx = EvalCtx::new(tx, "test", local);
+    let orphan_pkg = PackageId::from(["pinned", "by", "hash"]);
+    ctx.set_package_orphan(orphan_pkg.clone());
+
+    let inputs = record_with("min", Value::Int(0));
+    let result = ctx
+        .with_owner(ctx.owner_for_package(&orphan_pkg), || {
+            ctx.resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+        })
+        .expect("orphan resource call should not error");
+
+    // Orphan emits never have backing state and never resolve to concrete
+    // outputs — the importer reads `<pending>` indefinitely.
+    assert!(result.is_none(), "orphan reads must be pending");
+    let effect = rx.try_recv().expect("expected an orphan effect");
+    assert!(
+        matches!(effect, Effect::CreateResource { .. }),
+        "got {effect:?}"
+    );
+    assert_eq!(effect.owner(), None, "orphan effect carries no owner");
+
+    // No cross-deployment dependency is recorded for orphan reads — there is
+    // no foreign deployment to depend on.
+    assert!(ctx.take_foreign_dependencies().is_empty());
 }
