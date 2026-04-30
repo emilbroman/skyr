@@ -156,6 +156,21 @@ impl Worker {
                     );
                 }
             }
+
+            // Hash-pinned dependencies have no deployment owner. Mark them as
+            // orphan so the evaluator stamps their effects with `None`, and
+            // the drain task below logs them as errors.
+            for orphan_repo in finder.resolved_orphans().await {
+                if !cache_hit {
+                    self.log_publisher
+                        .info(format!(
+                            "Resolved package {orphan_repo} (hash-pinned, orphan)"
+                        ))
+                        .await;
+                }
+                let pkg_id = sclc::package_id_for_repo(&orphan_repo);
+                eval_ctx.set_package_orphan(pkg_id);
+            }
         }
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
@@ -194,13 +209,33 @@ impl Worker {
                     let mut had_mutation = false;
                     let mut touched_resource_ids = HashSet::new();
                     while let Some(effect) = effects_rx.recv().await {
-                        if effect.owner() != &local_deployment_qid_for_drain {
-                            tracing::debug!(
-                                owner = %effect.owner(),
-                                local_owner = %local_deployment_qid_for_drain,
-                                "dropping foreign-owned effect",
-                            );
-                            continue;
+                        match effect.owner() {
+                            None => {
+                                let id = effect.id();
+                                tracing::warn!(
+                                    resource = %id,
+                                    "orphan effect emitted from a hash-pinned package",
+                                );
+                                log_publisher
+                                    .error(format!(
+                                        "Resource {id} was emitted from a hash-pinned \
+                                         dependency with no deployment owner; dropping. \
+                                         Pin the dependency to a branch or tag to attribute \
+                                         its resources to the foreign deployment, or move the \
+                                         resource into the local package.",
+                                    ))
+                                    .await;
+                                continue;
+                            }
+                            Some(owner) if owner != &local_deployment_qid_for_drain => {
+                                tracing::debug!(
+                                    owner = %owner,
+                                    local_owner = %local_deployment_qid_for_drain,
+                                    "dropping foreign-owned effect",
+                                );
+                                continue;
+                            }
+                            Some(_) => {}
                         }
                         match effect {
                             sclc::Effect::CreateResource {
