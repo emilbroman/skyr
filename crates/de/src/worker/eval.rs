@@ -34,7 +34,7 @@ pub(crate) struct EvalOutcome {
 
 impl Worker {
     pub(crate) async fn compile_and_evaluate(&mut self) -> anyhow::Result<EvalOutcome> {
-        let user_pkg: Arc<dyn sclc::Package> = Arc::new(self.client.clone());
+        let user_pkg: Arc<dyn sclc::Package> = Arc::new(self.client.commit_client().clone());
         let repo_qid = self.client.repo_qid().clone();
 
         let cross_repo_finder = self
@@ -42,9 +42,9 @@ impl Worker {
             .await?;
 
         // Eagerly resolve every declared cross-repo dep so we can use the
-        // resolved map as a cache key. This also populates the finder's
-        // internal `resolved` table, which `resolved_owners()` reads below.
-        let resolved_key: BTreeMap<ids::RepoQid, ids::DeploymentQid> = match &cross_repo_finder {
+        // resolved commits as a cache key. This also populates the finder's
+        // internal owner table, which `resolved_owners()` reads below.
+        let resolved_key: BTreeMap<ids::RepoQid, ids::CommitHash> = match &cross_repo_finder {
             Some(f) => f.resolve_all().await?,
             None => BTreeMap::new(),
         };

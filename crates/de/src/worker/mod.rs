@@ -21,7 +21,7 @@ use crate::reporter::{
 use crate::util::{resource_id_from, resource_ref};
 
 pub(crate) struct CachedCompile {
-    pub(crate) key: BTreeMap<ids::RepoQid, ids::DeploymentQid>,
+    pub(crate) key: BTreeMap<ids::RepoQid, ids::CommitHash>,
     pub(crate) asg: Arc<sclc::Asg>,
 }
 
