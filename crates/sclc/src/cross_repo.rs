@@ -1,11 +1,16 @@
 //! Cross-repository [`PackageFinder`] backed by a manifest and the CDB.
 //!
-//! Each deployment that imports modules from foreign repositories is
+//! Each importer that depends on modules from foreign repositories is
 //! configured with a manifest mapping `Org/Repo → Specifier`. The
 //! [`CrossRepoPackageFinder`] consults this map when resolving a raw module
-//! id whose first two segments name a foreign repo, looks up the resolved
-//! deployment via the CDB, and returns a [`Package`] backed by a
-//! [`cdb::DeploymentClient`].
+//! id whose first two segments name a foreign repo, resolves the specifier to
+//! a commit hash via the CDB, and returns a [`Package`] backed by a
+//! [`cdb::CommitClient`].
+//!
+//! Branch and tag specifiers resolve through the active deployment of the
+//! foreign repo in the matching environment — that's how Skyr finds the
+//! "current" commit for a moving ref. Hash specifiers bypass deployments
+//! entirely and address a commit directly.
 //!
 //! ## v1 limitations
 //!
@@ -13,7 +18,7 @@
 //!   must match the dependency's org).
 //! - Diamond dependencies that resolve to *different* revisions of the same
 //!   foreign repo are not supported. The finder treats each foreign repo as
-//!   having a single resolved revision per deployment. The
+//!   having a single resolved revision per importer. The
 //!   `CROSS_REPO_IMPORTS.md` design document describes a future
 //!   "@hash-in-package-id" rewrite that lifts this restriction.
 //! - Access control (UDB org-membership) is the caller's responsibility —
@@ -25,7 +30,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use ids::{DeploymentQid, OrgId, RepoQid};
+use ids::{CommitHash, DeploymentQid, OrgId, RepoQid};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -39,9 +44,17 @@ pub struct CrossRepoPackageFinder {
     local_org: OrgId,
     dependencies: BTreeMap<RepoQid, Specifier>,
     cache: RwLock<HashMap<RepoQid, Option<Arc<dyn Package>>>>,
-    /// Resolved deployment QIDs alongside the cached packages, exposed for
-    /// the DE so it can populate `EvalCtx::package_owner`.
-    resolved: RwLock<HashMap<RepoQid, DeploymentQid>>,
+    /// Resolved commit hashes per dependency. Populated for every resolved
+    /// dependency regardless of specifier kind. The DE uses this map as the
+    /// compile cache key — recompilation is needed when, and only when, the
+    /// resolved source for any dependency changes.
+    resolved_commits: RwLock<HashMap<RepoQid, CommitHash>>,
+    /// Deployment QIDs for dependencies that resolved through an active
+    /// deployment (branch or tag specifiers). Hash-pinned dependencies do
+    /// not appear here, so their effects fall back to the local owner —
+    /// pinning by hash means "this exact code, on me", not "delegate to the
+    /// foreign owner".
+    resolved_owners: RwLock<HashMap<RepoQid, DeploymentQid>>,
 }
 
 /// Errors produced while resolving a foreign repo.
@@ -57,6 +70,9 @@ pub enum CrossRepoError {
         "dependency {repo} pinned to {specifier:?} could not be resolved to an active deployment"
     )]
     Unresolved { repo: RepoQid, specifier: Specifier },
+
+    #[error("invalid commit hash in dependency specifier: {0}")]
+    InvalidHash(String),
 
     #[error("CDB error: {0}")]
     Cdb(Box<dyn std::error::Error + Send + Sync>),
@@ -78,14 +94,17 @@ impl CrossRepoPackageFinder {
             local_org,
             dependencies,
             cache: RwLock::new(HashMap::new()),
-            resolved: RwLock::new(HashMap::new()),
+            resolved_commits: RwLock::new(HashMap::new()),
+            resolved_owners: RwLock::new(HashMap::new()),
         }
     }
 
-    /// All currently-resolved foreign packages, keyed by their `Org/Repo`.
-    /// Useful for `EvalCtx::set_package_owner` plumbing in the DE.
+    /// All currently-resolved foreign packages that have a deployment owner,
+    /// keyed by their `Org/Repo`. Hash-pinned dependencies are absent — they
+    /// have no deployment owner and their effects fall back to the local
+    /// owner. Used by the DE to populate `EvalCtx::set_package_owner`.
     pub async fn resolved_owners(&self) -> HashMap<RepoQid, DeploymentQid> {
-        self.resolved.read().await.clone()
+        self.resolved_owners.read().await.clone()
     }
 
     /// Whether any of the manifest's dependencies use a volatile (branch or
@@ -95,32 +114,16 @@ impl CrossRepoPackageFinder {
         self.dependencies.values().any(Specifier::is_volatile)
     }
 
-    /// Direct lookup helper used by tests and (eventually) the DE: returns
-    /// the resolved [`DeploymentQid`] for a foreign repo, resolving it
-    /// through the CDB if not already cached. Returns `Ok(None)` when the
-    /// repo isn't a declared dependency.
-    pub async fn resolve_dependency(
-        &self,
-        repo: &RepoQid,
-    ) -> Result<Option<DeploymentQid>, CrossRepoError> {
-        if !self.dependencies.contains_key(repo) {
-            return Ok(None);
-        }
-        // resolve_internal populates self.resolved.
-        let _ = self.resolve_internal(repo).await?;
-        Ok(self.resolved.read().await.get(repo).cloned())
-    }
-
-    /// Eagerly resolve every declared dependency to its current
-    /// [`DeploymentQid`]. Used by the DE to compute a cache key for the
-    /// compiled ASG before deciding whether to recompile.
-    pub async fn resolve_all(&self) -> Result<BTreeMap<RepoQid, DeploymentQid>, CrossRepoError> {
+    /// Eagerly resolve every declared dependency to its current commit
+    /// hash. Used by the DE to compute a cache key for the compiled ASG
+    /// before deciding whether to recompile.
+    pub async fn resolve_all(&self) -> Result<BTreeMap<RepoQid, CommitHash>, CrossRepoError> {
         let repos: Vec<RepoQid> = self.dependencies.keys().cloned().collect();
         let mut out = BTreeMap::new();
         for repo in repos {
             let _ = self.resolve_internal(&repo).await?;
-            if let Some(qid) = self.resolved.read().await.get(&repo).cloned() {
-                out.insert(repo, qid);
+            if let Some(commit) = self.resolved_commits.read().await.get(&repo).cloned() {
+                out.insert(repo, commit);
             }
         }
         Ok(out)
@@ -147,88 +150,95 @@ impl CrossRepoPackageFinder {
             });
         }
 
-        let deployment = self.lookup_deployment(repo, &specifier).await?;
-        let dc = self.cdb.repo(repo.clone()).deployment(
-            deployment.environment.environment.clone(),
-            deployment.deployment.clone(),
-        );
-        let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
+        let resolution = self.lookup(repo, &specifier).await?;
+        let cc = self
+            .cdb
+            .repo(repo.clone())
+            .commit(resolution.commit.clone());
+        let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(cc));
 
         self.cache
             .write()
             .await
             .insert(repo.clone(), Some(Arc::clone(&pkg)));
-        self.resolved.write().await.insert(repo.clone(), deployment);
+        self.resolved_commits
+            .write()
+            .await
+            .insert(repo.clone(), resolution.commit);
+        if let Some(owner) = resolution.owner {
+            self.resolved_owners
+                .write()
+                .await
+                .insert(repo.clone(), owner);
+        }
         Ok(Some(pkg))
     }
 
-    async fn lookup_deployment(
+    async fn lookup(
         &self,
         repo: &RepoQid,
         specifier: &Specifier,
-    ) -> Result<DeploymentQid, CrossRepoError> {
-        let repo_client = self.cdb.repo(repo.clone());
-
-        // Confirm the repo exists, surfacing a clearer error than the
-        // empty-active-deployments case.
-        match repo_client.get().await {
-            Ok(_) => {}
-            Err(cdb::RepositoryQueryError::NotFound) => {
-                return Err(CrossRepoError::NoSuchRepo(repo.clone()));
-            }
-            Err(e) => return Err(CrossRepoError::Cdb(Box::new(e))),
-        }
-
+    ) -> Result<Resolution, CrossRepoError> {
         match specifier {
             Specifier::Branch(name) => {
+                let repo_client = self.cdb.repo(repo.clone());
+                self.confirm_repo_exists(&repo_client, repo).await?;
                 let env: ids::EnvironmentId =
                     name.parse().map_err(|_| CrossRepoError::Unresolved {
                         repo: repo.clone(),
                         specifier: specifier.clone(),
                     })?;
-                self.find_active_by_env(&repo_client, repo, specifier, env)
+                self.resolve_via_active_deployment(&repo_client, repo, specifier, env)
                     .await
             }
             Specifier::Tag(name) => {
+                let repo_client = self.cdb.repo(repo.clone());
+                self.confirm_repo_exists(&repo_client, repo).await?;
                 let env_str = format!("tag:{name}");
                 let env: ids::EnvironmentId =
                     env_str.parse().map_err(|_| CrossRepoError::Unresolved {
                         repo: repo.clone(),
                         specifier: specifier.clone(),
                     })?;
-                self.find_active_by_env(&repo_client, repo, specifier, env)
+                self.resolve_via_active_deployment(&repo_client, repo, specifier, env)
                     .await
             }
             Specifier::Hash(hex) => {
-                let target_hash = hex.as_str();
-                let mut deployments = repo_client
-                    .deployments()
-                    .await
-                    .map_err(|e| CrossRepoError::Cdb(Box::new(e)))?;
-                while let Some(result) = deployments.next().await {
-                    let deployment = result.map_err(|e| CrossRepoError::Cdb(Box::new(e)))?;
-                    if deployment.deployment.commit.as_str() == target_hash {
-                        return Ok(repo
-                            .clone()
-                            .environment(deployment.environment)
-                            .deployment(deployment.deployment));
-                    }
-                }
-                Err(CrossRepoError::Unresolved {
-                    repo: repo.clone(),
-                    specifier: specifier.clone(),
+                // Hash specifiers bypass deployments. The pin addresses a
+                // specific commit; whether anything is currently deployed at
+                // that commit is irrelevant to package loading.
+                let commit: CommitHash = hex
+                    .parse()
+                    .map_err(|_| CrossRepoError::InvalidHash(hex.clone()))?;
+                Ok(Resolution {
+                    commit,
+                    owner: None,
                 })
             }
         }
     }
 
-    async fn find_active_by_env(
+    async fn confirm_repo_exists(
+        &self,
+        repo_client: &cdb::RepositoryClient,
+        repo: &RepoQid,
+    ) -> Result<(), CrossRepoError> {
+        match repo_client.get().await {
+            Ok(_) => Ok(()),
+            Err(cdb::RepositoryQueryError::NotFound) => {
+                Err(CrossRepoError::NoSuchRepo(repo.clone()))
+            }
+            Err(e) => Err(CrossRepoError::Cdb(Box::new(e))),
+        }
+    }
+
+    async fn resolve_via_active_deployment(
         &self,
         repo_client: &cdb::RepositoryClient,
         repo: &RepoQid,
         specifier: &Specifier,
         env: ids::EnvironmentId,
-    ) -> Result<DeploymentQid, CrossRepoError> {
+    ) -> Result<Resolution, CrossRepoError> {
         let mut deployments = repo_client
             .active_deployments()
             .await
@@ -236,10 +246,14 @@ impl CrossRepoPackageFinder {
         while let Some(result) = deployments.next().await {
             let deployment = result.map_err(|e| CrossRepoError::Cdb(Box::new(e)))?;
             if deployment.environment == env {
-                return Ok(repo
+                let owner = repo
                     .clone()
                     .environment(deployment.environment)
-                    .deployment(deployment.deployment));
+                    .deployment(deployment.deployment.clone());
+                return Ok(Resolution {
+                    commit: deployment.deployment.commit,
+                    owner: Some(owner),
+                });
             }
         }
         Err(CrossRepoError::Unresolved {
@@ -247,6 +261,15 @@ impl CrossRepoPackageFinder {
             specifier: specifier.clone(),
         })
     }
+}
+
+/// Outcome of resolving a single dependency specifier.
+struct Resolution {
+    commit: CommitHash,
+    /// `Some` for branch/tag specifiers (resolved through an active
+    /// deployment); `None` for hash specifiers, which intentionally have no
+    /// foreign owner.
+    owner: Option<DeploymentQid>,
 }
 
 #[async_trait::async_trait]

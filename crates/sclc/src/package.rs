@@ -124,12 +124,12 @@ impl<P: Package + 'static> PackageFinder for Arc<P> {
 }
 
 // ---------------------------------------------------------------------------
-// CDB DeploymentClient → Package impl
+// CDB CommitClient → Package impl
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "cdb")]
 #[async_trait::async_trait]
-impl Package for cdb::DeploymentClient {
+impl Package for cdb::CommitClient {
     fn id(&self) -> PackageId {
         let repo_qid = self.repo_qid();
         [repo_qid.org.to_string(), repo_qid.repo.to_string()]
@@ -217,8 +217,9 @@ mod cdb_finder {
     ///
     /// Given a raw module ID like `["MyOrg", "MyRepo", "Foo", "Bar"]`, extracts
     /// the first two segments as Org/Repo (per the CDB two-segment convention),
-    /// looks up the active deployment for that repo in the configured environment,
-    /// and returns a cached `DeploymentClient` as the resolved [`Package`].
+    /// looks up the active deployment for that repo in the configured environment
+    /// to find a commit hash, and returns a cached [`cdb::CommitClient`] as the
+    /// resolved [`Package`].
     pub struct CdbPackageFinder {
         client: cdb::Client,
         environment: ids::EnvironmentId,
@@ -300,9 +301,11 @@ mod cdb_finder {
                 return Ok(None);
             };
 
-            // Construct a cached DeploymentClient.
-            let dc = repo_client.deployment(deployment.environment, deployment.deployment);
-            let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(dc));
+            // Construct a cached CommitClient — the deployment was only
+            // needed to discover which commit is currently active for this
+            // environment.
+            let cc = repo_client.commit(deployment.deployment.commit);
+            let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(cc));
             self.cache
                 .write()
                 .await
