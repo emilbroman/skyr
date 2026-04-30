@@ -351,19 +351,20 @@ impl ContainerPlugin {
         let qualified_name =
             image_name::qualify(env_qid.repo.org.as_str(), env_qid.repo.repo.as_str(), &name);
 
-        // Create a DeploymentClient for this deployment
-        let repo_client = self.inner.cdb.repo(deployment_qid.repo_qid().clone());
-        let deployment_client = repo_client.deployment(
-            deployment_qid.environment_qid().environment.clone(),
-            deployment_qid.deployment.clone(),
-        );
+        // We only need the commit's tree to build the image — deployment
+        // identity isn't relevant to extracting the build context.
+        let commit_client = self
+            .inner
+            .cdb
+            .repo(deployment_qid.repo_qid().clone())
+            .commit(deployment_qid.deployment.commit.clone());
 
         // Extract the Git context to a temporary directory
         let temp_dir = tempfile::tempdir()
             .map_err(|e| PluginError::Internal(format!("failed to create temp dir: {e}")))?;
 
         // Extract the context directory from the Git tree
-        extract_context(&deployment_client, &context, temp_dir.path()).await?;
+        extract_context(&commit_client, &context, temp_dir.path()).await?;
 
         debug!(
             temp_dir = %temp_dir.path().display(),
@@ -2109,7 +2110,7 @@ fn parse_env_qid_string(deployment_qid: &str) -> Result<String, PluginError> {
 
 /// Extract a directory from the Git tree to the filesystem.
 async fn extract_context(
-    client: &cdb::DeploymentClient,
+    client: &cdb::CommitClient,
     context_path: &str,
     dest: &Path,
 ) -> Result<(), PluginError> {
@@ -2148,7 +2149,7 @@ async fn extract_context(
 /// `context_root` is the canonicalized root directory used to validate that
 /// symlink targets do not escape the build context.
 async fn extract_tree_recursive(
-    client: &cdb::DeploymentClient,
+    client: &cdb::CommitClient,
     tree: &gix_object::Tree,
     tree_path: &Path,
     dest: &Path,
