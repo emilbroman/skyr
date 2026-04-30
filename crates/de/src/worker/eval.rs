@@ -30,6 +30,20 @@ pub(crate) struct EvalOutcome {
     /// `LEVEL: <module>:<span>: <diag>` line per diagnostic, joined by `\n`,
     /// suitable for surfacing to end users via the RQ failure report.
     pub(crate) compile_error_message: Option<String>,
+    /// True when at least one resource owned by this deployment carries the
+    /// [`sclc::Marker::Volatile`] marker. Combined with
+    /// `has_volatile_cross_repo_pins`, this gates the terminal-state rule
+    /// for bootstrapped DESIRED deployments: when both are false and the
+    /// deployment has converged (`!had_effect`), the worker can stop its
+    /// reconciliation loop because nothing it depends on can change without
+    /// an external trigger (a new push or a supersession).
+    pub(crate) has_volatile_owned_resource: bool,
+    /// True when the local repo's `Package.scle` declares at least one
+    /// dependency pinned to a branch or tag (a volatile specifier per
+    /// [`sclc::Specifier::is_volatile`]). Hash-pinned and absent manifests
+    /// both yield `false`. See `has_volatile_owned_resource` for how this
+    /// participates in the terminal-state decision.
+    pub(crate) has_volatile_cross_repo_pins: bool,
 }
 
 impl Worker {
@@ -93,6 +107,11 @@ impl Worker {
                     fully_explored: false,
                     had_effect: false,
                     compile_error_message: Some(compile_error_message),
+                    // Compile failed; we never inspected resources or pins,
+                    // and the deployment must keep reconciling regardless
+                    // (the terminal rule is gated on `!had_effect` anyway).
+                    has_volatile_owned_resource: false,
+                    has_volatile_cross_repo_pins: false,
                 });
             }
 
@@ -172,16 +191,24 @@ impl Worker {
         }
         let mut unowned_resource_owner_by_id = HashMap::new();
         let mut volatile_resource_ids = HashSet::new();
+        // Tracked separately from `volatile_resource_ids` because the
+        // terminal-state rule cares only about resources THIS deployment
+        // owns, whereas `volatile_resource_ids` (used for Check messages
+        // on TouchResource) is scoped by effect filtering downstream and
+        // does not need to filter by owner here.
+        let mut has_volatile_owned_resource = false;
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
             let resource_id = resource_id_from(&resource);
-            if resource.owner.as_deref() != Some(owner_deployment_qid.as_str())
-                && let Some(owner) = resource.owner.clone()
-            {
+            let is_owned = resource.owner.as_deref() == Some(owner_deployment_qid.as_str());
+            if !is_owned && let Some(owner) = resource.owner.clone() {
                 unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
             }
             if resource.markers.contains(&sclc::Marker::Volatile) {
                 volatile_resource_ids.insert(resource_id.clone());
+                if is_owned {
+                    has_volatile_owned_resource = true;
+                }
             }
 
             eval_ctx.add_resource(
@@ -195,6 +222,16 @@ impl Worker {
             );
         }
         drop(resources);
+
+        // Captured before the effects task starts so we can stamp the
+        // resulting `EvalOutcome` with the terminal-rule inputs without
+        // having to thread the cross-repo finder into the spawned task.
+        // `None` (no manifest, or no dependencies) collapses to `false`,
+        // matching the pre-v2 behaviour: a deployment with no cross-repo
+        // deps cannot have volatile pins.
+        let has_volatile_cross_repo_pins = cross_repo_finder
+            .as_ref()
+            .is_some_and(|f| f.has_volatile_pins());
 
         let log_publisher = self.log_publisher.clone();
         let env_qid = self.environment_qid.clone();
@@ -447,6 +484,8 @@ impl Worker {
                         fully_explored: !had_mutation,
                         had_effect,
                         compile_error_message: None,
+                        has_volatile_owned_resource,
+                        has_volatile_cross_repo_pins,
                     }
                 }
             }

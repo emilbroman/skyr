@@ -493,6 +493,43 @@ impl Worker {
                         self.client.set_progress(true).await?;
                     }
                     self.transition_superseded_to_undesired().await?;
+
+                    // Terminal-state rule for bootstrapped DESIRED
+                    // deployments (re-introduced post-DE-v2; pre-v2 this
+                    // was the `Up` transition removed in 5f11804). When a
+                    // converged deployment owns no `Volatile` resources
+                    // and its `Package.scle` declares no branch- or
+                    // tag-pinned cross-repo dependencies, no internal
+                    // signal can change its state — only an external
+                    // trigger (a new push, or a supersession) can. Stop
+                    // the reconciliation loop so the daemon parks the
+                    // worker as idle. The daemon's idle/respawn machinery
+                    // (see `crates/de/src/main.rs` — `Some(sender)` flips
+                    // to `None` on the next tick, then is respawned only
+                    // when `get_superseding()` returns `Some`) is
+                    // load-bearing for this path: dropping the worker
+                    // outright, or skipping the supersession poll on idle
+                    // workers, would silently break LINGERING→UNDESIRED→
+                    // DOWN for terminal deployments.
+                    if !outcome.has_volatile_owned_resource && !outcome.has_volatile_cross_repo_pins
+                    {
+                        tracing::info!(
+                            "{sid} bootstrapped with no volatile inputs; \
+                             stopping reconciliation loop (terminal)",
+                        );
+                        self.log_publisher
+                            .info(format!(
+                                "{sid} converged on non-volatile inputs; \
+                                 worker going idle",
+                            ))
+                            .await;
+                        return Ok(WorkResult {
+                            keep_running: false,
+                            state,
+                            outcome: IterationOutcome::Success,
+                            is_backoff_replay: false,
+                        });
+                    }
                 } else {
                     tracing::info!(
                         "{sid} evaluation incomplete; deferring superseded deployment teardown"
