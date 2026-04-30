@@ -120,7 +120,7 @@ impl Worker {
             for (foreign_repo, foreign_owner) in finder.resolved_owners().await {
                 if !cache_hit {
                     self.log_publisher
-                        .info(format!("Resolved package {foreign_owner}"))
+                        .info(format!("Resolved live package {foreign_owner}"))
                         .await;
                 }
                 let pkg_id = sclc::package_id_for_repo(&foreign_repo);
@@ -160,12 +160,10 @@ impl Worker {
             // Hash-pinned dependencies have no deployment owner. Mark them as
             // orphan so the evaluator stamps their effects with `None`, and
             // the drain task below logs them as errors.
-            for orphan_repo in finder.resolved_orphans().await {
+            for (orphan_repo, commit) in finder.resolved_orphans().await {
                 if !cache_hit {
                     self.log_publisher
-                        .info(format!(
-                            "Resolved package {orphan_repo} (hash-pinned, orphan)"
-                        ))
+                        .info(format!("Resolved static package {orphan_repo}@{commit}"))
                         .await;
                 }
                 let pkg_id = sclc::package_id_for_repo(&orphan_repo);
