@@ -3,7 +3,7 @@ mod deployment;
 mod repository;
 
 pub use client::{
-    Client, ClientBuilder, ConnectError, CreateRepositoryError, DeploymentClient,
+    Client, ClientBuilder, CommitClient, ConnectError, CreateRepositoryError, DeploymentClient,
     DeploymentQueryError, FileError, LoadObjectError, ReadObjectError, RepositoryClient,
     RepositoryQueryError, SetDeploymentError, WriteObjectError,
 };

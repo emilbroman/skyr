@@ -693,13 +693,21 @@ impl RepositoryClient {
         }
     }
 
+    pub fn commit(&self, commit: CommitHash) -> CommitClient {
+        CommitClient {
+            repo: self.clone(),
+            commit,
+        }
+    }
+
     pub fn deployment(
         &self,
         environment: EnvironmentId,
         deployment: DeploymentId,
     ) -> DeploymentClient {
+        let commit_client = self.commit(deployment.commit.clone());
         DeploymentClient {
-            repo: self.clone(),
+            commit_client,
             environment,
             deployment,
         }
@@ -924,94 +932,31 @@ impl RepositoryClient {
 }
 
 // ---------------------------------------------------------------------------
-// DeploymentClient
+// CommitClient
 // ---------------------------------------------------------------------------
 
+/// A client scoped to a single commit within a repository.
+///
+/// Provides commit-bound Git object reads (tree walks, file reads). The client
+/// does not know — and does not need to know — whether the commit is part of
+/// any deployment.
 #[derive(Clone)]
-pub struct DeploymentClient {
+pub struct CommitClient {
     repo: RepositoryClient,
-    environment: EnvironmentId,
-    deployment: DeploymentId,
+    commit: CommitHash,
 }
 
-impl DeploymentClient {
+impl CommitClient {
     pub fn repo_qid(&self) -> &RepoQid {
         &self.repo.name
     }
 
-    pub fn environment_id(&self) -> &EnvironmentId {
-        &self.environment
-    }
-
-    pub fn deployment_id(&self) -> &DeploymentId {
-        &self.deployment
-    }
-
-    pub fn deployment_qid(&self) -> ids::DeploymentQid {
-        self.repo
-            .name
-            .environment(self.environment.clone())
-            .deployment(self.deployment.clone())
-    }
-
-    pub fn environment_qid(&self) -> ids::EnvironmentQid {
-        self.repo.name.environment(self.environment.clone())
-    }
-
     pub fn commit_hash(&self) -> ObjectId {
-        ObjectId::from_bytes_or_panic(&self.deployment.commit.to_bytes())
+        ObjectId::from_bytes_or_panic(&self.commit.to_bytes())
     }
 
-    pub async fn get(&self) -> Result<Deployment, DeploymentQueryError> {
-        self.repo
-            .client
-            .find_deployment(&self.repo.name, &self.environment, &self.deployment)
-            .await
-    }
-
-    pub async fn set(&self, state: DeploymentState) -> Result<(), SetDeploymentError> {
-        let prev_state = self.get().await.ok();
-
-        if let (
-            Some(Deployment {
-                state: DeploymentState::Down,
-                ..
-            }),
-            DeploymentState::Undesired,
-        ) = (&prev_state, state)
-        {
-            return Ok(());
-        }
-
-        let deployment = Deployment {
-            repo: self.repo.name.clone(),
-            environment: self.environment.clone(),
-            deployment: self.deployment.clone(),
-            created_at: prev_state
-                .as_ref()
-                .map(|s| s.created_at)
-                .unwrap_or_else(Utc::now),
-            state,
-            bootstrapped: prev_state.as_ref().map(|s| s.bootstrapped).unwrap_or(false),
-        };
-
-        self.repo.client.set_deployment(deployment).await?;
-
-        Ok(())
-    }
-
-    /// Update the bootstrapped flag without changing the state.
-    pub async fn set_progress(&self, bootstrapped: bool) -> Result<(), SetDeploymentError> {
-        let prev = self.get().await?;
-
-        let deployment = Deployment {
-            bootstrapped,
-            ..prev
-        };
-
-        self.repo.client.set_deployment(deployment).await?;
-
-        Ok(())
+    pub async fn read_commit(&self) -> Result<Commit, ReadObjectError> {
+        self.repo.read_commit(self.commit_hash()).await
     }
 
     pub async fn read_dir(&self, path: Option<impl AsRef<Path>>) -> Result<Tree, FileError> {
@@ -1100,23 +1045,134 @@ impl DeploymentClient {
             .find(|e| e.filename.as_slice() == filename.as_encoded_bytes())
             .map(|e| e.oid))
     }
+}
+
+// ---------------------------------------------------------------------------
+// DeploymentClient
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+pub struct DeploymentClient {
+    commit_client: CommitClient,
+    environment: EnvironmentId,
+    deployment: DeploymentId,
+}
+
+impl std::ops::Deref for DeploymentClient {
+    type Target = CommitClient;
+    fn deref(&self) -> &CommitClient {
+        &self.commit_client
+    }
+}
+
+impl DeploymentClient {
+    /// Borrow the underlying commit-scoped client.
+    pub fn commit_client(&self) -> &CommitClient {
+        &self.commit_client
+    }
+
+    /// Discard the deployment-level scope and return an owned commit-scoped
+    /// client.
+    pub fn into_commit_client(self) -> CommitClient {
+        self.commit_client
+    }
+
+    pub fn deployment_qid(&self) -> ids::DeploymentQid {
+        self.commit_client
+            .repo
+            .name
+            .environment(self.environment.clone())
+            .deployment(self.deployment.clone())
+    }
+
+    pub fn environment_qid(&self) -> ids::EnvironmentQid {
+        self.commit_client
+            .repo
+            .name
+            .environment(self.environment.clone())
+    }
+
+    pub async fn get(&self) -> Result<Deployment, DeploymentQueryError> {
+        self.commit_client
+            .repo
+            .client
+            .find_deployment(
+                &self.commit_client.repo.name,
+                &self.environment,
+                &self.deployment,
+            )
+            .await
+    }
+
+    pub async fn set(&self, state: DeploymentState) -> Result<(), SetDeploymentError> {
+        let prev_state = self.get().await.ok();
+
+        if let (
+            Some(Deployment {
+                state: DeploymentState::Down,
+                ..
+            }),
+            DeploymentState::Undesired,
+        ) = (&prev_state, state)
+        {
+            return Ok(());
+        }
+
+        let deployment = Deployment {
+            repo: self.commit_client.repo.name.clone(),
+            environment: self.environment.clone(),
+            deployment: self.deployment.clone(),
+            created_at: prev_state
+                .as_ref()
+                .map(|s| s.created_at)
+                .unwrap_or_else(Utc::now),
+            state,
+            bootstrapped: prev_state.as_ref().map(|s| s.bootstrapped).unwrap_or(false),
+        };
+
+        self.commit_client
+            .repo
+            .client
+            .set_deployment(deployment)
+            .await?;
+
+        Ok(())
+    }
+
+    /// Update the bootstrapped flag without changing the state.
+    pub async fn set_progress(&self, bootstrapped: bool) -> Result<(), SetDeploymentError> {
+        let prev = self.get().await?;
+
+        let deployment = Deployment {
+            bootstrapped,
+            ..prev
+        };
+
+        self.commit_client
+            .repo
+            .client
+            .set_deployment(deployment)
+            .await?;
+
+        Ok(())
+    }
 
     pub async fn mark_superseded_by(
         &self,
         superseding: &DeploymentId,
     ) -> Result<(), SetDeploymentError> {
         let superseding_oid = ObjectId::from_bytes_or_panic(&superseding.commit.to_bytes());
-        let this_oid = self.commit_hash();
-        self.repo
-            .client
+        let this_oid = self.commit_client.commit_hash();
+        let repo = &self.commit_client.repo;
+        repo.client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.create_supersession,
+                &repo.client.statements.create_supersession,
                 (
                     superseding_oid.as_bytes(),
                     superseding.nonce.as_u64() as i64,
-                    self.repo.name.org.as_str(),
-                    self.repo.name.repo.as_str(),
+                    repo.name.org.as_str(),
+                    repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
                     self.deployment.nonce.as_u64() as i64,
@@ -1127,20 +1183,16 @@ impl DeploymentClient {
     }
 
     pub async fn superseded(&self) -> Result<Vec<DeploymentClient>, DeploymentQueryError> {
-        let this_oid = self.commit_hash();
-        let pager = self
-            .repo
+        let this_oid = self.commit_client.commit_hash();
+        let repo = &self.commit_client.repo;
+        let pager = repo
             .client
             .session
             .execute_iter(
-                self.repo
-                    .client
-                    .statements
-                    .get_superseded_deployments
-                    .clone(),
+                repo.client.statements.get_superseded_deployments.clone(),
                 (
-                    self.repo.name.org.as_str(),
-                    self.repo.name.repo.as_str(),
+                    repo.name.org.as_str(),
+                    repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
                     self.deployment.nonce.as_u64() as i64,
@@ -1155,9 +1207,7 @@ impl DeploymentClient {
                 let commit = CommitHash::from_bytes(&commit_hash)
                     .map_err(|_| DeploymentQueryError::NotFound)?;
                 let deploy_id = DeploymentId::new(commit, DeploymentNonce::from_u64(nonce as u64));
-                Ok::<_, DeploymentQueryError>(
-                    self.repo.deployment(self.environment.clone(), deploy_id),
-                )
+                Ok::<_, DeploymentQueryError>(repo.deployment(self.environment.clone(), deploy_id))
             })
             .try_collect::<Vec<_>>()
             .await?;
@@ -1173,9 +1223,10 @@ impl DeploymentClient {
     /// transitioned to `Lingering` and a supersession row is recorded
     /// linking it to this deployment.
     pub async fn make_desired(&self) -> Result<(), SetDeploymentError> {
+        let repo = &self.commit_client.repo;
         // Find currently-active deployments in the same environment.
         let mut active: Vec<Deployment> = Vec::new();
-        let mut stream = self.repo.active_deployments().await?;
+        let mut stream = repo.active_deployments().await?;
         while let Some(dep) = stream.next().await {
             let dep = dep?;
             if dep.environment != self.environment {
@@ -1191,9 +1242,7 @@ impl DeploymentClient {
 
         // Mark each as Lingering and record the supersession.
         for dep in active {
-            let predecessor = self
-                .repo
-                .deployment(dep.environment.clone(), dep.deployment.clone());
+            let predecessor = repo.deployment(dep.environment.clone(), dep.deployment.clone());
             let (r1, r2) = futures::join!(
                 predecessor.set(DeploymentState::Lingering),
                 predecessor.mark_superseded_by(&self.deployment),
@@ -1207,16 +1256,16 @@ impl DeploymentClient {
     }
 
     pub async fn get_superseding(&self) -> Result<Option<DeploymentClient>, DeploymentQueryError> {
-        let this_oid = self.commit_hash();
-        let r = self
-            .repo
+        let this_oid = self.commit_client.commit_hash();
+        let repo = &self.commit_client.repo;
+        let r = repo
             .client
             .session
             .execute_unpaged(
-                &self.repo.client.statements.get_superseding_deployment,
+                &repo.client.statements.get_superseding_deployment,
                 (
-                    self.repo.name.org.as_str(),
-                    self.repo.name.repo.as_str(),
+                    repo.name.org.as_str(),
+                    repo.name.repo.as_str(),
                     self.environment.as_str(),
                     this_oid.as_bytes(),
                     self.deployment.nonce.as_u64() as i64,
@@ -1230,7 +1279,7 @@ impl DeploymentClient {
             .and_then(|(superseding, nonce)| {
                 let commit = CommitHash::from_bytes(&superseding).ok()?;
                 let deploy_id = DeploymentId::new(commit, DeploymentNonce::from_u64(nonce as u64));
-                Some(self.repo.deployment(self.environment.clone(), deploy_id))
+                Some(repo.deployment(self.environment.clone(), deploy_id))
             }))
     }
 }
