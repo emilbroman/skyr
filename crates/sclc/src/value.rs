@@ -1,3 +1,4 @@
+use ids::ObjId;
 use ordered_float::NotNan;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
@@ -5,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathValue {
     pub path: String,
-    pub hash: gix_hash::ObjectId,
+    pub hash: ObjId,
 }
 
 impl Serialize for PathValue {
@@ -16,7 +17,7 @@ impl Serialize for PathValue {
         use serde::ser::SerializeStruct;
         let mut s = serializer.serialize_struct("PathValue", 2)?;
         s.serialize_field("path", &self.path)?;
-        s.serialize_field("hash", &self.hash.to_hex().to_string())?;
+        s.serialize_field("hash", &self.hash.to_string())?;
         s.end()
     }
 }
@@ -32,8 +33,7 @@ impl<'de> Deserialize<'de> for PathValue {
             hash: String,
         }
         let raw = Raw::deserialize(deserializer)?;
-        let hash =
-            gix_hash::ObjectId::from_hex(raw.hash.as_bytes()).map_err(serde::de::Error::custom)?;
+        let hash: ObjId = raw.hash.parse().map_err(serde::de::Error::custom)?;
         Ok(PathValue {
             path: raw.path,
             hash,

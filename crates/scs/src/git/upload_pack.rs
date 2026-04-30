@@ -42,14 +42,21 @@ fn encode_pack_header(kind: gix_object::Kind, mut size: u64) -> Vec<u8> {
 /// When `max_depth` is `Some(n)`, commit traversal stops at depth `n`
 /// from the wanted commits (depth 1 = the want itself). Trees and blobs
 /// reachable from included commits are always sent regardless of depth.
+///
+/// The wire-format wants/haves come in as [`ids::ObjId`] (application-level
+/// identity), but the internal traversal walks any kind of git object so
+/// stays in `gix_hash::ObjectId` — the most natural type for the
+/// `gix-pack`/`gix-object` APIs that resolve the actual object content.
 async fn collect_objects(
     client: &cdb::RepositoryClient,
-    wants: Vec<gix_hash::ObjectId>,
-    haves: &HashSet<gix_hash::ObjectId>,
+    wants: Vec<ids::ObjId>,
+    haves: &HashSet<ids::ObjId>,
     max_depth: Option<u32>,
 ) -> anyhow::Result<Vec<PackObject>> {
-    let mut stack: Vec<(gix_hash::ObjectId, u32)> = wants.into_iter().map(|oid| (oid, 1)).collect();
+    let mut stack: Vec<(gix_hash::ObjectId, u32)> =
+        wants.into_iter().map(|oid| (oid.into(), 1)).collect();
     let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
+    let haves: HashSet<gix_hash::ObjectId> = haves.iter().map(|h| (*h).into()).collect();
     let mut out = Vec::new();
 
     while let Some((oid, depth)) = stack.pop() {
@@ -59,7 +66,7 @@ async fn collect_objects(
         if haves.contains(&oid) {
             continue;
         }
-        let (kind, data) = client.read_raw_object(oid).await?;
+        let (kind, data) = client.read_raw_object(oid.into()).await?;
 
         match kind {
             gix_object::Kind::Commit => {
@@ -108,7 +115,7 @@ impl<'a> CommandHandler<'a> {
         let mut use_sideband = false;
         let mut use_multi_ack_detailed = false;
         let mut use_no_done = false;
-        let mut client_shallow: HashSet<gix_hash::ObjectId> = HashSet::new();
+        let mut client_shallow: HashSet<ids::ObjId> = HashSet::new();
         let mut deepen: Option<u32> = None;
         let wants = {
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
@@ -155,10 +162,10 @@ impl<'a> CommandHandler<'a> {
                         }
                         first_want = false;
                     }
-                    let oid = gix_hash::ObjectId::from_hex(hex)?;
+                    let oid = ids::ObjId::from_hex(hex)?;
                     wants.push(oid);
                 } else if let Some(hex) = data.strip_prefix(b"shallow ") {
-                    let oid = gix_hash::ObjectId::from_hex(hex)?;
+                    let oid = ids::ObjId::from_hex(hex)?;
                     client_shallow.insert(oid);
                 } else if let Some(n) = data.strip_prefix(b"deepen ") {
                     deepen = Some(std::str::from_utf8(n)?.parse::<u32>()?);
@@ -178,11 +185,11 @@ impl<'a> CommandHandler<'a> {
         // become unshallowed (parents now included after deepening).
         if deepen.is_some() || !client_shallow.is_empty() {
             let max_depth = deepen.unwrap_or(u32::MAX);
-            let mut new_shallow: Vec<gix_hash::ObjectId> = Vec::new();
-            let mut new_unshallow: Vec<gix_hash::ObjectId> = Vec::new();
+            let mut new_shallow: Vec<ids::ObjId> = Vec::new();
+            let mut new_unshallow: Vec<ids::ObjId> = Vec::new();
             {
-                let mut seen: HashSet<gix_hash::ObjectId> = HashSet::new();
-                let mut stack: Vec<(gix_hash::ObjectId, u32)> =
+                let mut seen: HashSet<ids::ObjId> = HashSet::new();
+                let mut stack: Vec<(ids::ObjId, u32)> =
                     wants.iter().copied().map(|oid| (oid, 1)).collect();
                 while let Some((oid, depth)) = stack.pop() {
                     if !seen.insert(oid) {
@@ -202,7 +209,7 @@ impl<'a> CommandHandler<'a> {
                         }
                         let iter = gix_object::CommitRefIter::from_bytes(&data);
                         for parent in iter.parent_ids() {
-                            stack.push((parent, depth + 1));
+                            stack.push((parent.into(), depth + 1));
                         }
                     }
                 }
@@ -236,8 +243,8 @@ impl<'a> CommandHandler<'a> {
         // is active — tell the client which objects we share so it can send an
         // optimal set of haves and know when to stop.
         let (haves, last_common) = {
-            let mut haves = HashSet::new();
-            let mut last_common: Option<gix_hash::ObjectId> = None;
+            let mut haves: HashSet<ids::ObjId> = HashSet::new();
+            let mut last_common: Option<ids::ObjId> = None;
             let mut sent_ready = false;
             let mut pkt = gix_packetline::async_io::StreamingPeekableIter::new(
                 r.compat(),
@@ -256,7 +263,7 @@ impl<'a> CommandHandler<'a> {
                             break;
                         }
                         if let Some(hex) = data.strip_prefix(b"have ")
-                            && let Ok(oid) = gix_hash::ObjectId::from_hex(hex)
+                            && let Ok(oid) = ids::ObjId::from_hex(hex)
                         {
                             haves.insert(oid);
                             if use_multi_ack_detailed

@@ -201,7 +201,6 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "futures-util",
- "gix-hash",
  "gix-object",
  "http 1.4.0",
  "ids",
@@ -1101,7 +1100,6 @@ dependencies = [
  "chrono",
  "futures",
  "futures-util",
- "gix-hash",
  "gix-object",
  "ids",
  "scylla",
@@ -1249,7 +1247,6 @@ dependencies = [
  "sclc",
  "serde",
  "serde_json",
- "sha1 0.10.6",
  "tabular",
  "tokio",
  "tokio-tungstenite",
@@ -3226,8 +3223,11 @@ dependencies = [
 name = "ids"
 version = "0.1.0"
 dependencies = [
+ "gix-hash",
+ "gix-object",
  "rand 0.9.2",
  "serde",
+ "sha1 0.10.6",
  "thiserror 2.0.18",
 ]
 
@@ -3641,7 +3641,7 @@ name = "lsp"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "gix-hash",
+ "ids",
  "lsp-types",
  "sclc",
  "serde",
@@ -5621,7 +5621,6 @@ dependencies = [
  "cdb",
  "chrono",
  "futures-util",
- "gix-hash",
  "hex",
  "hmac",
  "ids",

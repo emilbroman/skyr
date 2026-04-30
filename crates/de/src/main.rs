@@ -60,7 +60,9 @@ fn deployment_owned_by_worker(
     if worker_count <= 1 {
         return true;
     }
-    let hex_prefix = &deployment_id.commit.as_str()[..16];
+    // Hash the deployment by the first 16 hex chars of its commit hash.
+    let hex = deployment_id.commit.to_string();
+    let hex_prefix = &hex[..16];
     let hash = u64::from_str_radix(hex_prefix, 16).unwrap_or(0);
     (hash % worker_count as u64) == worker_index as u64
 }

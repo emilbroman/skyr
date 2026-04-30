@@ -357,7 +357,7 @@ impl ContainerPlugin {
             .inner
             .cdb
             .repo(deployment_qid.repo_qid().clone())
-            .commit(deployment_qid.deployment.commit.clone());
+            .commit(deployment_qid.deployment.commit);
 
         // Extract the Git context to a temporary directory
         let temp_dir = tempfile::tempdir()

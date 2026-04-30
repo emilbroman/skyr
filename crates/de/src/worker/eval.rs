@@ -44,7 +44,7 @@ impl Worker {
         // Eagerly resolve every declared cross-repo dep so we can use the
         // resolved commits as a cache key. This also populates the finder's
         // internal owner table, which `resolved_owners()` reads below.
-        let resolved_key: BTreeMap<ids::RepoQid, ids::CommitHash> = match &cross_repo_finder {
+        let resolved_key: BTreeMap<ids::RepoQid, ids::ObjId> = match &cross_repo_finder {
             Some(f) => f.resolve_all().await?,
             None => BTreeMap::new(),
         };

@@ -19,10 +19,10 @@ Skyr organizes infrastructure into four levels:
 | **Organization** | `OrgId` | SCL symbol | `MyOrg` |
 | **Repository** | `RepoId` | SCL symbol | `MyRepo` |
 | **Environment** | `EnvironmentId` | Git ref (stripped) | `main`, `tag:v1.0` |
-| **Deployment** | `DeploymentId` | `CommitHash.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
+| **Deployment** | `DeploymentId` | `ObjId.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
 | **Resource** | `ResourceId` | `Type:Name` | `Std/Random.Int:seed` |
 
-A `DeploymentId` is the pair `(commit, nonce)`: a `CommitHash` (40-char lowercase hex SHA-1) and a `DeploymentNonce` (16-char lowercase hex `u64`). The nonce distinguishes multiple deployments of the same commit.
+A `DeploymentId` is the pair `(commit, nonce)`: an `ObjId` (40-char lowercase hex SHA-1 of a git object — here, the commit) and a `DeploymentNonce` (16-char lowercase hex `u64`). The nonce distinguishes multiple deployments of the same commit.
 
 SCL symbol validation requires: non-empty, first character alphabetic or `_`, remaining characters alphanumeric or `_`.
 
@@ -98,10 +98,17 @@ QID types provide accessors for parent scopes:
 
 ### Binary Encoding
 
-`CommitHash` supports binary encoding for compact storage:
+`ObjId` (the type backing the `commit` field of a `DeploymentId`, and any other git object hash referenced by Skyr) supports binary encoding for compact storage:
 
-- `CommitHash::from_bytes(&[u8])` — decode from 20-byte SHA-1 representation
-- `CommitHash::to_bytes()` → `[u8; 20]` — encode to bytes
+- `ObjId::from_bytes(&[u8])` — decode from 20-byte SHA-1 representation
+- `ObjId::to_bytes()` → `[u8; 20]` — encode to bytes
+- `ObjId::as_bytes()` — borrow the 20 bytes
+- `ObjId::from_hex(&[u8])` — decode from 40-byte ASCII lowercase hex
+- `ObjId::null()` — the all-zero hash (git's null OID)
+- `ObjId::hash_bytes(&[u8])` — SHA-1 of raw content (no git framing)
+- `ObjId::from_git_object(kind, &[u8])` — SHA-1 of `<kind> <len>\0<data>` (the git object hash)
+
+`ObjId` round-trips losslessly with `gix_hash::ObjectId` via `From`/`Into`/`AsRef` so the rare git-protocol-facing call sites can convert at the boundary without parsing through hex.
 
 ## Related Crates
 

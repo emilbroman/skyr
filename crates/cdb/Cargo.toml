@@ -7,7 +7,6 @@ edition = "2024"
 chrono = { version = "0.4.43", features = ["serde"] }
 futures = "0.3.31"
 futures-util = "0.3.31"
-gix-hash = "0.22.0"
 gix-object = "0.56.0"
 ids = { path = "../ids" }
 scylla = { version = "1.5.0", features = ["chrono-04"] }

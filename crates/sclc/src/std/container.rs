@@ -53,8 +53,8 @@ fn image_extern_fn(
 
     // Compute content-addressed resource name from Git object hashes
     let mut hasher = sha1::Sha1::new();
-    hasher.update(context.hash.to_hex().to_string().as_bytes());
-    hasher.update(containerfile.hash.to_hex().to_string().as_bytes());
+    hasher.update(context.hash.to_string().as_bytes());
+    hasher.update(containerfile.hash.to_string().as_bytes());
     let hash = hex::encode(hasher.finalize());
     let resource_name = format!("{name}-{hash}");
 

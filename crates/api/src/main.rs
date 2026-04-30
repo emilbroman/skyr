@@ -673,7 +673,7 @@ impl Mutation {
         let env: ids::EnvironmentId = environment
             .parse()
             .map_err(|_| field_error("Invalid environment name"))?;
-        let commit: ids::CommitHash = commit_hash
+        let commit: ids::ObjId = commit_hash
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_qid = ids::RepoQid { org, repo };

@@ -82,7 +82,7 @@ impl sclc::Package for OverlayPackage {
         // If the file is open in the editor, report it as existing.
         let absolute = self.root.join(path);
         if self.documents.get(&absolute).is_some() {
-            let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let null_hash = ids::ObjId::null();
             return Ok(Some(Cow::Owned(sclc::PackageEntity::File {
                 hash: null_hash,
             })));
@@ -108,7 +108,7 @@ impl sclc::Package for OverlayPackage {
         // Check if an open document would make a missing directory appear
         if result.is_none() {
             let prefix = self.root.join(path);
-            let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let null_hash = ids::ObjId::null();
             let children = dir_children_from_documents(&self.documents, &prefix, &HashSet::new());
 
             if !children.is_empty() {
@@ -501,7 +501,7 @@ fn dir_children_from_documents(
     exclude: &HashSet<String>,
 ) -> Vec<sclc::DirChild> {
     let prefix_str = prefix.to_string_lossy().to_string();
-    let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+    let null_hash = ids::ObjId::null();
     let mut children = Vec::new();
 
     for doc_path in documents.paths() {

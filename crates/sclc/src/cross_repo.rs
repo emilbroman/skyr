@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use ids::{CommitHash, DeploymentQid, OrgId, RepoQid};
+use ids::{DeploymentQid, ObjId, OrgId, RepoQid};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -48,7 +48,7 @@ pub struct CrossRepoPackageFinder {
     /// dependency regardless of specifier kind. The DE uses this map as the
     /// compile cache key — recompilation is needed when, and only when, the
     /// resolved source for any dependency changes.
-    resolved_commits: RwLock<HashMap<RepoQid, CommitHash>>,
+    resolved_commits: RwLock<HashMap<RepoQid, ObjId>>,
     /// Deployment QIDs for dependencies that resolved through an active
     /// deployment (branch or tag specifiers). Hash-pinned dependencies do
     /// not appear here — see [`Self::resolved_orphans`].
@@ -115,14 +115,14 @@ impl CrossRepoPackageFinder {
     /// The DE registers each with `EvalCtx::set_package_orphan` so effects
     /// emitted from their globals are flagged as orphan and surfaced as
     /// errors instead of being silently attributed to the local deployment.
-    pub async fn resolved_orphans(&self) -> HashMap<RepoQid, CommitHash> {
+    pub async fn resolved_orphans(&self) -> HashMap<RepoQid, ObjId> {
         let (orphans, commits) =
             tokio::join!(self.resolved_orphans.read(), self.resolved_commits.read());
         orphans
             .iter()
             .filter_map(|k| {
                 let commit = commits.get(k)?;
-                Some((k.clone(), commit.clone()))
+                Some((k.clone(), *commit))
             })
             .collect()
     }
@@ -137,7 +137,7 @@ impl CrossRepoPackageFinder {
     /// Eagerly resolve every declared dependency to its current commit
     /// hash. Used by the DE to compute a cache key for the compiled ASG
     /// before deciding whether to recompile.
-    pub async fn resolve_all(&self) -> Result<BTreeMap<RepoQid, CommitHash>, CrossRepoError> {
+    pub async fn resolve_all(&self) -> Result<BTreeMap<RepoQid, ObjId>, CrossRepoError> {
         let repos: Vec<RepoQid> = self.dependencies.keys().cloned().collect();
         let mut out = BTreeMap::new();
         for repo in repos {
@@ -171,10 +171,7 @@ impl CrossRepoPackageFinder {
         }
 
         let resolution = self.lookup(repo, &specifier).await?;
-        let cc = self
-            .cdb
-            .repo(repo.clone())
-            .commit(resolution.commit.clone());
+        let cc = self.cdb.repo(repo.clone()).commit(resolution.commit);
         let pkg: Arc<dyn Package> = Arc::new(CachedPackage::new(cc));
 
         self.cache
@@ -232,7 +229,7 @@ impl CrossRepoPackageFinder {
                 // Hash specifiers bypass deployments. The pin addresses a
                 // specific commit; whether anything is currently deployed at
                 // that commit is irrelevant to package loading.
-                let commit: CommitHash = hex
+                let commit: ObjId = hex
                     .parse()
                     .map_err(|_| CrossRepoError::InvalidHash(hex.clone()))?;
                 Ok(Resolution {
@@ -290,7 +287,7 @@ impl CrossRepoPackageFinder {
 
 /// Outcome of resolving a single dependency specifier.
 struct Resolution {
-    commit: CommitHash,
+    commit: ObjId,
     /// `Some` for branch/tag specifiers (resolved through an active
     /// deployment); `None` for hash specifiers, which intentionally have no
     /// foreign owner.

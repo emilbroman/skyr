@@ -42,7 +42,9 @@ impl<'a> CommandHandler<'a> {
 
         if let Some(caps) = server_caps.take() {
             let mut line = vec![];
-            gix_hash::ObjectId::Sha1(Default::default()).write_hex_to(&mut line)?;
+            // Null OID for capabilities advertisement (40 zeros).
+            let null_oid: gix_hash::ObjectId = ids::ObjId::null().into();
+            null_oid.write_hex_to(&mut line)?;
             line.extend_from_slice(b" capabilities^{}\0");
             line.extend_from_slice(caps);
             line.push(b'\n');
@@ -75,8 +77,8 @@ impl<'a> CommandHandler<'a> {
             }
 
             let git_ref = deployment.environment.to_git_ref();
-            let commit_oid =
-                gix_hash::ObjectId::from_hex(deployment.deployment.commit.as_str().as_bytes())?;
+            // ObjId is already validated; just convert to the gix-typed form.
+            let commit_oid: gix_hash::ObjectId = deployment.deployment.commit.into();
             refs.push(Reference {
                 name: gix_ref::FullName::try_from(git_ref.as_str())?,
                 target: gix_ref::Target::Object(commit_oid),

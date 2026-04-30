@@ -92,7 +92,7 @@ mod tests {
 
         async fn lookup(&self, _path: &Path) -> Result<Option<Cow<'_, PackageEntity>>, LoadError> {
             self.lookup_count.fetch_add(1, Ordering::SeqCst);
-            let hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let hash = ids::ObjId::null();
             Ok(Some(Cow::Owned(PackageEntity::File { hash })))
         }
 

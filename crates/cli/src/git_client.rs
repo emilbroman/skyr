@@ -414,21 +414,7 @@ fn find_zlib_end(compressed: &[u8], expected_size: usize) -> anyhow::Result<usiz
 
 /// Compute a git object ID: SHA-1 of `"<type> <size>\0<data>"`.
 fn compute_object_id(kind: gix_object::Kind, data: &[u8]) -> gix_hash::ObjectId {
-    use sha1::Digest;
-
-    let type_str = match kind {
-        gix_object::Kind::Commit => "commit",
-        gix_object::Kind::Tree => "tree",
-        gix_object::Kind::Blob => "blob",
-        gix_object::Kind::Tag => "tag",
-    };
-
-    let header = format!("{type_str} {}\0", data.len());
-    let mut hasher = sha1::Sha1::new();
-    hasher.update(header.as_bytes());
-    hasher.update(data);
-    let hash = hasher.finalize();
-    gix_hash::ObjectId::from_bytes_or_panic(&hash)
+    ids::ObjId::from_git_object(kind, data).into()
 }
 
 // ---------------------------------------------------------------------------
@@ -443,9 +429,12 @@ fn extract_tree(objects: &[PackObject], commit_hash: &str, dest_dir: &Path) -> a
         by_oid.insert(obj.oid, obj);
     }
 
-    // Find the commit.
-    let commit_oid = gix_hash::ObjectId::from_hex(commit_hash.as_bytes())
+    // Find the commit. ObjId validates first; convert to gix's `ObjectId`
+    // only at the lookup boundary.
+    let commit_id: ids::ObjId = commit_hash
+        .parse()
         .map_err(|e| anyhow!("invalid commit hash: {e}"))?;
+    let commit_oid: gix_hash::ObjectId = commit_id.into();
     let commit_obj = by_oid
         .get(&commit_oid)
         .ok_or_else(|| anyhow!("commit {commit_hash} not found in pack"))?;

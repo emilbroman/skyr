@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::Path;
 
+use ids::ObjId;
+
 use crate::{PackageId, Value};
 
 use super::{DirChild, DirChildKind, LoadError, Package, PackageEntity};
@@ -45,7 +47,7 @@ impl Package for StdPackage {
 
         // Check if it's a direct file match.
         if let Some(data) = self.files.get(&key) {
-            let hash = hash_bytes(data);
+            let hash = ObjId::hash_bytes(data);
             return Ok(Some(Cow::Owned(PackageEntity::File { hash })));
         }
 
@@ -74,14 +76,14 @@ impl Package for StdPackage {
                     children.push(DirChild {
                         name: dir_name.to_string(),
                         kind: DirChildKind::Dir,
-                        hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+                        hash: ObjId::null(),
                     });
                 }
             } else if seen.insert(relative.to_string()) {
                 children.push(DirChild {
                     name: relative.to_string(),
                     kind: DirChildKind::File,
-                    hash: hash_bytes(file_data),
+                    hash: ObjId::hash_bytes(file_data),
                 });
             }
         }
@@ -90,7 +92,7 @@ impl Package for StdPackage {
             Ok(None)
         } else {
             children.sort_by(|a, b| a.name.cmp(&b.name));
-            let hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let hash = ObjId::null();
             Ok(Some(Cow::Owned(PackageEntity::Dir { hash, children })))
         }
     }
@@ -106,13 +108,6 @@ impl Package for StdPackage {
     fn register_externs(&self, externs: &mut HashMap<String, Value>) {
         externs.extend(crate::std::collect_std_externs());
     }
-}
-
-/// Compute a SHA-1 hash of raw bytes.
-fn hash_bytes(data: &[u8]) -> gix_hash::ObjectId {
-    use sha1::Digest;
-    let hash = sha1::Sha1::digest(data);
-    gix_hash::ObjectId::from_bytes_or_panic(&hash)
 }
 
 #[cfg(test)]

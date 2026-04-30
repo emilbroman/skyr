@@ -128,17 +128,17 @@ pub enum ParseIdError {
     #[error("invalid environment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId)")]
     InvalidEnvironmentQid(String),
 
-    #[error("invalid commit hash: {0:?} (must be 40-char lowercase hex)")]
-    InvalidCommitHash(String),
+    #[error("invalid git object hash: {0:?} (must be 40-char lowercase hex)")]
+    InvalidObjId(String),
 
-    #[error("invalid deployment ID: {0:?} (expected format: CommitHash.Nonce)")]
+    #[error("invalid deployment ID: {0:?} (expected format: ObjId.Nonce)")]
     InvalidDeploymentId(String),
 
     #[error("invalid deployment nonce: {0:?} (must be 16-char lowercase hex)")]
     InvalidDeploymentNonce(String),
 
     #[error(
-        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@CommitHash.Nonce)"
+        "invalid deployment QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId@ObjId.Nonce)"
     )]
     InvalidDeploymentQid(String),
 
@@ -590,107 +590,152 @@ impl<'de> Deserialize<'de> for EnvironmentQid {
 }
 
 // ---------------------------------------------------------------------------
-// CommitHash
+// ObjId
 // ---------------------------------------------------------------------------
 
-/// A Git commit hash. The 40-character lowercase hexadecimal SHA-1 of a commit
-/// object, used as the commit-identity component of a [`DeploymentId`].
+/// A Git object hash: the 20-byte SHA-1 of a commit, tree, blob, or tag.
+///
+/// `ObjId` ("object ID") is the canonical type for naming any git object
+/// hash inside Skyr. Its repr is `gix_hash::ObjectId`, but that is an
+/// implementation detail — outside this crate (and a small handful of
+/// git-protocol-facing helpers in `scs` and `cli`), code should treat
+/// `ObjId` as opaque and convert via [`From`]/[`AsRef`] only at the few
+/// boundaries that genuinely speak `gix_hash`.
+///
+/// The wire / `Display` form is the 40-character lowercase hexadecimal
+/// representation, matching git's tooling.
 ///
 /// # Examples
 ///
 /// ```
-/// use ids::CommitHash;
-/// let h: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
-/// assert_eq!(h.as_str().len(), 40);
+/// use ids::ObjId;
+/// let h: ObjId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+/// assert_eq!(h.to_string().len(), 40);
 /// ```
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-pub struct CommitHash(String);
+pub struct ObjId(gix_hash::ObjectId);
 
-impl CommitHash {
-    /// Creates a new `CommitHash` without validation.
-    pub fn new_unchecked(s: impl Into<String>) -> Self {
-        Self(s.into())
+impl ObjId {
+    /// Wraps an existing [`gix_hash::ObjectId`].
+    pub const fn from_object_id(oid: gix_hash::ObjectId) -> Self {
+        Self(oid)
     }
 
-    /// Returns the commit hash as a string slice (40-char hex).
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// Borrowed access to the inner [`gix_hash::oid`].
+    pub fn as_object_id(&self) -> &gix_hash::oid {
+        self.0.as_ref()
     }
 
-    /// Creates a `CommitHash` from raw bytes (20-byte SHA-1 hash), encoding as hex.
+    /// The 20 raw bytes of the hash.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    /// Creates an `ObjId` from raw bytes (must be exactly 20 bytes).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, ParseIdError> {
         if bytes.len() != 20 {
-            return Err(ParseIdError::InvalidCommitHash(format!(
+            return Err(ParseIdError::InvalidObjId(format!(
                 "<{} bytes>",
                 bytes.len()
             )));
         }
-        use std::fmt::Write;
-        let mut hex = String::with_capacity(40);
-        for b in bytes {
-            write!(hex, "{b:02x}").unwrap();
-        }
-        Ok(Self(hex))
+        Ok(Self(gix_hash::ObjectId::from_bytes_or_panic(bytes)))
     }
 
-    /// Decodes the hex string into a 20-byte array.
+    /// Creates an `ObjId` from 40-byte ASCII lowercase hexadecimal.
+    pub fn from_hex(hex: &[u8]) -> Result<Self, ParseIdError> {
+        // Validate via FromStr so we emit ParseIdError::InvalidObjId
+        // rather than gix_hash's own error type.
+        let s = std::str::from_utf8(hex)
+            .map_err(|_| ParseIdError::InvalidObjId(String::from_utf8_lossy(hex).into_owned()))?;
+        s.parse()
+    }
+
+    /// The 20-byte form. Equivalent to `*self.as_bytes()` cast to a fixed
+    /// array; kept for symmetry with [`Self::from_bytes`].
     pub fn to_bytes(&self) -> [u8; 20] {
-        let mut out = [0u8; 20];
-        for (i, chunk) in self.0.as_bytes().chunks(2).enumerate() {
-            let hi = hex_digit(chunk[0]);
-            let lo = hex_digit(chunk[1]);
-            out[i] = (hi << 4) | lo;
-        }
-        out
+        self.0
+            .as_slice()
+            .try_into()
+            .expect("Sha1 ObjectId is always 20 bytes")
+    }
+
+    /// The all-zero SHA-1 hash. Used by git as the "null" object id, e.g.
+    /// in ref-update lines for ref creation/deletion.
+    pub fn null() -> Self {
+        Self(gix_hash::ObjectId::null(gix_hash::Kind::Sha1))
+    }
+
+    /// SHA-1 of an arbitrary byte buffer (raw content, no git framing).
+    pub fn hash_bytes(data: &[u8]) -> Self {
+        use sha1::Digest;
+        let digest = sha1::Sha1::digest(data);
+        Self(gix_hash::ObjectId::from_bytes_or_panic(&digest))
+    }
+
+    /// SHA-1 of `<kind> <len>\0<data>` — i.e. the git-object hash for the
+    /// given kind and uncompressed content.
+    pub fn from_git_object(kind: gix_object::Kind, data: &[u8]) -> Self {
+        let oid = gix_object::compute_hash(gix_hash::Kind::Sha1, kind, data)
+            .expect("compute_hash on Sha1 cannot fail");
+        Self(oid)
     }
 }
 
-fn hex_digit(b: u8) -> u8 {
-    match b {
-        b'0'..=b'9' => b - b'0',
-        b'a'..=b'f' => b - b'a' + 10,
-        _ => unreachable!(
-            "hex_digit called with non-hex byte 0x{b:02x}; CommitHash is always validated before use"
-        ),
-    }
-}
-
-impl fmt::Display for CommitHash {
+impl fmt::Display for ObjId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        // ObjectId's Display is the lowercase 40-char hex.
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
-impl fmt::Debug for CommitHash {
+impl fmt::Debug for ObjId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CommitHash({self})")
+        write!(f, "ObjId({})", self.0)
     }
 }
 
-impl FromStr for CommitHash {
+impl FromStr for ObjId {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if !is_valid_oid_hex(s) {
-            return Err(ParseIdError::InvalidCommitHash(s.to_string()));
+            return Err(ParseIdError::InvalidObjId(s.to_string()));
         }
-        Ok(Self(s.to_string()))
+        Ok(Self(
+            gix_hash::ObjectId::from_hex(s.as_bytes()).expect("validated above"),
+        ))
     }
 }
 
-impl From<CommitHash> for String {
-    fn from(id: CommitHash) -> Self {
+impl From<ObjId> for String {
+    fn from(id: ObjId) -> Self {
+        id.to_string()
+    }
+}
+
+impl TryFrom<String> for ObjId {
+    type Error = ParseIdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<gix_hash::ObjectId> for ObjId {
+    fn from(oid: gix_hash::ObjectId) -> Self {
+        Self(oid)
+    }
+}
+
+impl From<ObjId> for gix_hash::ObjectId {
+    fn from(id: ObjId) -> Self {
         id.0
     }
 }
 
-impl TryFrom<String> for CommitHash {
-    type Error = ParseIdError;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        if !is_valid_oid_hex(&s) {
-            return Err(ParseIdError::InvalidCommitHash(s));
-        }
-        Ok(Self(s))
+impl AsRef<gix_hash::oid> for ObjId {
+    fn as_ref(&self) -> &gix_hash::oid {
+        self.0.as_ref()
     }
 }
 
@@ -797,18 +842,18 @@ impl<'de> Deserialize<'de> for DeploymentNonce {
 /// ```
 /// use ids::DeploymentId;
 /// let id: DeploymentId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268.a1b2c3d4e5f60718".parse().unwrap();
-/// assert_eq!(id.commit.as_str(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
+/// assert_eq!(id.commit.to_string(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
 /// assert_eq!(id.nonce.as_u64(), 0xa1b2c3d4e5f60718);
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeploymentId {
-    pub commit: CommitHash,
+    pub commit: ObjId,
     pub nonce: DeploymentNonce,
 }
 
 impl DeploymentId {
     /// Creates a new `DeploymentId` from a commit hash and a nonce.
-    pub fn new(commit: CommitHash, nonce: DeploymentNonce) -> Self {
+    pub fn new(commit: ObjId, nonce: DeploymentNonce) -> Self {
         Self { commit, nonce }
     }
 
@@ -816,7 +861,7 @@ impl DeploymentId {
     /// `<6-char commit>.<2-char nonce>` (lowercase hex). Suitable for tight
     /// UI surfaces where the full deployment id is too long.
     pub fn short(&self) -> String {
-        let hash = self.commit.as_str();
+        let hash = self.commit.to_string();
         let nonce = self.nonce.to_string();
         format!("{}.{}", &hash[..6], &nonce[..2])
     }
@@ -1074,7 +1119,7 @@ impl<'de> Deserialize<'de> for ResourceQid {
 // DeploymentQid
 // ---------------------------------------------------------------------------
 
-/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@CommitHash.Nonce`.
+/// Qualified deployment identifier: `OrgId/RepoId::EnvironmentId@ObjId.Nonce`.
 ///
 /// This is the most specific identifier in the hierarchy, uniquely identifying
 /// a single deployment (revision) of an environment. The nonce distinguishes
@@ -1131,7 +1176,7 @@ impl FromStr for DeploymentQid {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Split on the last "@" — everything after is the deployment id
-        // (CommitHash.Nonce).
+        // (ObjId.Nonce).
         let Some((env_part, deploy_part)) = s.rsplit_once('@') else {
             return Err(ParseIdError::InvalidDeploymentQid(s.to_string()));
         };
@@ -1232,32 +1277,47 @@ mod tests {
     }
 
     #[test]
-    fn commit_hash_valid() {
-        let id: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
-        assert_eq!(id.as_str(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
+    fn obj_id_valid() {
+        let id: ObjId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+        assert_eq!(id.to_string(), "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268");
     }
 
     #[test]
-    fn commit_hash_invalid() {
-        assert!("too_short".parse::<CommitHash>().is_err());
+    fn obj_id_invalid() {
+        assert!("too_short".parse::<ObjId>().is_err());
         assert!(
             "2CBECBED4BFA1599EF4CE0DFC542C97A82D79268"
-                .parse::<CommitHash>()
+                .parse::<ObjId>()
                 .is_err()
         ); // uppercase
         assert!(
             "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
-                .parse::<CommitHash>()
+                .parse::<ObjId>()
                 .is_err()
         ); // non-hex
     }
 
     #[test]
-    fn commit_hash_bytes_roundtrip() {
-        let id: CommitHash = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
+    fn obj_id_bytes_roundtrip() {
+        let id: ObjId = "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268".parse().unwrap();
         let bytes = id.to_bytes();
-        let id2 = CommitHash::from_bytes(&bytes).unwrap();
+        let id2 = ObjId::from_bytes(&bytes).unwrap();
         assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn obj_id_null() {
+        let id = ObjId::null();
+        assert_eq!(id.to_string(), "0000000000000000000000000000000000000000");
+        assert_eq!(id.to_bytes(), [0u8; 20]);
+        assert_eq!(id.as_bytes(), &[0u8; 20]);
+    }
+
+    #[test]
+    fn obj_id_hash_bytes() {
+        // SHA-1 of empty string is da39a3ee5e6b4b0d3255bfef95601890afd80709.
+        let id = ObjId::hash_bytes(b"");
+        assert_eq!(id.to_string(), "da39a3ee5e6b4b0d3255bfef95601890afd80709");
     }
 
     #[test]
@@ -1295,7 +1355,7 @@ mod tests {
         let id: DeploymentId = s.parse().unwrap();
         assert_eq!(id.to_string(), s);
         assert_eq!(
-            id.commit.as_str(),
+            id.commit.to_string(),
             "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
         );
         assert_eq!(id.nonce.as_u64(), 0xa1b2c3d4e5f60718);
@@ -1328,7 +1388,7 @@ mod tests {
         assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
         assert_eq!(qid.repo_qid().to_string(), "MyOrg/MyRepo");
         assert_eq!(
-            qid.deployment.commit.as_str(),
+            qid.deployment.commit.to_string(),
             "2cbecbed4bfa1599ef4ce0dfc542c97a82d79268"
         );
         assert_eq!(qid.deployment.nonce.as_u64(), 0xa1b2c3d4e5f60718);

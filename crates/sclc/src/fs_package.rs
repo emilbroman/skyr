@@ -2,6 +2,8 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use ids::ObjId;
+
 use crate::{PackageId, Value};
 
 use super::{DirChild, DirChildKind, LoadError, Package, PackageEntity};
@@ -35,7 +37,7 @@ impl Package for FsPackage {
             Err(e) => return Err(LoadError::Io(e)),
         };
 
-        let null_hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+        let null_hash = ObjId::null();
 
         if metadata.is_file() {
             Ok(Some(Cow::Owned(PackageEntity::File { hash: null_hash })))

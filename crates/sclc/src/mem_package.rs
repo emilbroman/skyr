@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
+use ids::ObjId;
+
 use crate::PackageId;
 
 use super::{DirChild, DirChildKind, LoadError, Package, PackageEntity};
@@ -50,7 +52,7 @@ impl Package for InMemoryPackage {
 
         // Direct file match.
         if let Some(data) = files.get(&normalized) {
-            let hash = hash_bytes(data);
+            let hash = ObjId::hash_bytes(data);
             return Ok(Some(Cow::Owned(PackageEntity::File { hash })));
         }
 
@@ -82,14 +84,14 @@ impl Package for InMemoryPackage {
                         children.push(DirChild {
                             name,
                             kind: DirChildKind::Dir,
-                            hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+                            hash: ObjId::null(),
                         });
                     }
                 } else if seen.insert(name.clone()) {
                     children.push(DirChild {
                         name,
                         kind: DirChildKind::File,
-                        hash: hash_bytes(file_data),
+                        hash: ObjId::hash_bytes(file_data),
                     });
                 }
             }
@@ -99,7 +101,7 @@ impl Package for InMemoryPackage {
             Ok(None)
         } else {
             children.sort_by(|a, b| a.name.cmp(&b.name));
-            let hash = gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+            let hash = ObjId::null();
             Ok(Some(Cow::Owned(PackageEntity::Dir { hash, children })))
         }
     }
@@ -117,12 +119,6 @@ impl Package for InMemoryPackage {
 fn normalize(path: &Path) -> PathBuf {
     // Normalize backslashes for cross-platform consistency.
     PathBuf::from(path.to_string_lossy().replace('\\', "/"))
-}
-
-fn hash_bytes(data: &[u8]) -> gix_hash::ObjectId {
-    use sha1::Digest;
-    let hash = sha1::Sha1::digest(data);
-    gix_hash::ObjectId::from_bytes_or_panic(&hash)
 }
 
 #[cfg(test)]

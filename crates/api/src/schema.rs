@@ -194,21 +194,17 @@ impl Repository {
     }
 
     async fn commit(&self, context: &Context, hash: String) -> FieldResult<Commit> {
-        let commit_hash: ids::CommitHash = hash
+        let commit_hash: ids::ObjId = hash
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_client = context.cdb_client.repo(self.repository.name.clone());
-        let oid = gix_hash::ObjectId::from_hex(commit_hash.as_str().as_bytes()).map_err(|e| {
-            tracing::error!("Invalid object ID hex for commit {commit_hash}: {e}");
-            internal_error()
-        })?;
-        let commit = repo_client.read_commit(oid).await.map_err(|e| {
-            tracing::error!("Failed to read commit {oid}: {e}");
+        let commit = repo_client.read_commit(commit_hash).await.map_err(|e| {
+            tracing::error!("Failed to read commit {commit_hash}: {e}");
             internal_error()
         })?;
         Ok(Commit {
             repo: self.repository.name.clone(),
-            hash: oid,
+            hash: commit_hash,
             commit,
         })
     }
@@ -440,7 +436,7 @@ impl Environment {
 
 pub(crate) struct Commit {
     pub(crate) repo: ids::RepoQid,
-    pub(crate) hash: gix_hash::ObjectId,
+    pub(crate) hash: ids::ObjId,
     pub(crate) commit: gix_object::Commit,
 }
 
@@ -458,13 +454,14 @@ impl Commit {
         let repo_client = context.cdb_client.repo(self.repo.clone());
         let mut parents = Vec::with_capacity(self.commit.parents.len());
         for parent_oid in self.commit.parents.iter().copied() {
-            let parent_commit = repo_client.read_commit(parent_oid).await.map_err(|e| {
-                tracing::error!("Failed to read parent commit {parent_oid}: {e}");
+            let parent_id: ids::ObjId = parent_oid.into();
+            let parent_commit = repo_client.read_commit(parent_id).await.map_err(|e| {
+                tracing::error!("Failed to read parent commit {parent_id}: {e}");
                 internal_error()
             })?;
             parents.push(Commit {
                 repo: self.repo.clone(),
-                hash: parent_oid,
+                hash: parent_id,
                 commit: parent_commit,
             });
         }
@@ -473,13 +470,14 @@ impl Commit {
 
     async fn tree(&self, context: &Context) -> FieldResult<Tree> {
         let repo_client = context.cdb_client.repo(self.repo.clone());
-        let tree = repo_client.read_tree(self.commit.tree).await.map_err(|e| {
-            tracing::error!("Failed to read tree {}: {e}", self.commit.tree);
+        let tree_id: ids::ObjId = self.commit.tree.into();
+        let tree = repo_client.read_tree(tree_id).await.map_err(|e| {
+            tracing::error!("Failed to read tree {tree_id}: {e}");
             internal_error()
         })?;
         Ok(Tree {
             repo: self.repo.clone(),
-            hash: self.commit.tree,
+            hash: tree_id,
             name: None,
             tree,
         })
@@ -488,8 +486,9 @@ impl Commit {
     #[graphql(name = "treeEntry")]
     async fn tree_entry(&self, context: &Context, path: String) -> FieldResult<Option<TreeEntry>> {
         let repo_client = context.cdb_client.repo(self.repo.clone());
-        let root_tree = repo_client.read_tree(self.commit.tree).await.map_err(|e| {
-            tracing::error!("Failed to read root tree {}: {e}", self.commit.tree);
+        let root_tree_id: ids::ObjId = self.commit.tree.into();
+        let root_tree = repo_client.read_tree(root_tree_id).await.map_err(|e| {
+            tracing::error!("Failed to read root tree {root_tree_id}: {e}");
             internal_error()
         })?;
 
@@ -497,7 +496,7 @@ impl Commit {
         if segments.is_empty() {
             return Ok(Some(TreeEntry::Tree(Tree {
                 repo: self.repo.clone(),
-                hash: self.commit.tree,
+                hash: root_tree_id,
                 name: None,
                 tree: root_tree,
             })));
@@ -514,27 +513,29 @@ impl Commit {
                 return Ok(None);
             };
 
+            let entry_id: ids::ObjId = entry.oid.into();
+
             if i == segments.len() - 1 {
                 // Last segment: return the entry
                 let name = Some(String::from_utf8_lossy(entry.filename.as_slice()).into_owned());
                 if entry.mode.is_tree() {
-                    let tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
-                        tracing::error!("Failed to read tree {}: {e}", entry.oid);
+                    let tree = repo_client.read_tree(entry_id).await.map_err(|e| {
+                        tracing::error!("Failed to read tree {entry_id}: {e}");
                         internal_error()
                     })?;
                     return Ok(Some(TreeEntry::Tree(Tree {
                         repo: self.repo.clone(),
-                        hash: entry.oid,
+                        hash: entry_id,
                         name,
                         tree,
                     })));
                 } else if entry.mode.is_blob() {
-                    let blob = repo_client.read_blob(entry.oid).await.map_err(|e| {
-                        tracing::error!("Failed to read blob {}: {e}", entry.oid);
+                    let blob = repo_client.read_blob(entry_id).await.map_err(|e| {
+                        tracing::error!("Failed to read blob {entry_id}: {e}");
                         internal_error()
                     })?;
                     return Ok(Some(TreeEntry::Blob(Blob {
-                        hash: entry.oid,
+                        hash: entry_id,
                         name,
                         blob,
                     })));
@@ -547,8 +548,8 @@ impl Commit {
             if !entry.mode.is_tree() {
                 return Ok(None);
             }
-            current_tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
-                tracing::error!("Failed to read tree {}: {e}", entry.oid);
+            current_tree = repo_client.read_tree(entry_id).await.map_err(|e| {
+                tracing::error!("Failed to read tree {entry_id}: {e}");
                 internal_error()
             })?;
         }
@@ -559,7 +560,7 @@ impl Commit {
 
 pub(crate) struct Tree {
     repo: ids::RepoQid,
-    hash: gix_hash::ObjectId,
+    hash: ids::ObjId,
     name: Option<String>,
     tree: gix_object::Tree,
 }
@@ -580,24 +581,25 @@ impl Tree {
 
         for entry in &self.tree.entries {
             let name = Some(String::from_utf8_lossy(entry.filename.as_slice()).into_owned());
+            let entry_id: ids::ObjId = entry.oid.into();
             if entry.mode.is_tree() {
-                let tree = repo_client.read_tree(entry.oid).await.map_err(|e| {
-                    tracing::error!("Failed to read tree entry {}: {e}", entry.oid);
+                let tree = repo_client.read_tree(entry_id).await.map_err(|e| {
+                    tracing::error!("Failed to read tree entry {entry_id}: {e}");
                     internal_error()
                 })?;
                 entries.push(TreeEntry::Tree(Tree {
                     repo: self.repo.clone(),
-                    hash: entry.oid,
+                    hash: entry_id,
                     name,
                     tree,
                 }));
             } else if entry.mode.is_blob() {
-                let blob = repo_client.read_blob(entry.oid).await.map_err(|e| {
-                    tracing::error!("Failed to read blob entry {}: {e}", entry.oid);
+                let blob = repo_client.read_blob(entry_id).await.map_err(|e| {
+                    tracing::error!("Failed to read blob entry {entry_id}: {e}");
                     internal_error()
                 })?;
                 entries.push(TreeEntry::Blob(Blob {
-                    hash: entry.oid,
+                    hash: entry_id,
                     name,
                     blob,
                 }));
@@ -610,7 +612,7 @@ impl Tree {
 }
 
 pub(crate) struct Blob {
-    hash: gix_hash::ObjectId,
+    hash: ids::ObjId,
     name: Option<String>,
     blob: gix_object::Blob,
 }
@@ -701,15 +703,7 @@ impl Deployment {
 
     async fn commit(&self, context: &Context) -> FieldResult<Commit> {
         let repo_client = context.cdb_client.repo(self.deployment.repo.clone());
-        let hash =
-            gix_hash::ObjectId::from_hex(self.deployment.deployment.commit.as_str().as_bytes())
-                .map_err(|e| {
-                    tracing::error!(
-                        "Invalid object ID hex for deployment {}: {e}",
-                        self.deployment.deployment
-                    );
-                    internal_error()
-                })?;
+        let hash = self.deployment.deployment.commit;
         let commit = repo_client.read_commit(hash).await.map_err(|e| {
             tracing::error!("Failed to read commit {hash}: {e}");
             internal_error()

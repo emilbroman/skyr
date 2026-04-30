@@ -3,16 +3,18 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use ids::ObjId;
+
 use crate::{PackageId, Value};
 
 /// A filesystem-like entity within a [`Package`].
 #[derive(Clone, Debug)]
 pub enum PackageEntity {
     File {
-        hash: gix_hash::ObjectId,
+        hash: ObjId,
     },
     Dir {
-        hash: gix_hash::ObjectId,
+        hash: ObjId,
         children: Vec<DirChild>,
     },
 }
@@ -22,7 +24,7 @@ pub enum PackageEntity {
 pub struct DirChild {
     pub name: String,
     pub kind: DirChildKind,
-    pub hash: gix_hash::ObjectId,
+    pub hash: ObjId,
 }
 
 /// Whether a [`DirChild`] is a file or directory.
@@ -33,8 +35,8 @@ pub enum DirChildKind {
 }
 
 impl PackageEntity {
-    /// Returns the git hash of this entity.
-    pub fn hash(&self) -> gix_hash::ObjectId {
+    /// Returns the git object hash of this entity.
+    pub fn hash(&self) -> ObjId {
         match self {
             PackageEntity::File { hash } => *hash,
             PackageEntity::Dir { hash, .. } => *hash,
@@ -167,7 +169,7 @@ impl Package for cdb::CommitClient {
                         DirChild {
                             name,
                             kind,
-                            hash: entry.oid,
+                            hash: entry.oid.into(),
                         }
                     })
                     .collect();
@@ -342,16 +344,16 @@ mod tests {
     #[test]
     fn package_entity_construction() {
         let file = PackageEntity::File {
-            hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+            hash: ObjId::null(),
         };
         assert!(matches!(file, PackageEntity::File { .. }));
 
         let dir = PackageEntity::Dir {
-            hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+            hash: ObjId::null(),
             children: vec![DirChild {
                 name: "foo.scl".into(),
                 kind: DirChildKind::File,
-                hash: gix_hash::ObjectId::null(gix_hash::Kind::Sha1),
+                hash: ObjId::null(),
             }],
         };
         if let PackageEntity::Dir { children, .. } = &dir {

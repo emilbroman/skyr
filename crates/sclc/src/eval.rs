@@ -941,8 +941,8 @@ impl<'p> Eval<'p> {
         &self,
         resolved_path: &str,
         package_id: &crate::PackageId,
-    ) -> gix_hash::ObjectId {
-        let null = || gix_hash::ObjectId::null(gix_hash::Kind::Sha1);
+    ) -> ids::ObjId {
+        let null = ids::ObjId::null;
         let Some(packages) = &self.packages else {
             return null();
         };

@@ -31,7 +31,7 @@ CDB uses the [IDs](../ids/) crate for all identifier types:
 
 - **`RepoQid`** (`org/repo`) — identifies a repository; partition key for most tables.
 - **`EnvironmentId`** — derived from Git refs (e.g., `main`, `tag:v1.0`); stored as the `environment_id` column.
-- **`DeploymentId`** — `(CommitHash, DeploymentNonce)` pair identifying a specific deployment revision; the nonce distinguishes multiple deployments of the same commit.
+- **`DeploymentId`** — `(ObjId, DeploymentNonce)` pair identifying a specific deployment revision — the `ObjId` is the commit hash, and the nonce distinguishes multiple deployments of the same commit.
 
 Client hierarchy: `Client → repo(RepoQid) → RepositoryClient → deployment(EnvironmentId, DeploymentId) → DeploymentClient`.
 

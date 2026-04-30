@@ -6,13 +6,13 @@ use tokio::io::AsyncReadExt;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 use cdb::DeploymentState;
-use ids::EnvironmentId;
+use ids::{EnvironmentId, ObjId};
 
 use super::CommandHandler;
 
 struct RefUpdate {
-    old: gix_hash::ObjectId,
-    new: gix_hash::ObjectId,
+    old: ObjId,
+    new: ObjId,
     name: String,
 }
 
@@ -258,7 +258,7 @@ impl<'a> CommandHandler<'a> {
 
         let mut r = self.channel.make_reader();
 
-        let null_oid = gix_hash::Kind::Sha1.null();
+        let null_oid = ObjId::null();
         let mut updates = Vec::new();
 
         let mut use_sideband = false;
@@ -316,8 +316,8 @@ impl<'a> CommandHandler<'a> {
                     continue;
                 };
 
-                let old = gix_hash::ObjectId::from_hex(old_hex)?;
-                let new = gix_hash::ObjectId::from_hex(new_hex)?;
+                let old = ObjId::from_hex(old_hex)?;
+                let new = ObjId::from_hex(new_hex)?;
                 let name = String::from_utf8(name.to_vec())?;
 
                 updates.push(RefUpdate { old, new, name });
@@ -406,6 +406,10 @@ impl<'a> CommandHandler<'a> {
             }
         }
 
+        // Pack-resolution internals (`oid_by_offset`, `gix_object::ObjectRef::from_bytes`,
+        // `gix_pack::data::entry::Header::RefDelta { base_id }`) keep `gix_hash::ObjectId`
+        // because they interface directly with `gix-pack` / `gix-object` types and
+        // walk objects of any kind. Application-level identity uses `ObjId` instead.
         let mut oid_by_offset: HashMap<u64, gix_hash::ObjectId> = HashMap::new();
 
         loop {
@@ -429,7 +433,7 @@ impl<'a> CommandHandler<'a> {
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
                         tracing::debug!("writing {} {}", object.kind(), id);
-                        self.client.write_object(id, object).await?;
+                        self.client.write_object(id.into(), object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
@@ -440,10 +444,13 @@ impl<'a> CommandHandler<'a> {
                         let Some(base_id) = oid_by_offset.get(&base_offset).copied() else {
                             continue;
                         };
-                        let (kind, base_data) =
-                            self.client.read_raw_object(base_id).await.map_err(|err| {
-                                anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
-                            })?;
+                        let (kind, base_data) = self
+                            .client
+                            .read_raw_object(base_id.into())
+                            .await
+                            .map_err(|err| {
+                            anyhow!("failed to load ofs-delta base {}: {}", base_id, err)
+                        })?;
                         let delta = entry
                             .data
                             .take()
@@ -453,22 +460,23 @@ impl<'a> CommandHandler<'a> {
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
                         tracing::debug!("writing {} {}", object.kind(), id);
-                        self.client.write_object(id, object).await?;
+                        self.client.write_object(id.into(), object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
                     gix_pack::data::entry::Header::RefDelta { base_id } => {
-                        let (kind, base_data) = match self.client.read_raw_object(base_id).await {
-                            Ok(result) => result,
-                            Err(cdb::LoadObjectError::NotFound) => continue,
-                            Err(err) => {
-                                return Err(anyhow!(
-                                    "failed to load ref-delta base object {}: {}",
-                                    base_id,
-                                    err
-                                ));
-                            }
-                        };
+                        let (kind, base_data) =
+                            match self.client.read_raw_object(base_id.into()).await {
+                                Ok(result) => result,
+                                Err(cdb::LoadObjectError::NotFound) => continue,
+                                Err(err) => {
+                                    return Err(anyhow!(
+                                        "failed to load ref-delta base object {}: {}",
+                                        base_id,
+                                        err
+                                    ));
+                                }
+                            };
 
                         let delta = entry
                             .data
@@ -479,7 +487,7 @@ impl<'a> CommandHandler<'a> {
                         let object =
                             gix_object::ObjectRef::from_bytes(kind, &data)?.into_owned()?;
                         tracing::debug!("writing {} {}", object.kind(), id);
-                        self.client.write_object(id, object).await?;
+                        self.client.write_object(id.into(), object).await?;
                         oid_by_offset.insert(pack_offset, id);
                         progress = true;
                     }
@@ -499,8 +507,7 @@ impl<'a> CommandHandler<'a> {
                 .map_err(|e| anyhow!("invalid git ref '{}': {}", update.name, e))?;
 
             if update.new != null_oid {
-                let commit = ids::CommitHash::from_bytes(update.new.as_bytes())
-                    .map_err(|e| anyhow!("invalid commit hash: {}", e))?;
+                let commit = update.new;
                 let nonce = ids::DeploymentNonce::random();
                 let deployment_id = ids::DeploymentId::new(commit, nonce);
                 let deployment = self
@@ -512,8 +519,7 @@ impl<'a> CommandHandler<'a> {
             } else if update.old != null_oid {
                 // Deleting a ref: find the active deployment for this
                 // environment and transition it to Undesired.
-                let old_commit = ids::CommitHash::from_bytes(update.old.as_bytes())
-                    .map_err(|e| anyhow!("invalid commit hash: {}", e))?;
+                let old_commit = update.old;
                 // Look up the deployment by scanning active deployments
                 // in this environment to find the one with this commit hash.
                 let mut stream = self.client.active_deployments().await?;

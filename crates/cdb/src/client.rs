@@ -8,9 +8,8 @@ use crate::{DeploymentState, Repository};
 use chrono::{DateTime, Utc};
 use futures_util::stream::BoxStream;
 use futures_util::{Stream, StreamExt, TryStreamExt, stream};
-use gix_hash::ObjectId;
 use gix_object::{Blob, Commit, Kind, Object, Tree, WriteTo};
-use ids::{CommitHash, DeploymentId, DeploymentNonce, EnvironmentId, ParseIdError, RepoQid};
+use ids::{DeploymentId, DeploymentNonce, EnvironmentId, ObjId, ParseIdError, RepoQid};
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
@@ -365,8 +364,7 @@ fn deployment_from_row(
     state: String,
     bootstrapped: Option<bool>,
 ) -> Result<Deployment, DeploymentQueryError> {
-    let commit =
-        CommitHash::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
+    let commit = ObjId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
     let org: ids::OrgId = organization.parse()?;
     let repo: ids::RepoId = repository.parse()?;
     let environment: EnvironmentId = environment_id.parse()?;
@@ -529,7 +527,7 @@ impl Client {
     ) -> Result<(), SetDeploymentError> {
         let deployment_qid = deployment.deployment_qid().to_string();
         let repo = &deployment.repo;
-        let commit_hash = ObjectId::from_bytes_or_panic(&deployment.deployment.commit.to_bytes());
+        let commit_hash = deployment.deployment.commit.as_bytes();
         let nonce_val = deployment.deployment.nonce.as_u64() as i64;
         let (dep, dep_by_id, active_dep) = futures::join!(
             self.session.execute_unpaged(
@@ -539,7 +537,7 @@ impl Client {
                     repo.repo.as_str(),
                     deployment.created_at,
                     deployment.environment.as_str(),
-                    commit_hash.as_slice(),
+                    commit_hash,
                     nonce_val,
                     deployment.state.to_string(),
                     deployment.bootstrapped,
@@ -552,7 +550,7 @@ impl Client {
                     repo.org.as_str(),
                     repo.repo.as_str(),
                     deployment.environment.as_str(),
-                    commit_hash.as_slice(),
+                    commit_hash,
                     nonce_val,
                     deployment.created_at,
                     deployment.state.to_string(),
@@ -568,7 +566,7 @@ impl Client {
                                 repo.org.as_str(),
                                 repo.repo.as_str(),
                                 deployment.environment.as_str(),
-                                commit_hash.as_slice(),
+                                commit_hash,
                                 nonce_val,
                             ),
                         )
@@ -581,7 +579,7 @@ impl Client {
                                 repo.org.as_str(),
                                 repo.repo.as_str(),
                                 deployment.environment.as_str(),
-                                commit_hash.as_slice(),
+                                commit_hash,
                                 nonce_val,
                                 deployment_qid.as_str(),
                             ),
@@ -693,7 +691,7 @@ impl RepositoryClient {
         }
     }
 
-    pub fn commit(&self, commit: CommitHash) -> CommitClient {
+    pub fn commit(&self, commit: ObjId) -> CommitClient {
         CommitClient {
             repo: self.clone(),
             commit,
@@ -705,7 +703,7 @@ impl RepositoryClient {
         environment: EnvironmentId,
         deployment: DeploymentId,
     ) -> DeploymentClient {
-        let commit_client = self.commit(deployment.commit.clone());
+        let commit_client = self.commit(deployment.commit);
         DeploymentClient {
             commit_client,
             environment,
@@ -713,7 +711,7 @@ impl RepositoryClient {
         }
     }
 
-    async fn read_object(&self, hash: ObjectId) -> Result<(Kind, Vec<u8>), LoadObjectError> {
+    async fn read_object(&self, hash: ObjId) -> Result<(Kind, Vec<u8>), LoadObjectError> {
         let repo = &self.name;
         let pager = self
             .client
@@ -737,7 +735,7 @@ impl RepositoryClient {
         }
     }
 
-    pub async fn write_object(&self, id: ObjectId, object: Object) -> Result<(), WriteObjectError> {
+    pub async fn write_object(&self, id: ObjId, object: Object) -> Result<(), WriteObjectError> {
         let kind = kind_to_db(object.kind());
         let mut data = vec![];
         object.write_to(&mut data)?;
@@ -750,7 +748,7 @@ impl RepositoryClient {
                 (
                     repo.org.as_str(),
                     repo.repo.as_str(),
-                    id.as_slice(),
+                    id.as_bytes(),
                     kind,
                     data,
                 ),
@@ -760,38 +758,35 @@ impl RepositoryClient {
         Ok(())
     }
 
-    pub async fn read_raw_object(
-        &self,
-        hash: ObjectId,
-    ) -> Result<(Kind, Vec<u8>), LoadObjectError> {
+    pub async fn read_raw_object(&self, hash: ObjId) -> Result<(Kind, Vec<u8>), LoadObjectError> {
         self.read_object(hash).await
     }
 
-    pub async fn write_commit(&self, id: ObjectId, object: Commit) -> Result<(), WriteObjectError> {
+    pub async fn write_commit(&self, id: ObjId, object: Commit) -> Result<(), WriteObjectError> {
         self.write_object(id, Object::Commit(object)).await
     }
 
-    pub async fn read_commit(&self, hash: ObjectId) -> Result<Commit, ReadObjectError> {
+    pub async fn read_commit(&self, hash: ObjId) -> Result<Commit, ReadObjectError> {
         let (_, data) = self.read_object(hash).await?;
         let commit = gix_object::CommitRef::from_bytes(&data)?;
         Ok(commit.into_owned()?)
     }
 
-    pub async fn write_tree(&self, id: ObjectId, object: Tree) -> Result<(), WriteObjectError> {
+    pub async fn write_tree(&self, id: ObjId, object: Tree) -> Result<(), WriteObjectError> {
         self.write_object(id, Object::Tree(object)).await
     }
 
-    pub async fn read_tree(&self, hash: ObjectId) -> Result<Tree, ReadObjectError> {
+    pub async fn read_tree(&self, hash: ObjId) -> Result<Tree, ReadObjectError> {
         let (_, data) = self.read_object(hash).await?;
         let tree = gix_object::TreeRef::from_bytes(&data)?;
         Ok(tree.into_owned())
     }
 
-    pub async fn write_blob(&self, id: ObjectId, object: Blob) -> Result<(), WriteObjectError> {
+    pub async fn write_blob(&self, id: ObjId, object: Blob) -> Result<(), WriteObjectError> {
         self.write_object(id, Object::Blob(object)).await
     }
 
-    pub async fn read_blob(&self, hash: ObjectId) -> Result<Blob, ReadObjectError> {
+    pub async fn read_blob(&self, hash: ObjId) -> Result<Blob, ReadObjectError> {
         let (_, data) = self.read_object(hash).await?;
         // BlobRef::from_bytes is infallible (returns Result<_, Infallible>).
         let Ok(blob) = gix_object::BlobRef::from_bytes(&data);
@@ -943,7 +938,7 @@ impl RepositoryClient {
 #[derive(Clone)]
 pub struct CommitClient {
     repo: RepositoryClient,
-    commit: CommitHash,
+    commit: ObjId,
 }
 
 impl CommitClient {
@@ -951,8 +946,8 @@ impl CommitClient {
         &self.repo.name
     }
 
-    pub fn commit_hash(&self) -> ObjectId {
-        ObjectId::from_bytes_or_panic(&self.commit.to_bytes())
+    pub fn commit_hash(&self) -> ObjId {
+        self.commit
     }
 
     pub async fn read_commit(&self) -> Result<Commit, ReadObjectError> {
@@ -961,7 +956,7 @@ impl CommitClient {
 
     pub async fn read_dir(&self, path: Option<impl AsRef<Path>>) -> Result<Tree, FileError> {
         let commit = self.repo.read_commit(self.commit_hash()).await?;
-        let mut tree = self.repo.read_tree(commit.tree).await?;
+        let mut tree = self.repo.read_tree(commit.tree.into()).await?;
 
         let mut result_buf = PathBuf::new();
 
@@ -988,7 +983,7 @@ impl CommitClient {
                             return Err(FileError::NotADirectory(result_buf));
                         }
 
-                        tree = self.repo.read_tree(entry.oid).await?;
+                        tree = self.repo.read_tree(entry.oid.into()).await?;
                     }
                 }
             }
@@ -1014,18 +1009,18 @@ impl CommitClient {
             return Err(FileError::NotAFile(path.to_path_buf()));
         }
 
-        Ok(self.repo.read_blob(entry.oid).await?.data)
+        Ok(self.repo.read_blob(entry.oid.into()).await?.data)
     }
 
     /// Return the Git object hash (blob or tree OID) for a path, or `None`
     /// if the path does not exist.
-    pub async fn path_hash(&self, path: impl AsRef<Path>) -> Result<Option<ObjectId>, FileError> {
+    pub async fn path_hash(&self, path: impl AsRef<Path>) -> Result<Option<ObjId>, FileError> {
         let path = path.as_ref();
 
         // Root path → return the commit's tree OID.
         if path.as_os_str().is_empty() {
             let commit = self.repo.read_commit(self.commit_hash()).await?;
-            return Ok(Some(commit.tree));
+            return Ok(Some(commit.tree.into()));
         }
 
         let filename = match path.file_name() {
@@ -1043,7 +1038,7 @@ impl CommitClient {
             .entries
             .iter()
             .find(|e| e.filename.as_slice() == filename.as_encoded_bytes())
-            .map(|e| e.oid))
+            .map(|e| e.oid.into()))
     }
 }
 
@@ -1161,7 +1156,7 @@ impl DeploymentClient {
         &self,
         superseding: &DeploymentId,
     ) -> Result<(), SetDeploymentError> {
-        let superseding_oid = ObjectId::from_bytes_or_panic(&superseding.commit.to_bytes());
+        let superseding_oid = superseding.commit.as_bytes();
         let this_oid = self.commit_client.commit_hash();
         let repo = &self.commit_client.repo;
         repo.client
@@ -1169,7 +1164,7 @@ impl DeploymentClient {
             .execute_unpaged(
                 &repo.client.statements.create_supersession,
                 (
-                    superseding_oid.as_bytes(),
+                    superseding_oid,
                     superseding.nonce.as_u64() as i64,
                     repo.name.org.as_str(),
                     repo.name.repo.as_str(),
@@ -1204,8 +1199,8 @@ impl DeploymentClient {
             .rows_stream::<(Vec<u8>, i64)>()?
             .map(|row| {
                 let (commit_hash, nonce) = row?;
-                let commit = CommitHash::from_bytes(&commit_hash)
-                    .map_err(|_| DeploymentQueryError::NotFound)?;
+                let commit =
+                    ObjId::from_bytes(&commit_hash).map_err(|_| DeploymentQueryError::NotFound)?;
                 let deploy_id = DeploymentId::new(commit, DeploymentNonce::from_u64(nonce as u64));
                 Ok::<_, DeploymentQueryError>(repo.deployment(self.environment.clone(), deploy_id))
             })
@@ -1277,7 +1272,7 @@ impl DeploymentClient {
             .single_row::<(Vec<u8>, i64)>()
             .ok()
             .and_then(|(superseding, nonce)| {
-                let commit = CommitHash::from_bytes(&superseding).ok()?;
+                let commit = ObjId::from_bytes(&superseding).ok()?;
                 let deploy_id = DeploymentId::new(commit, DeploymentNonce::from_u64(nonce as u64));
                 Some(repo.deployment(self.environment.clone(), deploy_id))
             }))
