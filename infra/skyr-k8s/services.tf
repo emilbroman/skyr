@@ -98,6 +98,7 @@ resource "kubernetes_deployment_v1" "api" {
           args = [
             "--host", "0.0.0.0",
             "--port", "8080",
+            "--region", var.region,
             "--cdb-hostname", local.scylladb_hostname,
             "--rdb-hostname", local.scylladb_hostname,
             "--sdb-hostname", local.scylladb_hostname,
@@ -221,6 +222,7 @@ resource "kubernetes_deployment_v1" "scs" {
             "daemon",
             "--address", "0.0.0.0:2222",
             "--key", "/secrets/host.pem",
+            "--region", var.region,
             "--cdb-hostname", local.scylladb_hostname,
             "--udb-hostname", local.redis_hostname,
             "--rdb-hostname", local.scylladb_hostname,
@@ -300,6 +302,7 @@ resource "kubernetes_deployment_v1" "de" {
           command = ["/de"]
           args = [
             "daemon",
+            "--region", var.region,
             "--cdb-hostname", local.scylladb_hostname,
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
@@ -359,6 +362,7 @@ resource "kubernetes_deployment_v1" "rte" {
           command = ["/rte"]
           args = [
             "daemon",
+            "--region", var.region,
             "--rdb-hostname", local.scylladb_hostname,
             "--rtq-hostname", local.rabbitmq_hostname,
             "--rq-hostname", local.rabbitmq_hostname,

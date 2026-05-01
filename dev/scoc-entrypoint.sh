@@ -54,6 +54,7 @@ echo "containerd is ready"
 # runs plain gRPC. Validated both at the shell layer and inside SCOC.
 exec /usr/local/bin/scoc daemon \
   --node-name "${SCOC_NODE_NAME}" \
+  --region "${SCOC_REGION:-stockholm}" \
   --bind "${SCOC_BIND:-0.0.0.0:50054}" \
   --conduit-address "${SCOC_CONDUIT_ADDRESS}" \
   --orchestrator-address "${SCOC_ORCHESTRATOR_ADDRESS}" \

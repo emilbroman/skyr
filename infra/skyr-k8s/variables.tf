@@ -5,6 +5,19 @@ variable "namespace" {
   description = "Kubernetes namespace for all resources."
 }
 
+# --- Region ---
+
+variable "region" {
+  type        = string
+  description = "Skyr region this stack serves (e.g. \"stockholm\"). Validated as [a-z]+. Stamped onto every ResourceId constructed by services in this stack."
+  default     = "stockholm"
+
+  validation {
+    condition     = can(regex("^[a-z]+$", var.region))
+    error_message = "region must be one or more lowercase ASCII letters."
+  }
+}
+
 # --- Image ---
 
 variable "image_pull_policy" {

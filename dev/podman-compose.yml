@@ -102,6 +102,8 @@ services:
         "0.0.0.0",
         "--port",
         "8080",
+        "--region",
+        "stockholm",
         "--cdb-hostname",
         "scylla",
         "--rdb-hostname",
@@ -149,6 +151,8 @@ services:
         "0.0.0.0:2222",
         "--key",
         "/host.pem",
+        "--region",
+        "stockholm",
         "--cdb-hostname",
         "scylla",
         "--udb-hostname",
@@ -170,6 +174,8 @@ services:
     command:
       [
         "daemon",
+        "--region",
+        "stockholm",
         "--cdb-hostname",
         "scylla",
         "--rdb-hostname",
@@ -195,6 +201,8 @@ services:
     command:
       [
         "daemon",
+        "--region",
+        "stockholm",
         "--cdb-hostname",
         "scylla",
         "--rdb-hostname",
@@ -305,6 +313,8 @@ services:
     command:
       [
         "daemon",
+        "--region",
+        "stockholm",
         "--rdb-hostname",
         "scylla",
         "--rtq-hostname",
@@ -340,6 +350,8 @@ services:
     command:
       [
         "daemon",
+        "--region",
+        "stockholm",
         "--rdb-hostname",
         "scylla",
         "--rtq-hostname",
@@ -375,6 +387,8 @@ services:
     command:
       [
         "daemon",
+        "--region",
+        "stockholm",
         "--rdb-hostname",
         "scylla",
         "--rtq-hostname",
@@ -470,6 +484,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-1
+      - SCOC_REGION=stockholm
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-1:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
@@ -483,6 +498,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-2
+      - SCOC_REGION=stockholm
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-2:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
@@ -496,6 +512,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-3
+      - SCOC_REGION=stockholm
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-3:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
