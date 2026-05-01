@@ -1,0 +1,22 @@
+import Std/Path
+
+let NotFound = Path.NotFound
+
+// Manipulating a path to point at a file that does not exist in the
+// calling package raises `Path.NotFound` rather than silently
+// returning a path with a null content hash. The exception is
+// catchable from SCL.
+export let joined = try
+	"{Path.join(/foo, "missing")}"
+catch NotFound(p):
+	"caught {p}"
+
+export let parented = try
+	"{Path.parent(Path.join(/foo, "missing/inner"))}"
+catch NotFound(p):
+	"caught {p}"
+
+export let parsed = try
+	"{Path.fromStr("/missing")}"
+catch NotFound(p):
+	"caught {p}"

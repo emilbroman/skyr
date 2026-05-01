@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
-use ids::ResourceId;
+use ids::{ObjId, ResourceId};
 
-use crate::{EvalError, EvalErrorKind, PathValue, TrackedValue, Value};
+use crate::eval::PathLookupError;
+use crate::{EvalCtx, EvalError, EvalErrorKind, PathValue, Record, TrackedValue, Value};
 
 type CollectResult = Result<Result<(Vec<Value>, BTreeSet<ResourceId>), TrackedValue>, EvalError>;
 
@@ -21,8 +22,8 @@ fn collect_args(args: Vec<TrackedValue>, n: usize) -> CollectResult {
     Ok(Ok((values, deps)))
 }
 
-fn null_hash() -> gix_hash::ObjectId {
-    gix_hash::ObjectId::null(gix_hash::Kind::Sha1)
+fn null_hash() -> ObjId {
+    ObjId::null()
 }
 
 /// Normalize segments by handling "." and ".." entries.
@@ -54,8 +55,74 @@ fn split_path_str(s: &str) -> Vec<String> {
     s.split('/').map(|p| p.to_string()).collect()
 }
 
+/// Outcome of looking up a synthesized path against the calling
+/// package, mirrored as a `_PathLookup` record on the SCL side.
+enum LookupOutcome {
+    /// Path was found (or no packages were registered, in which case
+    /// the hash is null but the value is still considered "found" so
+    /// that compile-time eval and tests without fixture files keep
+    /// working). Carries the resolved path value.
+    Found(PathValue),
+    /// Path was not found in the calling package; cannot carry a
+    /// content hash. The SCL wrapper raises `Path.NotFound` with the
+    /// path string.
+    Missing(String),
+    /// `parent` of the root path; the SCL wrapper returns `nil`.
+    Root,
+    /// `fromStr` was given a string that is not a valid absolute path;
+    /// the SCL wrapper returns `nil`.
+    Invalid,
+}
+
+fn lookup_path(ctx: &EvalCtx, path: String) -> LookupOutcome {
+    let hash = match ctx.current_caller_package() {
+        Some(caller_pkg) => match ctx.resolve_path_hash(&path, &caller_pkg) {
+            Ok(Some(h)) => h,
+            Ok(None) => null_hash(),
+            Err(PathLookupError::NotFound) => return LookupOutcome::Missing(path),
+        },
+        None => null_hash(),
+    };
+    LookupOutcome::Found(PathValue { path, hash })
+}
+
+fn lookup_to_record(outcome: LookupOutcome) -> Record {
+    let mut record = Record::default();
+    let (tag, path, missing) = match outcome {
+        LookupOutcome::Found(pv) => ("found", Value::Path(pv), String::new()),
+        LookupOutcome::Missing(path) => (
+            "missing",
+            Value::Path(PathValue {
+                path: "/".into(),
+                hash: null_hash(),
+            }),
+            path,
+        ),
+        LookupOutcome::Root => (
+            "root",
+            Value::Path(PathValue {
+                path: "/".into(),
+                hash: null_hash(),
+            }),
+            String::new(),
+        ),
+        LookupOutcome::Invalid => (
+            "invalid",
+            Value::Path(PathValue {
+                path: "/".into(),
+                hash: null_hash(),
+            }),
+            String::new(),
+        ),
+    };
+    record.insert("tag".into(), Value::Str(tag.into()));
+    record.insert("path".into(), path);
+    record.insert("missing".into(), Value::Str(missing));
+    record
+}
+
 pub fn register_extern(eval: &mut impl super::ExternRegistry) {
-    eval.add_extern_fn("Std/Path.join", |args, _ctx| {
+    eval.add_extern_fn("Std/Path.join", |args, ctx| {
         let (mut values, deps) = match collect_args(args, 2)? {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
@@ -76,18 +143,15 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
                 return Err(EvalErrorKind::Custom(
                     "Std/Path.join: relative segment escapes root".into(),
                 )
-                .into())
+                .into());
             }
         };
         let path_str = segments_to_path_str(&segs);
-        Ok(TrackedValue::new(Value::Path(PathValue {
-            path: path_str,
-            hash: null_hash(),
-        }))
-        .with_dependencies(deps))
+        let record = lookup_to_record(lookup_path(ctx, path_str));
+        Ok(TrackedValue::new(Value::Record(record)).with_dependencies(deps))
     });
 
-    eval.add_extern_fn("Std/Path.parent", |args, _ctx| {
+    eval.add_extern_fn("Std/Path.parent", |args, ctx| {
         let (mut values, deps) = match collect_args(args, 1)? {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
@@ -101,16 +165,14 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
-        if segs.is_empty() {
-            return Ok(TrackedValue::new(Value::Nil).with_dependencies(deps));
-        }
-        let parent_segs = &segs[..segs.len() - 1];
-        let parent_str = segments_to_path_str(parent_segs);
-        Ok(TrackedValue::new(Value::Path(PathValue {
-            path: parent_str,
-            hash: null_hash(),
-        }))
-        .with_dependencies(deps))
+        let outcome = if segs.is_empty() {
+            LookupOutcome::Root
+        } else {
+            let parent_segs = &segs[..segs.len() - 1];
+            lookup_path(ctx, segments_to_path_str(parent_segs))
+        };
+        let record = lookup_to_record(outcome);
+        Ok(TrackedValue::new(Value::Record(record)).with_dependencies(deps))
     });
 
     eval.add_extern_fn("Std/Path.basename", |args, _ctx| {
@@ -205,7 +267,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         Ok(TrackedValue::new(Value::Str(path_str)).with_dependencies(deps))
     });
 
-    eval.add_extern_fn("Std/Path.fromStr", |args, _ctx| {
+    eval.add_extern_fn("Std/Path.fromStr", |args, ctx| {
         let (mut values, deps) = match collect_args(args, 1)? {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
@@ -214,19 +276,16 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             Value::Str(s) => s,
             other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
         };
-        if s.is_empty() || !s.starts_with('/') {
-            return Ok(TrackedValue::new(Value::Nil).with_dependencies(deps));
-        }
-        let raw = split_path_str(&s);
-        let segs = match normalize_segments(raw) {
-            Some(s) => s,
-            None => return Ok(TrackedValue::new(Value::Nil).with_dependencies(deps)),
+        let outcome = if s.is_empty() || !s.starts_with('/') {
+            LookupOutcome::Invalid
+        } else {
+            let raw = split_path_str(&s);
+            match normalize_segments(raw) {
+                Some(segs) => lookup_path(ctx, segments_to_path_str(&segs)),
+                None => LookupOutcome::Invalid,
+            }
         };
-        let path_str = segments_to_path_str(&segs);
-        Ok(TrackedValue::new(Value::Path(PathValue {
-            path: path_str,
-            hash: null_hash(),
-        }))
-        .with_dependencies(deps))
+        let record = lookup_to_record(outcome);
+        Ok(TrackedValue::new(Value::Record(record)).with_dependencies(deps))
     });
 }
