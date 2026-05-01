@@ -342,17 +342,6 @@ impl CallExpr {
                 }
                 *evaluator.ctx.source_trace.lock().unwrap() = trace;
 
-                // Caller package for context-sensitive externs (e.g.
-                // `Std/Path.*`). Walk the call stack to the bottom-most
-                // frame so that SCL-wrapped externs see the original
-                // user-level caller's package, not the package of the
-                // wrapping SCL function definition.
-                let caller_package = env
-                    .stack
-                    .map(|s| s.collect_trace())
-                    .and_then(|trace| trace.last().map(|(mid, _, _)| mid.package.clone()))
-                    .unwrap_or_else(|| call_module_id.package.clone());
-                let _caller_guard = evaluator.ctx.enter_caller_package(caller_package);
                 let result = function
                     .call(args, &evaluator.ctx)
                     .map(|value| value.with_dependencies(callee_dependencies));

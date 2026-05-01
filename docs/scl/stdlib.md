@@ -760,7 +760,7 @@ Coerce a dynamic value to `#{Any: Any}`. Raises `UnexpectedType` if the value is
 
 Functions for inspecting and composing repo-rooted `Path` values.
 
-`Path` values carry both a path string and a content hash that uniquely identifies the file or directory at that path within a specific git commit. Manipulation functions that produce new `Path` values (`Path.join`, `Path.parent`, `Path.fromStr`) look up the content hash of the resulting path in the calling package — this keeps manipulated paths usable as content-addressed references (see [`Std/Container.Pod`](#stdcontainer)). When the resulting path does not exist in the calling package, the function raises `Path.NotFound(path)` rather than silently returning a path with a null hash.
+A `Path` value is anchored to the package it was originally resolved against, and carries a content hash identifying the file or directory at that path within that package's commit. Manipulation functions that produce new `Path` values (`Path.join`, `Path.parent`, `Path.fromStr`) look up the content hash of the resulting path against the input's anchor package, keeping manipulated paths usable as content-addressed references (see [`Std/Container.Pod`](#stdcontainer)). When the resulting path does not exist in that package, the function raises `Path.NotFound(path)` rather than silently returning a path with a null hash.
 
 ```scl
 import Std/Path
@@ -768,7 +768,7 @@ import Std/Path
 
 ### Path.NotFound
 
-Exception raised by `Path.join`, `Path.parent`, and `Path.fromStr` when the manipulated path is syntactically valid but does not refer to an existing entry in the calling package. The payload is the manipulated path string.
+Exception raised by `Path.join`, `Path.parent`, and `Path.fromStr` when the manipulated path is syntactically valid but does not refer to an existing entry in the input path's anchor package. The payload is the manipulated path string.
 
 ```scl
 let NotFound = Path.NotFound
@@ -781,7 +781,7 @@ catch NotFound(p):
 
 ### Path.join
 
-Append a string segment to a path. The segment may contain `/` separators; `.` and `..` are normalized away. A leading `/` in the segment is treated as a separator (relative). Raises `Path.NotFound` when the joined path does not exist in the calling package.
+Append a string segment to a path. The segment may contain `/` separators; `.` and `..` are normalized away. A leading `/` in the segment is treated as a separator (relative). The result is anchored to the same package as the input path. Raises `Path.NotFound` when the joined path does not exist in that package.
 
 ```scl
 Path.join(/foo, "bar")       // /foo/bar
@@ -791,7 +791,7 @@ Path.join(/foo, "bar/baz")   // /foo/bar/baz
 
 ### Path.parent
 
-Return the parent directory of the path, or `nil` at the root. Raises `Path.NotFound` when the parent path does not exist in the calling package.
+Return the parent directory of the path, or `nil` at the root. The result is anchored to the same package as the input path. Raises `Path.NotFound` when the parent path does not exist in that package.
 
 ```scl
 Path.parent(/foo/bar)  // /foo
@@ -860,14 +860,14 @@ Path.toStr(/)         // "/"
 
 ### Path.fromStr
 
-Parse a string as an absolute, repo-rooted path. Returns `nil` on syntactically invalid input. Raises `Path.NotFound` when the string is a valid absolute path but does not exist in the calling package. The string must start with `/`; components are normalized (`.` dropped, `..` pops a segment, empty segments from doubled slashes are dropped). A `..` that would escape the root makes the input invalid.
+Parse a string as an absolute, repo-rooted path, anchored to the same package as `anchor`. The anchor is only used for its package — pass `/` from the calling module for the conventional case. Returns `nil` on syntactically invalid input. Raises `Path.NotFound` when the string is a valid absolute path but does not exist in `anchor`'s package. The string must start with `/`; components are normalized (`.` dropped, `..` pops a segment, empty segments from doubled slashes are dropped). A `..` that would escape the root makes the input invalid.
 
 ```scl
-Path.fromStr("/foo/bar")          // /foo/bar
-Path.fromStr("/foo/./bar/../baz") // /foo/baz
-Path.fromStr("foo")               // nil
-Path.fromStr("/..")               // nil
-Path.fromStr("")                  // nil
+Path.fromStr(/, "/foo/bar")          // /foo/bar
+Path.fromStr(/, "/foo/./bar/../baz") // /foo/baz
+Path.fromStr(/, "foo")               // nil
+Path.fromStr(/, "/..")               // nil
+Path.fromStr(/, "")                  // nil
 ```
 
 ## Std/Encoding

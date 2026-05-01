@@ -4,7 +4,7 @@
 /// - `"invalid"` — only used by `fromStr`, signalling "input string is
 ///   not a valid absolute path".
 /// - `"missing"` — `missing` is set; the manipulated path is syntactically
-///   valid but does not refer to an existing entry in the calling package.
+///   valid but does not refer to an existing entry in the path's package.
 /// Other fields are placeholders when their tag does not apply and must
 /// not be read.
 type _PathLookup {
@@ -15,13 +15,14 @@ type _PathLookup {
 
 let _join = extern "Std/Path.join": fn(Path, Str) _PathLookup
 let _parent = extern "Std/Path.parent": fn(Path) _PathLookup
-let _fromStr = extern "Std/Path.fromStr": fn(Str) _PathLookup
+let _fromStr = extern "Std/Path.fromStr": fn(Path, Str) _PathLookup
 
 /// Raised by `join`, `parent`, and `fromStr` when the manipulated path
-/// does not refer to an existing entry in the calling package, so the
-/// resulting path cannot carry a valid content hash. The payload is the
-/// manipulated path string. Synthesized paths must always carry a valid
-/// hash so they remain usable as content-addressed references — see
+/// is syntactically valid but does not refer to an existing entry in
+/// the package the input `Path` is anchored to, so the resulting path
+/// cannot carry a valid content hash. The payload is the manipulated
+/// path string. Synthesized paths must always carry a valid hash so
+/// they remain usable as content-addressed references — see
 /// `Std/Container.Pod`, which keys the resource id on the hashes of
 /// `context` and `containerfile`.
 export let NotFound = exception(Str)
@@ -29,8 +30,9 @@ export let NotFound = exception(Str)
 /// Append a string segment to a path. The segment may itself contain `/`
 /// separators; embedded `.` and `..` segments are normalized away. A
 /// leading `/` in the segment is treated as a separator (relative).
-/// Raises `NotFound(path)` when the joined path does not exist in the
-/// calling package.
+/// The resulting `Path` is anchored to the same package as `p` and
+/// carries the content hash of the joined path. Raises `NotFound(path)`
+/// when the joined path does not exist in that package.
 export let join = fn(p: Path, segment: Str)
 	let r = _join(p, segment);
 	if (r.tag == "found")
@@ -38,8 +40,10 @@ export let join = fn(p: Path, segment: Str)
 	else
 		raise NotFound(r.missing)
 
-/// Parent directory; `nil` at the root. Raises `NotFound(path)` when
-/// the parent path does not exist in the calling package.
+/// Parent directory; `nil` at the root. The resulting `Path` is
+/// anchored to the same package as `p` and carries the content hash
+/// of the parent. Raises `NotFound(path)` when the parent does not
+/// exist in that package.
 export let parent = fn(p: Path)
 	let r = _parent(p);
 	if (r.tag == "root")
@@ -70,16 +74,19 @@ export let isRoot = extern "Std/Path.isRoot": fn(Path) Bool
 /// Canonical string form (always begins with `/`).
 export let toStr = extern "Std/Path.toStr": fn(Path) Str
 
-/// Parse a string as an absolute, repo-rooted path. Returns `nil` on
-/// syntactically invalid input. Raises `NotFound(path)` when the input
-/// is a valid absolute path but does not exist in the calling package.
+/// Parse a string as an absolute, repo-rooted path, anchored to the
+/// same package as `anchor`. The anchor is only used for its package;
+/// pass `/` from the calling module for the conventional case. Returns
+/// `nil` on syntactically invalid input. Raises `NotFound(path)` when
+/// the string is a valid absolute path but does not refer to an
+/// existing entry in `anchor`'s package.
 ///
 /// The string must start with `/`. Components are normalized: `.` is
 /// dropped, `..` pops the previous segment, and empty segments (from
 /// doubled slashes) are dropped. A `..` that would escape the root
 /// makes the input invalid.
-export let fromStr = fn(s: Str)
-	let r = _fromStr(s);
+export let fromStr = fn(anchor: Path, s: Str)
+	let r = _fromStr(anchor, s);
 	if (r.tag == "invalid")
 		nil as Path?
 	else if (r.tag == "found")

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use ids::{ObjId, ResourceId};
 
 use crate::eval::PathLookupError;
-use crate::{EvalCtx, EvalError, EvalErrorKind, PathValue, Record, TrackedValue, Value};
+use crate::{EvalCtx, EvalError, EvalErrorKind, PackageId, PathValue, Record, TrackedValue, Value};
 
 type CollectResult = Result<Result<(Vec<Value>, BTreeSet<ResourceId>), TrackedValue>, EvalError>;
 
@@ -20,10 +20,6 @@ fn collect_args(args: Vec<TrackedValue>, n: usize) -> CollectResult {
         return Ok(Err(TrackedValue::pending().with_dependencies(deps)));
     }
     Ok(Ok((values, deps)))
-}
-
-fn null_hash() -> ObjId {
-    ObjId::null()
 }
 
 /// Normalize segments by handling "." and ".." entries.
@@ -55,17 +51,15 @@ fn split_path_str(s: &str) -> Vec<String> {
     s.split('/').map(|p| p.to_string()).collect()
 }
 
-/// Outcome of looking up a synthesized path against the calling
-/// package, mirrored as a `_PathLookup` record on the SCL side.
+/// Outcome of looking up a synthesized path against a known package,
+/// mirrored as a `_PathLookup` record on the SCL side.
 enum LookupOutcome {
     /// Path was found (or no packages were registered, in which case
     /// the hash is null but the value is still considered "found" so
-    /// that compile-time eval and tests without fixture files keep
-    /// working). Carries the resolved path value.
+    /// compile-time eval and tests without fixture files keep working).
     Found(PathValue),
-    /// Path was not found in the calling package; cannot carry a
-    /// content hash. The SCL wrapper raises `Path.NotFound` with the
-    /// path string.
+    /// Path was not found in `package`; cannot carry a content hash.
+    /// The SCL wrapper raises `Path.NotFound` with the path string.
     Missing(String),
     /// `parent` of the root path; the SCL wrapper returns `nil`.
     Root,
@@ -74,46 +68,38 @@ enum LookupOutcome {
     Invalid,
 }
 
-fn lookup_path(ctx: &EvalCtx, path: String) -> LookupOutcome {
-    let hash = match ctx.current_caller_package() {
-        Some(caller_pkg) => match ctx.resolve_path_hash(&path, &caller_pkg) {
-            Ok(Some(h)) => h,
-            Ok(None) => null_hash(),
-            Err(PathLookupError::NotFound) => return LookupOutcome::Missing(path),
-        },
-        None => null_hash(),
+/// Anchor a manipulated path against `package` and look up its content
+/// hash. When packages are registered (the runtime case) and the path
+/// does not exist in `package`, returns [`LookupOutcome::Missing`] so
+/// the SCL wrapper can raise `Path.NotFound`. When no packages are
+/// registered (compile-time eval, tests with no fixture files), falls
+/// back to a null hash so synthesized paths keep round-tripping —
+/// this matches the existing behaviour of literal-path resolution.
+fn lookup_path(ctx: &EvalCtx, path: String, package: PackageId) -> LookupOutcome {
+    let hash = match ctx.resolve_path_hash(&path, &package) {
+        Ok(Some(h)) => h,
+        Ok(None) => ObjId::null(),
+        Err(PathLookupError::NotFound) => return LookupOutcome::Missing(path),
     };
-    LookupOutcome::Found(PathValue { path, hash })
+    LookupOutcome::Found(PathValue {
+        path,
+        package,
+        hash,
+    })
 }
 
 fn lookup_to_record(outcome: LookupOutcome) -> Record {
+    let placeholder = || PathValue {
+        path: "/".into(),
+        package: PackageId::default(),
+        hash: ObjId::null(),
+    };
     let mut record = Record::default();
     let (tag, path, missing) = match outcome {
         LookupOutcome::Found(pv) => ("found", Value::Path(pv), String::new()),
-        LookupOutcome::Missing(path) => (
-            "missing",
-            Value::Path(PathValue {
-                path: "/".into(),
-                hash: null_hash(),
-            }),
-            path,
-        ),
-        LookupOutcome::Root => (
-            "root",
-            Value::Path(PathValue {
-                path: "/".into(),
-                hash: null_hash(),
-            }),
-            String::new(),
-        ),
-        LookupOutcome::Invalid => (
-            "invalid",
-            Value::Path(PathValue {
-                path: "/".into(),
-                hash: null_hash(),
-            }),
-            String::new(),
-        ),
+        LookupOutcome::Missing(path) => ("missing", Value::Path(placeholder()), path),
+        LookupOutcome::Root => ("root", Value::Path(placeholder()), String::new()),
+        LookupOutcome::Invalid => ("invalid", Value::Path(placeholder()), String::new()),
     };
     record.insert("tag".into(), Value::Str(tag.into()));
     record.insert("path".into(), path);
@@ -131,11 +117,11 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             Value::Str(s) => s,
             other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
         };
-        let base_path = match values.remove(0) {
-            Value::Path(pv) => pv.path,
+        let base = match values.remove(0) {
+            Value::Path(pv) => pv,
             other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
         };
-        let mut raw: Vec<String> = split_path_str(&base_path);
+        let mut raw: Vec<String> = split_path_str(&base.path);
         raw.extend(split_path_str(&segment));
         let segs = match normalize_segments(raw) {
             Some(s) => s,
@@ -147,7 +133,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             }
         };
         let path_str = segments_to_path_str(&segs);
-        let record = lookup_to_record(lookup_path(ctx, path_str));
+        let record = lookup_to_record(lookup_path(ctx, path_str, base.package));
         Ok(TrackedValue::new(Value::Record(record)).with_dependencies(deps))
     });
 
@@ -156,11 +142,12 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
         };
-        let path_str = match values.remove(0) {
-            Value::Path(pv) => pv.path,
+        let input = match values.remove(0) {
+            Value::Path(pv) => pv,
             other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
         };
-        let segs: Vec<String> = path_str
+        let segs: Vec<String> = input
+            .path
             .split('/')
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
@@ -169,7 +156,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             LookupOutcome::Root
         } else {
             let parent_segs = &segs[..segs.len() - 1];
-            lookup_path(ctx, segments_to_path_str(parent_segs))
+            lookup_path(ctx, segments_to_path_str(parent_segs), input.package)
         };
         let record = lookup_to_record(outcome);
         Ok(TrackedValue::new(Value::Record(record)).with_dependencies(deps))
@@ -267,21 +254,27 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         Ok(TrackedValue::new(Value::Str(path_str)).with_dependencies(deps))
     });
 
+    // `fromStr` takes an anchor `Path` whose package the resulting path
+    // is resolved against. The anchor's path is otherwise unused — callers
+    // typically pass `/` from their own module to provide the package.
     eval.add_extern_fn("Std/Path.fromStr", |args, ctx| {
-        let (mut values, deps) = match collect_args(args, 1)? {
+        let (mut values, deps) = match collect_args(args, 2)? {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
         };
-        let s = match values.remove(0) {
+        let s = match values.remove(1) {
             Value::Str(s) => s,
+            other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
+        };
+        let anchor = match values.remove(0) {
+            Value::Path(pv) => pv,
             other => return Err(EvalErrorKind::UnexpectedValue(other).into()),
         };
         let outcome = if s.is_empty() || !s.starts_with('/') {
             LookupOutcome::Invalid
         } else {
-            let raw = split_path_str(&s);
-            match normalize_segments(raw) {
-                Some(segs) => lookup_path(ctx, segments_to_path_str(&segs)),
+            match normalize_segments(split_path_str(&s)) {
+                Some(segs) => lookup_path(ctx, segments_to_path_str(&segs), anchor.package),
                 None => LookupOutcome::Invalid,
             }
         };

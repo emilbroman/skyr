@@ -450,14 +450,10 @@ pub struct EvalCtx {
     foreign_deps: Mutex<HashSet<(ids::EnvironmentQid, ResourceId)>>,
     pub(crate) source_trace: Mutex<ids::SourceTrace>,
     /// Package map for on-demand path hash resolution at runtime. Shared
-    /// `Arc` with [`Eval::packages`] so extern functions can look up paths
+    /// `Arc` with [`Eval::packages`] so extern functions (e.g. `Std/Path`)
+    /// can look up paths against the package the input `Path` carries,
     /// without going through the evaluator.
     packages: Mutex<Option<PackageMap>>,
-    /// Package id of the module that invoked the currently-running extern
-    /// function. Set in [`crate::ast::CallExpr`] around extern dispatch and
-    /// cleared on return. Used by stdlib externs (e.g. `Std/Path`) that
-    /// need to look up paths in the caller's package context.
-    current_caller_package: Mutex<Option<crate::PackageId>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -496,7 +492,6 @@ impl EvalCtx {
             foreign_deps: Mutex::new(HashSet::new()),
             source_trace: Mutex::new(Vec::new()),
             packages: Mutex::new(None),
-            current_caller_package: Mutex::new(None),
         }
     }
 
@@ -505,19 +500,6 @@ impl EvalCtx {
     /// `Expr::Path` evaluation share a single source of truth.
     pub(crate) fn set_packages(&self, packages: PackageMap) {
         *self.packages.lock().unwrap() = Some(packages);
-    }
-
-    /// Push a caller-package frame around an extern function invocation.
-    /// Returns a guard that clears the frame on drop.
-    pub(crate) fn enter_caller_package(&self, package: crate::PackageId) -> CallerPackageGuard<'_> {
-        let prev = self.current_caller_package.lock().unwrap().replace(package);
-        CallerPackageGuard { ctx: self, prev }
-    }
-
-    /// The package id of the module that invoked the currently-running
-    /// extern function, if one is set.
-    pub fn current_caller_package(&self) -> Option<crate::PackageId> {
-        self.current_caller_package.lock().unwrap().clone()
     }
 
     /// Look up the git object hash for `resolved_path` in `package_id`.
@@ -822,18 +804,6 @@ pub enum PathLookupError {
     /// package. Distinct from `Ok(None)`, which means no packages were
     /// registered at all.
     NotFound,
-}
-
-/// Drop guard that restores the previous caller-package frame.
-pub(crate) struct CallerPackageGuard<'a> {
-    ctx: &'a EvalCtx,
-    prev: Option<crate::PackageId>,
-}
-
-impl Drop for CallerPackageGuard<'_> {
-    fn drop(&mut self) {
-        *self.ctx.current_caller_package.lock().unwrap() = self.prev.take();
-    }
 }
 
 #[derive(Debug)]
