@@ -17,6 +17,7 @@ fn register_record_extern(registry: &mut impl super::ExternRegistry, resource_ty
         let name = config.get("name").assert_str_ref()?;
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: resource_type.to_string(),
             name: name.to_owned(),
         };

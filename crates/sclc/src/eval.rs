@@ -425,6 +425,10 @@ pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<ResourceId, crate::Resource>,
     namespace: String,
+    /// The region of the local deployment — used as the default region
+    /// for resources that don't specify one explicitly. Region is part of the
+    /// resource's structural identity (see [`ids::ResourceId`]).
+    region: ids::RegionId,
     /// The local deployment's QID — the bottom of the owner stack and the
     /// fallback when no scope has been pushed.
     local_owner: ids::DeploymentQid,
@@ -480,11 +484,13 @@ impl EvalCtx {
         effects: mpsc::UnboundedSender<Effect>,
         namespace: impl Into<String>,
         local_owner: ids::DeploymentQid,
+        region: ids::RegionId,
     ) -> Self {
         Self {
             effects,
             resources: HashMap::new(),
             namespace: namespace.into(),
+            region,
             local_owner,
             owner_stack: Mutex::new(Vec::new()),
             package_owner: HashMap::new(),
@@ -493,6 +499,12 @@ impl EvalCtx {
             source_trace: Mutex::new(Vec::new()),
             packages: Mutex::new(None),
         }
+    }
+
+    /// The region of this evaluator — used as the default region for
+    /// resources that don't specify one explicitly.
+    pub fn region(&self) -> &ids::RegionId {
+        &self.region
     }
 
     /// Set the package map used by extern functions for path lookups. The
@@ -642,6 +654,7 @@ impl EvalCtx {
         name: impl Into<String>,
     ) -> Option<&crate::Resource> {
         let resource_id = ResourceId {
+            region: self.region.clone(),
             typ: ty.into(),
             name: name.into(),
         };
@@ -662,6 +675,7 @@ impl EvalCtx {
         let ty = ty.into();
         let name = name.into();
         let resource_id = ResourceId {
+            region: self.region.clone(),
             typ: ty.clone(),
             name: name.clone(),
         };
@@ -1400,10 +1414,16 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
@@ -1426,14 +1446,21 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
@@ -1475,14 +1502,21 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
@@ -1525,14 +1559,21 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let callee_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "callee".to_string(),
         };
         let arg_dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "arg".to_string(),
         };
@@ -1573,9 +1614,15 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let id = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
         };
@@ -1592,6 +1639,7 @@ mod tests {
             },
         );
         let dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
@@ -1623,9 +1671,15 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let id = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "x".to_string(),
         };
@@ -1633,6 +1687,7 @@ mod tests {
         inputs.insert("min".to_string(), Value::Int(1));
         inputs.insert("max".to_string(), Value::Int(2));
         let dependency = ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: "seed".to_string(),
         };
@@ -1673,7 +1728,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();
@@ -1698,7 +1758,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();
@@ -1723,7 +1788,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();
@@ -1748,7 +1818,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();
@@ -1775,7 +1850,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();
@@ -1802,7 +1882,12 @@ mod tests {
         let (tx, _rx) = mpsc::unbounded_channel();
         let eval = Eval::from_externs(
             HashMap::new(),
-            super::EvalCtx::new(tx, "test/namespace", crate::placeholder_deployment_qid()),
+            super::EvalCtx::new(
+                tx,
+                "test/namespace",
+                crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
+            ),
         );
         let module_id = ModuleId::default();
         let ge = GlobalEvalEnv::default();

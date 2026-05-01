@@ -80,5 +80,12 @@ pub fn placeholder_deployment_qid() -> ids::DeploymentQid {
         .expect("placeholder deployment QID is well-formed")
 }
 
+/// A placeholder [`ids::RegionId`] suitable for tests and other contexts that
+/// need to construct an [`EvalCtx`] without a real operator-supplied home
+/// region. Real deployments must always pass a configured region.
+pub fn placeholder_region() -> ids::RegionId {
+    "test".parse().expect("placeholder region is well-formed")
+}
+
 #[cfg(test)]
 mod tests;

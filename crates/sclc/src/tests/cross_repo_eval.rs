@@ -29,7 +29,7 @@ async fn foreign_global_emits_foreign_owned_create_when_unmaterialised() {
     let local = placeholder_deployment_qid();
     let foreign = foreign_qid('a');
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local.clone());
+    let mut ctx = EvalCtx::new(tx, "test", local.clone(), crate::placeholder_region());
     let foreign_pkg = PackageId::from(["foreign", "repo"]);
     ctx.set_package_owner(foreign_pkg.clone(), foreign.clone());
 
@@ -54,7 +54,7 @@ async fn foreign_global_returns_concrete_outputs_when_materialised() {
     let local = placeholder_deployment_qid();
     let foreign = foreign_qid('b');
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local.clone());
+    let mut ctx = EvalCtx::new(tx, "test", local.clone(), crate::placeholder_region());
     let foreign_pkg = PackageId::from(["foreign", "repo"]);
     ctx.set_package_owner(foreign_pkg.clone(), foreign.clone());
 
@@ -62,6 +62,7 @@ async fn foreign_global_returns_concrete_outputs_when_materialised() {
     ctx.add_foreign_resource(
         foreign.clone(),
         ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".into(),
             name: "seed".into(),
         },
@@ -97,7 +98,7 @@ async fn foreign_resource_with_changed_inputs_yields_pending_and_update() {
     let local = placeholder_deployment_qid();
     let foreign = foreign_qid('c');
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local.clone());
+    let mut ctx = EvalCtx::new(tx, "test", local.clone(), crate::placeholder_region());
     let foreign_pkg = PackageId::from(["foreign", "repo"]);
     ctx.set_package_owner(foreign_pkg.clone(), foreign.clone());
 
@@ -105,6 +106,7 @@ async fn foreign_resource_with_changed_inputs_yields_pending_and_update() {
     ctx.add_foreign_resource(
         foreign.clone(),
         ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".into(),
             name: "seed".into(),
         },
@@ -137,7 +139,7 @@ async fn foreign_reads_record_cross_deployment_dependencies() {
     let local = placeholder_deployment_qid();
     let foreign = foreign_qid('d');
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local.clone());
+    let mut ctx = EvalCtx::new(tx, "test", local.clone(), crate::placeholder_region());
     let foreign_pkg = PackageId::from(["foreign", "repo"]);
     ctx.set_package_owner(foreign_pkg.clone(), foreign.clone());
 
@@ -163,7 +165,7 @@ async fn foreign_reads_record_cross_deployment_dependencies() {
 async fn local_resource_unaffected_by_foreign_scope_outside_it() {
     let local = placeholder_deployment_qid();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", local.clone());
+    let ctx = EvalCtx::new(tx, "test", local.clone(), crate::placeholder_region());
 
     let inputs = record_with("min", Value::Int(0));
     let _ = ctx
@@ -179,7 +181,7 @@ async fn local_resource_unaffected_by_foreign_scope_outside_it() {
 async fn orphan_package_emits_unowned_create_and_pending_output() {
     let local = placeholder_deployment_qid();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local);
+    let mut ctx = EvalCtx::new(tx, "test", local, crate::placeholder_region());
     let orphan_pkg = PackageId::from(["pinned", "by", "hash"]);
     ctx.set_package_orphan(orphan_pkg.clone());
 

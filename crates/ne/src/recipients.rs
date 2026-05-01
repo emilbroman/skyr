@@ -139,7 +139,7 @@ mod tests {
 
     #[test]
     fn extract_org_id_from_resource_qid() {
-        let qid = "MyOrg/MyRepo::main::Std/Random.Number:my_number";
+        let qid = "MyOrg/MyRepo::main::stockholm:Std/Random.Number:my_number";
         let org = extract_org_id(qid).unwrap();
         assert_eq!(org.to_string(), "MyOrg");
     }

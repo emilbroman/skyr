@@ -133,6 +133,7 @@ impl Worker {
             effects_tx,
             environment_qid_str,
             local_deployment_qid.clone(),
+            self.rdb_client.region().clone(),
         );
 
         if let Some(finder) = &cross_repo_finder {

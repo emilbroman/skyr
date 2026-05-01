@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn parse_env_qid_from_resource_string() {
-        let qid = "MyOrg/MyRepo::main::Std/Random.Int:seed";
+        let qid = "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed";
         let env = env_qid_from_string(qid).expect("resource QID parses");
         assert_eq!(env, "MyOrg/MyRepo::main");
     }

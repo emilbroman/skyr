@@ -39,6 +39,7 @@ pub async fn run_program(root: PathBuf, package: String, git_server: String) -> 
         effects_tx,
         package_id.to_string(),
         sclc::placeholder_deployment_qid(),
+        sclc::placeholder_region(),
     );
     let effects_task = spawn_effect_printer(effects_rx);
 

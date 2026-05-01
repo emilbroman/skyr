@@ -252,6 +252,7 @@ impl Repl {
             self.effects_tx.clone(),
             &self.namespace,
             crate::placeholder_deployment_qid(),
+            crate::placeholder_region(),
         );
         let evaluator =
             AsgEvaluator::new(&self.cached_asg, ctx).with_initial_env(self.global_eval_env.clone());
@@ -336,6 +337,7 @@ impl Repl {
                 self.effects_tx.clone(),
                 &self.namespace,
                 crate::placeholder_deployment_qid(),
+                crate::placeholder_region(),
             ),
         );
         let eval_env = self.eval_env(module_id);

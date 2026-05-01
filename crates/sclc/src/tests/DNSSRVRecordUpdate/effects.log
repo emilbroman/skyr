@@ -1,1 +1,1 @@
-UpdateResource ty=Std/DNS.SRVRecord name=_svc._tcp.example.com inputs={name: "_svc._tcp.example.com", records: [{port: 443, priority: 10, target: "svc2.example.com", weight: 10}], ttl: {milliseconds: 60000}}
+UpdateResource region=test ty=Std/DNS.SRVRecord name=_svc._tcp.example.com inputs={name: "_svc._tcp.example.com", records: [{port: 443, priority: 10, target: "svc2.example.com", weight: 10}], ttl: {milliseconds: 60000}}

@@ -37,7 +37,7 @@ async fn create_effect_carries_local_owner() {
 
     let local_owner = placeholder_deployment_qid();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", local_owner.clone());
+    let ctx = EvalCtx::new(tx, "test", local_owner.clone(), crate::placeholder_region());
     let _ = eval(&asg, ctx).expect("eval failed");
 
     let mut saw_create = false;
@@ -58,7 +58,7 @@ async fn create_effect_carries_local_owner() {
 async fn current_owner_falls_back_to_local() {
     let local_owner = placeholder_deployment_qid();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", local_owner.clone());
+    let ctx = EvalCtx::new(tx, "test", local_owner.clone(), crate::placeholder_region());
     assert_eq!(ctx.current_owner(), Some(local_owner));
 }
 
@@ -70,7 +70,7 @@ async fn with_owner_pushes_and_pops() {
             .parse()
             .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", local_owner.clone());
+    let ctx = EvalCtx::new(tx, "test", local_owner.clone(), crate::placeholder_region());
 
     let observed = ctx.with_owner(Some(foreign.clone()), || ctx.current_owner());
     assert_eq!(observed, Some(foreign));
@@ -82,7 +82,7 @@ async fn with_owner_pushes_and_pops() {
 async fn with_owner_orphan_scope_yields_no_owner() {
     let local_owner = placeholder_deployment_qid();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", local_owner.clone());
+    let ctx = EvalCtx::new(tx, "test", local_owner.clone(), crate::placeholder_region());
 
     let observed = ctx.with_owner(None, || ctx.current_owner());
     assert_eq!(observed, None);
@@ -98,7 +98,7 @@ async fn package_owner_falls_back_to_local() {
             .parse()
             .unwrap();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local_owner.clone());
+    let mut ctx = EvalCtx::new(tx, "test", local_owner.clone(), crate::placeholder_region());
 
     let foreign_pkg = PackageId::from(["foreign", "repo"]);
     ctx.set_package_owner(foreign_pkg.clone(), foreign.clone());
@@ -114,7 +114,7 @@ async fn package_owner_falls_back_to_local() {
 async fn orphan_package_owner_is_none() {
     let local_owner = placeholder_deployment_qid();
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut ctx = EvalCtx::new(tx, "test", local_owner);
+    let mut ctx = EvalCtx::new(tx, "test", local_owner, crate::placeholder_region());
 
     let pkg = PackageId::from(["pinned", "by", "hash"]);
     ctx.set_package_orphan(pkg.clone());

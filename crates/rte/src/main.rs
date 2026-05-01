@@ -40,6 +40,12 @@ enum Program {
 
         #[clap(long = "plugin")]
         plugin: Vec<PluginSpec>,
+
+        /// Skyr region this RTE serves (e.g. `stockholm`). Validated as
+        /// `[a-z]+`. Stamped onto resource IDs constructed for RDB writes
+        /// and status reports.
+        #[clap(long = "region")]
+        region: String,
     },
 }
 
@@ -88,8 +94,13 @@ async fn main() -> anyhow::Result<()> {
             worker_count,
             local_workers,
             plugin,
+            region,
         } => {
-            tracing::info!("starting resource transition engine daemon");
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+
+            tracing::info!(%region, "starting resource transition engine daemon");
 
             if local_workers == 0 {
                 anyhow::bail!("--local-workers must be at least 1");
@@ -108,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
             let rq_uri = format!("amqp://{}:5672/%2f", rq_hostname);
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(&rdb_hostname)
+                .region(region.clone())
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
@@ -1592,6 +1604,7 @@ async fn handle_check(
             .dependencies
             .iter()
             .map(|d| ids::ResourceId {
+                region: d.region.clone(),
                 typ: d.typ.clone(),
                 name: d.name.clone(),
             })

@@ -190,16 +190,22 @@ fn parse_json_field<T: serde::de::DeserializeOwned>(
     })
 }
 
-/// Build a validated [`ids::ResourceId`] from untrusted `type` and `name` strings.
-fn validated_resource_id(typ: &str, name: &str) -> Result<ids::ResourceId, tonic::Status> {
-    let composite = format!("{typ}:{name}");
+/// Build a validated [`ids::ResourceId`] from untrusted `region`, `type`, and
+/// `name` strings.
+fn validated_resource_id(
+    region: &str,
+    typ: &str,
+    name: &str,
+) -> Result<ids::ResourceId, tonic::Status> {
+    let composite = format!("{region}:{typ}:{name}");
     composite.parse::<ids::ResourceId>().map_err(|_| {
         warn!(
+            region,
             resource_type = typ,
             resource_name = name,
             "invalid resource ID in request"
         );
-        tonic::Status::invalid_argument("invalid resource type/name")
+        tonic::Status::invalid_argument("invalid region/type/name")
     })
 }
 
@@ -315,7 +321,11 @@ where
             &request.resource_name,
             "create_resource",
         )?;
-        let resource_id = validated_resource_id(&request.resource_type, &request.resource_name)?;
+        let resource_id = validated_resource_id(
+            &request.region,
+            &request.resource_type,
+            &request.resource_name,
+        )?;
 
         let resource = {
             let mut plugin = self.plugin.write().await;
@@ -352,7 +362,7 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = validated_resource_id(&current.r#type, &current.name)?;
+        let resource_id = validated_resource_id(&current.region, &current.r#type, &current.name)?;
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
@@ -422,7 +432,7 @@ where
         let current = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing resource"))?;
-        let resource_id = validated_resource_id(&current.r#type, &current.name)?;
+        let resource_id = validated_resource_id(&current.region, &current.r#type, &current.name)?;
         info!(
             resource_type = resource_id.typ.as_str(),
             resource_name = resource_id.name.as_str(),
@@ -483,7 +493,7 @@ where
         let resource = request
             .resource
             .ok_or_else(|| tonic::Status::invalid_argument("missing check resource"))?;
-        let id = validated_resource_id(&resource.r#type, &resource.name)?;
+        let id = validated_resource_id(&resource.region, &resource.r#type, &resource.name)?;
         let parsed = decode_resource(resource)?;
 
         let plugin = self.plugin.read().await;
@@ -547,6 +557,7 @@ impl PluginClient {
             .create_resource(CreateResourceRequest {
                 resource_type: id.typ,
                 resource_name: id.name,
+                region: id.region.to_string(),
                 resource_inputs_json,
                 deployment_qid: deployment_qid.to_string(),
             })
@@ -582,6 +593,7 @@ impl PluginClient {
             .inner
             .update_resource(UpdateResourceRequest {
                 resource: Some(Resource {
+                    region: id.region.to_string(),
                     r#type: id.typ,
                     name: id.name,
                     inputs_json: current_inputs_json,
@@ -620,6 +632,7 @@ impl PluginClient {
         self.inner
             .delete_resource(DeleteResourceRequest {
                 resource: Some(Resource {
+                    region: id.region.to_string(),
                     r#type: id.typ,
                     name: id.name,
                     inputs_json,
@@ -685,6 +698,7 @@ fn encode_resource(
         .map_err(|error| tonic::Status::internal(error.to_string()))?;
     let markers = resource.markers.iter().map(encode_marker).collect();
     Ok(Resource {
+        region: id.region.to_string(),
         r#type: id.typ,
         name: id.name,
         inputs_json,
@@ -865,19 +879,20 @@ mod tests {
 
     #[test]
     fn validated_resource_id_accepts_valid() {
-        let id = validated_resource_id("Std/Random.Int", "seed").unwrap();
+        let id = validated_resource_id("stockholm", "Std/Random.Int", "seed").unwrap();
+        assert_eq!(id.region.as_str(), "stockholm");
         assert_eq!(id.typ, "Std/Random.Int");
         assert_eq!(id.name, "seed");
     }
 
     #[test]
     fn validated_resource_id_rejects_empty_type() {
-        assert!(validated_resource_id("", "seed").is_err());
+        assert!(validated_resource_id("stockholm", "", "seed").is_err());
     }
 
     #[test]
     fn validated_resource_id_rejects_empty_name() {
-        assert!(validated_resource_id("Std/Random.Int", "").is_err());
+        assert!(validated_resource_id("stockholm", "Std/Random.Int", "").is_err());
     }
 
     #[test]

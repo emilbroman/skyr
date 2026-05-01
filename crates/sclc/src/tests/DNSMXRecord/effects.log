@@ -1,1 +1,1 @@
-CreateResource ty=Std/DNS.MXRecord name=example.com inputs={exchanges: [{host: "mail.example.com", priority: 10}], name: "example.com", ttl: {milliseconds: 60000}}
+CreateResource region=test ty=Std/DNS.MXRecord name=example.com inputs={exchanges: [{host: "mail.example.com", priority: 10}], name: "example.com", ttl: {milliseconds: 60000}}

@@ -36,7 +36,12 @@ async fn evaluate_scle_main(source: &str) -> (Option<crate::TrackedValue>, DiagL
         return (None, diags);
     }
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "scle-test", crate::placeholder_deployment_qid());
+    let ctx = EvalCtx::new(
+        tx,
+        "scle-test",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
     let (_results, env) = AsgEvaluator::new(&asg, ctx)
         .eval()
         .expect("eval should succeed");
@@ -201,7 +206,12 @@ async fn scl_imports_scle_as_value() {
     assert_no_diags(&diags);
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let ctx = EvalCtx::new(
+        tx,
+        "test",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
     let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
     let y = env
@@ -238,7 +248,12 @@ async fn scl_accesses_scle_member() {
     assert_no_diags(&diags);
 
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let ctx = EvalCtx::new(
+        tx,
+        "test",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
     let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
     let g = env
         .get(&GlobalKey::Global(
@@ -313,7 +328,12 @@ async fn scle_as_entrypoint() {
         .unpack(&mut diags);
     assert_no_diags(&diags);
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let ctx = EvalCtx::new(
+        tx,
+        "test",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
     let (_results, env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
     let val = env
         .get(&GlobalKey::ModuleValue(vec![

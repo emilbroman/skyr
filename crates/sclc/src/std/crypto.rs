@@ -32,6 +32,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let name = config.get("name").assert_str_ref()?;
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: ED25519_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
@@ -67,6 +68,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         };
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: ECDSA_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
@@ -142,6 +144,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: CSR_RESOURCE_TYPE.to_owned(),
             name: resource_name.clone(),
         };
@@ -178,6 +181,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         };
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: RSA_RESOURCE_TYPE.to_owned(),
             name: name.to_owned(),
         };
@@ -230,6 +234,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let resource_name = format!("{:x}", std::hash::Hasher::finish(&hasher));
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: CERT_SIG_RESOURCE_TYPE.to_owned(),
             name: resource_name.clone(),
         };

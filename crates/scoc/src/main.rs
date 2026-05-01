@@ -34,6 +34,11 @@ enum Command {
         /// Unique name for this node.
         #[arg(long)]
         node_name: String,
+        /// Skyr region this node serves (e.g. `stockholm`). Used to stamp
+        /// the region segment of resource IDs constructed for LDB log
+        /// namespaces. Validated as `[a-z]+`.
+        #[arg(long)]
+        region: String,
         /// Address to bind the Conduit server to.
         #[arg(long, default_value = "0.0.0.0:50054")]
         bind: String,
@@ -430,6 +435,9 @@ struct CriConduit {
     cri: Arc<Mutex<CriClient>>,
     ldb_publisher: Option<ldb::Publisher>,
     log_tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    /// Skyr region this scoc node serves. Set from `--region` at
+    /// startup; used to stamp pod resource IDs onto LDB log namespaces.
+    region: ids::RegionId,
     /// Pods keyed by pod_name (full resource name with hash).
     pods: Arc<Mutex<HashMap<String, PodInfo>>>,
     /// Network state, set after orchestrator registration via `NetworkInitHandle`.
@@ -465,11 +473,13 @@ impl CriConduit {
         dns_records: dns::DnsRecords,
         self_name: String,
         tls: Option<Arc<scop::TlsMaterial>>,
+        region: ids::RegionId,
     ) -> Self {
         Self {
             cri: Arc::new(Mutex::new(cri)),
             ldb_publisher,
             log_tasks: Arc::new(Mutex::new(HashMap::new())),
+            region,
             pods: Arc::new(Mutex::new(HashMap::new())),
             net_state: Arc::new(OnceCell::new()),
             pending_entries: Arc::new(Mutex::new(Vec::new())),
@@ -706,12 +716,16 @@ impl scop::Conduit for CriConduit {
         let mut container_ids: Vec<String> = Vec::with_capacity(config.containers.len());
         // Build the LDB namespace from the pod's resource QID
         let resource_id = ids::ResourceId {
+            region: self.region.clone(),
             typ: "Std/Container.Pod".to_string(),
             name: pod_name.clone(),
         };
         let ldb_namespace = match config.environment_qid.parse::<ids::EnvironmentQid>() {
             Ok(env_qid) => ids::ResourceQid::new(env_qid, resource_id).to_string(),
-            Err(_) => format!("{}::Std/Container.Pod:{}", config.environment_qid, pod_name),
+            Err(_) => format!(
+                "{}::{}:Std/Container.Pod:{}",
+                config.environment_qid, self.region, pod_name
+            ),
         };
 
         for (i, container_config) in config.containers.iter().enumerate() {
@@ -1322,6 +1336,7 @@ async fn main() -> Result<()> {
     match args.command {
         Command::Daemon {
             node_name,
+            region,
             bind,
             conduit_address,
             orchestrator_address,
@@ -1338,6 +1353,9 @@ async fn main() -> Result<()> {
             gossip_interval_secs,
             tombstone_ttl_secs,
         } => {
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
             // Parse --pod-netmask, stripping optional leading slash
             let pod_netmask: u32 = pod_netmask
                 .strip_prefix('/')
@@ -1353,6 +1371,7 @@ async fn main() -> Result<()> {
 
             tracing::info!("SCOC conduit starting");
             tracing::info!("  node_name: {}", node_name);
+            tracing::info!("  region: {}", region);
             tracing::info!("  bind: {}", bind);
             tracing::info!("  conduit_address: {}", conduit_address);
             tracing::info!("  orchestrator_address: {}", orchestrator_address);
@@ -1403,6 +1422,7 @@ async fn main() -> Result<()> {
                 dns_records.clone(),
                 node_name.clone(),
                 tls.clone(),
+                region.clone(),
             );
             let init_handle = conduit.network_init_handle();
             let gossip_handles = conduit.gossip_handles();

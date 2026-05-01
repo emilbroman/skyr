@@ -1,1 +1,1 @@
-UpdateResource ty=Std/DNS.AAAARecord name=a.b.c inputs={addresses: ["2001:db8::1", "2001:db8::2"], name: "a.b.c", ttl: {milliseconds: 60000}}
+UpdateResource region=test ty=Std/DNS.AAAARecord name=a.b.c inputs={addresses: ["2001:db8::1", "2001:db8::2"], name: "a.b.c", ttl: {milliseconds: 60000}}

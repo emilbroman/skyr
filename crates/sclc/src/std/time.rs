@@ -87,6 +87,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
 
         let id_str = format!("{months}/{milliseconds}");
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: SCHEDULE_RESOURCE_TYPE.to_string(),
             name: id_str.clone(),
         };

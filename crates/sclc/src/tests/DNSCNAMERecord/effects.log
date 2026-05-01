@@ -1,1 +1,1 @@
-CreateResource ty=Std/DNS.CNAMERecord name=alias.example.com inputs={name: "alias.example.com", target: "canonical.example.com", ttl: {milliseconds: 60000}}
+CreateResource region=test ty=Std/DNS.CNAMERecord name=alias.example.com inputs={name: "alias.example.com", target: "canonical.example.com", ttl: {milliseconds: 60000}}

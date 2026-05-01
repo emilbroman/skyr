@@ -1,1 +1,1 @@
-TouchResource ty=Std/Random.Int name=seed inputs={max: 100, min: 0}
+TouchResource region=test ty=Std/Random.Int name=seed inputs={max: 100, min: 0}

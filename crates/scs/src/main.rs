@@ -41,6 +41,12 @@ enum Program {
         /// Node registry hostname (Redis) for SCOC address lookups (port-forward).
         #[clap(long = "node-registry-hostname", default_value = "localhost")]
         node_registry_hostname: String,
+
+        /// Skyr region this SCS serves (e.g. `stockholm`). Validated as
+        /// `[a-z]+`. Used by the RDB client for resource-id construction
+        /// when servicing port-forward lookups.
+        #[clap(long = "region")]
+        region: String,
     },
 }
 
@@ -61,7 +67,12 @@ async fn main() -> anyhow::Result<()> {
             udb_hostname,
             rdb_hostname,
             node_registry_hostname,
+            region,
         } => {
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+
             let client = cdb::ClientBuilder::new()
                 .known_node(cdb_hostname)
                 .build()
@@ -72,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(rdb_hostname)
+                .region(region.clone())
                 .build()
                 .await?;
             let node_registry_url = format!("redis://{node_registry_hostname}/");

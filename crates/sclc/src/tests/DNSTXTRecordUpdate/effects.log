@@ -1,1 +1,1 @@
-UpdateResource ty=Std/DNS.TXTRecord name=example.com inputs={name: "example.com", ttl: {milliseconds: 60000}, values: ["v=spf1 include:example.net -all"]}
+UpdateResource region=test ty=Std/DNS.TXTRecord name=example.com inputs={name: "example.com", ttl: {milliseconds: 60000}, values: ["v=spf1 include:example.net -all"]}

@@ -818,7 +818,9 @@ mod tests {
     }
 
     fn sample_resource_qid() -> ids::ResourceQid {
-        "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap()
+        "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed"
+            .parse()
+            .unwrap()
     }
 
     fn sample_timestamp() -> DateTime<Utc> {
@@ -1026,7 +1028,7 @@ mod tests {
 
     #[test]
     fn shard_assignment_is_deterministic_and_in_range() {
-        let key = "MyOrg/MyRepo::main::Std/Random.Int:seed";
+        let key = "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed";
         let a = shard_for_entity_key(key, 32);
         let b = shard_for_entity_key(key, 32);
         assert_eq!(a, b);

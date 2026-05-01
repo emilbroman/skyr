@@ -159,7 +159,11 @@ type ResourceRow = (
     Option<String>,
 );
 
-fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, ResourceError> {
+fn map_resource_row(
+    namespace: &str,
+    region: &ids::RegionId,
+    row: ResourceRow,
+) -> Result<Resource, ResourceError> {
     let (
         resource_type,
         name,
@@ -172,6 +176,7 @@ fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, Resou
     ) = row;
     Ok(Resource {
         namespace: namespace.to_owned(),
+        region: region.clone(),
         resource_type,
         name,
         inputs: decode_record(inputs_json)?,
@@ -187,6 +192,7 @@ fn map_resource_row(namespace: &str, row: ResourceRow) -> Result<Resource, Resou
 pub struct ClientBuilder {
     inner: SessionBuilder,
     replication_factor: Option<u32>,
+    region: Option<ids::RegionId>,
 }
 
 impl ClientBuilder {
@@ -205,6 +211,17 @@ impl ClientBuilder {
     /// higher value (e.g. 3) for redundancy.
     pub fn replication_factor(mut self, factor: u32) -> Self {
         self.replication_factor = Some(factor);
+        self
+    }
+
+    /// Sets the region this RDB client serves. RDB is sharded by Skyr
+    /// region (every region has its own RDB), so every row this client
+    /// reads or writes is, by definition, in this region. The region
+    /// value isn't stored on the row itself — it's stamped onto returned
+    /// [`Resource`] values at read time so callers can reconstruct the
+    /// region-prefixed [`ids::ResourceId`].
+    pub fn region(mut self, region: ids::RegionId) -> Self {
+        self.region = Some(region);
         self
     }
 
@@ -230,9 +247,15 @@ impl ClientBuilder {
 
         let statements = PreparedStatements::new(&session).await?;
 
+        let region = self
+            .region
+            .clone()
+            .expect("ClientBuilder::region must be set before build");
+
         Ok(Client {
             session,
             statements,
+            region,
         })
     }
 }
@@ -241,9 +264,16 @@ impl ClientBuilder {
 pub struct Client {
     session: Arc<Session>,
     statements: PreparedStatements,
+    region: ids::RegionId,
 }
 
 impl Client {
+    /// The region of this RDB client. All resources read or written
+    /// through this client are in this region.
+    pub fn region(&self) -> &ids::RegionId {
+        &self.region
+    }
+
     pub fn namespace(&self, namespace: String) -> NamespaceClient {
         NamespaceClient {
             client: self.clone(),
@@ -284,9 +314,10 @@ impl NamespaceClient {
             .await?;
 
         let namespace = self.namespace.clone();
+        let region = self.client.region.clone();
         Ok(pager
             .rows_stream::<ResourceRow>()?
-            .map(move |row| map_resource_row(&namespace, row?)))
+            .map(move |row| map_resource_row(&namespace, &region, row?)))
     }
 
     pub async fn list_resources_by_owner(
@@ -303,9 +334,10 @@ impl NamespaceClient {
             .await?;
 
         let namespace = self.namespace.clone();
+        let region = self.client.region.clone();
         Ok(pager
             .rows_stream::<ResourceRow>()?
-            .map(move |row| map_resource_row(&namespace, row?)))
+            .map(move |row| map_resource_row(&namespace, &region, row?)))
     }
 }
 
@@ -358,6 +390,7 @@ impl ResourceClient {
 
         Ok(Some(Resource {
             namespace: self.namespace.namespace.clone(),
+            region: self.namespace.client.region.clone(),
             resource_type: self.resource_type.clone(),
             name: self.name.clone(),
             inputs: decode_record(inputs_json)?,
@@ -464,6 +497,11 @@ impl ResourceClient {
 #[derive(Clone)]
 pub struct Resource {
     pub namespace: String,
+    /// The Skyr region this resource lives in. Stamped at read time from
+    /// the [`Client`]'s region — RDB is sharded by region (every
+    /// region has its own RDB), so the value is always the region of
+    /// the connection that produced this row.
+    pub region: ids::RegionId,
     pub resource_type: String,
     pub name: String,
     pub inputs: Option<Record>,
@@ -635,7 +673,8 @@ mod tests {
 
     #[test]
     fn decode_dependencies_valid_json_round_trips() {
-        let deps = vec![ids::ResourceId::new("Std/Random.Int", "my-int")];
+        let region: ids::RegionId = "stockholm".parse().unwrap();
+        let deps = vec![ids::ResourceId::new(region, "Std/Random.Int", "my-int")];
         let json = serde_json::to_string(&deps).unwrap();
         let decoded = decode_dependencies(Some(json)).unwrap();
         assert_eq!(decoded, deps);
@@ -687,9 +726,10 @@ mod tests {
 
     #[test]
     fn encode_decode_dependencies_round_trip() {
+        let region: ids::RegionId = "stockholm".parse().unwrap();
         let deps = vec![
-            ids::ResourceId::new("Std/Random.Int", "a"),
-            ids::ResourceId::new("Std/Time.Schedule", "b"),
+            ids::ResourceId::new(region.clone(), "Std/Random.Int", "a"),
+            ids::ResourceId::new(region, "Std/Time.Schedule", "b"),
         ];
         let json = encode_dependencies(&deps).unwrap();
         let decoded = decode_dependencies(Some(json)).unwrap();
