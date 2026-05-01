@@ -479,6 +479,8 @@ test_case!(PathSegments);
 test_case!(PathIsRoot);
 test_case!(PathToStr);
 test_case!(PathFromStr);
+test_case!(PathPropagatesHash);
+test_case!(PathNotFound);
 
 // Std/Num
 test_case!(NumToHex);
