@@ -19,6 +19,10 @@ enum RepoCommand {
     Create {
         /// Repository name (just the repo, not `org/repo`).
         name: String,
+        /// Skyr region the repository should belong to. Defaults to the
+        /// org's region when omitted.
+        #[arg(long)]
+        region: Option<String>,
     },
 }
 
@@ -46,11 +50,20 @@ pub async fn run_repo(args: RepoArgs, ctx: &Context) -> anyhow::Result<()> {
             let org = ctx.org()?.to_owned();
             list_repositories(&client, &endpoint, &token, &org, ctx.format).await
         }
-        RepoCommand::Create { name } => {
+        RepoCommand::Create { name, region } => {
             let org = ctx.org()?;
             validate_segment(org).map_err(|e| anyhow!("--org `{org}`: {e}"))?;
             validate_segment(&name).map_err(|e| anyhow!("repository name `{name}`: {e}"))?;
-            create_repository(&client, &endpoint, &token, org, &name, ctx.format).await
+            create_repository(
+                &client,
+                &endpoint,
+                &token,
+                org,
+                &name,
+                region.as_deref(),
+                ctx.format,
+            )
+            .await
         }
     }
 }
@@ -61,6 +74,7 @@ async fn create_repository(
     token: &str,
     organization: &str,
     repository: &str,
+    region: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let data = auth::graphql_query::<CreateRepository>(
@@ -70,6 +84,7 @@ async fn create_repository(
         create_repository::Variables {
             organization: organization.to_owned(),
             repository: repository.to_owned(),
+            region: region.map(str::to_owned),
         },
         "repository create",
     )
