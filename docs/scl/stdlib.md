@@ -1,5 +1,36 @@
 # Standard Library Reference
 
+## Region
+
+Every resource has a region — part of its structural identity — but
+only resources whose real-world placement is region-dependent let the
+caller choose one. Where the choice is meaningful, the resource's
+input record carries an optional `region: Str?` field:
+
+```scl
+HTTP.Get({ url: "https://example.com", region: "stockholm" })
+```
+
+When present, the value names the Skyr region the resource is placed in
+(an `[a-z]+` label such as `stockholm` or `paris`). When omitted, the
+resource defaults to its repository's region. The region is part
+of the resource's structural identity — changing it triggers
+destroy + create under the existing lifecycle, not a special migration
+flow.
+
+Resources whose state is purely local to a region (and so cannot
+meaningfully be hosted elsewhere) omit the field and always inherit
+the repository's region. In the standard library these are all of
+`Std/Crypto`, `Random.Int`, and `Time.Schedule`.
+
+For composite resources (`Pod.Port`, `Pod.Attachment`, `Host.Port`,
+`Host.InternetAddress`), the child inherits the parent's region: a port
+lives wherever its pod lives.
+
+The per-resource tables below omit the `region: Str?` field on
+resources that accept it, to keep the signatures focused on
+resource-specific inputs.
+
 ## Std/DNS
 
 DNS resource management.
