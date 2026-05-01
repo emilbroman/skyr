@@ -13,18 +13,20 @@ mutation SignIn($username: String!, $proof: JSON!) {
       username
       email
       fullname
+      region
       publicKeys
     }
     token
   }
 }
 
-mutation Signup($username: String!, $email: String!, $proof: JSON!, $fullname: String) {
-  signup(username: $username, email: $email, proof: $proof, fullname: $fullname) {
+mutation Signup($username: String!, $email: String!, $proof: JSON!, $region: String!, $fullname: String) {
+  signup(username: $username, email: $email, proof: $proof, region: $region, fullname: $fullname) {
     user {
       username
       email
       fullname
+      region
       publicKeys
     }
     token
@@ -37,6 +39,7 @@ query RefreshToken {
       username
       email
       fullname
+      region
       publicKeys
     }
     token
@@ -48,6 +51,7 @@ query Me {
     username
     email
     fullname
+    region
     publicKeys
   }
 }
