@@ -760,7 +760,7 @@ Coerce a dynamic value to `#{Any: Any}`. Raises `UnexpectedType` if the value is
 
 Functions for inspecting and composing repo-rooted `Path` values.
 
-A `Path` value is anchored to the package it was originally resolved against, and carries a content hash identifying the file or directory at that path within that package's commit. Manipulation functions that produce new `Path` values (`Path.join`, `Path.parent`, `Path.fromStr`) look up the content hash of the resulting path against the input's anchor package, keeping manipulated paths usable as content-addressed references (see [`Std/Container.Pod`](#stdcontainer)). When the resulting path does not exist in that package, the function raises `Path.NotFound(path)` rather than silently returning a path with a null hash.
+A `Path` value is anchored to the package it was originally resolved against, and carries a content hash identifying the file or directory at that path within that package's commit. Manipulation functions that produce new `Path` values (`Path.join`, `Path.parent`, `Path.fromStr`) look up the content hash of the resulting path against the input's anchor package, keeping manipulated paths usable as content-addressed references (see [`Std/Container.Pod`](/~docs/scl/stdlib-ref/container/)). When the resulting path does not exist in that package, the function raises `Path.NotFound(path)` rather than silently returning a path with a null hash.
 
 ```scl
 import Std/Path
