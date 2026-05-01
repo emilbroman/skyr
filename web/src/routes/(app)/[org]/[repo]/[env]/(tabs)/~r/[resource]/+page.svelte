@@ -166,7 +166,15 @@ let pathLinkBase = $derived(
 {:else if resource}
   <!-- Header -->
   <div class="bg-white border border-gray-200 rounded-lg p-4 mb-6">
-    <div class="text-xs font-mono text-gray-500 truncate">{resource.type}</div>
+    <div class="text-xs font-mono text-gray-500 truncate flex items-center gap-1.5">
+      <span
+        class="inline-flex items-center px-1.5 py-0.5 rounded text-[0.65rem] font-medium border bg-purple-50 text-purple-700 border-purple-200"
+        title="Skyr region"
+      >
+        {resource.region}
+      </span>
+      <span>{resource.type}</span>
+    </div>
     <h2 class="mt-1 font-bold text-gray-900 break-all">{resource.name}</h2>
     {#if resource.markers.length > 0 || isDestroying}
       <div class="mt-2 flex items-center gap-1 flex-wrap">

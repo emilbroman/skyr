@@ -12,6 +12,7 @@ import SkyrLogo from "$lib/components/SkyrLogo.svelte";
 
 let username = $state("");
 let email = $state("");
+let region = $state("");
 let fullname = $state("");
 let authChallenge = $state<AuthChallengeQuery["authChallenge"] | null>(null);
 let error = $state<string | null>(null);
@@ -93,6 +94,7 @@ function submitSshSignup(signature: string) {
         username: username.trim(),
         email: email.trim(),
         proof: signature,
+        region: region.trim(),
         fullname: fullname.trim() || null,
     });
 }
@@ -107,6 +109,7 @@ async function submitPasskeySignup() {
             username: username.trim(),
             email: email.trim(),
             proof: JSON.stringify(proof),
+            region: region.trim(),
             fullname: fullname.trim() || null,
         });
     } catch (e) {
@@ -169,6 +172,21 @@ async function submitPasskeySignup() {
             disabled={loading}
           />
 
+          <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="region">
+            Region
+          </label>
+          <input
+            id="region"
+            type="text"
+            bind:value={region}
+            placeholder="stockholm"
+            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
+            disabled={loading}
+          />
+          <p class="mt-1 text-[0.65rem] text-gray-500">
+            Skyr region your account belongs to. Lowercase ASCII letters.
+          </p>
+
           <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="fullname">
             Full name <span class="text-gray-400 font-normal">(optional)</span>
           </label>
@@ -184,7 +202,7 @@ async function submitPasskeySignup() {
           <button
             type="submit"
             class="w-full mt-3 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={loading || !username.trim() || !email.trim()}
+            disabled={loading || !username.trim() || !email.trim() || !region.trim()}
           >
             {loading ? "Loading..." : "Continue"}
           </button>

@@ -8,12 +8,13 @@ import { Activity, List, Network } from "lucide-svelte";
 import { onMount, type Snippet } from "svelte";
 
 type Resource = {
+    region: string;
     type: string;
     name: string;
     markers: ResourceMarker[];
     status: { health: HealthStatus; openIncidentCount: number };
     owner?: { id: string } | null;
-    dependencies: { type: string; name: string }[];
+    dependencies: { region: string; type: string; name: string }[];
 };
 
 let {
@@ -39,8 +40,8 @@ onMount(() => {
     view = mq.matches ? "list" : "graph";
 });
 
-function resourceId(type: string, name: string): string {
-    return `${type}:${name}`;
+function resourceId(region: string, type: string, name: string): string {
+    return `${region}:${type}:${name}`;
 }
 
 function typeParts(type: string): { prefix: string; tail: string } {
@@ -106,7 +107,7 @@ function typeParts(type: string): { prefix: string; tail: string } {
     {#each resources as resource}
       <ResourceCardCompact
         {resource}
-        href={resourceHref(org, repo, env, resourceId(resource.type, resource.name))}
+        href={resourceHref(org, repo, env, resourceId(resource.region, resource.type, resource.name))}
       />
     {/each}
   </div>
@@ -130,7 +131,7 @@ function typeParts(type: string): { prefix: string; tail: string } {
             </td>
             <td class="py-2 pr-4">
               <a
-                href={resourceHref(org, repo, env, resourceId(resource.type, resource.name))}
+                href={resourceHref(org, repo, env, resourceId(resource.region, resource.type, resource.name))}
                 class="text-gray-800 hover:text-blue-600"
               >
                 {resource.name}

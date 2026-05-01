@@ -4,11 +4,12 @@ import { resourceHref } from "$lib/paths";
 import ResourceCardContent from "./ResourceCardContent.svelte";
 
 type ResourceInput = {
+    region: string;
     type: string;
     name: string;
     markers: ResourceMarker[];
     owner?: { id: string } | null;
-    dependencies: { type: string; name: string }[];
+    dependencies: { region: string; type: string; name: string }[];
 };
 
 let {
@@ -50,7 +51,7 @@ let dag = $derived.by(() => {
     const edges: DagEdge[] = [];
 
     for (const r of resources) {
-        const id = `${r.type}:${r.name}`;
+        const id = `${r.region}:${r.type}:${r.name}`;
         nodeMap.set(id, {
             id,
             type: r.type,
@@ -66,9 +67,9 @@ let dag = $derived.by(() => {
     }
 
     for (const r of resources) {
-        const id = `${r.type}:${r.name}`;
+        const id = `${r.region}:${r.type}:${r.name}`;
         for (const dep of r.dependencies) {
-            const depId = `${dep.type}:${dep.name}`;
+            const depId = `${dep.region}:${dep.type}:${dep.name}`;
             if (!nodeMap.has(depId)) {
                 nodeMap.set(depId, {
                     id: depId,
