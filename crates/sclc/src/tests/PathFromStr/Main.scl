@@ -1,6 +1,6 @@
 import Std/Path
-export let a = Path.fromStr("/foo/bar")
-export let b = Path.fromStr("/foo/./bar/../baz")
-export let c = Path.fromStr("foo")
-export let d = Path.fromStr("/..")
-export let e = Path.fromStr("")
+export let a = Path.fromStr(/, "/foo/bar")
+export let b = Path.fromStr(/, "/foo/./bar/../baz")
+export let c = Path.fromStr(/, "foo")
+export let d = Path.fromStr(/, "/..")
+export let e = Path.fromStr(/, "")

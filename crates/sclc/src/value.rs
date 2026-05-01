@@ -3,9 +3,23 @@ use ordered_float::NotNan;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::PackageId;
+
+/// A repo-rooted path value.
+///
+/// Carries three pieces of state:
+/// - `path` — the canonical, absolute path string (always begins with `/`).
+/// - `package` — the package the path is anchored to. Set by `Expr::Path`
+///   evaluation to the defining module's package so manipulating a `Path`
+///   value via `Std/Path.{join,parent,fromStr}` can resolve the resulting
+///   path against the same package and preserve content-addressing.
+/// - `hash` — the git object id of the entity at `path` within `package`.
+///   The null hash when no package map is registered (e.g. compile-time
+///   eval) or when the path could not be looked up.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PathValue {
     pub path: String,
+    pub package: PackageId,
     pub hash: ObjId,
 }
 
@@ -15,8 +29,9 @@ impl Serialize for PathValue {
         S: Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("PathValue", 2)?;
+        let mut s = serializer.serialize_struct("PathValue", 3)?;
         s.serialize_field("path", &self.path)?;
+        s.serialize_field("package", &self.package.to_string())?;
         s.serialize_field("hash", &self.hash.to_string())?;
         s.end()
     }
@@ -30,12 +45,20 @@ impl<'de> Deserialize<'de> for PathValue {
         #[derive(Deserialize)]
         struct Raw {
             path: String,
+            #[serde(default)]
+            package: Option<String>,
             hash: String,
         }
         let raw = Raw::deserialize(deserializer)?;
         let hash: ObjId = raw.hash.parse().map_err(serde::de::Error::custom)?;
+        let package = raw
+            .package
+            .map(|s| s.parse::<PackageId>().map_err(serde::de::Error::custom))
+            .transpose()?
+            .unwrap_or_default();
         Ok(PathValue {
             path: raw.path,
+            package,
             hash,
         })
     }
