@@ -39,6 +39,15 @@ impl User {
     fn fullname(&self) -> Option<&str> {
         self.user.fullname.as_deref()
     }
+
+    /// The Skyr region this user belongs to. The region is implicit
+    /// from which UDB the user row lives in — every user this server can
+    /// read from its local UDB is, by definition, in this server's
+    /// region.
+    #[graphql(name = "region")]
+    fn region(&self, context: &Context) -> String {
+        context.region.to_string()
+    }
 }
 
 pub(crate) struct SignedInUser {
@@ -57,6 +66,12 @@ impl SignedInUser {
 
     fn fullname(&self) -> Option<&str> {
         self.user.fullname.as_deref()
+    }
+
+    /// The Skyr region this user belongs to. See [`User::region`].
+    #[graphql(name = "region")]
+    fn region(&self, context: &Context) -> String {
+        context.region.to_string()
     }
 
     #[graphql(name = "publicKeys")]
@@ -82,6 +97,13 @@ pub(crate) struct Organization {
 impl Organization {
     fn name(&self) -> String {
         self.name.to_string()
+    }
+
+    /// The Skyr region this organization belongs to. The region is
+    /// implicit from which UDB the org row lives in.
+    #[graphql(name = "region")]
+    fn region(&self, context: &Context) -> String {
+        context.region.to_string()
     }
 
     async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
@@ -162,6 +184,13 @@ impl Repository {
 
     fn name(&self) -> String {
         self.repository.name.repo.to_string()
+    }
+
+    /// The Skyr region this repository belongs to. The region is
+    /// implicit from which CDB the repository row lives in.
+    #[graphql(name = "region")]
+    fn region(&self, context: &Context) -> String {
+        context.region.to_string()
     }
 
     async fn environment(&self, context: &Context, name: String) -> FieldResult<Environment> {
@@ -877,6 +906,12 @@ impl Resource {
 
     fn name(&self) -> &str {
         &self.resource.name
+    }
+
+    /// The Skyr region this resource lives in. Region is part of the
+    /// resource's structural identity (`<region>:<type>:<name>`).
+    fn region(&self) -> &str {
+        self.resource.region.as_str()
     }
 
     fn inputs(&self) -> FieldResult<Option<JsonValue>> {
