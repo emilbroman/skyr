@@ -40,6 +40,13 @@ pub(crate) struct Context {
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
     pub(crate) user: Option<udb::UserClient>,
+    /// Skyr region this API server serves. Used as the source of truth for
+    /// the `region` GraphQL field on `Repository`/`Organization`/`User`
+    /// reads, and as the validation target for `region` arguments on
+    /// signup/createOrg/createRepo mutations. In step 1 every binary is its
+    /// own region's only entry point, so any explicit `region` argument
+    /// must equal this value.
+    pub(crate) region: ids::RegionId,
 }
 
 impl Context {
@@ -67,6 +74,28 @@ pub(crate) fn field_error(message: &str) -> juniper::FieldError {
 
 pub(crate) fn internal_error() -> juniper::FieldError {
     field_error("Internal server error")
+}
+
+/// Validate a `region` mutation argument against this server's
+/// `--region`. Returns the resolved region (parsed and accepted) or a
+/// field error.
+///
+/// In step 1 every binary is its own region's only entry point, so any
+/// explicit `region` argument must equal `context.region`. When
+/// `requested` is `None`, the binary's own region is used as the default.
+fn resolve_region(context: &Context, requested: Option<String>) -> FieldResult<ids::RegionId> {
+    let Some(requested) = requested else {
+        return Ok(context.region.clone());
+    };
+    let parsed: ids::RegionId = requested
+        .parse()
+        .map_err(|_| field_error("Invalid region"))?;
+    if parsed != context.region {
+        return Err(field_error(&format!(
+            "region {parsed:?} is not served by this Skyr deployment",
+        )));
+    }
+    Ok(parsed)
 }
 
 /// Basic email validation: requires exactly one `@`, non-empty local and domain
@@ -290,8 +319,11 @@ impl Mutation {
         context: &Context,
         organization: String,
         repository: String,
+        #[graphql(name = "region")] region: Option<String>,
     ) -> FieldResult<Repository> {
         let (_, user) = context.check_auth().await?;
+
+        let _region = resolve_region(context, region)?;
 
         if organization != user.username {
             let is_member = context
@@ -344,6 +376,7 @@ impl Mutation {
         username: String,
         email: String,
         proof: JsonValue,
+        #[graphql(name = "region")] region: String,
         fullname: Option<String>,
     ) -> FieldResult<AuthSuccess> {
         if !USERNAME_REGEX.is_match(&username) {
@@ -353,6 +386,11 @@ impl Mutation {
         if !is_valid_email(&email) {
             return Err(field_error("Invalid email"));
         }
+
+        // Validate against this server's --region. The region is
+        // implicit from which UDB the user row lands in; the argument exists
+        // so the API surface is forward-compatible with future routing.
+        let _region = resolve_region(context, Some(region))?;
 
         let fullname = fullname.filter(|s| !s.is_empty());
 
@@ -516,12 +554,18 @@ impl Mutation {
     }
 
     #[graphql(name = "createOrganization")]
-    async fn create_organization(context: &Context, name: String) -> FieldResult<Organization> {
+    async fn create_organization(
+        context: &Context,
+        name: String,
+        #[graphql(name = "region")] region: Option<String>,
+    ) -> FieldResult<Organization> {
         let (_, user) = context.check_auth().await?;
 
         if !USERNAME_REGEX.is_match(&name) {
             return Err(field_error("Invalid organization name"));
         }
+
+        let _region = resolve_region(context, region)?;
 
         let org_id: ids::OrgId = name
             .parse()
@@ -1047,7 +1091,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(ldb_consumer))
         .layer(Extension(ldb_publisher))
         .layer(Extension(rtq_publisher))
-        .layer(Extension(udb_client));
+        .layer(Extension(udb_client))
+        .layer(Extension(region));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
     let addr = tokio::net::lookup_host(&bind_target)
@@ -1076,6 +1121,7 @@ async fn graphql_handler(
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(udb_client): Extension<udb::Client>,
+    Extension(region): Extension<ids::RegionId>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
@@ -1111,6 +1157,7 @@ async fn graphql_handler(
                     rp_id,
                     rp_name,
                     user: Some(user),
+                    region,
                 };
                 return AxumJson(request.execute(&schema, &ctx).await);
             }
@@ -1130,6 +1177,7 @@ async fn graphql_handler(
         rp_id,
         rp_name,
         user: None,
+        region,
     };
     AxumJson(request.execute(&schema, &ctx).await)
 }
@@ -1157,6 +1205,7 @@ async fn graphql_ws_handler(
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(udb_client): Extension<udb::Client>,
+    Extension(region): Extension<ids::RegionId>,
     headers: http::header::HeaderMap,
 ) -> Response {
     let auth_header = extract_bearer_token(&headers);
@@ -1191,6 +1240,7 @@ async fn graphql_ws_handler(
         rp_id,
         rp_name,
         user,
+        region,
     };
 
     ws.protocols(["graphql-transport-ws"])

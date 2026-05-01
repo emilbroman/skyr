@@ -187,13 +187,13 @@ type Log {
 }
 
 type Mutation {
-  createRepository(organization: String!, repository: String!): Repository!
-  signup(username: String!, email: String!, proof: JSON!, fullname: String): AuthSuccess!
+  createRepository(organization: String!, repository: String!, region: String): Repository!
+  signup(username: String!, email: String!, proof: JSON!, region: String!, fullname: String): AuthSuccess!
   updateFullname(fullname: String!): SignedInUser!
   addPublicKey(proof: JSON!): SignedInUser!
   removePublicKey(fingerprint: String!): SignedInUser!
   signin(username: String!, proof: JSON!): AuthSuccess!
-  createOrganization(name: String!): Organization!
+  createOrganization(name: String!, region: String): Organization!
   addOrganizationMember(organization: String!, username: String!): Organization!
   leaveOrganization(organization: String!): Boolean!
   """
@@ -233,6 +233,11 @@ type Mutation {
 
 type Organization {
   name: String!
+  """
+    The Skyr region this organization belongs to. The region is
+    implicit from which UDB the org row lives in.
+  """
+  region: String!
   members: [User!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
@@ -250,6 +255,11 @@ type Query {
 type Repository {
   organization: Organization!
   name: String!
+  """
+    The Skyr region this repository belongs to. The region is
+    implicit from which CDB the repository row lives in.
+  """
+  region: String!
   environment(name: String!): Environment!
   commit(hash: String!): Commit!
   environments: [Environment!]!
@@ -263,6 +273,11 @@ type Resource implements IncidentEntity {
   qid: ID!
   type: String!
   name: String!
+  """
+    The Skyr region this resource lives in. Region is part of the
+    resource's structural identity (`<region>:<type>:<name>`).
+  """
+  region: String!
   inputs: JSON
   outputs: JSON
   owner: Deployment
@@ -280,6 +295,8 @@ type SignedInUser {
   username: String!
   email: String!
   fullname: String
+  "The Skyr region this user belongs to. See [`User::region`]."
+  region: String!
   publicKeys: [String!]!
 }
 
@@ -314,6 +331,13 @@ type User {
   username: String!
   email: String!
   fullname: String
+  """
+    The Skyr region this user belongs to. The region is implicit
+    from which UDB the user row lives in — every user this server can
+    read from its local UDB is, by definition, in this server's
+    region.
+  """
+  region: String!
 }
 
 union TreeEntry = Blob | Tree
