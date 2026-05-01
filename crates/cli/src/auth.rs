@@ -444,6 +444,11 @@ enum AuthCommand {
         username: String,
         #[arg(long)]
         email: String,
+        /// Skyr region your account should belong to (e.g. `stockholm`).
+        /// Validated as `[a-z]+`. The region is the metro your user record
+        /// physically lives in.
+        #[arg(long)]
+        region: String,
         #[arg(long)]
         fullname: Option<String>,
         #[arg(long, default_value = "~/.ssh/id_ed25519")]
@@ -461,9 +466,10 @@ pub async fn run_auth(args: AuthArgs, ctx: &CliContext) -> anyhow::Result<()> {
         AuthCommand::Signup {
             username,
             email,
+            region,
             fullname,
             key,
-        } => run_signup(ctx, &username, &email, fullname.as_deref(), &key).await,
+        } => run_signup(ctx, &username, &email, &region, fullname.as_deref(), &key).await,
         AuthCommand::Signout => run_signout(ctx).await,
         AuthCommand::Whoami => run_whoami(ctx).await,
     }
@@ -503,6 +509,7 @@ async fn run_signup(
     ctx: &CliContext,
     username: &str,
     email: &str,
+    region: &str,
     fullname: Option<&str>,
     key: &str,
 ) -> anyhow::Result<()> {
@@ -519,6 +526,7 @@ async fn run_signup(
             username: username.to_owned(),
             email: email.to_owned(),
             proof: serde_json::Value::String(proof),
+            region: region.to_owned(),
             fullname: fullname.map(str::to_owned),
         },
         "signup",

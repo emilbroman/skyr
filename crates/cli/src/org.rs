@@ -15,7 +15,13 @@ enum OrgCommand {
     /// List organizations the current user is a member of.
     List,
     /// Create a new organization with the given name.
-    Create { name: String },
+    Create {
+        name: String,
+        /// Skyr region the organization should belong to. Defaults to
+        /// the creator's region when omitted.
+        #[arg(long)]
+        region: Option<String>,
+    },
     /// Add a user to an organization.
     AddMember {
         organization: String,
@@ -60,8 +66,16 @@ pub async fn run_org(args: OrgArgs, ctx: &Context) -> anyhow::Result<()> {
 
     match args.command {
         OrgCommand::List => list_organizations(&client, &endpoint, &token, ctx.format).await,
-        OrgCommand::Create { name } => {
-            create_organization(&client, &endpoint, &token, &name, ctx.format).await
+        OrgCommand::Create { name, region } => {
+            create_organization(
+                &client,
+                &endpoint,
+                &token,
+                &name,
+                region.as_deref(),
+                ctx.format,
+            )
+            .await
         }
         OrgCommand::AddMember {
             organization,
@@ -135,6 +149,7 @@ async fn create_organization(
     endpoint: &str,
     token: &str,
     name: &str,
+    region: Option<&str>,
     format: OutputFormat,
 ) -> anyhow::Result<()> {
     let data = auth::graphql_query::<CreateOrganization>(
@@ -143,6 +158,7 @@ async fn create_organization(
         token,
         create_organization::Variables {
             name: name.to_owned(),
+            region: region.map(str::to_owned),
         },
         "organization create",
     )
