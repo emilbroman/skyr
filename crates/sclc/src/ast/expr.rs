@@ -266,14 +266,15 @@ impl Expr {
             Expr::Str(str) => Ok(crate::eval::tracked(Value::Str(str.value.clone()))),
             Expr::Path(path) => {
                 let resolved = path.resolve(evaluator, env);
-                let package_id = env
+                let package = env
                     .module_id
                     .map(|m| &m.package)
                     .cloned()
                     .unwrap_or_default();
-                let hash = evaluator.resolve_path_hash(&resolved, &package_id);
+                let hash = evaluator.resolve_path_hash(&resolved, &package);
                 Ok(crate::eval::tracked(Value::Path(crate::PathValue {
                     path: resolved,
+                    package,
                     hash,
                 })))
             }

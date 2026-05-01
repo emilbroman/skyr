@@ -347,7 +347,7 @@ pub struct Eval<'p> {
     pub(crate) ctx: EvalCtx,
     pub(crate) externs: HashMap<String, Value>,
     /// Package map for on-demand path hash resolution at runtime.
-    pub(crate) packages: Option<Arc<HashMap<crate::PackageId, Arc<dyn crate::Package>>>>,
+    pub(crate) packages: Option<PackageMap>,
     /// Marker to keep the lifetime parameter used by callers.
     _phantom: std::marker::PhantomData<&'p ()>,
 }
@@ -416,7 +416,11 @@ impl Effect {
     }
 }
 
-#[derive(Debug)]
+/// Shared map of `PackageId` → loaded `Package`, used by `Expr::Path`
+/// evaluation and `Std/Path` extern functions to resolve content hashes
+/// for paths within a package.
+pub type PackageMap = Arc<HashMap<crate::PackageId, Arc<dyn crate::Package>>>;
+
 pub struct EvalCtx {
     effects: mpsc::UnboundedSender<Effect>,
     resources: HashMap<ResourceId, crate::Resource>,
@@ -445,6 +449,11 @@ pub struct EvalCtx {
     /// Drained by callers via [`EvalCtx::take_foreign_dependencies`].
     foreign_deps: Mutex<HashSet<(ids::EnvironmentQid, ResourceId)>>,
     pub(crate) source_trace: Mutex<ids::SourceTrace>,
+    /// Package map for on-demand path hash resolution at runtime. Shared
+    /// `Arc` with [`Eval::packages`] so extern functions (e.g. `Std/Path`)
+    /// can look up paths against the package the input `Path` carries,
+    /// without going through the evaluator.
+    packages: Mutex<Option<PackageMap>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -482,6 +491,59 @@ impl EvalCtx {
             foreign_resources: HashMap::new(),
             foreign_deps: Mutex::new(HashSet::new()),
             source_trace: Mutex::new(Vec::new()),
+            packages: Mutex::new(None),
+        }
+    }
+
+    /// Set the package map used by extern functions for path lookups. The
+    /// evaluator calls this in [`Eval::with_packages`] so extern fns and
+    /// `Expr::Path` evaluation share a single source of truth.
+    pub(crate) fn set_packages(&self, packages: PackageMap) {
+        *self.packages.lock().unwrap() = Some(packages);
+    }
+
+    /// Look up the git object hash for `resolved_path` in `package_id`.
+    ///
+    /// Returns `Ok(Some(hash))` on success, `Ok(None)` when no packages
+    /// are registered (e.g. compile-time eval) or the package is unknown
+    /// — extern callers fall back to a null hash in that case — and
+    /// `Err(PathLookupError::NotFound)` when packages are registered but
+    /// the path does not exist in the named package.
+    pub fn resolve_path_hash(
+        &self,
+        resolved_path: &str,
+        package_id: &crate::PackageId,
+    ) -> Result<Option<ids::ObjId>, PathLookupError> {
+        let guard = self.packages.lock().unwrap();
+        let Some(packages) = guard.as_ref() else {
+            return Ok(None);
+        };
+        let Some(package) = packages.get(package_id).cloned() else {
+            return Ok(None);
+        };
+        drop(guard);
+
+        let rel = resolved_path.strip_prefix('/').unwrap_or(resolved_path);
+        #[cfg(not(feature = "runtime"))]
+        {
+            let _ = (rel, package);
+            return Ok(None);
+        }
+
+        #[cfg(feature = "runtime")]
+        {
+            let path = std::path::Path::new(rel);
+            let result = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => tokio::task::block_in_place(|| {
+                    handle.block_on(async { package.lookup(path).await })
+                }),
+                Err(_) => return Ok(None),
+            };
+            match result {
+                Ok(Some(entity)) => Ok(Some(entity.hash())),
+                Ok(None) => Err(PathLookupError::NotFound),
+                Err(_) => Err(PathLookupError::NotFound),
+            }
         }
     }
 
@@ -732,6 +794,15 @@ impl Drop for OwnerStackGuard<'_> {
     }
 }
 
+/// Outcome of looking up a path in a package via [`EvalCtx::resolve_path_hash`].
+#[derive(Debug)]
+pub enum PathLookupError {
+    /// Packages are registered but the path does not exist in the named
+    /// package. Distinct from `Ok(None)`, which means no packages were
+    /// registered at all.
+    NotFound,
+}
+
 #[derive(Debug)]
 pub struct StackTrace {
     pub frames: Vec<(crate::ModuleId, crate::Span, String)>,
@@ -923,52 +994,29 @@ impl<'p> Eval<'p> {
         eval
     }
 
-    /// Set the package map for on-demand path hash resolution.
-    pub fn with_packages(
-        mut self,
-        packages: Arc<HashMap<crate::PackageId, Arc<dyn crate::Package>>>,
-    ) -> Self {
+    /// Set the package map for on-demand path hash resolution. The same
+    /// `Arc` is shared with [`EvalCtx`] so extern functions can look up
+    /// paths without re-plumbing through the evaluator.
+    pub fn with_packages(mut self, packages: PackageMap) -> Self {
+        self.ctx.set_packages(Arc::clone(&packages));
         self.packages = Some(packages);
         self
     }
 
     /// Resolve a path expression hash on-demand by calling `Package::lookup`.
     ///
-    /// Uses `tokio::task::block_in_place` to bridge the async package API
-    /// into the synchronous evaluator. Returns a null hash when no packages
-    /// are available or the path cannot be resolved.
+    /// Returns a null hash when no packages are available or the path
+    /// cannot be resolved — path literals are evaluated even when their
+    /// referent does not exist (e.g. compile-time eval) and silently
+    /// fall back to a null hash.
     pub(crate) fn resolve_path_hash(
         &self,
         resolved_path: &str,
         package_id: &crate::PackageId,
     ) -> ids::ObjId {
-        let null = ids::ObjId::null;
-        let Some(packages) = &self.packages else {
-            return null();
-        };
-        let Some(_package) = packages.get(package_id) else {
-            return null();
-        };
-        let rel = resolved_path.strip_prefix('/').unwrap_or(resolved_path);
-        #[cfg(not(feature = "runtime"))]
-        return null();
-
-        // Bridge async Package::lookup into the sync evaluator.
-        // block_in_place requires rt-multi-thread (gated behind "runtime" feature).
-        #[cfg(feature = "runtime")]
-        {
-            let path = std::path::Path::new(rel);
-            let package = Arc::clone(_package);
-            let result = match tokio::runtime::Handle::try_current() {
-                Ok(handle) => tokio::task::block_in_place(|| {
-                    handle.block_on(async { package.lookup(path).await })
-                }),
-                Err(_) => return null(),
-            };
-            match result {
-                Ok(Some(entity)) => entity.hash(),
-                _ => null(),
-            }
+        match self.ctx.resolve_path_hash(resolved_path, package_id) {
+            Ok(Some(hash)) => hash,
+            _ => ids::ObjId::null(),
         }
     }
 

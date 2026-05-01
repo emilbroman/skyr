@@ -1,0 +1,11 @@
+import Std/Path
+
+// Manipulated paths must carry the content hash of the file they
+// reference, identical to the corresponding path literal. Equality
+// on `Path` compares the path string, the package, and the hash, so
+// these only hold when `Path.join`/`Path.parent`/`Path.fromStr` look
+// the hash up against the input's package rather than synthesizing
+// a null hash.
+export let joined = Path.join(/foo, "bar/baz") == /foo/bar/baz
+export let parented = Path.parent(/foo/bar) == /foo
+export let parsed = Path.fromStr(/, "/foo/bar/baz") == /foo/bar/baz
