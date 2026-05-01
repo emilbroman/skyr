@@ -10,6 +10,10 @@ For broader conventions and design principles, see:
 
 The guidelines page also hosts the [component audit log](dev/guidelines/index.md#audit-log), which records when each crate (and `web`) was last audited for guideline compliance. Before performing an audit, update the row per the instructions in that section.
 
+### Git History
+
+This repo keeps a **linear history** — no merge commits on PR branches or `main`. When a PR branch needs to be brought up to date with `main` (e.g. to resolve conflicts), rebase onto `origin/main` and force-push with `--force-with-lease`. Do not run `git merge` to integrate `main` into a feature branch.
+
 ### Before Committing
 
 Always run formatting and linting before committing:
