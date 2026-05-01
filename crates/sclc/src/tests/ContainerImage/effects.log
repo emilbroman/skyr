@@ -1,1 +1,1 @@
-CreateResource ty=Std/Container.Image name=myapp-d99ed995c0982ba4a602b2220430a592fa51207e inputs={containerfile: /Dockerfile, context: /, name: "myapp"}
+CreateResource region=test ty=Std/Container.Image name=myapp-d99ed995c0982ba4a602b2220430a592fa51207e inputs={containerfile: /Dockerfile, context: /, name: "myapp"}

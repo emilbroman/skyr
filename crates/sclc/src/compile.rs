@@ -198,7 +198,12 @@ mod tests {
 
         let asg = result.into_inner();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+        let ctx = EvalCtx::new(
+            tx,
+            "test",
+            crate::placeholder_deployment_qid(),
+            crate::placeholder_region(),
+        );
         let results = eval(&asg, ctx).unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);

@@ -1,1 +1,1 @@
-UpdateResource ty=Std/DNS.MXRecord name=example.com inputs={exchanges: [{host: "mail.example.com", priority: 10}, {host: "mail2.example.com", priority: 20}], name: "example.com", ttl: {milliseconds: 60000}}
+UpdateResource region=test ty=Std/DNS.MXRecord name=example.com inputs={exchanges: [{host: "mail.example.com", priority: 10}, {host: "mail2.example.com", priority: 20}], name: "example.com", ttl: {milliseconds: 60000}}

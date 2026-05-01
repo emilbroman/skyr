@@ -22,6 +22,11 @@
 //!    during their entire lifecycle. Deployments are identified by a commit hash and a random
 //!    nonce, allowing the same commit to be deployed multiple times.
 //!
+//! Resources additionally carry a **region** — the Skyr region they are placed in.
+//! Region is part of a resource's structural identity (see [`ResourceId`]), so changing
+//! the region of a resource in source code triggers destroy + create under the existing
+//! lifecycle rather than a special migration primitive.
+//!
 //! ## IDs vs QIDs
 //!
 //! Each level has an **ID** (the unqualified, local segment) and a **QID** (the fully
@@ -33,7 +38,7 @@
 //! | Repo | `MyRepo` | `OrgId/RepoId` | `MyOrg/MyRepo` |
 //! | Env | `main` | `RepoQid::EnvironmentId` | `MyOrg/MyRepo::main` |
 //! | Deploy | `2cbec....a1b2` | `EnvironmentQid@DeploymentId` | `MyOrg/MyRepo::main@2cbec....a1b2` |
-//! | Resource | `Std/Random.Int:seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
+//! | Resource | `stockholm:Std/Random.Int:seed` | `EnvironmentQid::ResourceId` | `MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed` |
 //!
 //! ## Separators
 //!
@@ -41,7 +46,7 @@
 //! - `::` between repository and environment
 //! - `@` between environment and deployment
 //! - `.` between commit hash and nonce (within a deployment ID)
-//! - `:` between resource type and resource name (within a resource ID)
+//! - `:` between region and resource type, and between resource type and resource name (within a resource ID)
 //! - `::` between environment QID and resource ID (within a resource QID)
 //!
 //! ## Namespaces
@@ -90,6 +95,12 @@ fn is_valid_symbol(s: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || *first == b'_')
         && rest.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+}
+
+/// Returns `true` if `s` is a valid Skyr region label: non-empty, all
+/// lowercase ASCII letters. The format is deliberately narrow — see [`RegionId`].
+fn is_valid_region(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase())
 }
 
 /// Returns `true` if `s` is a valid 40-character lowercase hexadecimal string.
@@ -142,11 +153,14 @@ pub enum ParseIdError {
     )]
     InvalidDeploymentQid(String),
 
-    #[error("invalid resource ID: {0:?} (expected format: ResourceType:ResourceName)")]
+    #[error("invalid region ID: {0:?} (must be one or more lowercase ASCII letters)")]
+    InvalidRegionId(String),
+
+    #[error("invalid resource ID: {0:?} (expected format: Region:ResourceType:ResourceName)")]
     InvalidResourceId(String),
 
     #[error(
-        "invalid resource QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId::ResourceType:ResourceName)"
+        "invalid resource QID: {0:?} (expected format: OrgId/RepoId::EnvironmentId::Region:ResourceType:ResourceName)"
     )]
     InvalidResourceQid(String),
 
@@ -290,6 +304,83 @@ impl TryFrom<String> for RepoId {
     fn try_from(s: String) -> Result<Self, Self::Error> {
         if !is_valid_symbol(&s) {
             return Err(ParseIdError::InvalidRepoId(s));
+        }
+        Ok(Self(s))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RegionId
+// ---------------------------------------------------------------------------
+
+/// Skyr region identifier. A region is a metro/city — the user-facing
+/// label for where a resource physically runs (e.g. `stockholm`, `paris`,
+/// `richmond`). Skyr software is cloud-provider-agnostic by construction:
+/// the live set of regions is operator data and the underlying cloud
+/// deployment of any region is invisible to Skyr binaries.
+///
+/// Validated as one or more lowercase ASCII letters (`[a-z]+`). Deliberately
+/// narrow to keep the abstraction neutral as new clouds are added — the label
+/// must not align with any single cloud's region naming.
+///
+/// # Examples
+///
+/// ```
+/// use ids::RegionId;
+/// let r: RegionId = "stockholm".parse().unwrap();
+/// assert_eq!(r.as_str(), "stockholm");
+/// assert!("Stockholm".parse::<RegionId>().is_err());
+/// assert!("eu-north-1".parse::<RegionId>().is_err());
+/// ```
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RegionId(String);
+
+impl RegionId {
+    /// Creates a new `RegionId` without validation. Use `FromStr` for validated construction.
+    pub fn new_unchecked(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Returns the region ID as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RegionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for RegionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "RegionId({self})")
+    }
+}
+
+impl FromStr for RegionId {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !is_valid_region(s) {
+            return Err(ParseIdError::InvalidRegionId(s.to_string()));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl From<RegionId> for String {
+    fn from(id: RegionId) -> Self {
+        id.0
+    }
+}
+
+impl TryFrom<String> for RegionId {
+    type Error = ParseIdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if !is_valid_region(&s) {
+            return Err(ParseIdError::InvalidRegionId(s));
         }
         Ok(Self(s))
     }
@@ -914,37 +1005,51 @@ impl<'de> Deserialize<'de> for DeploymentId {
 // ---------------------------------------------------------------------------
 
 /// Resource ID. Identifies a resource within an environment by combining
-/// its resource type and resource name, separated by `:`.
+/// its region, resource type, and resource name, separated by `:`.
 ///
+/// The region is the Skyr region the resource is placed in (see [`RegionId`]).
 /// The resource type is the plugin-qualified type (e.g., `Std/Random.Int`)
 /// and the resource name is the unique name within that type (e.g., `seed`).
 ///
+/// Region is part of the resource's structural identity: changing the region
+/// of a resource in source code changes its `ResourceId`, which under the
+/// existing resource lifecycle means the old resource is destroyed and a new
+/// one is created. There is no separate migration primitive for region changes.
+///
 /// # Format
 ///
-/// `ResourceType:ResourceName` — for example, `Std/Random.Int:seed`.
+/// `Region:ResourceType:ResourceName` — for example, `stockholm:Std/Random.Int:seed`.
 ///
 /// # Examples
 ///
 /// ```
 /// use ids::ResourceId;
-/// let id: ResourceId = "Std/Random.Int:seed".parse().unwrap();
+/// let id: ResourceId = "stockholm:Std/Random.Int:seed".parse().unwrap();
+/// assert_eq!(id.region().as_str(), "stockholm");
 /// assert_eq!(id.resource_type(), "Std/Random.Int");
 /// assert_eq!(id.resource_name(), "seed");
-/// assert_eq!(id.to_string(), "Std/Random.Int:seed");
+/// assert_eq!(id.to_string(), "stockholm:Std/Random.Int:seed");
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceId {
+    pub region: RegionId,
     pub typ: String,
     pub name: String,
 }
 
 impl ResourceId {
-    /// Creates a new `ResourceId` from a resource type and name.
-    pub fn new(typ: impl Into<String>, name: impl Into<String>) -> Self {
+    /// Creates a new `ResourceId` from a region, resource type, and name.
+    pub fn new(region: RegionId, typ: impl Into<String>, name: impl Into<String>) -> Self {
         Self {
+            region,
             typ: typ.into(),
             name: name.into(),
         }
+    }
+
+    /// Returns the region.
+    pub fn region(&self) -> &RegionId {
+        &self.region
     }
 
     /// Returns the resource type.
@@ -957,15 +1062,15 @@ impl ResourceId {
         &self.name
     }
 
-    /// Returns the full `Type:Name` string.
+    /// Returns the full `Region:Type:Name` string.
     pub fn as_str(&self) -> String {
-        format!("{}:{}", self.typ, self.name)
+        format!("{}:{}:{}", self.region, self.typ, self.name)
     }
 }
 
 impl fmt::Display for ResourceId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.typ, self.name)
+        write!(f, "{}:{}:{}", self.region, self.typ, self.name)
     }
 }
 
@@ -978,21 +1083,33 @@ impl fmt::Debug for ResourceId {
 impl FromStr for ResourceId {
     type Err = ParseIdError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some(sep) = s.find(':') else {
+        // The first `:` separates region from the rest. The rest is `<type>:<name>`,
+        // where `<type>` may contain no `:` and `<name>` is the remainder after the
+        // next `:`. Region characters are `[a-z]+`, so the first `:` is unambiguous.
+        let Some(first) = s.find(':') else {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         };
-        if sep == 0 || sep == s.len() - 1 {
+        let region_part = &s[..first];
+        let rest = &s[first + 1..];
+        let region: RegionId = region_part
+            .parse()
+            .map_err(|_| ParseIdError::InvalidResourceId(s.to_string()))?;
+
+        let Some(sep) = rest.find(':') else {
+            return Err(ParseIdError::InvalidResourceId(s.to_string()));
+        };
+        if sep == 0 || sep == rest.len() - 1 {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         }
-        let typ = s[..sep].to_string();
-        let name = s[sep + 1..].to_string();
+        let typ = rest[..sep].to_string();
+        let name = rest[sep + 1..].to_string();
         // Disallow ':' at the start of the name segment. A colon in the name would produce '::' in the
-        // formatted ResourceId (e.g. "Type::name"), which breaks ResourceQid parsing since
+        // formatted ResourceId (e.g. "Region:Type::name"), which breaks ResourceQid parsing since
         // it uses rsplit_once("::") to separate the environment QID from the resource ID.
         if name.starts_with(':') || name.contains("::") {
             return Err(ParseIdError::InvalidResourceId(s.to_string()));
         }
-        Ok(Self { typ, name })
+        Ok(Self { region, typ, name })
     }
 }
 
@@ -1033,15 +1150,15 @@ impl<'de> Deserialize<'de> for ResourceId {
 ///
 /// # Format
 ///
-/// `OrgId/RepoId::EnvironmentId::ResourceType:ResourceName`
+/// `OrgId/RepoId::EnvironmentId::Region:ResourceType:ResourceName`
 ///
 /// # Examples
 ///
 /// ```
 /// use ids::ResourceQid;
-/// let qid: ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
+/// let qid: ResourceQid = "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed".parse().unwrap();
 /// assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
-/// assert_eq!(qid.resource().to_string(), "Std/Random.Int:seed");
+/// assert_eq!(qid.resource().to_string(), "stockholm:Std/Random.Int:seed");
 /// ```
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResourceQid {
@@ -1414,34 +1531,55 @@ mod tests {
     }
 
     #[test]
+    fn region_id_valid() {
+        assert!("stockholm".parse::<RegionId>().is_ok());
+        assert!("paris".parse::<RegionId>().is_ok());
+        assert!("a".parse::<RegionId>().is_ok());
+    }
+
+    #[test]
+    fn region_id_invalid() {
+        assert!("".parse::<RegionId>().is_err());
+        assert!("Stockholm".parse::<RegionId>().is_err());
+        assert!("eu-north-1".parse::<RegionId>().is_err());
+        assert!("region_1".parse::<RegionId>().is_err());
+        assert!("paris2".parse::<RegionId>().is_err());
+    }
+
+    #[test]
     fn resource_id_roundtrip() {
-        let id: ResourceId = "Std/Random.Int:seed".parse().unwrap();
+        let id: ResourceId = "stockholm:Std/Random.Int:seed".parse().unwrap();
+        assert_eq!(id.region().as_str(), "stockholm");
         assert_eq!(id.resource_type(), "Std/Random.Int");
         assert_eq!(id.resource_name(), "seed");
-        assert_eq!(id.to_string(), "Std/Random.Int:seed");
+        assert_eq!(id.to_string(), "stockholm:Std/Random.Int:seed");
     }
 
     #[test]
     fn resource_id_new() {
-        let id = ResourceId::new("Std/Container.Pod", "web");
+        let region: RegionId = "stockholm".parse().unwrap();
+        let id = ResourceId::new(region, "Std/Container.Pod", "web");
+        assert_eq!(id.region().as_str(), "stockholm");
         assert_eq!(id.resource_type(), "Std/Container.Pod");
         assert_eq!(id.resource_name(), "web");
-        assert_eq!(id.to_string(), "Std/Container.Pod:web");
+        assert_eq!(id.to_string(), "stockholm:Std/Container.Pod:web");
     }
 
     #[test]
     fn resource_id_with_compound_name() {
         // Resource names can contain slashes (e.g., "pod/port")
-        let id = ResourceId::new("Std/Container.Pod.Port", "web/http");
+        let region: RegionId = "stockholm".parse().unwrap();
+        let id = ResourceId::new(region, "Std/Container.Pod.Port", "web/http");
         assert_eq!(id.resource_type(), "Std/Container.Pod.Port");
         assert_eq!(id.resource_name(), "web/http");
-        assert_eq!(id.to_string(), "Std/Container.Pod.Port:web/http");
+        assert_eq!(id.to_string(), "stockholm:Std/Container.Pod.Port:web/http");
     }
 
     #[test]
     fn resource_id_parse_compound_name() {
-        // The first `:` separates type from name
-        let id: ResourceId = "Std/Container.Pod.Port:web/http".parse().unwrap();
+        // The first `:` separates region from rest, the second separates type from name
+        let id: ResourceId = "stockholm:Std/Container.Pod.Port:web/http".parse().unwrap();
+        assert_eq!(id.region().as_str(), "stockholm");
         assert_eq!(id.resource_type(), "Std/Container.Pod.Port");
         assert_eq!(id.resource_name(), "web/http");
     }
@@ -1449,28 +1587,47 @@ mod tests {
     #[test]
     fn resource_id_invalid() {
         assert!("no_colon_separator".parse::<ResourceId>().is_err());
-        assert!(":no_type".parse::<ResourceId>().is_err());
-        assert!("no_name:".parse::<ResourceId>().is_err());
+        // Missing region: starts with type
+        assert!(":Std/Random.Int:seed".parse::<ResourceId>().is_err());
+        // Missing type
+        assert!("stockholm::seed".parse::<ResourceId>().is_err());
+        // Missing name
+        assert!("stockholm:Std/Random.Int:".parse::<ResourceId>().is_err());
+        // Only two segments (no name)
+        assert!("stockholm:Std/Random.Int".parse::<ResourceId>().is_err());
         assert!("".parse::<ResourceId>().is_err());
+        // Invalid region (uppercase)
+        assert!(
+            "Stockholm:Std/Random.Int:seed"
+                .parse::<ResourceId>()
+                .is_err()
+        );
+        // Invalid region (digits)
+        assert!("us1:Std/Random.Int:seed".parse::<ResourceId>().is_err());
         // Colon in name would produce "::" in formatted output, breaking ResourceQid parsing
-        assert!("Std/Random.Int::seed".parse::<ResourceId>().is_err());
-        assert!("Type:na::me".parse::<ResourceId>().is_err());
+        assert!(
+            "stockholm:Std/Random.Int::seed"
+                .parse::<ResourceId>()
+                .is_err()
+        );
+        assert!("stockholm:Type:na::me".parse::<ResourceId>().is_err());
     }
 
     #[test]
     fn resource_qid_roundtrip() {
-        let s = "MyOrg/MyRepo::main::Std/Random.Int:seed";
+        let s = "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed";
         let qid: ResourceQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(qid.environment_qid().to_string(), "MyOrg/MyRepo::main");
-        assert_eq!(qid.resource().to_string(), "Std/Random.Int:seed");
+        assert_eq!(qid.resource().to_string(), "stockholm:Std/Random.Int:seed");
+        assert_eq!(qid.resource().region().as_str(), "stockholm");
         assert_eq!(qid.resource().resource_type(), "Std/Random.Int");
         assert_eq!(qid.resource().resource_name(), "seed");
     }
 
     #[test]
     fn resource_qid_with_slashed_env() {
-        let s = "MyOrg/MyRepo::feature/branch::Std/Artifact.File:readme";
+        let s = "MyOrg/MyRepo::feature/branch::stockholm:Std/Artifact.File:readme";
         let qid: ResourceQid = s.parse().unwrap();
         assert_eq!(qid.to_string(), s);
         assert_eq!(
@@ -1484,7 +1641,7 @@ mod tests {
     fn resource_qid_invalid() {
         // Missing resource part
         assert!("MyOrg/MyRepo::main".parse::<ResourceQid>().is_err());
-        // Invalid resource (no `:` separator within resource)
+        // Invalid resource (no `:` separators)
         assert!(
             "MyOrg/MyRepo::main::nocolon"
                 .parse::<ResourceQid>()
@@ -1492,7 +1649,7 @@ mod tests {
         );
         // ResourceId with "::" in name would parse ambiguously — must be rejected
         assert!(
-            "MyOrg/MyRepo::main::Std/Random.Int::seed"
+            "MyOrg/MyRepo::main::stockholm:Std/Random.Int::seed"
                 .parse::<ResourceQid>()
                 .is_err()
         );
@@ -1501,11 +1658,12 @@ mod tests {
     #[test]
     fn environment_qid_resource_builder() {
         let env_qid: EnvironmentQid = "MyOrg/MyRepo::main".parse().unwrap();
-        let resource_id = ResourceId::new("Std/Random.Int", "seed");
+        let region: RegionId = "stockholm".parse().unwrap();
+        let resource_id = ResourceId::new(region, "Std/Random.Int", "seed");
         let resource_qid = env_qid.resource(resource_id);
         assert_eq!(
             resource_qid.to_string(),
-            "MyOrg/MyRepo::main::Std/Random.Int:seed"
+            "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed"
         );
     }
 }

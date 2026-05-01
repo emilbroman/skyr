@@ -8,6 +8,29 @@ use crate::{Dict, Effect, EvalCtx, ModuleId, PackageId, Record, Resource, Tracke
 
 /// Format an effect in compact form.
 fn format_effect(effect: &Effect) -> String {
+    fn fmt_body(
+        kind: &str,
+        id: &ResourceId,
+        inputs: &Record,
+        dependencies: &[ResourceId],
+    ) -> String {
+        let mut s = format!(
+            "{kind} region={} ty={} name={} inputs={}",
+            id.region, id.typ, id.name, inputs
+        );
+        if !dependencies.is_empty() {
+            s.push_str(" deps=[");
+            for (i, dep) in dependencies.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&format!("{dep}"));
+            }
+            s.push(']');
+        }
+        s
+    }
+
     match effect {
         Effect::CreateResource {
             id,
@@ -15,69 +38,21 @@ fn format_effect(effect: &Effect) -> String {
             dependencies,
             source_trace: _,
             owner: _,
-        } => {
-            let mut s = format!(
-                "CreateResource ty={} name={} inputs={}",
-                id.typ, id.name, inputs
-            );
-            if !dependencies.is_empty() {
-                s.push_str(" deps=[");
-                for (i, dep) in dependencies.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    s.push_str(&format!("{dep}"));
-                }
-                s.push(']');
-            }
-            s
-        }
+        } => fmt_body("CreateResource", id, inputs, dependencies),
         Effect::UpdateResource {
             id,
             inputs,
             dependencies,
             source_trace: _,
             owner: _,
-        } => {
-            let mut s = format!(
-                "UpdateResource ty={} name={} inputs={}",
-                id.typ, id.name, inputs
-            );
-            if !dependencies.is_empty() {
-                s.push_str(" deps=[");
-                for (i, dep) in dependencies.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    s.push_str(&format!("{dep}"));
-                }
-                s.push(']');
-            }
-            s
-        }
+        } => fmt_body("UpdateResource", id, inputs, dependencies),
         Effect::TouchResource {
             id,
             inputs,
             dependencies,
             source_trace: _,
             owner: _,
-        } => {
-            let mut s = format!(
-                "TouchResource ty={} name={} inputs={}",
-                id.typ, id.name, inputs
-            );
-            if !dependencies.is_empty() {
-                s.push_str(" deps=[");
-                for (i, dep) in dependencies.iter().enumerate() {
-                    if i > 0 {
-                        s.push_str(", ");
-                    }
-                    s.push_str(&format!("{dep}"));
-                }
-                s.push(']');
-            }
-            s
-        }
+        } => fmt_body("TouchResource", id, inputs, dependencies),
     }
 }
 
@@ -166,6 +141,7 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
 
             entries.push((
                 ResourceId {
+                    region: crate::placeholder_region(),
                     typ: resource_type.clone(),
                     name: resource_id.clone(),
                 },
@@ -180,7 +156,16 @@ fn parse_rdb(json_str: &str) -> Vec<(ResourceId, Resource)> {
                                 .map(|dep| {
                                     let obj =
                                         dep.as_object().expect("dependency must be an object");
+                                    let region = match obj.get("region") {
+                                        Some(v) => v
+                                            .as_str()
+                                            .expect("region must be a string")
+                                            .parse()
+                                            .expect("region must be valid"),
+                                        None => crate::placeholder_region(),
+                                    };
                                     ResourceId {
+                                        region,
                                         typ: obj["type"]
                                             .as_str()
                                             .expect("type must be a string")
@@ -348,7 +333,12 @@ async fn run_test_case(dir_name: &str) {
     // Set up evaluation
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let asg = result.into_inner();
-    let mut eval_ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+    let mut eval_ctx = EvalCtx::new(
+        tx,
+        "test",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
 
     // Load existing resources from rdb.json
     for (id, resource) in rdb {

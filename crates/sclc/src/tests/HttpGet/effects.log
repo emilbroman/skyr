@@ -1,1 +1,1 @@
-CreateResource ty=Std/HTTP.Get name=https://example.com inputs={headers: #{}, url: "https://example.com"}
+CreateResource region=test ty=Std/HTTP.Get name=https://example.com inputs={headers: #{}, url: "https://example.com"}

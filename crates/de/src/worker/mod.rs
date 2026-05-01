@@ -705,7 +705,11 @@ impl Worker {
                 self.log_publisher
                     .info(format!(
                         "{} will stick around",
-                        ids::ResourceId::new(&resource.resource_type, &resource.name)
+                        ids::ResourceId::new(
+                            resource.region.clone(),
+                            &resource.resource_type,
+                            &resource.name,
+                        )
                     ))
                     .await;
             }

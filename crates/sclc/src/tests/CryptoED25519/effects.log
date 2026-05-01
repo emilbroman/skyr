@@ -1,1 +1,1 @@
-CreateResource ty=Std/Crypto.ED25519PrivateKey name=mykey inputs={}
+CreateResource region=test ty=Std/Crypto.ED25519PrivateKey name=mykey inputs={}

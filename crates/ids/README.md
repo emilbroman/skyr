@@ -18,13 +18,16 @@ Skyr organizes infrastructure into four levels:
 |-------|------|------------|---------|
 | **Organization** | `OrgId` | SCL symbol | `MyOrg` |
 | **Repository** | `RepoId` | SCL symbol | `MyRepo` |
+| **Region** | `RegionId` | `[a-z]+` | `stockholm`, `paris` |
 | **Environment** | `EnvironmentId` | Git ref (stripped) | `main`, `tag:v1.0` |
 | **Deployment** | `DeploymentId` | `ObjId.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
-| **Resource** | `ResourceId` | `Type:Name` | `Std/Random.Int:seed` |
+| **Resource** | `ResourceId` | `Region:Type:Name` | `stockholm:Std/Random.Int:seed` |
 
 A `DeploymentId` is the pair `(commit, nonce)`: an `ObjId` (40-char lowercase hex SHA-1 of a git object — here, the commit) and a `DeploymentNonce` (16-char lowercase hex `u64`). The nonce distinguishes multiple deployments of the same commit.
 
 SCL symbol validation requires: non-empty, first character alphabetic or `_`, remaining characters alphanumeric or `_`.
+
+A `RegionId` is a deliberately narrow `[a-z]+` label. The live set of regions is operator data — Skyr software contains no region enum, allowlist, or cloud mapping.
 
 ## Qualified Identifiers (QIDs)
 
@@ -35,7 +38,7 @@ Each level also has a qualified form that includes all parent scopes:
 | `RepoQid` | `org/repo` | `MyOrg/MyRepo` |
 | `EnvironmentQid` | `org/repo::env` | `MyOrg/MyRepo::main` |
 | `DeploymentQid` | `org/repo::env@hash.nonce` | `MyOrg/MyRepo::main@a10fb43f....a1b2c3d4e5f60718` |
-| `ResourceQid` | `org/repo::env::Type:Name` | `MyOrg/MyRepo::main::Std/Random.Int:seed` |
+| `ResourceQid` | `org/repo::env::Region:Type:Name` | `MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed` |
 
 ### Separators
 
@@ -43,7 +46,7 @@ Each level also has a qualified form that includes all parent scopes:
 - `::` between repository QID and environment
 - `@` between environment QID and deployment
 - `.` between commit hash and nonce (within a deployment ID)
-- `:` between resource type and resource name (within a resource ID)
+- `:` between region and resource type, and between resource type and resource name (within a resource ID)
 - `::` between environment QID and resource ID (within a resource QID)
 
 ## Environment IDs and Git Refs

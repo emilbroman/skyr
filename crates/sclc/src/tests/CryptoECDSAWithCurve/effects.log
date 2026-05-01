@@ -1,1 +1,1 @@
-CreateResource ty=Std/Crypto.ECDSAPrivateKey name=eckey inputs={curve: "P-384"}
+CreateResource region=test ty=Std/Crypto.ECDSAPrivateKey name=eckey inputs={curve: "P-384"}

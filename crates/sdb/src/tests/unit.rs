@@ -73,7 +73,7 @@ fn incident_id_lex_order_matches_creation_order() {
 fn incident_is_open_reflects_closed_at() {
     let mut inc = Incident {
         id: IncidentId::new(),
-        entity_qid: "Org/Repo::env::Std/X:y".into(),
+        entity_qid: "Org/Repo::env::stockholm:Std/X:y".into(),
         category: Category::Crash,
         opened_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         closed_at: None,
@@ -91,7 +91,7 @@ fn incident_is_open_reflects_closed_at() {
 #[test]
 fn status_summary_default_open_state() {
     let s = StatusSummary {
-        entity_qid: "Org/Repo::main::Std/X:y".into(),
+        entity_qid: "Org/Repo::main::stockholm:Std/X:y".into(),
         last_report_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
         last_report_succeeded: true,
         open_incident_count: 0,

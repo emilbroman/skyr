@@ -44,6 +44,12 @@ enum Program {
 
         #[clap(long = "worker-count", default_value_t = 1)]
         worker_count: u16,
+
+        /// Skyr region this DE serves (e.g. `stockholm`). Validated as
+        /// `[a-z]+`. Stamped onto every `ResourceId` constructed during
+        /// evaluation.
+        #[clap(long = "region")]
+        region: String,
     },
 }
 
@@ -86,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
             ldb_hostname,
             worker_index,
             worker_count,
+            region,
         } => {
             if worker_count == 0 {
                 anyhow::bail!("--worker-count must be at least 1");
@@ -94,9 +101,14 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--worker-index must be less than --worker-count");
             }
 
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+
             tracing::info!(
                 worker_index,
                 worker_count,
+                %region,
                 "starting deployment engine daemon",
             );
 
@@ -107,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
 
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(&rdb_hostname)
+                .region(region.clone())
                 .build()
                 .await?;
 

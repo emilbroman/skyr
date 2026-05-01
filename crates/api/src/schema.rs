@@ -853,7 +853,11 @@ impl Resource {
             );
             internal_error()
         })?;
-        let resource_id = ids::ResourceId::new(&self.resource.resource_type, &self.resource.name);
+        let resource_id = ids::ResourceId::new(
+            self.resource.region.clone(),
+            &self.resource.resource_type,
+            &self.resource.name,
+        );
         Ok(ids::ResourceQid::new(env_qid, resource_id))
     }
 }

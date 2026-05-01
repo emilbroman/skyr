@@ -1,1 +1,1 @@
-TouchResource ty=Std/Artifact.File name=readme-05a587384cbc0bf9edb922b9938bde71 inputs={contents: "hello world", mediaType: "application/octet-stream", name: "readme-05a587384cbc0bf9edb922b9938bde71", namespace: "test"}
+TouchResource region=test ty=Std/Artifact.File name=readme-05a587384cbc0bf9edb922b9938bde71 inputs={contents: "hello world", mediaType: "application/octet-stream", name: "readme-05a587384cbc0bf9edb922b9938bde71", namespace: "test"}

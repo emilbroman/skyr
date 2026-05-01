@@ -160,7 +160,12 @@ pub async fn load_manifest(
 
     // Evaluate.
     let (effects_tx, _effects_rx) = tokio::sync::mpsc::unbounded_channel();
-    let ctx = EvalCtx::new(effects_tx, "manifest", crate::placeholder_deployment_qid());
+    let ctx = EvalCtx::new(
+        effects_tx,
+        "manifest",
+        crate::placeholder_deployment_qid(),
+        crate::placeholder_region(),
+    );
     let (_results, env) = AsgEvaluator::new(&asg, ctx).eval()?;
 
     let raw_id: Vec<String> = entry.iter().map(|s| s.to_string()).collect();

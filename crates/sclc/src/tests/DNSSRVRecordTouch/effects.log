@@ -1,1 +1,1 @@
-TouchResource ty=Std/DNS.SRVRecord name=_svc._tcp.example.com inputs={name: "_svc._tcp.example.com", records: [{port: 443, priority: 10, target: "svc.example.com", weight: 5}], ttl: {milliseconds: 60000}}
+TouchResource region=test ty=Std/DNS.SRVRecord name=_svc._tcp.example.com inputs={name: "_svc._tcp.example.com", records: [{port: 443, priority: 10, target: "svc.example.com", weight: 5}], ttl: {milliseconds: 60000}}

@@ -1,1 +1,1 @@
-CreateResource ty=Std/Artifact.File name=data-a3bf847afce2558ef60e541d2bd5ec0e inputs={contents: "test data", mediaType: "application/json", name: "data-a3bf847afce2558ef60e541d2bd5ec0e", namespace: "test"}
+CreateResource region=test ty=Std/Artifact.File name=data-a3bf847afce2558ef60e541d2bd5ec0e inputs={contents: "test data", mediaType: "application/json", name: "data-a3bf847afce2558ef60e541d2bd5ec0e", namespace: "test"}

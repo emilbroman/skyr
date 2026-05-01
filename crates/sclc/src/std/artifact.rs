@@ -53,6 +53,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let hashed_name = content_addressed_name(name, contents, resolved_media_type);
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: FILE_RESOURCE_TYPE.to_owned(),
             name: hashed_name.clone(),
         };

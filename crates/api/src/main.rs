@@ -944,6 +944,12 @@ struct Cli {
     rp_name: String,
     #[arg(long)]
     write_schema: bool,
+    /// Skyr region this API server serves (e.g. `stockholm`). Validated as
+    /// `[a-z]+`. The API rejects `region` mutation arguments that don't
+    /// match this value, since (in step 1) every binary is its own region's
+    /// only entry point.
+    #[arg(long)]
+    region: Option<String>,
 }
 
 #[tokio::main]
@@ -968,6 +974,12 @@ async fn main() -> anyhow::Result<()> {
         .challenge_salt
         .ok_or_else(|| anyhow::anyhow!("missing --challenge-salt"))?;
 
+    let region: ids::RegionId = cli
+        .region
+        .ok_or_else(|| anyhow::anyhow!("missing --region"))?
+        .parse()
+        .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+
     let udb_client = udb::ClientBuilder::new()
         .known_node(cli.udb_hostname)
         .build()
@@ -978,6 +990,7 @@ async fn main() -> anyhow::Result<()> {
         .await?;
     let rdb_client = rdb::ClientBuilder::new()
         .known_node(cli.rdb_hostname)
+        .region(region.clone())
         .build()
         .await?;
     let sdb_client = sdb::ClientBuilder::new()

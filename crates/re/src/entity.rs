@@ -196,7 +196,9 @@ mod tests {
 
     #[test]
     fn env_qid_for_resource_qid() {
-        let qid: ids::ResourceQid = "MyOrg/MyRepo::main::Std/Random.Int:seed".parse().unwrap();
+        let qid: ids::ResourceQid = "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed"
+            .parse()
+            .unwrap();
         let entity = EntityQid::Resource(qid);
         assert_eq!(env_qid_string(&entity), "MyOrg/MyRepo::main");
     }

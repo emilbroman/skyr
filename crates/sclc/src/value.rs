@@ -443,6 +443,7 @@ mod tests {
 
     fn dep(name: &str) -> ResourceId {
         ResourceId {
+            region: crate::placeholder_region(),
             typ: "Std/Random.Int".to_string(),
             name: name.to_string(),
         }

@@ -29,6 +29,8 @@ message CreateResourceRequest {
   // Fully-qualified deployment ID (format:
   // "OrgId/RepoId::EnvironmentId@DeploymentId.Nonce").
   string deployment_qid = 4;
+  // Skyr region this resource lives in (lowercase ASCII letters).
+  string region = 5;
 }
 
 enum Marker {
@@ -42,6 +44,8 @@ message Resource {
   string inputs_json = 3;
   string outputs_json = 4;
   repeated Marker markers = 5;
+  // Skyr region this resource lives in (lowercase ASCII letters).
+  string region = 6;
 }
 
 message CreateResourceResponse {

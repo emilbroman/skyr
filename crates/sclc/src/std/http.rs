@@ -20,6 +20,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("headers"), headers);
 
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: GET_RESOURCE_TYPE.to_owned(),
             name: url.to_owned(),
         };

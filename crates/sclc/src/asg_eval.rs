@@ -491,7 +491,12 @@ mod tests {
     async fn evaluator_on_empty_asg() {
         let asg = super::super::Asg::new();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+        let ctx = EvalCtx::new(
+            tx,
+            "test",
+            crate::placeholder_deployment_qid(),
+            crate::placeholder_region(),
+        );
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
         assert!(results.modules.is_empty());
     }
@@ -509,7 +514,12 @@ mod tests {
         let asg = loader.finish().into_inner();
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+        let ctx = EvalCtx::new(
+            tx,
+            "test",
+            crate::placeholder_deployment_qid(),
+            crate::placeholder_region(),
+        );
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);
@@ -534,7 +544,12 @@ mod tests {
         let asg = loader.finish().into_inner();
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let ctx = EvalCtx::new(tx, "test", crate::placeholder_deployment_qid());
+        let ctx = EvalCtx::new(
+            tx,
+            "test",
+            crate::placeholder_deployment_qid(),
+            crate::placeholder_region(),
+        );
         let (results, _env) = AsgEvaluator::new(&asg, ctx).eval().unwrap();
 
         let main_id = ModuleId::new(PackageId::from(["Test"]), vec!["Main".to_string()]);

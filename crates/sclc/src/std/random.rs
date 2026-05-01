@@ -22,6 +22,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let min = arg1.min(arg2);
         let max = arg1.max(arg2);
         let resource_id = ids::ResourceId {
+            region: eval_ctx.region().clone(),
             typ: INT_RESOURCE_TYPE.to_string(),
             name: name.to_owned(),
         };

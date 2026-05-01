@@ -59,6 +59,7 @@ fn image_extern_fn(
     let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
+        region: eval_ctx.region().clone(),
         typ: IMAGE_RESOURCE_TYPE.to_string(),
         name: resource_name.clone(),
     };
@@ -190,6 +191,7 @@ fn pod_extern_fn(
     let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
+        region: eval_ctx.region().clone(),
         typ: POD_RESOURCE_TYPE.to_string(),
         name: resource_name.clone(),
     };
@@ -287,6 +289,7 @@ fn create_port_fn(
         // Build the resource ID: "{resource_name}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", resource_name, port, protocol);
         let resource_id = ResourceId {
+            region: eval_ctx.region().clone(),
             typ: PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -354,6 +357,7 @@ fn create_attachment_fn(
         // Build the resource ID: "{resource_name}@{dest_address}:{port}/{protocol}"
         let resource_id_str = format!("{}@{}:{}/{}", resource_name, dest_address, port, protocol);
         let resource_id = ResourceId {
+            region: eval_ctx.region().clone(),
             typ: ATTACHMENT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -409,6 +413,7 @@ fn host_extern_fn(
     let name = config.get("name").assert_str_ref()?.to_owned();
 
     let resource_id = ResourceId {
+        region: eval_ctx.region().clone(),
         typ: HOST_RESOURCE_TYPE.to_string(),
         name: name.clone(),
     };
@@ -498,6 +503,7 @@ fn create_host_port_fn(
         // Build the resource ID: "{hostname}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", host_hostname, port, protocol);
         let resource_id = ResourceId {
+            region: eval_ctx.region().clone(),
             typ: HOST_PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -589,6 +595,7 @@ fn create_host_internet_address_fn(
             // Build the resource ID: "{hostname}/{name}"
             let resource_id_str = format!("{}/{}", host_hostname, name);
             let resource_id = ResourceId {
+                region: eval_ctx.region().clone(),
                 typ: HOST_INTERNET_ADDRESS_RESOURCE_TYPE.to_string(),
                 name: resource_id_str.clone(),
             };

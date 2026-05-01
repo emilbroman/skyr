@@ -51,6 +51,7 @@ pub(crate) fn diag_severity(level: sclc::DiagLevel) -> ldb::Severity {
 
 pub(crate) fn resource_id_from(resource: &rdb::Resource) -> ids::ResourceId {
     ids::ResourceId {
+        region: resource.region.clone(),
         typ: resource.resource_type.clone(),
         name: resource.name.clone(),
     }

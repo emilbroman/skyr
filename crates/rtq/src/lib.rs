@@ -108,9 +108,11 @@ impl Message {
 /// rather than raw strings, ensuring that all identifiers are validated on
 /// deserialization and that separator injection is impossible.
 ///
-/// The JSON representation preserves the original field names
-/// (`environment_qid`, `resource_type`, `resource_name`) for wire
-/// compatibility.
+/// The wire format separates the resource ID into its constituent
+/// `region`, `resource_type`, and `resource_name` fields. For the message's
+/// primary `resource` the region equals the regional RTQ this message was
+/// dispatched to (the consuming RTE can sanity-check); for dependency
+/// references the region may name a different region.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceRef {
     pub environment_qid: ids::EnvironmentQid,
@@ -120,8 +122,9 @@ pub struct ResourceRef {
 impl Serialize for ResourceRef {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("ResourceRef", 3)?;
+        let mut s = serializer.serialize_struct("ResourceRef", 4)?;
         s.serialize_field("environment_qid", &self.environment_qid)?;
+        s.serialize_field("region", self.resource_id.region())?;
         s.serialize_field("resource_type", self.resource_id.resource_type())?;
         s.serialize_field("resource_name", self.resource_id.resource_name())?;
         s.end()
@@ -133,11 +136,12 @@ impl<'de> Deserialize<'de> for ResourceRef {
         #[derive(Deserialize)]
         struct Raw {
             environment_qid: ids::EnvironmentQid,
+            region: ids::RegionId,
             resource_type: String,
             resource_name: String,
         }
         let raw = Raw::deserialize(deserializer)?;
-        let resource_id = ids::ResourceId::new(raw.resource_type, raw.resource_name);
+        let resource_id = ids::ResourceId::new(raw.region, raw.resource_type, raw.resource_name);
         Ok(ResourceRef {
             environment_qid: raw.environment_qid,
             resource_id,
