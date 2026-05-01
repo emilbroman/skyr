@@ -18,6 +18,10 @@ export let Get = extern "Std/HTTP.Get": fn({
 	/// These are merged with default headers (e.g. `User-Agent`) and
 	/// override them on key conflict.
 	headers: #{Str: Str}?,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) HttpGet
 
 export type HttpGet {

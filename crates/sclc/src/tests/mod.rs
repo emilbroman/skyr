@@ -415,6 +415,7 @@ test_case!(RandomIntTouch);
 // Std/HTTP
 test_case!(HttpGet);
 test_case!(HttpGetTouch);
+test_case!(HttpGetForeignRegion);
 
 // Std/List
 test_case!(ListRange);

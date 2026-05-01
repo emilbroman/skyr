@@ -8,6 +8,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
         };
+let region = super::extract_region_field(&config)?;
 
         let url = config.get("url").assert_str_ref()?;
         let headers = match config.get("headers") {
@@ -20,12 +21,15 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("headers"), headers);
 
         let resource_id = ids::ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
             typ: GET_RESOURCE_TYPE.to_owned(),
             name: url.to_owned(),
         };
 
         let Some(outputs) = eval_ctx.resource(
+            region.clone(),
             GET_RESOURCE_TYPE,
             url,
             &inputs,

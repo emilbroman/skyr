@@ -40,6 +40,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let inputs = crate::Record::default();
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             ED25519_RESOURCE_TYPE,
             name,
             &inputs,
@@ -77,6 +78,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("curve"), crate::Value::Str(curve.to_owned()));
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             ECDSA_RESOURCE_TYPE,
             name,
             &inputs,
@@ -150,6 +152,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         };
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             CSR_RESOURCE_TYPE,
             &resource_name,
             &inputs,
@@ -190,6 +193,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("size"), crate::Value::Int(size));
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             RSA_RESOURCE_TYPE,
             name,
             &inputs,
@@ -240,6 +244,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         };
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             CERT_SIG_RESOURCE_TYPE,
             &resource_name,
             &inputs,

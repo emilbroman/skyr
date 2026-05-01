@@ -97,6 +97,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("milliseconds"), Value::Int(milliseconds));
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             SCHEDULE_RESOURCE_TYPE,
             &id_str,
             &inputs,

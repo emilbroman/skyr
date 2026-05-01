@@ -13,21 +13,30 @@ fn register_record_extern(registry: &mut impl super::ExternRegistry, resource_ty
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
         };
+        let region = super::extract_region_field(&config)?;
 
         let name = config.get("name").assert_str_ref()?;
 
         let resource_id = ids::ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
             typ: resource_type.to_string(),
             name: name.to_owned(),
         };
 
         let mut inputs = crate::Record::default();
         for (k, v) in config.iter() {
+            // Strip the region field — it is structural identity, not input
+            // material that the plugin should see.
+            if k == "region" {
+                continue;
+            }
             inputs.insert(k.to_string(), v.clone());
         }
 
-        let Some(outputs) = eval_ctx.resource(resource_type, name, &inputs, deps.clone())? else {
+        let Some(outputs) = eval_ctx.resource(region, resource_type, name, &inputs, deps.clone())?
+        else {
             return Ok(crate::TrackedValue::pending().with_dependency(resource_id));
         };
 

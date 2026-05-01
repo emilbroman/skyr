@@ -37,6 +37,10 @@ export let Image = extern "Std/Container.Image": fn({
 	context: Path,
 	/// Containerfile path (relative to repo root)
 	containerfile: Path,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) Image
 
 /// Output of `Pod.Port` — an open ingress port on a pod.
@@ -112,6 +116,10 @@ export let Pod = extern "Std/Container.Pod": fn({
 	/// Pod-level environment variables shared across all containers.
 	/// Container-level `env` overrides these when keys conflict.
 	env: #{Str: Str}?,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) Pod
 
 /// Output of `Host.InternetAddress` — a public internet address assigned to a Host.
@@ -146,6 +154,10 @@ export type HostPort {
 export let Host = extern "Std/Container.Host": fn({
 	/// Host name (becomes `\{name}.internal` for DNS)
 	name: Str,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) {
 	/// Full DNS hostname (e.g., `"api.internal"`)
 	hostname: Str,

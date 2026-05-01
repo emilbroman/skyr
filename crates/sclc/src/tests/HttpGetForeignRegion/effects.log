@@ -1,0 +1,1 @@
+CreateResource region=paris ty=Std/HTTP.Get name=https://example.com inputs={headers: #{}, url: "https://example.com"}
