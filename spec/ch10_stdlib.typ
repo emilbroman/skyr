@@ -64,6 +64,20 @@ The type system does not distinguish pure and resource externs: both
 have ordinary function types. The distinction is carried entirely by
 the host's dispatch behaviour.
 
+Every resource has a region — part of its structural identity — but
+not every resource extern lets the caller choose it. By convention, a
+resource extern whose real-world placement is region-dependent carries
+an optional $"region" colon "Str?"$ field on its input record naming
+the Skyr region the resource is placed in; resource externs whose
+state is purely local to a region (and so cannot meaningfully be
+hosted elsewhere) omit the field and inherit the region of the
+ambient deployment. Where the field is present, the host strips it
+from the inputs it persists and records the region on the resource's
+identifier; changing the region in source thus changes the resource's
+identity, which under the existing lifecycle (Section 8) means the
+old identity is destroyed and the new identity is created — there is
+no distinct migration primitive.
+
 == The run-time plug-in protocol
 
 A resource extern delegates its create, update, and delete operations
