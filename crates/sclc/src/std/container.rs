@@ -45,6 +45,7 @@ fn image_extern_fn(
         Ok(pair) => pair,
         Err(pending) => return Ok(pending),
     };
+let region = super::extract_region_field(&config)?;
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -59,7 +60,9 @@ fn image_extern_fn(
     let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
-        region: eval_ctx.region().clone(),
+        region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
         typ: IMAGE_RESOURCE_TYPE.to_string(),
         name: resource_name.clone(),
     };
@@ -71,6 +74,7 @@ fn image_extern_fn(
     inputs.insert(String::from("containerfile"), Value::Path(containerfile));
 
     let Some(outputs) = eval_ctx.resource(
+        region.clone(),
         IMAGE_RESOURCE_TYPE,
         &resource_name,
         &inputs,
@@ -152,6 +156,7 @@ fn pod_extern_fn(
         Ok(pair) => pair,
         Err(pending) => return Ok(pending),
     };
+let region = super::extract_region_field(&config)?;
 
     // Extract inputs
     let name = config.get("name").assert_str_ref()?.to_owned();
@@ -191,7 +196,9 @@ fn pod_extern_fn(
     let resource_name = format!("{name}-{hash}");
 
     let resource_id = ResourceId {
-        region: eval_ctx.region().clone(),
+        region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
         typ: POD_RESOURCE_TYPE.to_string(),
         name: resource_name.clone(),
     };
@@ -203,6 +210,7 @@ fn pod_extern_fn(
     inputs.insert(String::from("env"), env_value);
 
     let Some(outputs) = eval_ctx.resource(
+        region.clone(),
         POD_RESOURCE_TYPE,
         &resource_name,
         &inputs,
@@ -288,8 +296,11 @@ fn create_port_fn(
 
         // Build the resource ID: "{resource_name}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", resource_name, port, protocol);
+        // Pod ports inherit their region from the parent pod — the port lives
+        // wherever its pod lives.
+        let region = pod_resource_id.region.clone();
         let resource_id = ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region.clone(),
             typ: PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -303,6 +314,7 @@ fn create_port_fn(
         inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
 
         let Some(_outputs) = eval_ctx.resource(
+            Some(region),
             PORT_RESOURCE_TYPE,
             &resource_id_str,
             &inputs,
@@ -356,8 +368,10 @@ fn create_attachment_fn(
 
         // Build the resource ID: "{resource_name}@{dest_address}:{port}/{protocol}"
         let resource_id_str = format!("{}@{}:{}/{}", resource_name, dest_address, port, protocol);
+        // Attachments inherit their region from the parent pod.
+        let region = pod_resource_id.region.clone();
         let resource_id = ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region.clone(),
             typ: ATTACHMENT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -372,6 +386,7 @@ fn create_attachment_fn(
         inputs.insert(String::from("protocol"), Value::Str(protocol.clone()));
 
         let Some(_outputs) = eval_ctx.resource(
+            Some(region),
             ATTACHMENT_RESOURCE_TYPE,
             &resource_id_str,
             &inputs,
@@ -408,12 +423,15 @@ fn host_extern_fn(
         Ok(pair) => pair,
         Err(pending) => return Ok(pending),
     };
+let region = super::extract_region_field(&config)?;
 
     // Extract the name from input
     let name = config.get("name").assert_str_ref()?.to_owned();
 
     let resource_id = ResourceId {
-        region: eval_ctx.region().clone(),
+        region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
         typ: HOST_RESOURCE_TYPE.to_string(),
         name: name.clone(),
     };
@@ -423,6 +441,7 @@ fn host_extern_fn(
     inputs.insert(String::from("name"), Value::Str(name.clone()));
 
     let Some(outputs) = eval_ctx.resource(
+        region.clone(),
         HOST_RESOURCE_TYPE,
         &name,
         &inputs,
@@ -502,8 +521,10 @@ fn create_host_port_fn(
 
         // Build the resource ID: "{hostname}:{port}/{protocol}"
         let resource_id_str = format!("{}:{}/{}", host_hostname, port, protocol);
+        // Host ports inherit their region from the parent host.
+        let region = host_resource_id.region.clone();
         let resource_id = ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region.clone(),
             typ: HOST_PORT_RESOURCE_TYPE.to_string(),
             name: resource_id_str.clone(),
         };
@@ -517,6 +538,7 @@ fn create_host_port_fn(
         inputs.insert(String::from("backends"), backends_value);
 
         let Some(outputs) = eval_ctx.resource(
+            Some(region),
             HOST_PORT_RESOURCE_TYPE,
             &resource_id_str,
             &inputs,
@@ -594,8 +616,10 @@ fn create_host_internet_address_fn(
 
             // Build the resource ID: "{hostname}/{name}"
             let resource_id_str = format!("{}/{}", host_hostname, name);
+            // Host internet addresses inherit their region from the parent host.
+            let region = host_resource_id.region.clone();
             let resource_id = ResourceId {
-                region: eval_ctx.region().clone(),
+                region: region.clone(),
                 typ: HOST_INTERNET_ADDRESS_RESOURCE_TYPE.to_string(),
                 name: resource_id_str.clone(),
             };
@@ -610,6 +634,7 @@ fn create_host_internet_address_fn(
             inputs.insert(String::from("name"), Value::Str(name));
 
             let Some(outputs) = eval_ctx.resource(
+                Some(region),
                 HOST_INTERNET_ADDRESS_RESOURCE_TYPE,
                 &resource_id_str,
                 &inputs,

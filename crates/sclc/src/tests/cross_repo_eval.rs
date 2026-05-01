@@ -37,7 +37,7 @@ async fn foreign_global_emits_foreign_owned_create_when_unmaterialised() {
     let inputs = record_with("min", Value::Int(0));
     let result = ctx
         .with_owner(ctx.owner_for_package(&foreign_pkg), || {
-            ctx.resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+            ctx.resource(None, "Std/Random.Int", "seed", &inputs, BTreeSet::new())
         })
         .expect("resource call should succeed");
 
@@ -76,7 +76,7 @@ async fn foreign_global_returns_concrete_outputs_when_materialised() {
 
     let result = ctx
         .with_owner(ctx.owner_for_package(&foreign_pkg), || {
-            ctx.resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+            ctx.resource(None, "Std/Random.Int", "seed", &inputs, BTreeSet::new())
         })
         .expect("resource call should succeed");
 
@@ -121,7 +121,7 @@ async fn foreign_resource_with_changed_inputs_yields_pending_and_update() {
     let new_inputs = record_with("min", Value::Int(99));
     let result = ctx
         .with_owner(ctx.owner_for_package(&foreign_pkg), || {
-            ctx.resource("Std/Random.Int", "seed", &new_inputs, BTreeSet::new())
+            ctx.resource(None, "Std/Random.Int", "seed", &new_inputs, BTreeSet::new())
         })
         .expect("resource call should succeed");
 
@@ -146,7 +146,7 @@ async fn foreign_reads_record_cross_deployment_dependencies() {
     let inputs = record_with("min", Value::Int(0));
     let _ = ctx
         .with_owner(ctx.owner_for_package(&foreign_pkg), || {
-            ctx.resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+            ctx.resource(None, "Std/Random.Int", "seed", &inputs, BTreeSet::new())
         })
         .expect("resource call should succeed");
 
@@ -169,7 +169,7 @@ async fn local_resource_unaffected_by_foreign_scope_outside_it() {
 
     let inputs = record_with("min", Value::Int(0));
     let _ = ctx
-        .resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+        .resource(None, "Std/Random.Int", "seed", &inputs, BTreeSet::new())
         .expect("local resource call");
 
     let effect = rx.try_recv().expect("expected an effect");
@@ -188,7 +188,7 @@ async fn orphan_package_emits_unowned_create_and_pending_output() {
     let inputs = record_with("min", Value::Int(0));
     let result = ctx
         .with_owner(ctx.owner_for_package(&orphan_pkg), || {
-            ctx.resource("Std/Random.Int", "seed", &inputs, BTreeSet::new())
+            ctx.resource(None, "Std/Random.Int", "seed", &inputs, BTreeSet::new())
         })
         .expect("orphan resource call should not error");
 

@@ -19,6 +19,10 @@ export let ARecord = extern "Std/DNS.ARecord": fn({
 	ttl: Time.Duration,
 	/// IPv4 addresses
 	addresses: [Str],
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) ARecordOutput
 
 export type ARecordOutput {
@@ -49,6 +53,10 @@ export let AAAARecord = extern "Std/DNS.AAAARecord": fn({
 	ttl: Time.Duration,
 	/// IPv6 addresses
 	addresses: [Str],
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) AAAARecordOutput
 
 export type AAAARecordOutput {
@@ -79,6 +87,10 @@ export let CNAMERecord = extern "Std/DNS.CNAMERecord": fn({
 	ttl: Time.Duration,
 	/// CNAME target
 	target: Str,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) CNAMERecordOutput
 
 export type CNAMERecordOutput {
@@ -109,6 +121,10 @@ export let TXTRecord = extern "Std/DNS.TXTRecord": fn({
 	ttl: Time.Duration,
 	/// Text values
 	values: [Str],
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) TXTRecordOutput
 
 export type TXTRecordOutput {
@@ -139,6 +155,10 @@ export let MXRecord = extern "Std/DNS.MXRecord": fn({
 	ttl: Time.Duration,
 	/// Mail exchangers
 	exchanges: [{ priority: Int, host: Str }],
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) MXRecordOutput
 
 export type MXRecordOutput {
@@ -169,6 +189,10 @@ export let SRVRecord = extern "Std/DNS.SRVRecord": fn({
 	ttl: Time.Duration,
 	/// Service records
 	records: [{ priority: Int, weight: Int, port: Int, target: Str }],
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) SRVRecordOutput
 
 export type SRVRecordOutput {

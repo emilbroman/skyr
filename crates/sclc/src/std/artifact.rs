@@ -37,6 +37,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
             Ok(pair) => pair,
             Err(pending) => return Ok(pending),
         };
+let region = super::extract_region_field(&config)?;
 
         let name = config.get("name").assert_str_ref()?;
         let media_type = match config.get("mediaType") {
@@ -53,7 +54,9 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         let hashed_name = content_addressed_name(name, contents, resolved_media_type);
 
         let resource_id = ids::ResourceId {
-            region: eval_ctx.region().clone(),
+            region: region
+                .clone()
+                .unwrap_or_else(|| eval_ctx.region().clone()),
             typ: FILE_RESOURCE_TYPE.to_owned(),
             name: hashed_name.clone(),
         };
@@ -74,6 +77,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         );
 
         let Some(outputs) = eval_ctx.resource(
+            region.clone(),
             FILE_RESOURCE_TYPE,
             &hashed_name,
             &inputs,

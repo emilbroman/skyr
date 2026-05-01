@@ -109,6 +109,30 @@ pub(crate) fn extract_config_arg(
     Ok(Ok((config, deps)))
 }
 
+/// Reads the optional `region` field from a resource's input record. Returns
+/// the parsed region (or `None` if the field is absent or `nil`), validating
+/// that the value is a string matching the [`ids::RegionId`] format.
+///
+/// Region is part of a resource's structural identity, not its inputs — the
+/// caller should not include `region` in the inputs record they pass to
+/// [`crate::EvalCtx::resource`].
+pub(crate) fn extract_region_field(
+    config: &crate::Record,
+) -> Result<Option<ids::RegionId>, crate::EvalError> {
+    match config.get("region") {
+        crate::Value::Nil => Ok(None),
+        crate::Value::Str(s) => {
+            let region: ids::RegionId = s.parse().map_err(|_| {
+                crate::EvalErrorKind::Custom(format!(
+                    "invalid region {s:?}: must be one or more lowercase ASCII letters"
+                ))
+            })?;
+            Ok(Some(region))
+        }
+        other => Err(crate::EvalErrorKind::UnexpectedValue(other.clone()).into()),
+    }
+}
+
 std_modules! {
     artifact => "Artifact.scl",
     container => "Container.scl",

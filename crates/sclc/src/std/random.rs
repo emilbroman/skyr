@@ -32,6 +32,7 @@ pub fn register_extern(eval: &mut impl super::ExternRegistry) {
         inputs.insert(String::from("max"), crate::Value::Int(max));
 
         let Some(outputs) = eval_ctx.resource(
+            None,
             INT_RESOURCE_TYPE,
             name,
             &inputs,

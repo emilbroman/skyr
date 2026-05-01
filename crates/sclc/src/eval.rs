@@ -667,17 +667,16 @@ impl EvalCtx {
 
     pub fn resource(
         &self,
+        region: Option<ids::RegionId>,
         ty: impl Into<String>,
         name: impl Into<String>,
         inputs: &crate::Record,
         dependencies: BTreeSet<ResourceId>,
     ) -> Result<Option<crate::Record>, EvalError> {
-        let ty = ty.into();
-        let name = name.into();
         let resource_id = ResourceId {
-            region: self.region.clone(),
-            typ: ty.clone(),
-            name: name.clone(),
+            region: region.unwrap_or_else(|| self.region.clone()),
+            typ: ty.into(),
+            name: name.into(),
         };
         let dependencies = dependencies.into_iter().collect::<Vec<_>>();
         let source_trace = self.source_trace.lock().unwrap().clone();
@@ -760,8 +759,10 @@ impl EvalCtx {
             }));
         }
 
-        // Local-owner path.
-        let Some(resource) = self.get_resource(ty, name) else {
+        // Local-owner path. Look up by the full (region-aware) id we
+        // constructed above — `get_resource(ty, name)` would default to
+        // region and miss resources whose region was overridden.
+        let Some(resource) = self.resources.get(&resource_id) else {
             self.emit(Effect::CreateResource {
                 id: resource_id,
                 inputs: inputs.clone(),
@@ -1648,7 +1649,7 @@ mod tests {
 
         let outputs = eval
             .ctx
-            .resource(id.typ.clone(), id.name.clone(), &inputs, dependencies)
+            .resource(None, id.typ.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert!(outputs.is_none());
 
@@ -1705,7 +1706,7 @@ mod tests {
 
         let outputs = eval
             .ctx
-            .resource(id.typ.clone(), id.name.clone(), &inputs, dependencies)
+            .resource(None, id.typ.clone(), id.name.clone(), &inputs, dependencies)
             .expect("resource lookup should succeed");
         assert_eq!(outputs, Some(crate::Record::default()));
 

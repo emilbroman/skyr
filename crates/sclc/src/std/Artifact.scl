@@ -19,6 +19,10 @@ export let File = extern "Std/Artifact.File": fn({
 	mediaType: Str?,
 	/// File contents
 	contents: Str,
+	/// Skyr region this resource lives in. Defaults to the repo's
+	/// region when omitted. Region is part of the resource's structural
+	/// identity — changing it triggers destroy + create.
+	region: Str?,
 }) File
 
 export type File {
