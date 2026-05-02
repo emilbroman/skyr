@@ -109,13 +109,7 @@ async fn main() -> anyhow::Result<()> {
                 .build()
                 .await?;
 
-            let rtq_publisher = rtq::ClientBuilder::new()
-                .uri(format!(
-                    "amqp://{}:5672/%2f",
-                    ids::service_address("rtq", &region, &domain)
-                ))
-                .build_publisher()
-                .await?;
+            let rtq_publisher = rtq::Publisher::new(domain.clone());
             let rq_publisher = rq::ClientBuilder::new()
                 .uri(format!(
                     "amqp://{}:5672/%2f",

@@ -1011,16 +1011,21 @@ impl Mutation {
                 .await;
         }
 
+        let target_region = resource_ref.resource_id.region().clone();
         let message = rtq::Message::Destroy(rtq::DestroyMessage {
             resource: resource_ref,
             deployment_id: owner_qid.deployment,
             home_region: context.region.clone(),
         });
 
-        context.rtq_publisher.enqueue(&message).await.map_err(|e| {
-            tracing::error!("Failed to publish destroy message: {e}");
-            internal_error()
-        })?;
+        context
+            .rtq_publisher
+            .enqueue(&target_region, &message)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to publish destroy message: {e}");
+                internal_error()
+            })?;
 
         Ok(true)
     }
@@ -1154,13 +1159,7 @@ async fn main() -> anyhow::Result<()> {
         .brokers(ldb_brokers)
         .build_publisher()
         .await?;
-    let rtq_publisher = rtq::ClientBuilder::new()
-        .uri(format!(
-            "amqp://{}:5672/%2f",
-            ids::service_address("rtq", &region, &domain)
-        ))
-        .build_publisher()
-        .await?;
+    let rtq_publisher = rtq::Publisher::new(domain.clone());
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
     let rp_id = Arc::new(cli.rp_id);
     let rp_name = Arc::new(cli.rp_name);
