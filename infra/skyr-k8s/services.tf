@@ -89,6 +89,17 @@ resource "kubernetes_deployment_v1" "api" {
       }
 
       spec {
+        volume {
+          name = "udb-signing-key"
+          secret {
+            secret_name = kubernetes_secret_v1.skyr.metadata[0].name
+            items {
+              key  = "udb-signing.key"
+              path = "udb-signing.key"
+            }
+          }
+        }
+
         container {
           name              = "api"
           image             = "ghcr.io/emilbroman/skyr-api:latest"
@@ -113,6 +124,7 @@ resource "kubernetes_deployment_v1" "api" {
             "--adb-secret-access-key", "$(MINIO_SECRET_KEY)",
             "--adb-region", var.minio_region,
             "--challenge-salt", "$(CHALLENGE_SALT)",
+            "--udb-signing-key", "/secrets/udb-signing.key",
           ]
 
           env {
@@ -143,6 +155,12 @@ resource "kubernetes_deployment_v1" "api" {
                 key  = "challenge-salt"
               }
             }
+          }
+
+          volume_mount {
+            name       = "udb-signing-key"
+            mount_path = "/secrets"
+            read_only  = true
           }
 
           port {

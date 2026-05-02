@@ -54,6 +54,17 @@ resource "random_password" "minio_secret_key" {
   special = false
 }
 
+# --- UDB Identity-Token Signing Key ---
+
+resource "random_id" "udb_signing_key" {
+  count       = var.udb_signing_key == null ? 1 : 0
+  byte_length = 32
+}
+
+locals {
+  udb_signing_key_b64 = coalesce(var.udb_signing_key, one(random_id.udb_signing_key[*].b64_std))
+}
+
 # --- Kubernetes Secret ---
 
 resource "kubernetes_secret_v1" "skyr" {
@@ -68,6 +79,10 @@ resource "kubernetes_secret_v1" "skyr" {
     "challenge-salt"      = local.challenge_salt
     "minio-access-key-id" = local.minio_access_key
     "minio-secret-key"    = local.minio_secret_key
+  }
+
+  binary_data = {
+    "udb-signing.key" = local.udb_signing_key_b64
   }
 }
 

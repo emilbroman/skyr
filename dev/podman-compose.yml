@@ -148,10 +148,14 @@ services:
         "minioadmin",
         "--challenge-salt",
         "local-dev-challenge-salt",
+        "--udb-signing-key",
+        "/udb-signing.key",
       ]
     restart: always
     ports:
       - 8080:8080
+    volumes:
+      - ./udb-signing.key:/udb-signing.key:ro
 
   web:
     image: skyr-web:latest
