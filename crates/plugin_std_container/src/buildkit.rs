@@ -72,7 +72,6 @@ pub(crate) async fn build_and_push(
     image_name: &str,
     registry_url: &str,
     insecure_registry: bool,
-    log: &ldb::NamespacePublisher,
     resource_log: &ldb::NamespacePublisher,
 ) -> Result<BuildResult, PluginError> {
     // Validate containerfile path to prevent path traversal
@@ -134,9 +133,7 @@ pub(crate) async fn build_and_push(
     let stdout_pipe = child.stdout.take().expect("stdout was piped");
     let stderr_pipe = child.stderr.take().expect("stderr was piped");
 
-    let stdout_deployment_log = log.clone();
     let stdout_resource_log = resource_log.clone();
-    let stderr_deployment_log = log.clone();
     let stderr_resource_log = resource_log.clone();
 
     let stdout_task = tokio::spawn(async move {
@@ -146,7 +143,6 @@ pub(crate) async fn build_and_push(
             if digest.is_none() {
                 digest = try_extract_digest(&line);
             }
-            stdout_deployment_log.info(line.clone()).await;
             stdout_resource_log.info(line).await;
         }
         digest
@@ -160,7 +156,6 @@ pub(crate) async fn build_and_push(
             if digest.is_none() {
                 digest = try_extract_digest(&line);
             }
-            stderr_deployment_log.info(line.clone()).await;
             stderr_resource_log.info(line.clone()).await;
             last_line = line;
         }

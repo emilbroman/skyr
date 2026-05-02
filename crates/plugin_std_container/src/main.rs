@@ -371,15 +371,6 @@ impl ContainerPlugin {
             "extracted git context"
         );
 
-        // Create an LDB namespace publisher for this deployment
-        let ldb_namespace = deployment_qid.to_string();
-        let log_publisher = self
-            .inner
-            .ldb_publisher
-            .namespace(ldb_namespace)
-            .await
-            .map_err(|e| PluginError::Internal(format!("failed to create log publisher: {e}")))?;
-
         // Create an LDB namespace publisher for this resource
         let resource_qid = ids::ResourceQid::new(env_qid.clone(), id.clone());
         let resource_log_publisher = self
@@ -399,7 +390,6 @@ impl ContainerPlugin {
             &qualified_name,
             &self.inner.registry_url,
             self.inner.insecure_registry,
-            &log_publisher,
             &resource_log_publisher,
         )
         .await?;
