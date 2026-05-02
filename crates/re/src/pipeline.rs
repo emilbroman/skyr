@@ -217,8 +217,13 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
         let resource = resource_qid.resource();
         let ns = ctx.rdb.namespace(env_namespace);
         if report.extension.is_terminal() {
-            ns.delete_resource_region(&resource.typ, &resource.name, report.timestamp)
-                .await?;
+            ns.delete_resource_region(
+                &resource.typ,
+                &resource.name,
+                &resource.region,
+                report.timestamp,
+            )
+            .await?;
         } else {
             ns.set_resource_region(
                 &resource.typ,

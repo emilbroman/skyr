@@ -83,16 +83,22 @@ prepared_statements! {
             ON rdb.resources (owner)
         "#,
         // Routing index populated only in a repo's home region. Each row
-        // records that the resource named `(resource_type, name)` in the
+        // records that the resource `(resource_type, name, region)` in the
         // environment `namespace` is materialized in `region`. The DE
         // consults this table before evaluation so it knows which remote
         // regions' RDBs to read for cross-region dependency state.
         //
+        // Region is part of the row identity — two resources that share a
+        // `(type, name)` but live in different regions are independent
+        // resources per the design's `<region>:<type>:<name>` ResourceId
+        // model, and each gets its own row here. Without `region` in the
+        // PK these would collide and the DE would lose track of one of
+        // them.
+        //
         // `updated_at` is the producer's report timestamp at the moment
         // the row was last written. Writes use LWT conditioned on this
         // value so out-of-order reports (e.g. a stale Live arriving after
-        // a Destroyed) cannot resurrect a deleted entry or overwrite a
-        // newer region pointer.
+        // a Destroyed) cannot resurrect a deleted entry.
         create_resource_regions_table = r#"
             CREATE TABLE IF NOT EXISTS rdb.resource_regions (
                 namespace TEXT,
@@ -100,7 +106,7 @@ prepared_statements! {
                 name TEXT,
                 region TEXT,
                 updated_at TIMESTAMP,
-                PRIMARY KEY ((namespace), resource_type, name)
+                PRIMARY KEY ((namespace), resource_type, name, region)
             )
         "#,
     }
@@ -175,16 +181,19 @@ prepared_statements! {
             VALUES (?, ?, ?, ?, ?)
             IF NOT EXISTS
         "#,
-        // Conditional update guarded by the existing row's `updated_at`.
-        // Stale reports are rejected with `applied=false`; we treat that
-        // as a benign drop, since a newer report has already shaped the
-        // row.
+        // Conditional update that bumps `updated_at` when a newer report
+        // arrives for the same row. Region is part of the PK and never
+        // changes here — the DELETE guard uses `updated_at` to reject
+        // out-of-order Destroyed reports, so we keep the value fresh on
+        // every successful Live. Stale reports are rejected with
+        // `applied=false` and treated as a benign drop.
         update_resource_region_if_newer = r#"
             UPDATE rdb.resource_regions
-            SET region = ?, updated_at = ?
+            SET updated_at = ?
             WHERE namespace = ?
             AND resource_type = ?
             AND name = ?
+            AND region = ?
             IF updated_at < ?
         "#,
         // Conditional delete guarded by the existing row's `updated_at`.
@@ -195,6 +204,7 @@ prepared_statements! {
             WHERE namespace = ?
             AND resource_type = ?
             AND name = ?
+            AND region = ?
             IF updated_at < ?
         "#,
         list_resource_regions = r#"
@@ -447,11 +457,11 @@ impl NamespaceClient {
             .execute_unpaged(
                 &self.client.statements.update_resource_region_if_newer,
                 (
-                    region.as_str(),
                     updated_at,
                     self.namespace.as_str(),
                     resource_type,
                     name,
+                    region.as_str(),
                     updated_at,
                 ),
             )
@@ -467,13 +477,20 @@ impl NamespaceClient {
         &self,
         resource_type: &str,
         name: &str,
+        region: &ids::RegionId,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Result<(), ResourceError> {
         self.client
             .session
             .execute_unpaged(
                 &self.client.statements.delete_resource_region_if_older,
-                (self.namespace.as_str(), resource_type, name, updated_at),
+                (
+                    self.namespace.as_str(),
+                    resource_type,
+                    name,
+                    region.as_str(),
+                    updated_at,
+                ),
             )
             .await?;
         Ok(())
