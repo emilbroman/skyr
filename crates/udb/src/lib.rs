@@ -20,8 +20,10 @@ pub enum ConnectError {
 /// Per-region identity used to mint signed identity tokens.
 ///
 /// The `region` is the issuer claim stamped onto every token this UDB
-/// produces; `signing_key` is the corresponding Ed25519 private key whose
-/// public counterpart is published into GDDB's `region_keys` table.
+/// produces; `signing_key` is the corresponding Ed25519 private key. The
+/// public counterpart is exposed by IAS via the `GetVerifyingKey` RPC,
+/// where other regions' API edges fetch and cache it for token
+/// verification.
 #[derive(Clone)]
 pub struct SigningIdentity {
     pub region: ids::RegionId,
@@ -298,9 +300,8 @@ impl Client {
 
     /// Public-key bytes of the configured signing identity, if any.
     ///
-    /// Used by the binary that owns this UDB to publish the key into GDDB's
-    /// `region_keys` table on startup, so other regions can verify tokens
-    /// this UDB issues.
+    /// Used by IAS to serve `GetVerifyingKey`, so other regions' API edges
+    /// can verify tokens this UDB issues.
     pub fn signing_public_key(&self) -> Option<[u8; 32]> {
         self.signing_identity
             .as_ref()
