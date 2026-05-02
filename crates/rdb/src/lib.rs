@@ -6,8 +6,8 @@ use sclc::Record;
 use scylla::{
     client::{session::Session, session_builder::SessionBuilder},
     errors::{
-        ExecutionError, NewSessionError, NextRowError, PagerExecutionError, PrepareError,
-        TypeCheckError,
+        ExecutionError, IntoRowsResultError, NewSessionError, NextRowError, PagerExecutionError,
+        PrepareError, TypeCheckError,
     },
     statement::prepared::PreparedStatement,
 };
@@ -82,6 +82,27 @@ prepared_statements! {
             CREATE INDEX IF NOT EXISTS resources_owner_idx
             ON rdb.resources (owner)
         "#,
+        // Routing index populated only in a repo's home region. Each row
+        // records that the resource named `(resource_type, name)` in the
+        // environment `namespace` is materialized in `region`. The DE
+        // consults this table before evaluation so it knows which remote
+        // regions' RDBs to read for cross-region dependency state.
+        //
+        // `updated_at` is the producer's report timestamp at the moment
+        // the row was last written. Writes use LWT conditioned on this
+        // value so out-of-order reports (e.g. a stale Live arriving after
+        // a Destroyed) cannot resurrect a deleted entry or overwrite a
+        // newer region pointer.
+        create_resource_regions_table = r#"
+            CREATE TABLE IF NOT EXISTS rdb.resource_regions (
+                namespace TEXT,
+                resource_type TEXT,
+                name TEXT,
+                region TEXT,
+                updated_at TIMESTAMP,
+                PRIMARY KEY ((namespace), resource_type, name)
+            )
+        "#,
     }
 
     PreparedStatements {
@@ -144,6 +165,42 @@ prepared_statements! {
             WHERE namespace = ?
             AND resource_type = ?
             AND name = ?
+        "#,
+        // First-writer-wins LWT insert. If the row already exists the
+        // statement returns `applied=false` and the existing values; the
+        // caller then falls back to a conditional update.
+        insert_resource_region_if_absent = r#"
+            INSERT INTO rdb.resource_regions
+                (namespace, resource_type, name, region, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            IF NOT EXISTS
+        "#,
+        // Conditional update guarded by the existing row's `updated_at`.
+        // Stale reports are rejected with `applied=false`; we treat that
+        // as a benign drop, since a newer report has already shaped the
+        // row.
+        update_resource_region_if_newer = r#"
+            UPDATE rdb.resource_regions
+            SET region = ?, updated_at = ?
+            WHERE namespace = ?
+            AND resource_type = ?
+            AND name = ?
+            IF updated_at < ?
+        "#,
+        // Conditional delete guarded by the existing row's `updated_at`.
+        // Out-of-order Destroyed reports that arrive after a newer Live
+        // are rejected with `applied=false` and leave the row alone.
+        delete_resource_region_if_older = r#"
+            DELETE FROM rdb.resource_regions
+            WHERE namespace = ?
+            AND resource_type = ?
+            AND name = ?
+            IF updated_at < ?
+        "#,
+        list_resource_regions = r#"
+            SELECT resource_type, name, region
+            FROM rdb.resource_regions
+            WHERE namespace = ?
         "#,
     }
 }
@@ -245,6 +302,10 @@ impl ClientBuilder {
             .execute_unpaged(&statements.create_owner_index, ())
             .await?;
 
+        session
+            .execute_unpaged(&statements.create_resource_regions_table, ())
+            .await?;
+
         let statements = PreparedStatements::new(&session).await?;
 
         let region = self
@@ -338,6 +399,114 @@ impl NamespaceClient {
         Ok(pager
             .rows_stream::<ResourceRow>()?
             .map(move |row| map_resource_row(&namespace, &region, row?)))
+    }
+
+    /// Upserts a routing index entry recording that the resource named
+    /// `(resource_type, name)` in this environment lives in `region`,
+    /// guarded by `updated_at` so out-of-order reports cannot overwrite a
+    /// newer entry. Two LWT round-trips in the steady state: first an
+    /// `INSERT IF NOT EXISTS` for the row's lifetime, falling back to a
+    /// conditional `UPDATE IF updated_at < ?`. A rejected write (newer row
+    /// already present) is treated as a benign drop.
+    ///
+    /// Only the repo's home-region RE writes to this table; remote regions
+    /// never populate it.
+    pub async fn set_resource_region(
+        &self,
+        resource_type: &str,
+        name: &str,
+        region: &ids::RegionId,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ResourceError> {
+        let insert = self
+            .client
+            .session
+            .execute_unpaged(
+                &self.client.statements.insert_resource_region_if_absent,
+                (
+                    self.namespace.as_str(),
+                    resource_type,
+                    name,
+                    region.as_str(),
+                    updated_at,
+                ),
+            )
+            .await?;
+        let insert_rows = insert.into_rows_result()?;
+        // LWT result rows for `IF NOT EXISTS` always carry `[applied]` as
+        // the first column.
+        let applied = insert_rows.first_row::<(bool,)>().map(|r| r.0).ok();
+        if applied == Some(true) {
+            return Ok(());
+        }
+        // Row exists; try a conditional update guarded by the existing
+        // timestamp. The result is read but not surfaced — a stale write
+        // (newer row already present) is a benign no-op.
+        self.client
+            .session
+            .execute_unpaged(
+                &self.client.statements.update_resource_region_if_newer,
+                (
+                    region.as_str(),
+                    updated_at,
+                    self.namespace.as_str(),
+                    resource_type,
+                    name,
+                    updated_at,
+                ),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Removes the routing index entry for the named resource if (and
+    /// only if) the existing row has an older `updated_at`. Called by RE
+    /// when a terminal Destroyed report arrives. Out-of-order Destroyed
+    /// reports leave a newer Live row in place.
+    pub async fn delete_resource_region(
+        &self,
+        resource_type: &str,
+        name: &str,
+        updated_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<(), ResourceError> {
+        self.client
+            .session
+            .execute_unpaged(
+                &self.client.statements.delete_resource_region_if_older,
+                (self.namespace.as_str(), resource_type, name, updated_at),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Lists all routing index entries for this environment. Returned rows
+    /// span every region the home region has seen reports from, including
+    /// the home region itself.
+    pub async fn list_resource_regions(&self) -> Result<Vec<ResourceRegion>, ResourceError> {
+        let pager = self
+            .client
+            .session
+            .execute_iter(
+                self.client.statements.list_resource_regions.clone(),
+                (self.namespace.as_str(),),
+            )
+            .await?;
+
+        pager
+            .rows_stream::<(String, String, String)>()?
+            .map(|row| {
+                let (resource_type, name, region) = row?;
+                let region = region
+                    .parse::<ids::RegionId>()
+                    .map_err(|e| ResourceError::InvalidRegion(e.to_string()))?;
+                Ok(ResourceRegion {
+                    resource_type,
+                    name,
+                    region,
+                })
+            })
+            .try_collect()
+            .await
     }
 }
 
@@ -494,6 +663,15 @@ impl ResourceClient {
     }
 }
 
+/// A row from the home region's `rdb.resource_regions` routing index. Tells
+/// the DE which region's RDB to read for a given resource's state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRegion {
+    pub resource_type: String,
+    pub name: String,
+    pub region: ids::RegionId,
+}
+
 #[derive(Clone)]
 pub struct Resource {
     pub namespace: String,
@@ -523,6 +701,9 @@ pub enum ResourceError {
     #[error("failed to execute statement: {0}")]
     ScyllaExecute(#[from] ExecutionError),
 
+    #[error("failed to read LWT result rows: {0}")]
+    ScyllaIntoRows(#[from] IntoRowsResultError),
+
     #[error("failed to parse row: {0}")]
     ScyllaTypeCheck(#[from] TypeCheckError),
 
@@ -534,6 +715,9 @@ pub enum ResourceError {
 
     #[error("JSON payload too large ({size} bytes, limit is {MAX_JSON_SIZE})")]
     JsonTooLarge { size: usize },
+
+    #[error("invalid region in resource_regions row: {0}")]
+    InvalidRegion(String),
 }
 
 /// Checks that a JSON string does not exceed [`MAX_JSON_SIZE`] before

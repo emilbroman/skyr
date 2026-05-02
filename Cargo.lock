@@ -5031,6 +5031,7 @@ dependencies = [
 name = "rdb"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "futures",
  "ids",
  "sclc",
@@ -5048,6 +5049,7 @@ dependencies = [
  "clap",
  "ids",
  "nq",
+ "rdb",
  "rq",
  "sdb",
  "serde_json",
