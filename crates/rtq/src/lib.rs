@@ -100,6 +100,20 @@ impl Message {
             Message::Check(msg) => &msg.resource,
         }
     }
+
+    /// Returns the home region of the repo this dispatch belongs to — i.e.
+    /// the region whose RQ should receive the resulting status report. This
+    /// may differ from `self.resource().resource_id.region()`, which is the
+    /// *target* region where the resource itself is being acted on.
+    pub fn home_region(&self) -> &ids::RegionId {
+        match self {
+            Message::Create(msg) => &msg.home_region,
+            Message::Restore(msg) => &msg.home_region,
+            Message::Adopt(msg) => &msg.home_region,
+            Message::Destroy(msg) => &msg.home_region,
+            Message::Check(msg) => &msg.home_region,
+        }
+    }
 }
 
 /// Identifies a resource by its environment and resource ID.
@@ -177,6 +191,7 @@ impl ResourceRef {
 pub struct CreateMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub home_region: ids::RegionId,
     pub inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -188,6 +203,7 @@ pub struct CreateMessage {
 pub struct RestoreMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub home_region: ids::RegionId,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -201,6 +217,7 @@ pub struct AdoptMessage {
     pub resource: ResourceRef,
     pub from_deployment_id: ids::DeploymentId,
     pub to_deployment_id: ids::DeploymentId,
+    pub home_region: ids::RegionId,
     pub desired_inputs: Value,
     pub dependencies: Vec<ResourceRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -212,6 +229,7 @@ pub struct AdoptMessage {
 pub struct DestroyMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub home_region: ids::RegionId,
 }
 
 /// Request to check (verify) the current state of a resource.
@@ -219,6 +237,7 @@ pub struct DestroyMessage {
 pub struct CheckMessage {
     pub resource: ResourceRef,
     pub deployment_id: ids::DeploymentId,
+    pub home_region: ids::RegionId,
 }
 
 #[derive(Debug, Error)]

@@ -136,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             let daemon = Daemon {
+                region,
                 cdb_client,
                 rdb_client,
                 rtq_publisher,
@@ -168,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
 /// Static daemon configuration: the per-replica clients and worker-sharding
 /// parameters. Cloned per spawned worker; otherwise borrowed.
 struct Daemon {
+    region: ids::RegionId,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
     rtq_publisher: rtq::Publisher,
@@ -272,6 +274,7 @@ impl Daemon {
                 ),
                 cdb_client: self.cdb_client.clone(),
                 rdb_client: self.rdb_client.clone(),
+                region: self.region.clone(),
                 environment_qid: env_qid.clone(),
                 namespace: self.rdb_client.namespace(environment_qid),
                 rtq_publisher: self.rtq_publisher.clone(),

@@ -237,6 +237,7 @@ impl Worker {
         let log_publisher = self.log_publisher.clone();
         let env_qid = self.environment_qid.clone();
         let rtq_publisher = self.rtq_publisher.clone();
+        let region = self.region.clone();
         let local_deployment_qid_for_drain = local_deployment_qid.clone();
         let effects_task = task::spawn(
             {
@@ -297,6 +298,7 @@ impl Worker {
                                 let message = rtq::Message::Create(rtq::CreateMessage {
                                     resource: resource_ref(&env_qid, &id),
                                     deployment_id: deployment_id.clone(),
+                                    home_region: region.clone(),
                                     inputs: inputs_value,
                                     dependencies: map_dependencies(&env_qid, dependencies),
                                     source_trace,
@@ -360,6 +362,7 @@ impl Worker {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
                                         to_deployment_id: deployment_id.clone(),
+                                        home_region: region.clone(),
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -368,6 +371,7 @@ impl Worker {
                                     rtq::Message::Restore(rtq::RestoreMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
+                                        home_region: region.clone(),
                                         desired_inputs,
                                         dependencies,
                                         source_trace,
@@ -431,6 +435,7 @@ impl Worker {
                                         resource: resource_ref(&env_qid, &id),
                                         from_deployment_id,
                                         to_deployment_id: deployment_id.clone(),
+                                        home_region: region.clone(),
                                         desired_inputs,
                                         dependencies: map_dependencies(&env_qid, dependencies),
                                         source_trace,
@@ -457,6 +462,7 @@ impl Worker {
                                     let message = rtq::Message::Check(rtq::CheckMessage {
                                         resource: resource_ref(&env_qid, &id),
                                         deployment_id: deployment_id.clone(),
+                                        home_region: region.clone(),
                                     });
                                     if !enqueue_message(
                                         &rtq_publisher,

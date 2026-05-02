@@ -29,6 +29,11 @@ pub(crate) struct Worker {
     pub(crate) client: DeploymentClient,
     pub(crate) cdb_client: cdb::Client,
     pub(crate) rdb_client: rdb::Client,
+    /// The region this DE runs in. By construction this is also the home
+    /// region of every repo this worker processes (DE only ever handles
+    /// deployments for repos homed in its own region), so it's the value
+    /// we stamp as `home_region` on every outgoing RTQ message.
+    pub(crate) region: ids::RegionId,
     pub(crate) environment_qid: ids::EnvironmentQid,
     pub(crate) namespace: rdb::NamespaceClient,
     pub(crate) rtq_publisher: rtq::Publisher,
@@ -679,6 +684,7 @@ impl Worker {
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
                 resource: resource_ref(&self.environment_qid, &resource_id),
                 deployment_id: deployment.deployment.clone(),
+                home_region: self.region.clone(),
             });
             self.rtq_publisher.enqueue(&message).await?;
             emitted += 1;
@@ -796,6 +802,7 @@ impl Worker {
             let message = rtq::Message::Destroy(rtq::DestroyMessage {
                 resource: resource_ref(&self.environment_qid, &resource_id),
                 deployment_id: deployment_id.clone(),
+                home_region: self.region.clone(),
             });
             self.rtq_publisher.enqueue(&message).await?;
 
