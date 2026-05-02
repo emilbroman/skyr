@@ -113,10 +113,6 @@ async fn main() -> anyhow::Result<()> {
                 "amqp://{}:5672/%2f",
                 ids::service_address("rtq", &region, &domain)
             );
-            let rq_uri = format!(
-                "amqp://{}:5672/%2f",
-                ids::service_address("rq", &region, &domain)
-            );
             let rdb_client = rdb::ClientBuilder::new()
                 .known_node(ids::service_address("rdb", &region, &domain))
                 .region(region.clone())
@@ -129,10 +125,7 @@ async fn main() -> anyhow::Result<()> {
                 ))
                 .build_publisher()
                 .await?;
-            let rq_publisher = rq::ClientBuilder::new()
-                .uri(rq_uri)
-                .build_publisher()
-                .await?;
+            let rq_publisher = rq::Publisher::new(domain.clone());
             let plugins = dial_plugins(&plugin).await?;
             let mut handles = Vec::new();
 
@@ -331,6 +324,7 @@ async fn handle_create(
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let home_region = &message.home_region;
     let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
@@ -362,6 +356,7 @@ async fn handle_create(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -385,6 +380,7 @@ async fn handle_create(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -413,6 +409,7 @@ async fn handle_create(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -440,6 +437,7 @@ async fn handle_create(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::BadConfiguration, error),
@@ -499,6 +497,7 @@ async fn handle_create(
             .await;
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::Crash, error),
@@ -526,6 +525,7 @@ async fn handle_create(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -573,6 +573,7 @@ async fn handle_create(
         .await;
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -606,6 +607,7 @@ async fn handle_create(
     .await;
     publish_report(
         &ctx.rq_publisher,
+        home_region,
         res_qid_typed,
         start.elapsed().as_millis() as u64,
         outcome_success(),
@@ -623,6 +625,7 @@ async fn handle_destroy(
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let home_region = &message.home_region;
     let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
@@ -672,6 +675,7 @@ async fn handle_destroy(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -698,6 +702,7 @@ async fn handle_destroy(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -724,6 +729,7 @@ async fn handle_destroy(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -750,6 +756,7 @@ async fn handle_destroy(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -811,6 +818,7 @@ async fn handle_destroy(
         .await;
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(rq::IncidentCategory::Crash, error),
@@ -849,6 +857,7 @@ async fn handle_destroy(
         // hit the idempotent-missing path or retry).
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -883,6 +892,7 @@ async fn handle_destroy(
     // Successful destroy is the terminal report for this resource.
     publish_report(
         &ctx.rq_publisher,
+        home_region,
         res_qid_typed,
         start.elapsed().as_millis() as u64,
         outcome_success(),
@@ -898,6 +908,7 @@ struct UpdateParams<'a> {
     resource: &'a rtq::ResourceRef,
     owner_deployment_qid: &'a str,
     target_deployment_id: &'a ids::DeploymentId,
+    home_region: &'a ids::RegionId,
     desired_inputs: serde_json::Value,
     dependencies: &'a [rtq::ResourceRef],
     operation: &'a str,
@@ -921,6 +932,7 @@ async fn handle_update_inputs(
     let resource = params.resource;
     let owner_deployment_qid = params.owner_deployment_qid;
     let target_deployment_id = params.target_deployment_id;
+    let home_region = params.home_region;
     let desired_inputs = params.desired_inputs;
     let dependencies = params.dependencies;
     let operation = params.operation;
@@ -957,6 +969,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -999,6 +1012,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1026,6 +1040,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1053,6 +1068,7 @@ async fn handle_update_inputs(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -1081,6 +1097,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::BadConfiguration, error),
@@ -1114,6 +1131,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1191,6 +1209,7 @@ async fn handle_update_inputs(
                 .await;
                 publish_report(
                     &ctx.rq_publisher,
+                    home_region,
                     res_qid_typed,
                     start.elapsed().as_millis() as u64,
                     outcome_failure(rq::IncidentCategory::Crash, error),
@@ -1219,6 +1238,7 @@ async fn handle_update_inputs(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1283,6 +1303,7 @@ async fn handle_update_inputs(
         .await;
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -1307,6 +1328,7 @@ async fn handle_adopt(
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let home_region = &message.home_region;
     let res_qid_typed = resource_qid_typed(&message.resource);
     let from_dep_qid = deployment_qid(
         &message.resource.environment_qid,
@@ -1317,6 +1339,7 @@ async fn handle_adopt(
             resource: &message.resource,
             owner_deployment_qid: &from_dep_qid,
             target_deployment_id: &message.to_deployment_id,
+            home_region,
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "adopt",
@@ -1368,6 +1391,7 @@ async fn handle_adopt(
     .await;
     publish_report(
         &ctx.rq_publisher,
+        home_region,
         res_qid_typed,
         start.elapsed().as_millis() as u64,
         outcome_success(),
@@ -1385,6 +1409,7 @@ async fn handle_restore(
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let home_region = &message.home_region;
     let res_qid_typed = resource_qid_typed(&message.resource);
     let dep_qid = deployment_qid(&message.resource.environment_qid, &message.deployment_id);
     let Some(success) = handle_update_inputs(
@@ -1392,6 +1417,7 @@ async fn handle_restore(
             resource: &message.resource,
             owner_deployment_qid: &dep_qid,
             target_deployment_id: &message.deployment_id,
+            home_region,
             desired_inputs: message.desired_inputs.clone(),
             dependencies: &message.dependencies,
             operation: "restore",
@@ -1435,6 +1461,7 @@ async fn handle_restore(
     .await;
     publish_report(
         &ctx.rq_publisher,
+        home_region,
         res_qid_typed,
         start.elapsed().as_millis() as u64,
         outcome_success(),
@@ -1452,6 +1479,7 @@ async fn handle_check(
     ctx: &WorkerContext,
 ) -> anyhow::Result<()> {
     let start = Instant::now();
+    let home_region = &message.home_region;
     let res_qid_typed = resource_qid_typed(&message.resource);
     let resource_client = ctx
         .rdb_client
@@ -1501,6 +1529,7 @@ async fn handle_check(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -1527,6 +1556,7 @@ async fn handle_check(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1553,6 +1583,7 @@ async fn handle_check(
             );
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(
@@ -1579,6 +1610,7 @@ async fn handle_check(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -1643,6 +1675,7 @@ async fn handle_check(
             .await;
             publish_report(
                 &ctx.rq_publisher,
+                home_region,
                 res_qid_typed,
                 start.elapsed().as_millis() as u64,
                 outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -1670,6 +1703,7 @@ async fn handle_check(
         );
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(
@@ -1704,6 +1738,7 @@ async fn handle_check(
         .await;
         publish_report(
             &ctx.rq_publisher,
+            home_region,
             res_qid_typed,
             start.elapsed().as_millis() as u64,
             outcome_failure(rq::IncidentCategory::SystemError, error),
@@ -1724,6 +1759,7 @@ async fn handle_check(
     );
     publish_report(
         &ctx.rq_publisher,
+        home_region,
         res_qid_typed,
         start.elapsed().as_millis() as u64,
         outcome_success(),
@@ -1841,8 +1877,10 @@ async fn log_event(
 /// Reporting failures are logged at warn-level and otherwise swallowed —
 /// reporting is best-effort from the producer's perspective and must never
 /// affect the transition outcome itself.
+#[allow(clippy::too_many_arguments)]
 async fn publish_report(
     publisher: &rq::Publisher,
+    home_region: &ids::RegionId,
     resource_qid: ids::ResourceQid,
     elapsed_ms: u64,
     outcome: rq::Outcome,
@@ -1861,7 +1899,7 @@ async fn publish_report(
             volatile,
         }),
     };
-    if let Err(error) = publisher.enqueue(&report).await {
+    if let Err(error) = publisher.enqueue(home_region, &report).await {
         tracing::warn!(
             resource_qid = %resource_qid,
             error = %error,

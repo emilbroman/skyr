@@ -128,14 +128,19 @@ pub(crate) fn build_deployment_report(
     }
 }
 
-/// Publish a [`Report`] to the RQ, logging publish errors at warn level.
+/// Publish a [`Report`] to the RQ in `home_region`, logging publish errors at
+/// warn level.
 ///
 /// Reporting failures must not propagate into the worker loop — the DE keeps
 /// reconciling regardless of broker availability. Per the design doc, "the
 /// only feedback loop from the SDB back into a producer is the DE's
 /// exponential-backoff calculation; everything else stays one-way."
-pub(crate) async fn publish_report(publisher: &rq::Publisher, report: &Report) {
-    if let Err(error) = publisher.enqueue(report).await {
+pub(crate) async fn publish_report(
+    publisher: &rq::Publisher,
+    home_region: &ids::RegionId,
+    report: &Report,
+) {
+    if let Err(error) = publisher.enqueue(home_region, report).await {
         tracing::warn!(error = %error, "failed to publish status report");
     }
 }
@@ -153,14 +158,18 @@ pub(crate) async fn publish_report(publisher: &rq::Publisher, report: &Report) {
 /// Retries are bounded so a sustained outage cannot block worker exit
 /// indefinitely; if the budget is exhausted, an error is logged and the worker
 /// proceeds to shut down anyway.
-pub(crate) async fn publish_terminal_report(publisher: &rq::Publisher, report: &Report) {
+pub(crate) async fn publish_terminal_report(
+    publisher: &rq::Publisher,
+    home_region: &ids::RegionId,
+    report: &Report,
+) {
     const INITIAL_DELAY: Duration = Duration::from_millis(250);
     const MAX_DELAY: Duration = Duration::from_secs(30);
     const MAX_ATTEMPTS: u32 = 12;
 
     let mut delay = INITIAL_DELAY;
     for attempt in 1..=MAX_ATTEMPTS {
-        match publisher.enqueue(report).await {
+        match publisher.enqueue(home_region, report).await {
             Ok(()) => {
                 if attempt > 1 {
                     tracing::info!(
