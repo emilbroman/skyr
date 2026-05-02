@@ -6,6 +6,7 @@ members = [
   "crates/auth_token",
   "crates/cdb",
   "crates/gddb",
+  "crates/ias",
   "crates/ids",
   "crates/de",
   "crates/ldb",

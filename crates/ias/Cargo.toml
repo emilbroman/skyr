@@ -1,0 +1,31 @@
+[package]
+name = "ias"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.102"
+base64 = "0.22.1"
+chrono = { version = "0.4.42", features = ["clock"] }
+ciborium = "0.2"
+clap = { version = "4.5.48", features = ["derive", "env"] }
+ed25519-dalek = "2.2"
+p256 = { version = "0.13", features = ["ecdsa"] }
+prost = "0.13.5"
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+ssh-key = { version = "0.6", features = ["std", "ecdsa", "ed25519"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread", "signal"] }
+tonic = { version = "0.12.3", features = ["transport"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+ids = { path = "../ids" }
+udb = { path = "../udb" }
+
+[build-dependencies]
+protoc-bin-vendored = "3.2.0"
+tonic-build = "0.12.3"
+
+[lints]
+workspace = true

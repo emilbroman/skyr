@@ -198,17 +198,16 @@ dependencies = [
  "base64",
  "cdb",
  "chrono",
- "ciborium",
  "clap",
  "ed25519-dalek",
  "futures-util",
  "gddb",
  "gix-object",
  "http 1.4.0",
+ "ias",
  "ids",
  "juniper",
  "ldb",
- "p256 0.13.2",
  "rdb",
  "regex",
  "rtq",
@@ -216,13 +215,12 @@ dependencies = [
  "sdb",
  "serde_json",
  "sha2 0.10.9",
- "ssh-key",
  "thiserror 2.0.18",
  "tokio",
+ "tonic 0.12.3",
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "udb",
 ]
 
 [[package]]
@@ -3128,6 +3126,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f31827a206f56af32e590ba56d5d2d085f558508192593743f16b2306495269f"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "ias"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "ciborium",
+ "clap",
+ "ed25519-dalek",
+ "ids",
+ "p256 0.13.2",
+ "prost 0.13.5",
+ "protoc-bin-vendored",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "thiserror 2.0.18",
+ "tokio",
+ "tonic 0.12.3",
+ "tonic-build 0.12.3",
+ "tracing",
+ "tracing-subscriber",
+ "udb",
 ]
 
 [[package]]
