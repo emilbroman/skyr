@@ -4,6 +4,7 @@ members = [
   "crates/adb",
   "crates/api",
   "crates/cdb",
+  "crates/gddb",
   "crates/ids",
   "crates/de",
   "crates/ldb",
