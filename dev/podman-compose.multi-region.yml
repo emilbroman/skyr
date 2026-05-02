@@ -1,0 +1,589 @@
+name: skyr-multi-region
+
+# Two-region local harness. Brings up `loca` and `locb` end-to-end so the
+# cross-region machinery (signed identity tokens issued by one region and
+# verified at another, GDDB lookups across regions, queue routing across
+# regions, DE cross-region dependency reads via `rdb.resource_regions`)
+# can be exercised before any cloud deployment.
+#
+# Layout:
+# - Each region runs its own ScyllaDB (CDB/RDB/SDB), RabbitMQ
+#   (RTQ/RQ/NQ), Redis (UDB), and Redpanda (LDB).
+# - GDDB is logically global. Both regions' GDDB clients alias to the
+#   `loca` ScyllaDB; the spec calls for cross-DC ScyllaDB in production
+#   but that is operator-level config the application does not see, so
+#   we just point both edges at the same instance for dev.
+# - MinIO / OCI registry / BuildKit / MailHog are shared single
+#   instances; ADB cross-region pull is not exercised here.
+# - SCOC and `plugin-std-container` are intentionally not duplicated.
+#   The user workload fleet doubles container cost for no Phase-1
+#   validation benefit; add it when exercising container deployments.
+# - The web frontend is also omitted; CLI access via two API ports
+#   (8080 for `loca`, 8081 for `locb`) is sufficient for harness use.
+
+networks:
+  default:
+
+services:
+  # ─── Shared infra (region-agnostic) ──────────────────────────────────
+
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - 9000:9000
+      - 9001:9001
+    restart: always
+
+  oci-registry:
+    image: registry:2
+    ports:
+      - 5000:5000
+    restart: always
+
+  buildkit:
+    image: moby/buildkit:latest
+    privileged: true
+    restart: always
+    command:
+      - --addr
+      - tcp://0.0.0.0:1234
+      - --config
+      - /etc/buildkit/buildkitd.toml
+    ports:
+      - 1234:1234
+    volumes:
+      - ./buildkitd.toml:/etc/buildkit/buildkitd.toml:ro
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - 1025:1025
+      - 8025:8025
+    restart: always
+
+  # ─── Region: loca ────────────────────────────────────────────────────
+
+  scylla-loca:
+    image: scylladb/scylla
+    ports:
+      - 9042:9042
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      default:
+        aliases:
+          - cdb.loca.int.test
+          - rdb.loca.int.test
+          - sdb.loca.int.test
+          # GDDB is logically global. We alias BOTH regions' GDDB DNS
+          # names to this one ScyllaDB so application code does not
+          # need to know which physical instance hosts the global plane.
+          - gddb.loca.int.test
+          - gddb.locb.int.test
+
+  rabbitmq-loca:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - 15672:15672
+      - 5672:5672
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      default:
+        aliases:
+          - rtq.loca.int.test
+          - rq.loca.int.test
+          - nq.loca.int.test
+
+  redis-loca:
+    image: redis:8-alpine
+    ports:
+      - 6379:6379
+    restart: always
+    networks:
+      default:
+        aliases:
+          - udb.loca.int.test
+
+  redpanda-loca:
+    image: redpandadata/redpanda:v25.3.7
+    command:
+      [
+        "redpanda",
+        "start",
+        "--kafka-addr",
+        "internal://0.0.0.0:9092",
+        "--advertise-kafka-addr",
+        "internal://ldb.loca.int.test:9092",
+        "--overprovisioned",
+        "--smp",
+        "1",
+        "--memory",
+        "1G",
+        "--reserve-memory",
+        "0M",
+        "--check=false",
+      ]
+    ports:
+      - 9092:9092
+    restart: always
+    networks:
+      default:
+        aliases:
+          - ldb.loca.int.test
+
+  api-loca:
+    image: skyr:latest
+    entrypoint: ["/api"]
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8080",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-external-url",
+        "http://localhost:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
+        "--challenge-salt",
+        "local-dev-challenge-salt",
+        "--udb-signing-key",
+        "/udb-signing.key",
+      ]
+    restart: always
+    ports:
+      - 8080:8080
+    volumes:
+      - ./udb-signing.key:/udb-signing.key:ro
+
+  scs-loca:
+    image: skyr:latest
+    entrypoint: ["/scs"]
+    command:
+      [
+        "daemon",
+        "--address",
+        "0.0.0.0:2222",
+        "--key",
+        "/host.pem",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--node-registry-hostname",
+        "redis-loca",
+      ]
+    restart: always
+    ports:
+      - 2222:2222
+    volumes:
+      - ./host.pem:/host.pem:ro
+
+  de-loca:
+    image: skyr:latest
+    entrypoint: ["/de"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  re-loca:
+    image: skyr:latest
+    entrypoint: ["/re"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  rte-loca:
+    image: skyr:latest
+    entrypoint: ["/rte"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--plugin",
+        "Std/Random@tcp://plugin-std-random-loca:50051",
+        "--plugin",
+        "Std/Artifact@tcp://plugin-std-artifact-loca:50052",
+        "--plugin",
+        "Std/Crypto@tcp://plugin-std-crypto-loca:50055",
+        "--plugin",
+        "Std/Time@tcp://plugin-std-time-loca:50056",
+        "--plugin",
+        "Std/HTTP@tcp://plugin-std-http-loca:50058",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  ne-loca:
+    image: skyr:latest
+    entrypoint: ["/ne"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "loca",
+        "--domain",
+        "test",
+        "--dedup-hostname",
+        "redis-loca",
+        "--smtp-host",
+        "mailhog",
+        "--smtp-port",
+        "1025",
+        "--smtp-tls",
+        "none",
+        "--smtp-from",
+        "skyr@localhost",
+      ]
+    restart: always
+
+  plugin-std-random-loca:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_random"]
+    command: ["--bind", "tcp://0.0.0.0:50051"]
+    restart: always
+
+  plugin-std-artifact-loca:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_artifact"]
+    command:
+      [
+        "--bind",
+        "tcp://0.0.0.0:50052",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
+      ]
+    restart: always
+
+  plugin-std-crypto-loca:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_crypto"]
+    command: ["--bind", "tcp://0.0.0.0:50055"]
+    restart: always
+
+  plugin-std-time-loca:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_time"]
+    command: ["--bind", "tcp://0.0.0.0:50056"]
+    restart: always
+
+  plugin-std-http-loca:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_http"]
+    command: ["--bind", "tcp://0.0.0.0:50058"]
+    restart: always
+
+  # ─── Region: locb ────────────────────────────────────────────────────
+
+  scylla-locb:
+    image: scylladb/scylla
+    ports:
+      - 9043:9042
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'DESCRIBE KEYSPACES'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      default:
+        aliases:
+          - cdb.locb.int.test
+          - rdb.locb.int.test
+          - sdb.locb.int.test
+
+  rabbitmq-locb:
+    image: rabbitmq:4-management-alpine
+    ports:
+      - 15673:15672
+      - 5673:5672
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks:
+      default:
+        aliases:
+          - rtq.locb.int.test
+          - rq.locb.int.test
+          - nq.locb.int.test
+
+  redis-locb:
+    image: redis:8-alpine
+    ports:
+      - 6380:6379
+    restart: always
+    networks:
+      default:
+        aliases:
+          - udb.locb.int.test
+
+  redpanda-locb:
+    image: redpandadata/redpanda:v25.3.7
+    command:
+      [
+        "redpanda",
+        "start",
+        "--kafka-addr",
+        "internal://0.0.0.0:9092",
+        "--advertise-kafka-addr",
+        "internal://ldb.locb.int.test:9092",
+        "--overprovisioned",
+        "--smp",
+        "1",
+        "--memory",
+        "1G",
+        "--reserve-memory",
+        "0M",
+        "--check=false",
+      ]
+    ports:
+      - 9093:9092
+    restart: always
+    networks:
+      default:
+        aliases:
+          - ldb.locb.int.test
+
+  api-locb:
+    image: skyr:latest
+    entrypoint: ["/api"]
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8081",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-external-url",
+        "http://localhost:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
+        "--challenge-salt",
+        "local-dev-challenge-salt",
+        "--udb-signing-key",
+        "/udb-signing.key",
+      ]
+    restart: always
+    ports:
+      - 8081:8081
+    volumes:
+      - ./udb-signing.key:/udb-signing.key:ro
+
+  scs-locb:
+    image: skyr:latest
+    entrypoint: ["/scs"]
+    command:
+      [
+        "daemon",
+        "--address",
+        "0.0.0.0:2222",
+        "--key",
+        "/host.pem",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--node-registry-hostname",
+        "redis-locb",
+      ]
+    restart: always
+    ports:
+      - 2223:2222
+    volumes:
+      - ./host.pem:/host.pem:ro
+
+  de-locb:
+    image: skyr:latest
+    entrypoint: ["/de"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  re-locb:
+    image: skyr:latest
+    entrypoint: ["/re"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  rte-locb:
+    image: skyr:latest
+    entrypoint: ["/rte"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--plugin",
+        "Std/Random@tcp://plugin-std-random-locb:50051",
+        "--plugin",
+        "Std/Artifact@tcp://plugin-std-artifact-locb:50052",
+        "--plugin",
+        "Std/Crypto@tcp://plugin-std-crypto-locb:50055",
+        "--plugin",
+        "Std/Time@tcp://plugin-std-time-locb:50056",
+        "--plugin",
+        "Std/HTTP@tcp://plugin-std-http-locb:50058",
+        "--worker-index",
+        "0",
+        "--worker-count",
+        "1",
+      ]
+    restart: always
+
+  ne-locb:
+    image: skyr:latest
+    entrypoint: ["/ne"]
+    command:
+      [
+        "daemon",
+        "--region",
+        "locb",
+        "--domain",
+        "test",
+        "--dedup-hostname",
+        "redis-locb",
+        "--smtp-host",
+        "mailhog",
+        "--smtp-port",
+        "1025",
+        "--smtp-tls",
+        "none",
+        "--smtp-from",
+        "skyr@localhost",
+      ]
+    restart: always
+
+  plugin-std-random-locb:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_random"]
+    command: ["--bind", "tcp://0.0.0.0:50051"]
+    restart: always
+
+  plugin-std-artifact-locb:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_artifact"]
+    command:
+      [
+        "--bind",
+        "tcp://0.0.0.0:50052",
+        "--adb-endpoint-url",
+        "http://minio:9000",
+        "--adb-bucket",
+        "skyr-artifacts",
+        "--adb-access-key-id",
+        "minioadmin",
+        "--adb-secret-access-key",
+        "minioadmin",
+      ]
+    restart: always
+
+  plugin-std-crypto-locb:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_crypto"]
+    command: ["--bind", "tcp://0.0.0.0:50055"]
+    restart: always
+
+  plugin-std-time-locb:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_time"]
+    command: ["--bind", "tcp://0.0.0.0:50056"]
+    restart: always
+
+  plugin-std-http-locb:
+    image: skyr:latest
+    entrypoint: ["/plugin_std_http"]
+    command: ["--bind", "tcp://0.0.0.0:50058"]
+    restart: always

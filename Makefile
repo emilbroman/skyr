@@ -1,4 +1,4 @@
-.PHONY: image scoc-image web-image deps compose up down build-cli install-cli uninstall-cli cloud-config spec spec-watch spec-clean
+.PHONY: image scoc-image web-image deps compose up down deps-multi-region up-multi-region down-multi-region build-cli install-cli uninstall-cli cloud-config spec spec-watch spec-clean
 
 image:
 	podman build -f dev/Containerfile.skyr -t skyr:latest -t localhost/skyr:latest .
@@ -21,6 +21,42 @@ up: image scoc-image web-image deps
 
 down:
 	podman compose -f dev/podman-compose.yml down
+
+# ─── Two-region local harness ────────────────────────────────────────
+#
+# Brings up `loca` and `locb` end-to-end so cross-region machinery (token
+# verify across edges, GDDB lookups, queue routing, DE cross-region
+# dependency reads) can be exercised before any cloud deployment. SCOC
+# and the container plugin are intentionally omitted; add them in
+# dev/podman-compose.multi-region.yml when needed.
+
+deps-multi-region:
+	podman compose -f dev/podman-compose.multi-region.yml up -d \
+		scylla-loca scylla-locb \
+		rabbitmq-loca rabbitmq-locb \
+		redis-loca redis-locb \
+		redpanda-loca redpanda-locb \
+		minio oci-registry buildkit mailhog
+	@echo "Waiting for scylla-loca to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr-multi-region_scylla-loca_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+	@echo "Waiting for scylla-locb to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr-multi-region_scylla-locb_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+	@echo "Waiting for rabbitmq-loca to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr-multi-region_rabbitmq-loca_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+	@echo "Waiting for rabbitmq-locb to become healthy..."
+	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr-multi-region_rabbitmq-locb_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
+
+up-multi-region: image deps-multi-region
+	podman compose -f dev/podman-compose.multi-region.yml up -d --force-recreate \
+		api-loca scs-loca de-loca re-loca rte-loca ne-loca \
+		plugin-std-random-loca plugin-std-artifact-loca plugin-std-crypto-loca \
+		plugin-std-time-loca plugin-std-http-loca \
+		api-locb scs-locb de-locb re-locb rte-locb ne-locb \
+		plugin-std-random-locb plugin-std-artifact-locb plugin-std-crypto-locb \
+		plugin-std-time-locb plugin-std-http-locb
+
+down-multi-region:
+	podman compose -f dev/podman-compose.multi-region.yml down
 
 build-cli:
 	cargo build --release -p cli
