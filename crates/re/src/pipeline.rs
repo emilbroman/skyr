@@ -32,7 +32,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use rq::{IncidentCategory, Outcome, Report};
+use rq::{EntityQid, IncidentCategory, Outcome, Report};
 use sdb::{Category, CloseIncidentOutcome, OpenIncidentOutcome, StatusSummary};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -51,6 +51,9 @@ pub enum PipelineError {
 
     #[error("nq publish error: {0}")]
     Nq(#[from] nq::PublishError),
+
+    #[error("rdb error: {0}")]
+    Rdb(#[from] rdb::ResourceError),
 }
 
 /// Shared, cheaply-cloneable handle bundling the worker's external
@@ -59,6 +62,10 @@ pub enum PipelineError {
 pub struct PipelineContext {
     pub sdb: sdb::Client,
     pub nq: nq::Publisher,
+    /// Home-region RDB. Used to maintain the `resource_regions` routing
+    /// index that DE consults to discover which remote regions hold each
+    /// resource's state. Only the home-region RE writes to this table.
+    pub rdb: rdb::Client,
     pub thresholds: Arc<ThresholdConfig>,
     pub tracker: Arc<Mutex<ThresholdTracker>>,
     /// Last-seen cache used by the watchdog. Keyed on entity QID string.
@@ -195,6 +202,31 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
                     watchdog_open: false,
                 },
             );
+        }
+    }
+
+    // ---- Maintain the RDB resource-regions routing index ----------------
+    //
+    // Only Resource entities populate the index; Deployment reports are not
+    // about a placeable resource. Terminal reports clear the entry; any
+    // non-terminal report upserts it. Failure outcomes still upsert because
+    // the resource may exist in the target region even if the most recent
+    // operation failed (e.g., a Check that returned an error).
+    if let EntityQid::Resource(resource_qid) = &report.entity_qid {
+        let env_namespace = resource_qid.environment_qid().to_string();
+        let resource = resource_qid.resource();
+        let ns = ctx.rdb.namespace(env_namespace);
+        if report.extension.is_terminal() {
+            ns.delete_resource_region(&resource.typ, &resource.name, report.timestamp)
+                .await?;
+        } else {
+            ns.set_resource_region(
+                &resource.typ,
+                &resource.name,
+                &resource.region,
+                report.timestamp,
+            )
+            .await?;
         }
     }
 

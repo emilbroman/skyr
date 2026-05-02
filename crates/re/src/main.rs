@@ -107,6 +107,13 @@ async fn main() -> anyhow::Result<()> {
                 .known_node(ids::service_address("sdb", &region, &domain))
                 .build()
                 .await?;
+            // Home-region RDB. RE writes the `resource_regions` routing
+            // index here; it never reads or writes resource state itself.
+            let rdb_client = rdb::ClientBuilder::new()
+                .known_node(ids::service_address("rdb", &region, &domain))
+                .region(region.clone())
+                .build()
+                .await?;
             let nq_publisher = nq::ClientBuilder::new()
                 .uri(nq_uri)
                 .build_publisher()
@@ -137,6 +144,7 @@ async fn main() -> anyhow::Result<()> {
                 let ctx = PipelineContext {
                     sdb: sdb_client.clone(),
                     nq: nq_publisher.clone(),
+                    rdb: rdb_client.clone(),
                     thresholds: Arc::new(cfg.thresholds.clone()),
                     tracker: Arc::new(Mutex::new(ThresholdTracker::new())),
                     heartbeats: Arc::new(Mutex::new(HeartbeatCache::new())),
