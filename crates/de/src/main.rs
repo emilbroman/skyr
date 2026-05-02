@@ -21,24 +21,6 @@ use worker::Worker;
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "cdb-hostname", default_value = "localhost")]
-        cdb_hostname: String,
-
-        #[clap(long = "rdb-hostname", default_value = "localhost")]
-        rdb_hostname: String,
-
-        #[clap(long = "rtq-hostname", default_value = "localhost")]
-        rtq_hostname: String,
-
-        #[clap(long = "rq-hostname", default_value = "localhost")]
-        rq_hostname: String,
-
-        #[clap(long = "sdb-hostname", default_value = "localhost")]
-        sdb_hostname: String,
-
-        #[clap(long = "ldb-hostname", default_value = "localhost")]
-        ldb_hostname: String,
-
         #[clap(long = "worker-index", default_value_t = 0)]
         worker_index: u16,
 
@@ -50,6 +32,12 @@ enum Program {
         /// evaluation.
         #[clap(long = "region")]
         region: String,
+
+        /// DNS suffix used to construct region-scoped Skyr peer service
+        /// addresses. Combined with `--region`, peers are resolved as
+        /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
+        #[clap(long = "domain")]
+        domain: String,
     },
 }
 
@@ -84,15 +72,10 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            cdb_hostname,
-            rdb_hostname,
-            rtq_hostname,
-            rq_hostname,
-            sdb_hostname,
-            ldb_hostname,
             worker_index,
             worker_count,
             region,
+            domain,
         } => {
             if worker_count == 0 {
                 anyhow::bail!("--worker-count must be at least 1");
@@ -104,6 +87,9 @@ async fn main() -> anyhow::Result<()> {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+            let domain: ids::Domain = domain
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
 
             tracing::info!(
                 worker_index,
@@ -113,30 +99,39 @@ async fn main() -> anyhow::Result<()> {
             );
 
             let cdb_client = cdb::ClientBuilder::new()
-                .known_node(&cdb_hostname)
+                .known_node(ids::service_address("cdb", &region, &domain))
                 .build()
                 .await?;
 
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(&rdb_hostname)
+                .known_node(ids::service_address("rdb", &region, &domain))
                 .region(region.clone())
                 .build()
                 .await?;
 
             let rtq_publisher = rtq::ClientBuilder::new()
-                .uri(format!("amqp://{}:5672/%2f", rtq_hostname))
+                .uri(format!(
+                    "amqp://{}:5672/%2f",
+                    ids::service_address("rtq", &region, &domain)
+                ))
                 .build_publisher()
                 .await?;
             let rq_publisher = rq::ClientBuilder::new()
-                .uri(format!("amqp://{}:5672/%2f", rq_hostname))
+                .uri(format!(
+                    "amqp://{}:5672/%2f",
+                    ids::service_address("rq", &region, &domain)
+                ))
                 .build_publisher()
                 .await?;
             let sdb_client = sdb::ClientBuilder::new()
-                .known_node(&sdb_hostname)
+                .known_node(ids::service_address("sdb", &region, &domain))
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
-                .brokers(format!("{}:9092", ldb_hostname))
+                .brokers(format!(
+                    "{}:9092",
+                    ids::service_address("ldb", &region, &domain)
+                ))
                 .build_publisher()
                 .await?;
 
