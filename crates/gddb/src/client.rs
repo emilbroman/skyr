@@ -9,19 +9,7 @@ use scylla::{
     statement::prepared::PreparedStatement,
 };
 
-use crate::error::{ConnectError, LookupError, ReserveError, UpsertError};
-
-/// A region's identity-token signing public key, as stored in GDDB.
-///
-/// `public_key` bytes are opaque to GDDB — interpretation belongs to
-/// `auth_token`. `generation` increments on every rotation; callers can use
-/// it to invalidate caches when they observe a higher generation than they
-/// have on hand.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegionKey {
-    pub public_key: Vec<u8>,
-    pub generation: i32,
-}
+use crate::error::{ConnectError, LookupError, ReserveError};
 
 macro_rules! prepared_statements {
     ($($struct_name:ident { $($name:ident = $statement:expr,)* })+) => {
@@ -66,15 +54,6 @@ prepared_statements! {
                 created_at TIMESTAMP
             )
         "#,
-
-        create_region_keys_table = r#"
-            CREATE TABLE IF NOT EXISTS gddb.region_keys (
-                region TEXT PRIMARY KEY,
-                public_key BLOB,
-                generation INT,
-                updated_at TIMESTAMP
-            )
-        "#,
     }
 
     PreparedStatements {
@@ -98,16 +77,6 @@ prepared_statements! {
         lookup_repo = r#"
             SELECT region FROM gddb.repo_names
             WHERE name_hash = ?
-        "#,
-
-        upsert_region_key = r#"
-            INSERT INTO gddb.region_keys (region, public_key, generation, updated_at)
-            VALUES (?, ?, ?, ?)
-        "#,
-
-        lookup_region_key = r#"
-            SELECT public_key, generation FROM gddb.region_keys
-            WHERE region = ?
         "#,
     }
 }
@@ -153,14 +122,12 @@ impl ClientBuilder {
         session.execute_unpaged(&create_keyspace, ()).await?;
 
         let table_statements = TableStatements::new(&session).await?;
-        let (r0, r1, r2) = futures::join!(
+        let (r0, r1) = futures::join!(
             session.execute_unpaged(&table_statements.create_org_names_table, ()),
             session.execute_unpaged(&table_statements.create_repo_names_table, ()),
-            session.execute_unpaged(&table_statements.create_region_keys_table, ()),
         );
         r0?;
         r1?;
-        r2?;
 
         let statements = PreparedStatements::new(&session).await?;
 
@@ -257,51 +224,6 @@ impl Client {
         let hash = name_hash(&qid.to_string());
         self.lookup_region(&self.statements.lookup_repo, hash.as_slice())
             .await
-    }
-
-    /// Publish `region`'s identity-token signing public key, replacing any
-    /// previously-stored key for the same region. `generation` lets readers
-    /// detect rotations: bump it whenever `public_key` changes.
-    ///
-    /// Idempotent — safe to call on every UDB startup.
-    pub async fn upsert_region_key(
-        &self,
-        region: &RegionId,
-        public_key: &[u8],
-        generation: i32,
-    ) -> Result<(), UpsertError> {
-        let now = Utc::now();
-        self.session
-            .execute_unpaged(
-                &self.statements.upsert_region_key,
-                (region.as_str(), public_key, generation, now),
-            )
-            .await?;
-        Ok(())
-    }
-
-    /// Look up `region`'s identity-token signing public key. Returns `None`
-    /// if the region has not registered a key yet.
-    pub async fn lookup_region_key(
-        &self,
-        region: &RegionId,
-    ) -> Result<Option<RegionKey>, LookupError> {
-        let pager = self
-            .session
-            .execute_iter(
-                self.statements.lookup_region_key.clone(),
-                (region.as_str(),),
-            )
-            .await?;
-
-        let mut stream = pager.rows_stream::<(Vec<u8>, i32)>()?;
-        match stream.try_next().await? {
-            None => Ok(None),
-            Some((public_key, generation)) => Ok(Some(RegionKey {
-                public_key,
-                generation,
-            })),
-        }
     }
 
     async fn lookup_region(

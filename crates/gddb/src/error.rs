@@ -33,12 +33,6 @@ pub enum ReserveError {
 }
 
 #[derive(Error, Debug)]
-pub enum UpsertError {
-    #[error("failed to execute statement: {0}")]
-    Execute(#[from] ExecutionError),
-}
-
-#[derive(Error, Debug)]
 pub enum LookupError {
     #[error("failed to execute statement: {0}")]
     Execute(#[from] ExecutionError),
