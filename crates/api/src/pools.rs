@@ -137,3 +137,90 @@ impl SdbPool {
         Ok(client)
     }
 }
+
+/// Default LDB Kafka broker port. Mirrors the LDB compose/k8s configuration.
+const LDB_PORT: u16 = 9092;
+
+#[derive(Clone)]
+pub(crate) struct LdbConsumerPool {
+    inner: Arc<Mutex<HashMap<RegionId, ldb::Consumer>>>,
+    domain: Domain,
+}
+
+impl LdbConsumerPool {
+    pub(crate) fn new(domain: Domain) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            domain,
+        }
+    }
+
+    pub(crate) async fn for_region(
+        &self,
+        region: &RegionId,
+    ) -> Result<ldb::Consumer, ldb::ConnectError> {
+        {
+            let entries = self.inner.lock().await;
+            if let Some(client) = entries.get(region) {
+                return Ok(client.clone());
+            }
+        }
+
+        let brokers = format!(
+            "{}:{LDB_PORT}",
+            service_address("ldb", region, &self.domain)
+        );
+        let client = ldb::ClientBuilder::new()
+            .brokers(brokers)
+            .build_consumer()
+            .await?;
+
+        self.inner
+            .lock()
+            .await
+            .insert(region.clone(), client.clone());
+        Ok(client)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct LdbPublisherPool {
+    inner: Arc<Mutex<HashMap<RegionId, ldb::Publisher>>>,
+    domain: Domain,
+}
+
+impl LdbPublisherPool {
+    pub(crate) fn new(domain: Domain) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            domain,
+        }
+    }
+
+    pub(crate) async fn for_region(
+        &self,
+        region: &RegionId,
+    ) -> Result<ldb::Publisher, ldb::ConnectError> {
+        {
+            let entries = self.inner.lock().await;
+            if let Some(client) = entries.get(region) {
+                return Ok(client.clone());
+            }
+        }
+
+        let brokers = format!(
+            "{}:{LDB_PORT}",
+            service_address("ldb", region, &self.domain)
+        );
+        let client = ldb::ClientBuilder::new()
+            .brokers(brokers)
+            .build_publisher()
+            .await?;
+
+        self.inner
+            .lock()
+            .await
+            .insert(region.clone(), client.clone());
+        Ok(client)
+    }
+}

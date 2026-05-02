@@ -469,11 +469,14 @@ impl Environment {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
+        let region = context.home_region_for_repo(&self.qid.repo).await?;
         let mut all_logs = Vec::new();
 
         for deployment in &self.deployments {
             let deployment_qid = deployment.deployment_qid().to_string();
-            match crate::subscriptions::load_logs(context, deployment_qid.clone(), amount).await {
+            match crate::subscriptions::load_logs(context, &region, deployment_qid.clone(), amount)
+                .await
+            {
                 Ok(logs) => all_logs.extend(logs),
                 Err(error) => {
                     tracing::warn!("Failed to fetch logs for deployment {deployment_qid}: {error}");
@@ -917,8 +920,9 @@ impl Deployment {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
+        let region = context.home_region_for_repo(&self.deployment.repo).await?;
         let deployment_qid = self.deployment.deployment_qid().to_string();
-        crate::subscriptions::load_logs(context, deployment_qid.clone(), amount)
+        crate::subscriptions::load_logs(context, &region, deployment_qid.clone(), amount)
             .await
             .map_err(|error| {
                 tracing::error!("Failed to fetch deployment logs for {deployment_qid}: {error}");
@@ -1137,8 +1141,10 @@ impl Resource {
     #[graphql(name = "lastLogs")]
     async fn last_logs(&self, context: &Context, amount: Option<i32>) -> FieldResult<Vec<Log>> {
         let amount = amount.unwrap_or(20).max(0) as u64;
-        let resource_qid = self.resource_qid()?.to_string();
-        crate::subscriptions::load_logs(context, resource_qid.clone(), amount)
+        let parsed_qid = self.resource_qid()?;
+        let region = parsed_qid.resource().region().clone();
+        let resource_qid = parsed_qid.to_string();
+        crate::subscriptions::load_logs(context, &region, resource_qid.clone(), amount)
             .await
             .map_err(|error| {
                 tracing::error!("Failed to fetch resource logs for {resource_qid}: {error}");
