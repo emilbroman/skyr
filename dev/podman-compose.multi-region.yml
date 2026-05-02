@@ -178,7 +178,10 @@ services:
     ports:
       - 8080:8080
     volumes:
-      - ./udb-signing.key:/udb-signing.key:ro
+      # Per-region signing keys: each region must own a distinct Ed25519
+      # secret so the cross-region verify path actually exercises
+      # `region_keys[issuer]` instead of any cached self-region key.
+      - ./udb-signing.loca.key:/udb-signing.key:ro
 
   scs-loca:
     image: skyr:latest
@@ -437,7 +440,7 @@ services:
     ports:
       - 8081:8081
     volumes:
-      - ./udb-signing.key:/udb-signing.key:ro
+      - ./udb-signing.locb.key:/udb-signing.key:ro
 
   scs-locb:
     image: skyr:latest
