@@ -7,19 +7,19 @@ tokens** — the bearer tokens that authenticate users across regions in Skyr.
 
 A user's home region (the region whose UDB owns their PII) is the only place
 that can validate that user's credentials (SSH signature, WebAuthn assertion).
-Once it has, it issues a self-validating identity token: any other region can
-verify the token using the issuer's published public key, without contacting
-the issuer or holding any per-user state.
+Once it has, the home-region IAS issues a self-validating identity token: any
+other region can verify the token using the issuer IAS's published public key,
+without contacting the issuer for per-user state.
 
 ```
-                signs                     verifies via
-   home region ─────► identity token ─────► any region
-   UDB                                       (API edge)
-   (private key)                             (cached public key)
+                  signs                       verifies via
+   home-region IAS ─────► identity token ─────► any region's API edge
+   (private key)                                (cached public key)
 ```
 
-The public keys themselves are published into a globally-replicated GDDB table
-(`region_keys`); see the GDDB crate for how regions register and look them up.
+Public keys are served by each region's IAS via the `GetVerifyingKey` gRPC
+RPC; every API edge caches the keys it has fetched (short TTL) so the
+verification path is local on cache hit.
 
 ## Wire Format
 

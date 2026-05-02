@@ -7,8 +7,10 @@ The API service exposes a GraphQL endpoint for user management, deployment inspe
 The API is the public-facing HTTP service for Skyr. It provides the GraphQL interface that the [CLI](../cli/) and other clients use for account management and deployment visibility.
 
 ```
-Client (GraphQL/HTTP) → API → UDB, CDB, RDB, ADB, LDB, SDB
+Client (GraphQL/HTTP) → API → IAS (per region), CDB, RDB, ADB, LDB, SDB
 ```
+
+The API is a **region-agnostic edge**: every per-request UDB read goes through the home-region [IAS](../ias/) (resolved via [GDDB](../gddb/)). Token verification fetches the issuing region's signing public key from that region's IAS via the `GetVerifyingKey` RPC and caches it short-TTL.
 
 The API is a **read-only** consumer of [SDB](../sdb/) — it never writes status or incident records. SDB writes are exclusively the [RE](../re/)'s responsibility.
 
@@ -19,15 +21,15 @@ The API is a **read-only** consumer of [SDB](../sdb/) — it never writes status
 
 ## Authentication
 
-The API uses SSH challenge-response authentication:
+The API is the public face of a challenge-response auth flow whose cryptographic core lives in [IAS](../ias/):
 
-1. Client calls `authChallenge(username)` to get a time-limited challenge string.
-2. Client signs the challenge with their SSH private key.
-3. Client submits `signup` or `signin` with the username, public key (OpenSSH format), and signature.
-4. Server verifies the signature and issues a bearer token.
-5. Subsequent requests include the token in the `Authorization: Bearer <token>` header.
+1. Client calls `authChallenge(username, region)` — for unregistered users `region` selects the target signup region; for existing users it is ignored and GDDB tells the API which IAS to ask. The API forwards to the home-region IAS, which derives a frame-aligned challenge string from its salt + username and returns it (along with any registered WebAuthn credential IDs).
+2. Client signs the challenge: SSH (`ssh-keygen -Y sign`) for the CLI, WebAuthn for the browser.
+3. Client calls `signup` or `signin` with the username and proof.
+4. The API parses the WebAuthn JSON envelope (or passes the SSH signature through) and forwards the proof to the home-region IAS, which verifies it against the recent challenge frames and signs a short-TTL identity token.
+5. Subsequent requests include the token in the `Authorization: Bearer <token>` header. Any API edge can verify it using the issuer region's IAS-published public key (cached locally).
 
-Challenges are frame-based (10-second windows) with ±1 frame tolerance for clock skew.
+Challenges are frame-based (60-second windows) with ±1 frame tolerance for clock skew. The API edge holds no signing key and no challenge salt — both live in IAS.
 
 ## Operations
 
@@ -100,7 +102,8 @@ The API uses the [IDs](../ids/) crate to work with qualified identifiers:
 ## Related Crates
 
 - [IDs](../ids/) — typed identifiers for deployment QID parsing
-- [UDB](../udb/) — user accounts and bearer token management
+- [IAS](../ias/) — sole gateway to the regional UDB; mints identity tokens
+- [GDDB](../gddb/) — name-to-region lookup; consulted on every cross-region resolver
 - [CDB](../cdb/) — deployment and Git object data
 - [RDB](../rdb/) — resource state
 - [SDB](../sdb/) — per-entity health summaries and incident records

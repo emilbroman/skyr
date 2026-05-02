@@ -7,7 +7,6 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use crate::json_scalar::{graphql_value_to_json, serialize_execution_errors};
-use crate::pools::UdbPool;
 use crate::region_keys::RegionKeyCache;
 use crate::{AuthOutcome, Context, Schema, authenticate_token};
 
@@ -15,7 +14,6 @@ pub(crate) async fn graphql_ws_connection(
     socket: WebSocket,
     schema: Arc<Schema>,
     mut context: Context,
-    udb_pool: UdbPool,
     region_keys: RegionKeyCache,
 ) {
     use std::collections::HashMap;
@@ -88,16 +86,16 @@ pub(crate) async fn graphql_ws_connection(
                     "connection_init" => {
                         // Support auth via connection_init payload for browser clients
                         // that cannot set custom HTTP headers on WebSocket upgrade.
-                        if context.user.is_none()
+                        if context.authenticated_user.is_none()
                             && let Some(token) = payload
                                 .get("payload")
                                 .and_then(|p| p.get("Authorization"))
                                 .and_then(|v| v.as_str())
                                 .and_then(|v| v.strip_prefix("Bearer "))
                         {
-                            match authenticate_token(token, &udb_pool, &region_keys).await {
+                            match authenticate_token(token, &region_keys).await {
                                 AuthOutcome::Authenticated(user) => {
-                                    context.user = Some(user);
+                                    context.authenticated_user = Some(user);
                                 }
                                 AuthOutcome::Invalid | AuthOutcome::Expired => {
                                     tracing::debug!("Invalid token in connection_init payload");

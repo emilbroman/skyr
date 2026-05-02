@@ -243,7 +243,16 @@ type Organization {
 type Query {
   health: Boolean!
   me: SignedInUser!
-  authChallenge(username: String!): AuthChallenge!
+  """
+    Issue an authentication challenge for `username`.
+
+    The challenge is owned by the user's home-region IAS (which holds
+    the salt). This edge resolves the home region in GDDB; for
+    already-registered users the GDDB entry tells us where to ask. For
+    brand-new signups (no GDDB entry yet), the caller must pass the
+    target signup region in `region`.
+  """
+  authChallenge(username: String!, region: String): AuthChallenge!
   refreshToken: AuthSuccess!
   organizations: [Organization!]!
   organization(name: String!): Organization!

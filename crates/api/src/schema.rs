@@ -22,8 +22,28 @@ impl AuthSuccess {
     }
 }
 
+/// Plain-data user record carried by the GraphQL surface. Constructed
+/// from `ias::proto::User` and used wherever the schema previously
+/// referenced `udb::User` directly.
+#[derive(Clone, Debug)]
+pub(crate) struct UserData {
+    pub(crate) username: String,
+    pub(crate) email: String,
+    pub(crate) fullname: Option<String>,
+}
+
+impl From<ias::proto::User> for UserData {
+    fn from(u: ias::proto::User) -> Self {
+        Self {
+            username: u.username,
+            email: u.email,
+            fullname: u.fullname,
+        }
+    }
+}
+
 pub(crate) struct User {
-    pub(crate) user: udb::User,
+    pub(crate) user: UserData,
 }
 
 #[juniper::graphql_object(Context = Context)]
@@ -51,7 +71,7 @@ impl User {
 }
 
 pub(crate) struct SignedInUser {
-    pub(crate) user: udb::User,
+    pub(crate) user: UserData,
 }
 
 #[juniper::graphql_object(Context = Context)]
@@ -80,17 +100,22 @@ impl SignedInUser {
     #[graphql(name = "publicKeys")]
     async fn public_keys(&self, context: &Context) -> FieldResult<Vec<String>> {
         let region = context.home_region_for_user(&self.user.username).await?;
-        context
-            .udb_for_region(&region)
-            .await?
-            .user(&self.user.username)
-            .pubkeys()
-            .list()
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to list public keys: {}", e);
-                internal_error()
+        let mut ias = context.ias_for_region(&region).await?;
+        let response = ias
+            .list_credentials(ias::proto::ListCredentialsRequest {
+                username: self.user.username.clone(),
             })
+            .await
+            .map_err(|status| {
+                tracing::error!("Failed to list credentials via IAS: {status}");
+                internal_error()
+            })?
+            .into_inner();
+        Ok(response
+            .credentials
+            .into_iter()
+            .map(|c| c.fingerprint)
+            .collect())
     }
 }
 
@@ -112,16 +137,18 @@ impl Organization {
 
     async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
         let org_region = context.home_region_for_org(&self.name).await?;
-        let org_udb = context.udb_for_region(&org_region).await?;
-        let usernames = org_udb
-            .org(self.name.as_str())
-            .members()
-            .list()
+        let mut org_ias = context.ias_for_region(&org_region).await?;
+        let usernames = org_ias
+            .list_org_members(ias::proto::ListOrgMembersRequest {
+                name: self.name.to_string(),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to list org members for {}: {}", self.name, e);
+            .map_err(|status| {
+                tracing::error!("Failed to list org members for {}: {status}", self.name);
                 internal_error()
-            })?;
+            })?
+            .into_inner()
+            .usernames;
 
         let mut users = Vec::with_capacity(usernames.len());
         for username in usernames {
@@ -134,14 +161,21 @@ impl Organization {
                     continue;
                 }
             };
-            let user_udb = context.udb_for_region(&user_region).await?;
-            match user_udb.user(&username).get().await {
-                Ok(user) => users.push(User { user }),
-                Err(udb::UserQueryError::NotFound) => {
-                    tracing::warn!("Org member {} not found in UDB", username);
+            let mut user_ias = context.ias_for_region(&user_region).await?;
+            match user_ias
+                .get_user(ias::proto::GetUserRequest {
+                    username: username.clone(),
+                })
+                .await
+            {
+                Ok(resp) => users.push(User {
+                    user: UserData::from(resp.into_inner()),
+                }),
+                Err(status) if status.code() == tonic::Code::NotFound => {
+                    tracing::warn!("Org member {} not found in IAS", username);
                 }
-                Err(e) => {
-                    tracing::error!("Failed to fetch org member {}: {}", username, e);
+                Err(status) => {
+                    tracing::error!("Failed to fetch org member {}: {status}", username);
                     return Err(internal_error());
                 }
             }

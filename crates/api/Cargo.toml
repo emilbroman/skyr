@@ -15,12 +15,9 @@ gix-object = "0.56.0"
 http = "1.4.0"
 juniper = { version = "0.16.2", features = ["schema-language"] }
 regex = "1.12.3"
-ciborium = "0.2"
 ed25519-dalek = "2.2"
-p256 = { version = "0.13", features = ["ecdsa"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
-ssh-key = { version = "0.6", features = ["std", "ecdsa", "ed25519"] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
@@ -30,13 +27,14 @@ ids = { path = "../ids", features = ["rand"] }
 auth_token = { path = "../auth_token" }
 cdb = { path = "../cdb" }
 gddb = { path = "../gddb" }
+ias = { path = "../ias" }
 rdb = { path = "../rdb" }
 sclc = { path = "../sclc" }
 sdb = { path = "../sdb" }
-udb = { path = "../udb" }
 ldb = { path = "../ldb" }
 adb = { path = "../adb" }
 rtq = { path = "../rtq" }
+tonic = { version = "0.12.3", features = ["transport"] }
 
 [lints]
 workspace = true

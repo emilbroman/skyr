@@ -19,7 +19,7 @@ impl Subscription {
         deployment_id: String,
         initial_amount: Option<i32>,
     ) -> FieldResult<LogStream> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let deployment_qid: ids::DeploymentQid = deployment_id
             .parse()
@@ -31,23 +31,25 @@ impl Subscription {
         let organization = org_id.to_string();
         let org_region = context.home_region_for_org(&org_id).await?;
 
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
+                .map_err(|status| {
+                    tracing::error!("Failed to check org membership: {status}");
                     internal_error()
-                })?;
+                })?
+                .into_inner()
+                .value;
             if !is_member {
                 tracing::warn!(
                     "Rejected deployment logs subscription: user is not a member of organization: deployment={} user={}",
                     deployment_id,
-                    user.username
+                    auth.username
                 );
                 return Err(field_error("Permission denied"));
             }
@@ -98,7 +100,7 @@ impl Subscription {
         environment_qid: String,
         initial_amount: Option<i32>,
     ) -> FieldResult<LogStream> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let env_qid: ids::EnvironmentQid = environment_qid
             .parse()
@@ -108,23 +110,25 @@ impl Subscription {
         let org_region = context.home_region_for_org(&env_qid.repo.org).await?;
 
         let organization = env_qid.repo.org.to_string();
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
+                .map_err(|status| {
+                    tracing::error!("Failed to check org membership: {status}");
                     internal_error()
-                })?;
+                })?
+                .into_inner()
+                .value;
             if !is_member {
                 tracing::warn!(
                     "Rejected environment logs subscription: user is not a member of organization: environment={} user={}",
                     environment_qid,
-                    user.username
+                    auth.username
                 );
                 return Err(field_error("Permission denied"));
             }
@@ -225,7 +229,7 @@ impl Subscription {
         resource_qid: String,
         initial_amount: Option<i32>,
     ) -> FieldResult<LogStream> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let parsed_qid: ids::ResourceQid = resource_qid
             .parse()
@@ -237,23 +241,25 @@ impl Subscription {
         let organization = org_id.to_string();
         let org_region = context.home_region_for_org(&org_id).await?;
 
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
+                .map_err(|status| {
+                    tracing::error!("Failed to check org membership: {status}");
                     internal_error()
-                })?;
+                })?
+                .into_inner()
+                .value;
             if !is_member {
                 tracing::warn!(
                     "Rejected resource logs subscription: user is not a member of organization: resource={} user={}",
                     resource_qid,
-                    user.username
+                    auth.username
                 );
                 return Err(field_error("Permission denied"));
             }
