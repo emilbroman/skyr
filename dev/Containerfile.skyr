@@ -6,6 +6,7 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates/adb/Cargo.toml crates/adb/Cargo.toml
 COPY crates/api/Cargo.toml crates/api/Cargo.toml
+COPY crates/auth_token/Cargo.toml crates/auth_token/Cargo.toml
 COPY crates/cdb/Cargo.toml crates/cdb/Cargo.toml
 COPY crates/gddb/Cargo.toml crates/gddb/Cargo.toml
 COPY crates/de/Cargo.toml crates/de/Cargo.toml
@@ -36,9 +37,10 @@ COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
 COPY crates/plugin_std_container/Cargo.toml crates/plugin_std_container/Cargo.toml
 RUN sed -i '/"crates\/sclc-wasm",/d; /"crates\/sclc-docgen",/d' Cargo.toml
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/gddb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_dns/src crates/plugin_std_http/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/re/src crates/rq/src crates/rtp/src crates/rte/src crates/rtq/src crates/sdb/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
+    mkdir -p crates/adb/src crates/api/src crates/auth_token/src crates/cdb/src crates/gddb/src crates/de/src crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src crates/plugin_std_artifact/src crates/plugin_std_crypto/src crates/plugin_std_dns/src crates/plugin_std_http/src crates/plugin_std_random/src crates/plugin_std_time/src crates/plugin_std_container/src crates/rdb/src crates/re/src crates/rq/src crates/rtp/src crates/rte/src crates/rtq/src crates/sdb/src crates/cli/src crates/sclc/src crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/auth_token/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/gddb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/de/src/main.rs; \
