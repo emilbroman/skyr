@@ -686,7 +686,9 @@ impl Worker {
                 deployment_id: deployment.deployment.clone(),
                 home_region: self.region.clone(),
             });
-            self.rtq_publisher.enqueue(&message).await?;
+            self.rtq_publisher
+                .enqueue(&resource_id.region, &message)
+                .await?;
             emitted += 1;
 
             tracing::info!(
@@ -804,7 +806,9 @@ impl Worker {
                 deployment_id: deployment_id.clone(),
                 home_region: self.region.clone(),
             });
-            self.rtq_publisher.enqueue(&message).await?;
+            self.rtq_publisher
+                .enqueue(&resource_id.region, &message)
+                .await?;
 
             tracing::info!(
                 resource_type = %resource.resource_type,

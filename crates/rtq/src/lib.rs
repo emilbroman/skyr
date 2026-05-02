@@ -48,10 +48,12 @@ use lapin::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    collections::HashMap,
     hash::{Hash, Hasher},
     sync::Arc,
 };
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 /// Default AMQP broker URI. Uses the guest account, which is only permitted to
 /// connect from localhost. For production, supply an authenticated URI via
@@ -250,12 +252,6 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Error)]
-pub enum ConnectError {
-    #[error("failed to connect to amqp broker: {0}")]
-    Amqp(#[from] lapin::Error),
-}
-
-#[derive(Debug, Error)]
 pub enum PublishError {
     #[error("failed to encode message as json: {0}")]
     Json(#[from] serde_json::Error),
@@ -298,10 +294,12 @@ impl WorkerConfig {
     }
 }
 
-/// Builder for RTQ publishers and consumers.
+/// Builder for RTQ consumers.
 ///
 /// Use [`ClientBuilder::shard_count`] and [`ClientBuilder::prefetch`] to
-/// override the default shard and prefetch settings.
+/// override the default shard and prefetch settings. Publishers are
+/// constructed directly via [`Publisher::new`] / [`Publisher::with_shard_count`]
+/// — they manage one connection per region internally and do not need a URI.
 pub struct ClientBuilder {
     uri: String,
     shard_count: u16,
@@ -344,18 +342,6 @@ impl ClientBuilder {
     pub fn prefetch(mut self, prefetch: u16) -> Self {
         self.prefetch = prefetch;
         self
-    }
-
-    pub async fn build_publisher(self) -> Result<Publisher, ConnectError> {
-        let connection = Connection::connect(&self.uri, ConnectionProperties::default()).await?;
-        let channel = connection.create_channel().await?;
-        declare_exchange(&channel).await?;
-
-        Ok(Publisher {
-            _connection: Arc::new(connection),
-            publish_channel: channel,
-            shard_count: self.shard_count,
-        })
     }
 
     pub async fn build_consumer(self, worker: WorkerConfig) -> Result<Consumer, ConsumerError> {
@@ -423,23 +409,59 @@ impl ClientBuilder {
     }
 }
 
+/// Cross-region RTQ publisher.
+///
+/// A single [`Publisher`] addresses every region's RTQ. AMQP connections are
+/// established lazily on first publish to a given region and reused
+/// thereafter; the per-region URI is derived from the configured
+/// [`ids::Domain`] via [`ids::service_address`].
+///
+/// In a single-region deployment exactly one connection is ever opened (to
+/// the local region's broker), giving the same operational profile as a
+/// pre-multi-region single-broker publisher.
 #[derive(Clone)]
 pub struct Publisher {
+    domain: ids::Domain,
+    shard_count: u16,
+    connections: Arc<Mutex<HashMap<ids::RegionId, RegionalConnection>>>,
+}
+
+#[derive(Clone)]
+struct RegionalConnection {
     // Keep the connection alive for the lifetime of channels.
     _connection: Arc<Connection>,
-    publish_channel: Channel,
-    shard_count: u16,
+    channel: Channel,
 }
 
 impl Publisher {
-    pub async fn enqueue(&self, message: &Message) -> Result<(), PublishError> {
+    /// Construct a publisher addressing every region under `domain`. The
+    /// shard count must match every consumer's shard count — defaults to
+    /// [`DEFAULT_SHARD_COUNT`].
+    pub fn new(domain: ids::Domain) -> Self {
+        Self::with_shard_count(domain, DEFAULT_SHARD_COUNT)
+    }
+
+    pub fn with_shard_count(domain: ids::Domain, shard_count: u16) -> Self {
+        Self {
+            domain,
+            shard_count,
+            connections: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Publish `message` onto the RTQ in `region`.
+    pub async fn enqueue(
+        &self,
+        region: &ids::RegionId,
+        message: &Message,
+    ) -> Result<(), PublishError> {
+        let channel = self.channel_for(region).await?;
         let resource_uid = message.resource().uid();
         let shard = shard_for_resource_uid(&resource_uid, self.shard_count);
         let routing_key = shard_routing_key(shard);
         let payload = message.encode_json()?;
 
-        let confirm = self
-            .publish_channel
+        let confirm = channel
             .basic_publish(
                 EXCHANGE_NAME,
                 &routing_key,
@@ -451,6 +473,29 @@ impl Publisher {
         confirm.await?;
 
         Ok(())
+    }
+
+    async fn channel_for(&self, region: &ids::RegionId) -> Result<Channel, PublishError> {
+        let mut connections = self.connections.lock().await;
+        if let Some(rc) = connections.get(region) {
+            return Ok(rc.channel.clone());
+        }
+        let uri = format!(
+            "amqp://{}:5672/%2f",
+            ids::service_address("rtq", region, &self.domain)
+        );
+        let connection = Connection::connect(&uri, ConnectionProperties::default()).await?;
+        let channel = connection.create_channel().await?;
+        declare_exchange(&channel).await?;
+        let returned = channel.clone();
+        connections.insert(
+            region.clone(),
+            RegionalConnection {
+                _connection: Arc::new(connection),
+                channel,
+            },
+        );
+        Ok(returned)
     }
 }
 

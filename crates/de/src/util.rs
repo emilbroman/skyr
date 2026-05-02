@@ -59,6 +59,9 @@ pub(crate) fn resource_id_from(resource: &rdb::Resource) -> ids::ResourceId {
 
 /// Enqueue an RTQ message, logging errors to both tracing and the deployment
 /// log publisher. Returns `true` if the message was enqueued successfully.
+///
+/// The message is routed to the RTQ in the resource's region (`id.region`),
+/// which may differ from the DE's home region for cross-region resources.
 pub(crate) async fn enqueue_message(
     rtq_publisher: &rtq::Publisher,
     log_publisher: &ldb::NamespacePublisher,
@@ -66,7 +69,7 @@ pub(crate) async fn enqueue_message(
     context: &str,
     id: &ids::ResourceId,
 ) -> bool {
-    if let Err(error) = rtq_publisher.enqueue(message).await {
+    if let Err(error) = rtq_publisher.enqueue(&id.region, message).await {
         tracing::error!(
             resource_type = %id.typ,
             resource_name = %id.name,
