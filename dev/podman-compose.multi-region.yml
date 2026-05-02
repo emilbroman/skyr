@@ -118,6 +118,9 @@ services:
       default:
         aliases:
           - udb.loca.int.test
+          # SCOC node-registry shares this redis in dev — SCS edges resolve
+          # it per-region as `node-registry.<region>.int.<domain>`.
+          - node-registry.loca.int.test
 
   ias-loca:
     image: skyr:latest
@@ -223,12 +226,10 @@ services:
         "0.0.0.0:2222",
         "--key",
         "/host.pem",
-        "--region",
-        "loca",
         "--domain",
         "test",
-        "--node-registry-hostname",
-        "redis-loca",
+        "--gddb-bootstrap-region",
+        "loca",
       ]
     restart: always
     ports:
@@ -410,6 +411,7 @@ services:
       default:
         aliases:
           - udb.locb.int.test
+          - node-registry.locb.int.test
 
   ias-locb:
     image: skyr:latest
@@ -507,12 +509,10 @@ services:
         "0.0.0.0:2222",
         "--key",
         "/host.pem",
-        "--region",
-        "locb",
         "--domain",
         "test",
-        "--node-registry-hostname",
-        "redis-locb",
+        "--gddb-bootstrap-region",
+        "locb",
       ]
     restart: always
     ports:
