@@ -1,54 +1,50 @@
 use anyhow::anyhow;
-use ids::{RegionId, RepoQid};
+use ids::RepoQid;
 
 use crate::UserFacingError;
+use crate::pools::IasPool;
 
-/// Verify the repo's home region matches this SCS server's region.
+/// Check that `username` is a member of `repo`'s organization.
 ///
-/// Rejects with a user-facing error if GDDB has the repo registered to a
-/// different region (`<region> is not served by this Skyr deployment`)
-/// or has no record of the repo at all.
-pub(crate) async fn ensure_repo_in_region(
-    gddb_client: &gddb::Client,
-    region: &RegionId,
-    repo: &RepoQid,
-) -> anyhow::Result<()> {
-    match gddb_client.lookup_repo(repo).await {
-        Ok(Some(home)) if &home == region => Ok(()),
-        Ok(Some(home)) => Err(UserFacingError(format!(
-            "region '{home}' is not served by this Skyr deployment"
-        ))
-        .into()),
-        Ok(None) => Err(UserFacingError(format!("repository '{repo}' does not exist")).into()),
-        Err(err) => {
-            tracing::error!("failed to look up repository '{}' in GDDB: {}", repo, err);
-            Err(UserFacingError("failed to access repository".to_string()).into())
-        }
-    }
-}
-
+/// Personal-org shortcut: if `repo.org == username` the caller is the
+/// org's sole owner. Otherwise we resolve the org's home region in GDDB
+/// and ask that region's IAS — org membership lives in UDB at the org's
+/// home, which is not necessarily the same region as the repo or the
+/// user.
 pub(crate) async fn ensure_repo_access(
-    user: &udb::User,
+    username: &str,
     repo: &RepoQid,
-    udb_client: &udb::Client,
+    gddb_client: &gddb::Client,
+    ias_pool: &IasPool,
 ) -> anyhow::Result<()> {
-    // Personal org: username matches org name
-    if repo.org.as_str() == user.username {
+    if repo.org.as_str() == username {
         return Ok(());
     }
 
-    // Check org membership
-    let is_member = udb_client
-        .org(repo.org.as_str())
-        .members()
-        .contains(&user.username)
+    let org_home = gddb_client
+        .lookup_org(&repo.org)
         .await
-        .map_err(|e| anyhow!("failed to check org membership: {e}"))?;
+        .map_err(|e| anyhow!("failed to look up org in GDDB: {e}"))?
+        .ok_or_else(|| UserFacingError(format!("organization '{}' does not exist", repo.org)))?;
+
+    let mut ias = ias_pool
+        .for_region(&org_home)
+        .await
+        .map_err(|e| anyhow!("failed to connect to IAS in {org_home}: {e}"))?;
+
+    let is_member = ias
+        .org_contains_member(ias::proto::OrgContainsMemberRequest {
+            name: repo.org.to_string(),
+            username: username.to_string(),
+        })
+        .await
+        .map_err(|status| anyhow!("IAS OrgContainsMember failed: {status}"))?
+        .into_inner()
+        .value;
 
     if !is_member {
         return Err(UserFacingError(format!(
-            "permission denied: user '{}' cannot access repository '{}'",
-            user.username, repo,
+            "permission denied: user '{username}' cannot access repository '{repo}'"
         ))
         .into());
     }

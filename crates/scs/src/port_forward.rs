@@ -3,6 +3,7 @@ use russh::{Channel, server};
 use tokio::sync::mpsc;
 
 use crate::auth::ensure_repo_access;
+use crate::pools::{IasPool, NodeRegistryPool, RdbPool};
 use crate::{ChannelMessage, UserFacingError};
 
 /// Port-forward resource types that we support.
@@ -104,14 +105,16 @@ async fn resolve_host_port_target(
 
 /// Handle a port-forward session: resolve the resource QID, connect to SCOC,
 /// and proxy data between the SSH channel and the gRPC stream.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_port_forward(
-    user: &udb::User,
+    username: &str,
     resource_qid_str: &str,
     channel: &mut Channel<server::Msg>,
     rx: &mut mpsc::Receiver<ChannelMessage>,
-    rdb_client: &rdb::Client,
-    udb_client: &udb::Client,
-    mut node_registry_redis: redis::aio::MultiplexedConnection,
+    rdb_pool: &RdbPool,
+    gddb_client: &gddb::Client,
+    ias_pool: &IasPool,
+    node_registry_pool: &NodeRegistryPool,
 ) -> anyhow::Result<()> {
     use ids::ResourceQid;
     use redis::AsyncCommands;
@@ -123,7 +126,7 @@ pub(crate) async fn handle_port_forward(
 
     // Access check: user must be a member of the organization
     let repo_qid = resource_qid.environment_qid().repo_qid();
-    ensure_repo_access(user, repo_qid, udb_client).await?;
+    ensure_repo_access(username, repo_qid, gddb_client, ias_pool).await?;
 
     let resource_type = &resource_qid.resource().typ;
     if resource_type != POD_PORT_TYPE && resource_type != HOST_PORT_TYPE {
@@ -133,6 +136,18 @@ pub(crate) async fn handle_port_forward(
         ))
         .into());
     }
+
+    // Resolve the region from the resource ID, then look up the resource
+    // and the SCOC node registry in that region.
+    let resource_region = resource_qid.resource().region().clone();
+    let rdb_client = rdb_pool
+        .for_region(&resource_region)
+        .await
+        .map_err(|e| anyhow!("failed to connect to RDB in {resource_region}: {e}"))?;
+    let mut node_registry_redis = node_registry_pool
+        .for_region(&resource_region)
+        .await
+        .map_err(|e| anyhow!("failed to connect to node-registry in {resource_region}: {e}"))?;
 
     // Look up the resource in RDB
     let env_qid = resource_qid.environment_qid().to_string();

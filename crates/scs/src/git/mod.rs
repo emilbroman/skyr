@@ -10,7 +10,7 @@ use cdb::DeploymentState;
 
 pub(crate) struct CommandHandler<'a> {
     pub(crate) channel: &'a mut Channel<server::Msg>,
-    pub(crate) _user: &'a udb::User,
+    pub(crate) _username: &'a str,
     pub(crate) client: cdb::RepositoryClient,
 }
 

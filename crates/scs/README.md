@@ -7,17 +7,24 @@ SCS hosts a Git server over SSH and stores the received configuration in the [CD
 SCS is the entry point for all user-initiated deployments. Users interact with Skyr by pushing Git commits to SCS, which handles the SSH transport, packfile parsing, and deployment state management.
 
 ```
-User (Git/SSH) → SCS → CDB (store objects + deployments)
-                       UDB (authenticate)
+User (Git/SSH) → SCS edge ──► IAS (auth, region-pooled)
+                          ──► GDDB (look up repo home region)
+                          ──► CDB at repo's home region
 ```
+
+SCS edges are **region-agnostic**. Anycast lands the user at the nearest edge; the edge then routes per-channel using token-equivalent SSH pubkey checks at the user's home-region IAS, GDDB lookups for the repo's home region, and the resource's region (encoded structurally in `ResourceQid`) for port-forward. There is no SSH-to-SSH proxy to a "home" SCS — every edge talks directly to whichever region's databases the request needs.
+
+The edge takes `--domain` (DNS suffix, e.g. `skyr.cloud`) and `--gddb-bootstrap-region` (the region whose `gddb.<region>.int.<domain>` peer to bootstrap the GDDB ScyllaDB session against). It does **not** take a `--region` flag.
 
 ## How It Works
 
 ### Authentication
 
-SCS validates incoming SSH connections by checking:
-1. The SSH username exists in the [UDB](../udb/) (user database).
-2. The connecting key's fingerprint is present in that user's stored public key set.
+SCS validates incoming SSH connections by:
+1. Resolving the SSH username's home region in GDDB (usernames are personal-org names).
+2. Calling `IAS.ListCredentials` at that region and checking that the connecting key's fingerprint is registered for the user.
+
+Unknown users, unknown fingerprints, and invalid usernames are all rejected without distinguishing between them, so the edge does not leak which usernames exist.
 
 ### Push (`git-receive-pack`)
 
@@ -65,7 +72,8 @@ SCS implements Git pack protocol v1. The table below summarizes all capabilities
 
 - [IDs](../ids/) — typed identifiers (RepoQid, EnvironmentId, DeploymentId) for ref conversion
 - [CDB](../cdb/) — where Git objects and deployment metadata are stored
-- [UDB](../udb/) — user authentication data
+- [GDDB](../gddb/) — looks up the repo's and user's home regions
+- [IAS](../ias/) — fronts UDB for SSH pubkey checks and org membership
 - [DE](../de/) — picks up deployments created by SCS
 
 ## Deployment States
