@@ -419,6 +419,14 @@ impl UserClient {
         TokensClient { user: self.clone() }
     }
 
+    /// Mint a signed identity token for this user, valid for `ttl`.
+    /// Forwards to [`Client::issue_identity_token`]; the surrounding
+    /// `Client` must have a configured [`SigningIdentity`] whose region
+    /// matches this user's home region.
+    pub fn issue_identity_token(&self, ttl: Duration) -> Result<String, IssueIdentityTokenError> {
+        self.client.issue_identity_token(&self.username, ttl)
+    }
+
     pub async fn register(
         &self,
         email: impl Into<String>,
