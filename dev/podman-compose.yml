@@ -402,12 +402,10 @@ services:
     command:
       [
         "daemon",
-        "--rq-hostname",
-        "rabbitmq",
-        "--sdb-hostname",
-        "scylla",
-        "--nq-hostname",
-        "rabbitmq",
+        "--region",
+        "local",
+        "--domain",
+        "test",
         "--worker-index",
         "0",
         "--worker-count",
@@ -421,12 +419,10 @@ services:
     command:
       [
         "daemon",
-        "--rq-hostname",
-        "rabbitmq",
-        "--sdb-hostname",
-        "scylla",
-        "--nq-hostname",
-        "rabbitmq",
+        "--region",
+        "local",
+        "--domain",
+        "test",
         "--worker-index",
         "1",
         "--worker-count",

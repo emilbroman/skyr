@@ -121,13 +121,16 @@ The pipeline is safe under at-least-once redelivery:
 
 ```sh
 cargo run -p re -- daemon \
-  --rq-hostname rabbitmq \
-  --sdb-hostname scylla \
-  --nq-hostname rabbitmq \
+  --region stockholm \
+  --domain skyr.cloud \
   --worker-index 0 \
   --worker-count 4 \
   --local-workers 1
 ```
+
+Peer service addresses (`rq`, `sdb`, `nq`) are resolved from `--region` and
+`--domain` via the canonical `<service>.<region>.int.<domain>` template
+(see `ids::service_address`).
 
 Multiple RE workers can run in parallel with disjoint shard ranges. Use
 `--worker-index` and `--local-workers` to assign one or more shard ranges to
