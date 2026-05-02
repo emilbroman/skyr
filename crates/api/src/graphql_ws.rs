@@ -16,7 +16,6 @@ pub(crate) async fn graphql_ws_connection(
     schema: Arc<Schema>,
     mut context: Context,
     udb_pool: UdbPool,
-    region: ids::RegionId,
     region_keys: RegionKeyCache,
 ) {
     use std::collections::HashMap;
@@ -96,8 +95,7 @@ pub(crate) async fn graphql_ws_connection(
                                 .and_then(|v| v.as_str())
                                 .and_then(|v| v.strip_prefix("Bearer "))
                         {
-                            match authenticate_token(token, &udb_pool, &region, &region_keys).await
-                            {
+                            match authenticate_token(token, &udb_pool, &region_keys).await {
                                 AuthOutcome::Authenticated(user) => {
                                     context.user = Some(user);
                                 }
