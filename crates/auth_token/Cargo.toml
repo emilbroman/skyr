@@ -1,0 +1,13 @@
+[package]
+name = "auth_token"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+base64 = "0.22.1"
+ed25519-dalek = "2.2.0"
+ids = { path = "../ids" }
+thiserror = "2.0.18"
+
+[lints]
+workspace = true

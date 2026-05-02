@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "crates/adb",
   "crates/api",
+  "crates/auth_token",
   "crates/cdb",
   "crates/gddb",
   "crates/ids",
