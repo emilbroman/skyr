@@ -82,6 +82,18 @@ impl UnverifiedToken {
         &self.claims.issuer_region
     }
 
+    /// The full claims as carried in the (unverified) payload.
+    ///
+    /// Exposed so callers without access to the issuer's public key — most
+    /// notably the CLI, which decides whether to reuse a cached token —
+    /// can read low-stakes fields like `expires_at`. The signature is not
+    /// checked, so a forged token can lie about any field; rely on this
+    /// only for hints that get re-validated when the request actually
+    /// hits an API edge.
+    pub fn unverified_claims(&self) -> &Claims {
+        &self.claims
+    }
+
     /// Verify the signature against `verifying_key` and check expiry against
     /// the system clock. On success, returns the trusted [`Claims`].
     pub fn verify(self, verifying_key: &VerifyingKey) -> Result<Claims, VerifyError> {
