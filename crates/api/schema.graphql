@@ -233,10 +233,7 @@ type Mutation {
 
 type Organization {
   name: String!
-  """
-    The Skyr region this organization belongs to. The region is
-    implicit from which UDB the org row lives in.
-  """
+  "The Skyr region this organization belongs to — looked up in GDDB."
   region: String!
   members: [User!]!
   repository(name: String!): Repository!
@@ -255,10 +252,7 @@ type Query {
 type Repository {
   organization: Organization!
   name: String!
-  """
-    The Skyr region this repository belongs to. The region is
-    implicit from which CDB the repository row lives in.
-  """
+  "The Skyr region this repository belongs to — looked up in GDDB."
   region: String!
   environment(name: String!): Environment!
   commit(hash: String!): Commit!
@@ -331,12 +325,7 @@ type User {
   username: String!
   email: String!
   fullname: String
-  """
-    The Skyr region this user belongs to. The region is implicit
-    from which UDB the user row lives in — every user this server can
-    read from its local UDB is, by definition, in this server's
-    region.
-  """
+  "The Skyr region this user belongs to — looked up in GDDB."
   region: String!
 }
 

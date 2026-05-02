@@ -43,13 +43,13 @@ pub(crate) struct Context {
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
     pub(crate) user: Option<udb::UserClient>,
-    /// Skyr region this API server serves. Used as the source of truth for
-    /// the `region` GraphQL field on `Repository`/`Organization`/`User`
-    /// reads, and as the validation target for `region` arguments on
-    /// signup/createOrg/createRepo mutations. In stage 4 every binary is
-    /// still its own region's only entry point, so any explicit `region`
-    /// argument or GDDB-resolved home region must equal this value. Stage 5
-    /// drops that rejection.
+    /// The region this API binary can sign identity tokens for. The
+    /// signing keypair attached to its UDB pool is valid only for users
+    /// whose home region matches this value, so signup is constrained to
+    /// it (the freshly-issued token would otherwise be unverifiable
+    /// elsewhere). Routing-side decisions are no longer pinned to this
+    /// region — see `home_region_for_*` for cross-region GDDB-driven
+    /// routing. Goes away when UDB becomes its own service.
     pub(crate) region: ids::RegionId,
 }
 
@@ -69,27 +69,18 @@ impl Context {
         Ok((client, user))
     }
 
-    /// Resolve `org`'s home region via GDDB.
-    ///
-    /// In stage 4 we still reject orgs whose home is a different region —
-    /// the API is not yet a true edge. Stage 5 removes that rejection and
-    /// just returns whatever GDDB says.
+    /// Resolve `org`'s home region via GDDB. Returns whatever region GDDB
+    /// has on file — the API is now a true edge and routes per-data-piece
+    /// (cross-region) instead of pinning everything to its own region.
     pub(crate) async fn home_region_for_org(&self, org: &ids::OrgId) -> FieldResult<ids::RegionId> {
         let home = self.gddb_client.lookup_org(org).await.map_err(|e| {
             tracing::error!("Failed to look up org in GDDB: {}", e);
             internal_error()
         })?;
-        match home {
-            None => Err(field_error("Organization not found")),
-            Some(home) if home != self.region => Err(field_error(&format!(
-                "region {home:?} is not served by this Skyr deployment",
-            ))),
-            Some(home) => Ok(home),
-        }
+        home.ok_or_else(|| field_error("Organization not found"))
     }
 
-    /// Resolve `qid`'s home region via GDDB. Same stage-4 rejection rule
-    /// as [`Self::home_region_for_org`].
+    /// Resolve `qid`'s home region via GDDB.
     pub(crate) async fn home_region_for_repo(
         &self,
         qid: &ids::RepoQid,
@@ -98,13 +89,7 @@ impl Context {
             tracing::error!("Failed to look up repo in GDDB: {}", e);
             internal_error()
         })?;
-        match home {
-            None => Err(field_error("Repository not found")),
-            Some(home) if home != self.region => Err(field_error(&format!(
-                "region {home:?} is not served by this Skyr deployment",
-            ))),
-            Some(home) => Ok(home),
-        }
+        home.ok_or_else(|| field_error("Repository not found"))
     }
 
     /// Resolve a user's home region. Users are personal orgs of the same
@@ -149,32 +134,14 @@ pub(crate) fn internal_error() -> juniper::FieldError {
     field_error("Internal server error")
 }
 
-/// Validate a `region` mutation argument against this server's
-/// `--region`. Returns the resolved region (parsed and accepted) or a
-/// field error.
-///
-/// In step 1 every binary is its own region's only entry point, so any
-/// explicit `region` argument must equal `context.region`. When
-/// `requested` is `None`, the binary's own region is used as the default.
-fn resolve_region(context: &Context, requested: Option<String>) -> FieldResult<ids::RegionId> {
-    let Some(requested) = requested else {
-        return Ok(context.region.clone());
-    };
-    let parsed: ids::RegionId = requested
-        .parse()
-        .map_err(|_| field_error("Invalid region"))?;
-    if parsed != context.region {
-        return Err(field_error(&format!(
-            "region {parsed:?} is not served by this Skyr deployment",
-        )));
-    }
-    Ok(parsed)
+/// Parse an explicit `region` mutation argument. Any operator-known
+/// region is accepted — the API no longer pins requests to its own
+/// signing region. Callers that omit the argument supply their own
+/// default (typically the caller's home region for create-org and
+/// create-repository, or required outright for signup).
+fn parse_region_arg(requested: &str) -> FieldResult<ids::RegionId> {
+    requested.parse().map_err(|_| field_error("Invalid region"))
 }
-
-// `resolve_org_home` / `resolve_repo_home` were folded into
-// `Context::home_region_for_org` / `Context::home_region_for_repo`, which
-// return the resolved region instead of just `()` so callers can route
-// downstream calls through `udb_for_region` / `cdb_for_region` / etc.
 
 /// Basic email validation: requires exactly one `@`, non-empty local and domain
 /// parts, a dot in the domain, and no whitespace.
@@ -239,10 +206,8 @@ impl Query {
         // having no credentials.
         let user_client = match username.parse::<ids::OrgId>() {
             Ok(parsed) => match context.gddb_client.lookup_org(&parsed).await {
-                Ok(Some(home)) if home == context.region => {
-                    Some(context.udb_for_region(&home).await?.user(&username))
-                }
-                Ok(Some(_)) | Ok(None) => None,
+                Ok(Some(home)) => Some(context.udb_for_region(&home).await?.user(&username)),
+                Ok(None) => None,
                 Err(e) => {
                     tracing::error!("Failed to look up user in GDDB: {}", e);
                     return Err(internal_error());
@@ -418,8 +383,6 @@ impl Mutation {
     ) -> FieldResult<Repository> {
         let (_, user) = context.check_auth().await?;
 
-        let region = resolve_region(context, region)?;
-
         let org: ids::OrgId = organization
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
@@ -429,6 +392,13 @@ impl Mutation {
         let name = ids::RepoQid { org, repo };
 
         let org_region = context.home_region_for_org(&name.org).await?;
+
+        // Default a new repo to its org's home region. Operators / users can
+        // override per-repo by passing `region:`.
+        let region = match region {
+            Some(s) => parse_region_arg(&s)?,
+            None => org_region.clone(),
+        };
 
         if organization != user.username {
             let is_member = context
@@ -498,7 +468,20 @@ impl Mutation {
             return Err(field_error("Invalid email"));
         }
 
-        let region = resolve_region(context, Some(region))?;
+        let region = parse_region_arg(&region)?;
+
+        // Stage-5 caveat: an API edge can only mint identity tokens for
+        // its own signing region. If a user signs up for a different home
+        // region, the local UDB write would still succeed but the freshly
+        // issued token couldn't be validated by other edges until they
+        // refetched this region's GDDB pubkey. Until UDB becomes a service
+        // (and any edge can RPC into the chosen region's UDB to sign), we
+        // require the signup region to match this API's signing region.
+        if region != context.region {
+            return Err(field_error(
+                "signup region must match this API's signing region",
+            ));
+        }
 
         // The username is also the user's personal-org name, so reserve it
         // in GDDB as an org name. This is the source of truth for global
@@ -695,7 +678,14 @@ impl Mutation {
             return Err(field_error("Invalid organization name"));
         }
 
-        let region = resolve_region(context, region)?;
+        // Default a new org to the caller's home region (where their UDB
+        // record already lives). Operators can override per-org by passing
+        // `region:`.
+        let user_region = context.home_region_for_user(&user.username).await?;
+        let region = match region {
+            Some(s) => parse_region_arg(&s)?,
+            None => user_region,
+        };
 
         let org_id: ids::OrgId = name
             .parse()
@@ -1017,7 +1007,7 @@ impl Mutation {
             org: org.clone(),
             repo,
         };
-        let _ = context.home_region_for_repo(&repo_qid).await?;
+        let repo_region = context.home_region_for_repo(&repo_qid).await?;
         let org_region = context.home_region_for_org(&org).await?;
 
         if organization != user.username {
@@ -1103,7 +1093,7 @@ impl Mutation {
         let message = rtq::Message::Destroy(rtq::DestroyMessage {
             resource: resource_ref,
             deployment_id: owner_qid.deployment,
-            home_region: context.region.clone(),
+            home_region: repo_region,
         });
 
         context
@@ -1261,10 +1251,12 @@ struct Cli {
     rp_name: String,
     #[arg(long)]
     write_schema: bool,
-    /// Skyr region this API server serves (e.g. `stockholm`). Validated as
-    /// `[a-z]+`. The API rejects `region` mutation arguments that don't
-    /// match this value, since (in step 1) every binary is its own region's
-    /// only entry point.
+    /// The region this API binary can sign identity tokens for (e.g.
+    /// `stockholm`). Validated as `[a-z]+`. Routing decisions no longer
+    /// depend on this — every API edge is region-agnostic for reads and
+    /// per-data-piece writes — but identity-token signing still requires
+    /// access to a region's private key, so signup is constrained to this
+    /// region until UDB becomes its own service.
     #[arg(long)]
     region: Option<String>,
     /// DNS suffix used to construct region-scoped Skyr peer service

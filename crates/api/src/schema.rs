@@ -40,13 +40,13 @@ impl User {
         self.user.fullname.as_deref()
     }
 
-    /// The Skyr region this user belongs to. The region is implicit
-    /// from which UDB the user row lives in — every user this server can
-    /// read from its local UDB is, by definition, in this server's
-    /// region.
+    /// The Skyr region this user belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    fn region(&self, context: &Context) -> String {
-        context.region.to_string()
+    async fn region(&self, context: &Context) -> FieldResult<String> {
+        Ok(context
+            .home_region_for_user(&self.user.username)
+            .await?
+            .to_string())
     }
 }
 
@@ -70,8 +70,11 @@ impl SignedInUser {
 
     /// The Skyr region this user belongs to. See [`User::region`].
     #[graphql(name = "region")]
-    fn region(&self, context: &Context) -> String {
-        context.region.to_string()
+    async fn region(&self, context: &Context) -> FieldResult<String> {
+        Ok(context
+            .home_region_for_user(&self.user.username)
+            .await?
+            .to_string())
     }
 
     #[graphql(name = "publicKeys")]
@@ -101,11 +104,10 @@ impl Organization {
         self.name.to_string()
     }
 
-    /// The Skyr region this organization belongs to. The region is
-    /// implicit from which UDB the org row lives in.
+    /// The Skyr region this organization belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    fn region(&self, context: &Context) -> String {
-        context.region.to_string()
+    async fn region(&self, context: &Context) -> FieldResult<String> {
+        Ok(context.home_region_for_org(&self.name).await?.to_string())
     }
 
     async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
@@ -208,11 +210,13 @@ impl Repository {
         self.repository.name.repo.to_string()
     }
 
-    /// The Skyr region this repository belongs to. The region is
-    /// implicit from which CDB the repository row lives in.
+    /// The Skyr region this repository belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    fn region(&self, context: &Context) -> String {
-        context.region.to_string()
+    async fn region(&self, context: &Context) -> FieldResult<String> {
+        Ok(context
+            .home_region_for_repo(&self.repository.name)
+            .await?
+            .to_string())
     }
 
     async fn environment(&self, context: &Context, name: String) -> FieldResult<Environment> {
