@@ -214,9 +214,9 @@ impl Worker {
             work_result.outcome,
         );
         if is_terminal {
-            publish_terminal_report(&self.rq_publisher, &report).await;
+            publish_terminal_report(&self.rq_publisher, &self.region, &report).await;
         } else {
-            publish_report(&self.rq_publisher, &report).await;
+            publish_report(&self.rq_publisher, &self.region, &report).await;
         }
 
         if is_terminal {

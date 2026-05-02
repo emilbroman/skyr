@@ -110,13 +110,7 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
 
             let rtq_publisher = rtq::Publisher::new(domain.clone());
-            let rq_publisher = rq::ClientBuilder::new()
-                .uri(format!(
-                    "amqp://{}:5672/%2f",
-                    ids::service_address("rq", &region, &domain)
-                ))
-                .build_publisher()
-                .await?;
+            let rq_publisher = rq::Publisher::new(domain.clone());
             let sdb_client = sdb::ClientBuilder::new()
                 .known_node(ids::service_address("sdb", &region, &domain))
                 .build()
