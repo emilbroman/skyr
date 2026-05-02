@@ -26,6 +26,13 @@ Reservation uses ScyllaDB lightweight transactions (`INSERT IF NOT EXISTS`) so t
 - `lookup_org(&OrgId)` — returns the home region of an org, or `None` if not reserved.
 - `lookup_repo(&RepoQid)` — returns the home region of an `org/repo`, or `None` if not reserved.
 
+### Region Identity Keys
+
+- `upsert_region_key(&RegionId, &[u8], generation)` — publish a region's identity-token signing public key. Idempotent; UDB calls this on every startup.
+- `lookup_region_key(&RegionId)` — fetch a region's published public key + generation. Used by every API edge to verify identity tokens (see [`auth_token`](../auth_token/)).
+
+The `region_keys` table is small (one row per region) and rotates rarely; cache hits on the API edge are the common case.
+
 ### Hashing
 
 Names are hashed with `ids::name_hash`, which is `sha1(name.to_ascii_lowercase())`. The hash is the table's primary key; it gives case-insensitive uniqueness without leaking the namespace for enumeration. The original-cased name is stored alongside for ops/audit purposes.
@@ -41,7 +48,8 @@ Creation paths run **GDDB-first, then UDB/CDB**. If the second step fails, the G
 ## Related Crates
 
 - [IDs](../ids/) — typed identifiers, including the `name_hash` helper.
+- [auth_token](../auth_token/) — defines the identity-token format whose signing public keys live in the `region_keys` table.
 - [API](../api/) — reserves names on `createOrganization` / `createRepository` / `signup`; consults GDDB on every org/repo lookup.
 - [SCS](../scs/) — consults GDDB on every SSH path resolution.
-- [UDB](../udb/) — stores org/user records (region-implicit).
+- [UDB](../udb/) — stores org/user records (region-implicit); registers its identity-token public key on startup.
 - [CDB](../cdb/) — stores repo records (region-implicit).
