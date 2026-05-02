@@ -10,7 +10,6 @@ thiserror = "2.0.18"
 rand = "0.9.2"
 base64 = "0.22.1"
 ed25519-dalek = "2.2.0"
-hex = "0.4.3"
 ids = { path = "../ids" }
 ssh-key = { version = "0.6", features = ["std", "ecdsa", "ed25519"] }
 ciborium = "0.2"

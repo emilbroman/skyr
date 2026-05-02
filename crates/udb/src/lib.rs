@@ -1,6 +1,6 @@
 use base64::Engine;
 use ed25519_dalek::SigningKey;
-use rand::{Rng, RngCore, SeedableRng};
+use rand::{RngCore, SeedableRng};
 use redis::{AsyncCommands, Client as RedisClient};
 use sha2::Digest;
 use ssh_key::PublicKey;
@@ -108,7 +108,6 @@ impl ClientBuilder {
 
         Ok(Client {
             conn,
-            rng: rand::rngs::StdRng::from_os_rng(),
             signing_identity: self.signing_identity.clone(),
         })
     }
@@ -137,12 +136,6 @@ pub enum UserQueryError {
     #[error("user not found")]
     NotFound,
 
-    #[error("system clock error: {0}")]
-    Clock(#[from] std::time::SystemTimeError),
-
-    #[error("token expiry cannot be represented as u32 epoch seconds")]
-    InvalidTokenExpiry,
-
     #[error("invalid SSH public key: {0}")]
     InvalidPublicKey(#[from] ssh_key::Error),
 
@@ -151,21 +144,6 @@ pub enum UserQueryError {
 
     #[error("corrupted data: {0}")]
     DataCorruption(String),
-}
-
-#[derive(Error, Debug)]
-pub enum LookupTokenError {
-    #[error("failed to execute query: {0}")]
-    Redis(#[from] redis::RedisError),
-
-    #[error("invalid token")]
-    InvalidToken,
-
-    #[error("token has expired")]
-    Expired,
-
-    #[error("system clock error: {0}")]
-    Clock(#[from] std::time::SystemTimeError),
 }
 
 #[derive(Error, Debug)]
@@ -234,11 +212,8 @@ pub struct Org {
 #[derive(Clone)]
 pub struct Client {
     conn: redis::aio::MultiplexedConnection,
-    rng: rand::rngs::StdRng,
     signing_identity: Option<SigningIdentity>,
 }
-
-const TOKEN_TTL_SECONDS: u64 = 86400;
 
 fn user_key(username: &str) -> String {
     format!("u:{username}")
@@ -246,10 +221,6 @@ fn user_key(username: &str) -> String {
 
 fn pubkey_key(username: &str) -> String {
     format!("p:{username}")
-}
-
-fn token_key(token: &str) -> String {
-    format!("t:{token}")
 }
 
 fn credential_key(username: &str, fingerprint: &str) -> String {
@@ -365,43 +336,6 @@ impl Client {
         };
         Ok(auth_token::issue(&identity.signing_key, &claims))
     }
-
-    pub async fn lookup_token(
-        &self,
-        token: impl Into<String>,
-    ) -> Result<UserClient, LookupTokenError> {
-        let token = token.into();
-
-        // Validate embedded expiry before hitting Redis (defense-in-depth
-        // beyond Redis TTL). Token format: "{expiry_hex}.{raw_token}".
-        if let Some(dot_pos) = token.find('.') {
-            let expiry_hex = &token[..dot_pos];
-            if let Ok(expiry_bytes) = hex::decode(expiry_hex)
-                && expiry_bytes.len() == 4
-            {
-                let expiry = u32::from_be_bytes([
-                    expiry_bytes[0],
-                    expiry_bytes[1],
-                    expiry_bytes[2],
-                    expiry_bytes[3],
-                ]);
-                let now = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)?
-                    .as_secs();
-                if u64::from(expiry) < now {
-                    return Err(LookupTokenError::Expired);
-                }
-            }
-        }
-
-        let mut conn = self.conn.clone();
-        let username: Option<String> = conn.get(token_key(&token)).await?;
-
-        match username {
-            Some(username) => Ok(self.user(username)),
-            None => Err(LookupTokenError::InvalidToken),
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -413,10 +347,6 @@ pub struct UserClient {
 impl UserClient {
     pub fn pubkeys(&self) -> PubkeysClient {
         PubkeysClient { user: self.clone() }
-    }
-
-    pub fn tokens(&self) -> TokensClient {
-        TokensClient { user: self.clone() }
     }
 
     /// Mint a signed identity token for this user, valid for `ttl`.
@@ -514,66 +444,6 @@ impl UserClient {
             email,
             fullname: fullname.filter(|s: &String| !s.is_empty()),
         })
-    }
-}
-
-#[derive(Clone)]
-pub struct TokensClient {
-    user: UserClient,
-}
-
-impl TokensClient {
-    pub async fn issue(&self) -> Result<String, UserQueryError> {
-        let mut raw_token = String::new();
-
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode_string(
-            self.user.client.rng.clone().random::<[u8; 32]>(),
-            &mut raw_token,
-        );
-
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs();
-        let expiry = now + TOKEN_TTL_SECONDS;
-        let expiry_u32 = u32::try_from(expiry).map_err(|_| UserQueryError::InvalidTokenExpiry)?;
-        let expiry_hex = hex::encode(expiry_u32.to_be_bytes());
-        let token = format!("{expiry_hex}.{raw_token}");
-
-        let mut conn = self.user.client.conn.clone();
-        let _: () = conn
-            .set_ex(token_key(&token), &self.user.username, TOKEN_TTL_SECONDS)
-            .await?;
-
-        Ok(token)
-    }
-
-    pub async fn revoke(&self, token: impl Into<String>) -> Result<(), LookupTokenError> {
-        let token = token.into();
-
-        // Atomically delete the key only if its value matches the expected
-        // username. This replaces the non-standard DELEX command with a
-        // standard Lua script that works on all Redis versions.
-        let script = redis::Script::new(
-            r#"
-            if redis.call('GET', KEYS[1]) == ARGV[1] then
-                return redis.call('DEL', KEYS[1])
-            else
-                return 0
-            end
-            "#,
-        );
-        let mut conn = self.user.client.conn.clone();
-        let deleted: i32 = script
-            .key(token_key(&token))
-            .arg(&self.user.username)
-            .invoke_async(&mut conn)
-            .await?;
-
-        if deleted == 0 {
-            return Err(LookupTokenError::InvalidToken);
-        }
-
-        Ok(())
     }
 }
 
