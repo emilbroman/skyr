@@ -1173,84 +1173,62 @@ pub(crate) enum AuthOutcome {
     Internal,
 }
 
-/// Authenticate a bearer token, accepting either a signed identity token
-/// (preferred) or a legacy opaque token stored in UDB Redis.
-///
-/// Identity tokens are tried first because they are self-validating and
-/// cheaper (no Redis round-trip). On parse failure we fall back to the
-/// legacy path so existing tokens continue to work during the rollout.
+/// Authenticate a bearer token. Tokens are signed identity envelopes
+/// (see the `auth_token` crate); the verifier looks up the issuer
+/// region's public key via the [`region_keys::RegionKeyCache`] (which
+/// pulls from GDDB on cache miss), validates the signature and expiry,
+/// and constructs a [`udb::UserClient`] bound to the user's home-region
+/// UDB so subsequent reads hit the right Redis.
 pub(crate) async fn authenticate_token(
     token: &str,
     udb_pool: &pools::UdbPool,
-    region: &ids::RegionId,
     region_keys: &region_keys::RegionKeyCache,
 ) -> AuthOutcome {
-    if let Ok(unverified) = auth_token::parse(token) {
-        let issuer = unverified.issuer_region().clone();
-        let key = match region_keys.get(&issuer).await {
-            Ok(key) => key,
-            Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
-            Err(e) => {
-                tracing::error!("Failed to fetch region key for {issuer}: {e}");
-                return AuthOutcome::Internal;
-            }
-        };
-        let claims = match unverified.verify(&key) {
-            Ok(claims) => claims,
-            Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
-            Err(auth_token::VerifyError::BadSignature) => {
-                // Possibly stale cache. Drop the entry, refetch, and retry
-                // once. Any failure on the retry is a real bad signature.
-                region_keys.invalidate(&issuer).await;
-                let fresh_key = match region_keys.get(&issuer).await {
-                    Ok(key) => key,
-                    Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
-                    Err(e) => {
-                        tracing::error!("Failed to refetch region key for {issuer}: {e}");
-                        return AuthOutcome::Internal;
-                    }
-                };
-                let reparsed = auth_token::parse(token).expect("parsed once already");
-                match reparsed.verify(&fresh_key) {
-                    Ok(claims) => claims,
-                    Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
-                    Err(_) => return AuthOutcome::Invalid,
-                }
-            }
-            Err(_) => return AuthOutcome::Invalid,
-        };
-        // The UserClient must read the user record from the user's home
-        // region UDB. In stage 4 the API still rejects non-local home
-        // regions elsewhere, so this is effectively the local UDB; in
-        // stage 5 it routes per-user.
-        let user_home = match udb_pool.for_region(&claims.issuer_region).await {
-            Ok(client) => client,
-            Err(e) => {
-                tracing::error!("Failed to connect to UDB in {}: {e}", claims.issuer_region);
-                return AuthOutcome::Internal;
-            }
-        };
-        return AuthOutcome::Authenticated(user_home.user(claims.username));
-    }
-
-    // Legacy opaque-token path: tokens live in the local region's UDB
-    // Redis. Identity tokens supersede this in stage 6.
-    let local_udb = match udb_pool.for_region(region).await {
-        Ok(client) => client,
+    let unverified = match auth_token::parse(token) {
+        Ok(u) => u,
+        Err(_) => return AuthOutcome::Invalid,
+    };
+    let issuer = unverified.issuer_region().clone();
+    let key = match region_keys.get(&issuer).await {
+        Ok(key) => key,
+        Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
         Err(e) => {
-            tracing::error!("Failed to connect to local UDB: {e}");
+            tracing::error!("Failed to fetch region key for {issuer}: {e}");
             return AuthOutcome::Internal;
         }
     };
-    match local_udb.lookup_token(token).await {
-        Ok(user) => AuthOutcome::Authenticated(user),
-        Err(udb::LookupTokenError::InvalidToken) => AuthOutcome::Invalid,
-        Err(udb::LookupTokenError::Expired) => AuthOutcome::Expired,
-        Err(e) => {
-            tracing::error!("Failed to lookup opaque token: {e}");
-            AuthOutcome::Internal
+    let claims = match unverified.verify(&key) {
+        Ok(claims) => claims,
+        Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
+        Err(auth_token::VerifyError::BadSignature) => {
+            // Possibly stale cache. Drop the entry, refetch, and retry
+            // once. Any failure on the retry is a real bad signature.
+            region_keys.invalidate(&issuer).await;
+            let fresh_key = match region_keys.get(&issuer).await {
+                Ok(key) => key,
+                Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
+                Err(e) => {
+                    tracing::error!("Failed to refetch region key for {issuer}: {e}");
+                    return AuthOutcome::Internal;
+                }
+            };
+            let reparsed = auth_token::parse(token).expect("parsed once already");
+            match reparsed.verify(&fresh_key) {
+                Ok(claims) => claims,
+                Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
+                Err(_) => return AuthOutcome::Invalid,
+            }
         }
-    }
+        Err(_) => return AuthOutcome::Invalid,
+    };
+    let user_home = match udb_pool.for_region(&claims.issuer_region).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!("Failed to connect to UDB in {}: {e}", claims.issuer_region);
+            return AuthOutcome::Internal;
+        }
+    };
+    AuthOutcome::Authenticated(user_home.user(claims.username))
 }
 
 #[derive(Parser, Debug)]
@@ -1454,7 +1432,7 @@ async fn graphql_handler(
         region,
     } = auth;
     let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_pool, &region, &region_keys).await {
+        match authenticate_token(&token, &udb_pool, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
@@ -1525,7 +1503,7 @@ async fn graphql_ws_handler(
         region,
     } = auth;
     let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_pool, &region, &region_keys).await {
+        match authenticate_token(&token, &udb_pool, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
@@ -1540,7 +1518,6 @@ async fn graphql_ws_handler(
     };
 
     let udb_pool_for_ws = udb_pool.clone();
-    let region_for_ws = region.clone();
     let region_keys_for_ws = region_keys.clone();
     let context = Context {
         udb_pool,
@@ -1566,7 +1543,6 @@ async fn graphql_ws_handler(
                 schema,
                 context,
                 udb_pool_for_ws,
-                region_for_ws,
                 region_keys_for_ws,
             )
         })
