@@ -1014,6 +1014,7 @@ impl Mutation {
         let message = rtq::Message::Destroy(rtq::DestroyMessage {
             resource: resource_ref,
             deployment_id: owner_qid.deployment,
+            home_region: context.region.clone(),
         });
 
         context.rtq_publisher.enqueue(&message).await.map_err(|e| {
