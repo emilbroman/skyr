@@ -1,0 +1,216 @@
+syntax = "proto3";
+
+package ias.v1;
+
+import "google/protobuf/empty.proto";
+
+// IAS — Identity and Access Service.
+//
+// One per Skyr region. Owns the region's identity-token signing key and
+// challenge salt; fronts the regional UDB. Every API edge is a client of
+// every region's IAS — token verification fetches public keys via
+// `GetVerifyingKey`; sign-in / sign-up / refresh routes to the user's
+// home-region IAS; per-resolver UDB reads (org membership, repo home
+// lookup, etc.) go to whichever region holds the data.
+//
+// All authenticated RPCs trust the calling edge to have authenticated the
+// bearer token. The service has no per-RPC authentication of its own —
+// in-mesh trust covers it (same posture as other internal services).
+service IdentityAndAccess {
+  // Returns this region's identity-token signing public key. Cached at
+  // every edge for token verification.
+  rpc GetVerifyingKey(google.protobuf.Empty) returns (VerifyingKey);
+
+  // Auth flows.
+  rpc IssueChallenge(IssueChallengeRequest) returns (IssueChallengeResponse);
+  rpc Signup(SignupRequest)                 returns (TokenResponse);
+  rpc Signin(SigninRequest)                 returns (TokenResponse);
+  rpc RefreshToken(RefreshTokenRequest)     returns (TokenResponse);
+
+  // Credential management. AddCredential is proof-gated (the user must
+  // sign a current challenge); RemoveCredential trusts the caller to have
+  // authenticated the user.
+  rpc AddCredential(AddCredentialRequest)       returns (google.protobuf.Empty);
+  rpc RemoveCredential(RemoveCredentialRequest) returns (google.protobuf.Empty);
+  rpc ListCredentials(ListCredentialsRequest)   returns (ListCredentialsResponse);
+
+  // User records.
+  rpc GetUser(GetUserRequest)               returns (User);
+  rpc UpdateFullname(UpdateFullnameRequest) returns (User);
+  rpc ListUserOrgs(ListUserOrgsRequest)     returns (ListOrgsResponse);
+
+  // Orgs and membership.
+  rpc CreateOrg(CreateOrgRequest)                 returns (Org);
+  rpc GetOrg(GetOrgRequest)                       returns (Org);
+  rpc ListOrgMembers(ListOrgMembersRequest)       returns (ListOrgMembersResponse);
+  rpc OrgContainsMember(OrgContainsMemberRequest) returns (BoolValue);
+  rpc AddOrgMember(AddOrgMemberRequest)           returns (google.protobuf.Empty);
+  rpc RemoveOrgMember(RemoveOrgMemberRequest)     returns (google.protobuf.Empty);
+}
+
+message VerifyingKey {
+  // Raw 32-byte Ed25519 public key.
+  bytes public_key = 1;
+}
+
+message IssueChallengeRequest {
+  string username = 1;
+}
+
+message IssueChallengeResponse {
+  // Frame-aligned challenge string for the current 60-second window. The
+  // edge wraps it into the WebAuthn registration/signin JSON for the
+  // browser, or the user signs it directly with `ssh-keygen -Y sign`.
+  string challenge = 1;
+
+  // Whether `username` is registered in this region's UDB. Drives the
+  // edge's signup-vs-signin UX dispatch.
+  bool user_taken = 2;
+
+  // base64url-encoded WebAuthn credential IDs registered for this user
+  // (empty when user_taken=false). The edge uses these to populate
+  // PublicKeyCredentialCreationOptions.excludeCredentials and
+  // PublicKeyCredentialRequestOptions.allowCredentials.
+  repeated string webauthn_credential_ids = 3;
+}
+
+// Discriminated union of credential proofs the IAS will verify against
+// the recent challenge frames. The edge has already unwrapped the
+// WebAuthn JSON envelope returned by the browser into the parsed binary
+// fields below.
+message Proof {
+  oneof kind {
+    // PEM-encoded `SshSig` from `ssh-keygen -Y sign`.
+    string ssh_signature = 1;
+    // Browser registration response (signup / AddCredential).
+    WebAuthnAttestation attestation = 2;
+    // Browser assertion response (signin).
+    WebAuthnAssertion assertion = 3;
+  }
+}
+
+message WebAuthnAttestation {
+  bytes  client_data_json   = 1;
+  bytes  attestation_object = 2;
+  // base64url-encoded credential ID from the AuthenticatorAttestationResponse.
+  string credential_id      = 3;
+}
+
+message WebAuthnAssertion {
+  bytes  client_data_json   = 1;
+  bytes  authenticator_data = 2;
+  bytes  signature          = 3;
+  // base64url-encoded credential ID from the AuthenticatorAssertionResponse.
+  string credential_id      = 4;
+}
+
+message SignupRequest {
+  string          username = 1;
+  string          email    = 2;
+  optional string fullname = 3;
+  Proof           proof    = 4;
+}
+
+message SigninRequest {
+  string username = 1;
+  Proof  proof    = 2;
+}
+
+message RefreshTokenRequest {
+  string username = 1;
+}
+
+message TokenResponse {
+  string token = 1;
+  User   user  = 2;
+}
+
+message User {
+  string          username = 1;
+  string          email    = 2;
+  optional string fullname = 3;
+}
+
+message Org {
+  string name    = 1;
+  string creator = 2;
+}
+
+message Credential {
+  string          fingerprint   = 1;
+  string          public_key    = 2;
+  optional string credential_id = 3;
+  uint32          sign_count    = 4;
+}
+
+message AddCredentialRequest {
+  string username = 1;
+  Proof  proof    = 2;
+}
+
+message RemoveCredentialRequest {
+  string username    = 1;
+  string fingerprint = 2;
+}
+
+message ListCredentialsRequest {
+  string username = 1;
+}
+
+message ListCredentialsResponse {
+  repeated Credential credentials = 1;
+}
+
+message GetUserRequest {
+  string username = 1;
+}
+
+message UpdateFullnameRequest {
+  string username = 1;
+  // Empty string clears the fullname.
+  string fullname = 2;
+}
+
+message ListUserOrgsRequest {
+  string username = 1;
+}
+
+message ListOrgsResponse {
+  repeated string org_names = 1;
+}
+
+message CreateOrgRequest {
+  string name    = 1;
+  string creator = 2;
+}
+
+message GetOrgRequest {
+  string name = 1;
+}
+
+message ListOrgMembersRequest {
+  string name = 1;
+}
+
+message ListOrgMembersResponse {
+  repeated string usernames = 1;
+}
+
+message OrgContainsMemberRequest {
+  string name     = 1;
+  string username = 2;
+}
+
+message BoolValue {
+  bool value = 1;
+}
+
+message AddOrgMemberRequest {
+  string name     = 1;
+  string username = 2;
+}
+
+message RemoveOrgMemberRequest {
+  string name     = 1;
+  string username = 2;
+}
