@@ -117,6 +117,15 @@ fn is_valid_nonce_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
+/// SHA-1 of `name.to_lowercase()`. Used by GDDB for case-insensitive
+/// name reservation: `Foo` and `foo` collide because the hash is taken over
+/// the lowercased bytes.
+pub fn name_hash(name: &str) -> [u8; 20] {
+    use sha1::Digest;
+    let lowered = name.to_ascii_lowercase();
+    sha1::Sha1::digest(lowered.as_bytes()).into()
+}
+
 // ---------------------------------------------------------------------------
 // Error types
 // ---------------------------------------------------------------------------
@@ -1334,6 +1343,19 @@ mod tests {
         assert!("MyOrg".parse::<OrgId>().is_ok());
         assert!("_private".parse::<OrgId>().is_ok());
         assert!("org123".parse::<OrgId>().is_ok());
+    }
+
+    #[test]
+    fn name_hash_is_case_insensitive() {
+        assert_eq!(name_hash("Foo"), name_hash("foo"));
+        assert_eq!(name_hash("FOO"), name_hash("foo"));
+        assert_eq!(name_hash("MyOrg/MyRepo"), name_hash("myorg/myrepo"));
+    }
+
+    #[test]
+    fn name_hash_distinguishes_distinct_names() {
+        assert_ne!(name_hash("foo"), name_hash("bar"));
+        assert_ne!(name_hash("foo/bar"), name_hash("foo/baz"));
     }
 
     #[test]
