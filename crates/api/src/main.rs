@@ -1045,20 +1045,6 @@ struct Cli {
     host: String,
     #[arg(long, default_value_t = 8080)]
     port: u16,
-    #[arg(long, default_value = "localhost")]
-    cdb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    gddb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    rdb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    sdb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    udb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    ldb_hostname: String,
-    #[arg(long, default_value = "localhost")]
-    rtq_hostname: String,
     #[arg(long, default_value = "http://127.0.0.1:9000")]
     adb_endpoint_url: String,
     #[arg(long)]
@@ -1069,6 +1055,8 @@ struct Cli {
     adb_access_key_id: String,
     #[arg(long, env = "SKYR_ADB_SECRET_ACCESS_KEY")]
     adb_secret_access_key: String,
+    /// S3 region used by the ADB client. Unrelated to the Skyr `--region`
+    /// (this is the cloud-vendor region for the S3 endpoint).
     #[arg(long, default_value = "us-east-1")]
     adb_region: String,
     #[arg(long, env = "SKYR_CHALLENGE_SALT")]
@@ -1085,6 +1073,11 @@ struct Cli {
     /// only entry point.
     #[arg(long)]
     region: Option<String>,
+    /// DNS suffix used to construct region-scoped Skyr peer service
+    /// addresses. Combined with `--region`, peers are resolved as
+    /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
+    #[arg(long)]
+    domain: String,
 }
 
 #[tokio::main]
@@ -1114,26 +1107,30 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("missing --region"))?
         .parse()
         .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+    let domain: ids::Domain = cli
+        .domain
+        .parse()
+        .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
 
     let udb_client = udb::ClientBuilder::new()
-        .known_node(cli.udb_hostname)
+        .known_node(ids::service_address("udb", &region, &domain))
         .build()
         .await?;
     let cdb_client = cdb::ClientBuilder::new()
-        .known_node(cli.cdb_hostname)
+        .known_node(ids::service_address("cdb", &region, &domain))
         .build()
         .await?;
     let gddb_client = gddb::ClientBuilder::new()
-        .known_node(cli.gddb_hostname)
+        .known_node(ids::service_address("gddb", &region, &domain))
         .build()
         .await?;
     let rdb_client = rdb::ClientBuilder::new()
-        .known_node(cli.rdb_hostname)
+        .known_node(ids::service_address("rdb", &region, &domain))
         .region(region.clone())
         .build()
         .await?;
     let sdb_client = sdb::ClientBuilder::new()
-        .known_node(cli.sdb_hostname)
+        .known_node(ids::service_address("sdb", &region, &domain))
         .build()
         .await?;
     let mut adb_builder = adb::ClientBuilder::new()
@@ -1147,7 +1144,7 @@ async fn main() -> anyhow::Result<()> {
         adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb_client = adb_builder.build().await?;
-    let ldb_brokers = format!("{}:9092", cli.ldb_hostname);
+    let ldb_brokers = format!("{}:9092", ids::service_address("ldb", &region, &domain));
     let ldb_consumer = ldb::ClientBuilder::new()
         .brokers(ldb_brokers.clone())
         .build_consumer()
@@ -1157,7 +1154,10 @@ async fn main() -> anyhow::Result<()> {
         .build_publisher()
         .await?;
     let rtq_publisher = rtq::ClientBuilder::new()
-        .uri(format!("amqp://{}:5672/%2f", cli.rtq_hostname))
+        .uri(format!(
+            "amqp://{}:5672/%2f",
+            ids::service_address("rtq", &region, &domain)
+        ))
         .build_publisher()
         .await?;
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));

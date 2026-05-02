@@ -1,5 +1,14 @@
 name: skyr
 
+# Region-scoped DNS aliases for Skyr peer services. Skyr binaries resolve
+# peers via `<service>.<region>.int.<domain>` (see ids::service_address);
+# in this compose stack the region is `local` and the domain is `test`,
+# so e.g. `cdb.local.int.test` resolves to the scylla container. The
+# original short names (scylla, rabbitmq, redis, redpanda) remain valid for
+# tooling that connects directly.
+networks:
+  default:
+
 services:
   scylla:
     image: scylladb/scylla
@@ -12,6 +21,13 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    networks:
+      default:
+        aliases:
+          - cdb.local.int.test
+          - gddb.local.int.test
+          - rdb.local.int.test
+          - sdb.local.int.test
 
   rabbitmq:
     image: rabbitmq:4-management-alpine
@@ -25,12 +41,22 @@ services:
       timeout: 5s
       retries: 12
       start_period: 20s
+    networks:
+      default:
+        aliases:
+          - rtq.local.int.test
+          - rq.local.int.test
+          - nq.local.int.test
 
   redis:
     image: redis:8-alpine
     ports:
       - 6379:6379
     restart: always
+    networks:
+      default:
+        aliases:
+          - udb.local.int.test
 
   redpanda:
     image: redpandadata/redpanda:v25.3.7
@@ -41,7 +67,7 @@ services:
         "--kafka-addr",
         "internal://0.0.0.0:9092",
         "--advertise-kafka-addr",
-        "internal://redpanda:9092",
+        "internal://ldb.local.int.test:9092",
         "--overprovisioned",
         "--smp",
         "1",
@@ -54,6 +80,10 @@ services:
     ports:
       - 9092:9092
     restart: always
+    networks:
+      default:
+        aliases:
+          - ldb.local.int.test
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
@@ -103,21 +133,9 @@ services:
         "--port",
         "8080",
         "--region",
-        "stockholm",
-        "--cdb-hostname",
-        "scylla",
-        "--gddb-hostname",
-        "scylla",
-        "--rdb-hostname",
-        "scylla",
-        "--sdb-hostname",
-        "scylla",
-        "--udb-hostname",
-        "redis",
-        "--ldb-hostname",
-        "redpanda",
-        "--rtq-hostname",
-        "rabbitmq",
+        "local",
+        "--domain",
+        "test",
         "--adb-endpoint-url",
         "http://minio:9000",
         "--adb-external-url",
@@ -488,7 +506,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-1
-      - SCOC_REGION=stockholm
+      - SCOC_REGION=local
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-1:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
@@ -502,7 +520,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-2
-      - SCOC_REGION=stockholm
+      - SCOC_REGION=local
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-2:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
@@ -516,7 +534,7 @@ services:
     privileged: true
     environment:
       - SCOC_NODE_NAME=scoc-3
-      - SCOC_REGION=stockholm
+      - SCOC_REGION=local
       - SCOC_BIND=0.0.0.0:50054
       - SCOC_CONDUIT_ADDRESS=http://scoc-3:50054
       - SCOC_ORCHESTRATOR_ADDRESS=http://plugin-std-container:50053
