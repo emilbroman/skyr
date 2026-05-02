@@ -436,10 +436,10 @@ services:
     command:
       [
         "daemon",
-        "--nq-hostname",
-        "rabbitmq",
-        "--udb-hostname",
-        "redis",
+        "--region",
+        "local",
+        "--domain",
+        "test",
         "--dedup-hostname",
         "redis",
         "--smtp-host",

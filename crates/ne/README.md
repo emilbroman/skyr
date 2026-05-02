@@ -46,13 +46,13 @@ variables:
 
 | Flag | Env var | Description |
 |------|---------|-------------|
-| `--nq-hostname` |  | AMQP host (default `localhost`); the URI is built as `amqp://HOST:5672/%2f` |
-| `--nq-uri` |  | Override the full AMQP URI (mutually exclusive with `--nq-hostname`) |
+| `--region` |  | Skyr region this NE serves (e.g. `stockholm`); `[a-z]+` |
+| `--domain` |  | DNS suffix for region-scoped peer service addressing (e.g. `skyr.cloud`) |
+| `--nq-uri` |  | Override the full AMQP URI for NQ (otherwise resolved as `amqp://nq.<region>.int.<domain>:5672/%2f`) |
 | `--nq-dlx` |  | Optional DLX to attach to the NQ queue declaration |
 | `--nq-dlx-routing-key` |  | Routing key for the DLX |
 | `--prefetch` |  | AMQP basic.qos prefetch (default 4) |
 | `--worker-count` |  | Concurrent worker tasks pulling from the same queue (default 1) |
-| `--udb-hostname` |  | Redis host backing UDB (default `localhost`) |
 | `--dedup-hostname` |  | Redis host for the dedup ledger (default `localhost`) |
 | `--dedup-ttl-seconds` |  | TTL on each dedup claim (default 7 days) |
 | `--smtp-host` |  | SMTP server hostname (required) |
@@ -62,6 +62,11 @@ variables:
 | `--smtp-password` | `NE_SMTP_PASSWORD` | SMTP AUTH password (env var preferred) |
 | `--smtp-from` |  | Sender mailbox, e.g. `Skyr <skyr@example.com>` (required) |
 | `--smtp-timeout-seconds` |  | Connection timeout (default 30) |
+
+UDB is resolved from `--region` and `--domain` (`udb.<region>.int.<domain>`)
+via the canonical `ids::service_address` template. The `--dedup-hostname`
+flag remains a direct Redis hostname, since the dedup store is a backing
+service rather than a Skyr peer.
 
 ## Why Redis for Dedup
 
