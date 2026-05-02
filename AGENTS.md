@@ -169,6 +169,13 @@ For manual testing:
 - Make any changes you want to the `.scl` files in `test-repo` (they aren't checked into Git)
 - Make any commits and pushes you want in `test-repo` too
 
+For cross-region work — anything that touches identity tokens across edges, GDDB lookups, queue routing, or the DE's cross-region dependency reads — `make up` is single-region and won't exercise the new code paths. Use the two-region harness instead:
+- Run `make up-multi-region` (separate compose stack at `dev/podman-compose.multi-region.yml`; doesn't disturb `make up`)
+- Two regions: `loca` (API on 8080, SCS on 2222) and `locb` (API on 8081, SCS on 2223)
+- Each region runs its own ScyllaDB / RabbitMQ / Redis / Redpanda; GDDB is logically global and aliased to the `loca` ScyllaDB
+- Point the CLI at either edge with `SKYR_API_URL=http://localhost:8080` (or `:8081`) to land at that region first; routing then follows token claims and GDDB lookups
+- SCOC and the container plugin are intentionally omitted from this stack — add them when exercising container deployments
+
 ## Environment Notes
 
 - `cargo` is not available in the current shell session by default.
