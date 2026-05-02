@@ -463,12 +463,10 @@ async fn handle_create(
         resource_name = %message.resource.resource_name(),
         "calling plugin create_resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &dep_qid,
         &res_qid,
         Severity::Info,
-        format!("{}: Creating {}", dep_short, id),
         format!("{}: Creating", dep_short),
     )
     .await;
@@ -483,15 +481,10 @@ async fn handle_create(
                 error = %error,
                 "create_resource plugin call failed",
             );
-            log_event(
+            log_resource_event(
                 &ctx.ldb_publisher,
-                &dep_qid,
                 &res_qid,
                 Severity::Error,
-                format!(
-                    "{}: Failed to create {}: {}",
-                    dep_short, message.resource.resource_id, error,
-                ),
                 format!("{}: Failed to create: {}", dep_short, error),
             )
             .await;
@@ -559,15 +552,10 @@ async fn handle_create(
             error = %error,
             "failed to persist created resource state",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &dep_qid,
             &res_qid,
             Severity::Error,
-            format!(
-                "{}: Failed to create {}: {}",
-                dep_short, message.resource.resource_id, error,
-            ),
             format!("{}: Failed to create: {}", dep_short, error),
         )
         .await;
@@ -592,16 +580,10 @@ async fn handle_create(
         resource_name = %message.resource.resource_name(),
         "created resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &dep_qid,
         &res_qid,
         Severity::Info,
-        format!(
-            "{}: Created {}",
-            dep_short,
-            message.resource.resource_id.clone(),
-        ),
         format!("{}: Created", dep_short),
     )
     .await;
@@ -786,12 +768,10 @@ async fn handle_destroy(
         resource_name = %message.resource.resource_name(),
         "calling plugin delete_resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &dep_qid,
         &res_qid,
         Severity::Info,
-        format!("{}: Destroying {}", dep_short, id),
         format!("{}: Destroying", dep_short),
     )
     .await;
@@ -804,15 +784,10 @@ async fn handle_destroy(
             error = %error,
             "delete_resource plugin call failed",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &dep_qid,
             &res_qid,
             Severity::Error,
-            format!(
-                "{}: Failed to destroy {}: {}",
-                dep_short, message.resource.resource_id, error,
-            ),
             format!("{}: Failed to destroy: {}", dep_short, error),
         )
         .await;
@@ -839,15 +814,10 @@ async fn handle_destroy(
             error = %error,
             "failed to delete resource from rdb",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &dep_qid,
             &res_qid,
             Severity::Error,
-            format!(
-                "{}: Failed to destroy {}: {}",
-                dep_short, message.resource.resource_id, error,
-            ),
             format!("{}: Failed to destroy: {}", dep_short, error),
         )
         .await;
@@ -876,16 +846,10 @@ async fn handle_destroy(
         resource_name = %message.resource.resource_name(),
         "deleted resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &dep_qid,
         &res_qid,
         Severity::Info,
-        format!(
-            "{}: Destroyed {}",
-            dep_short,
-            message.resource.resource_id.clone(),
-        ),
         format!("{}: Destroyed", dep_short),
     )
     .await;
@@ -1150,8 +1114,7 @@ async fn handle_update_inputs(
             return Ok(None);
         };
 
-        let target_dep_qid_for_log =
-            deployment_qid(&resource.environment_qid, target_deployment_id);
+        let plugin_dep_qid = deployment_qid(&resource.environment_qid, target_deployment_id);
         let verb = match operation {
             "adopt" => "Adopting",
             "restore" => "Restoring",
@@ -1165,19 +1128,17 @@ async fn handle_update_inputs(
             operation,
             "calling plugin update_resource",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &target_dep_qid_for_log,
             &res_qid,
             Severity::Info,
-            format!("{}: {} {}", dep_short, verb, id),
             format!("{}: {}", dep_short, verb),
         )
         .await;
 
         let updated = match plugin
             .update_resource(
-                &target_dep_qid_for_log,
+                &plugin_dep_qid,
                 id,
                 prev_inputs,
                 prev_outputs,
@@ -1195,15 +1156,10 @@ async fn handle_update_inputs(
                     error = %error,
                     "update_resource plugin call failed",
                 );
-                log_event(
+                log_resource_event(
                     &ctx.ldb_publisher,
-                    &target_dep_qid_for_log,
                     &res_qid,
                     Severity::Error,
-                    format!(
-                        "{}: Failed to update {}: {}",
-                        dep_short, resource.resource_id, error,
-                    ),
                     format!("{}: Failed to update: {}", dep_short, error),
                 )
                 .await;
@@ -1289,15 +1245,10 @@ async fn handle_update_inputs(
             error = %error,
             "failed to persist resource state",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &target_dep_qid,
             &res_qid,
             Severity::Error,
-            format!(
-                "{}: Failed to update {}: {}",
-                dep_short, resource.resource_id, error,
-            ),
             format!("{}: Failed to update: {}", dep_short, error),
         )
         .await;
@@ -1359,7 +1310,6 @@ async fn handle_adopt(
     } = success;
 
     let res_qid = resource_qid_string(&message.resource);
-    let resource_id = message.resource.resource_id.clone();
     let to_short = message.to_deployment_id.short();
     let from_short = message.from_deployment_id.short();
 
@@ -1371,22 +1321,11 @@ async fn handle_adopt(
         to_owner = %to_dep_qid,
         "adopted resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &from_dep_qid,
         &res_qid,
         Severity::Info,
-        format!("Relinquished {} to {}", resource_id, to_short),
-        format!("Relinquished to {}", to_short),
-    )
-    .await;
-    log_event(
-        &ctx.ldb_publisher,
-        &to_dep_qid,
-        &res_qid,
-        Severity::Info,
-        format!("Adopted {} from {}", resource_id, from_short),
-        format!("Adopted from {}", from_short),
+        format!("Relinquished by {} and adopted by {}", from_short, to_short),
     )
     .await;
     publish_report(
@@ -1446,16 +1385,10 @@ async fn handle_restore(
         owner = %dep_qid,
         "restored resource",
     );
-    log_event(
+    log_resource_event(
         &ctx.ldb_publisher,
-        &dep_qid,
         &res_qid,
         Severity::Info,
-        format!(
-            "{}: Restored {}",
-            dep_short,
-            message.resource.resource_id.clone(),
-        ),
         format!("{}: Restored", dep_short),
     )
     .await;
@@ -1664,12 +1597,10 @@ async fn handle_check(
                 error = %error,
                 "check plugin call failed",
             );
-            log_event(
+            log_resource_event(
                 &ctx.ldb_publisher,
-                &dep_qid,
                 &res_qid,
                 Severity::Error,
-                format!("{}: Failed to check {}: {}", dep_short, id, error),
                 format!("{}: Failed to check: {}", dep_short, error),
             )
             .await;
@@ -1727,12 +1658,10 @@ async fn handle_check(
             error = %error,
             "failed to persist checked resource outputs",
         );
-        log_event(
+        log_resource_event(
             &ctx.ldb_publisher,
-            &dep_qid,
             &res_qid,
             Severity::Error,
-            format!("{}: Failed to check {}: {}", dep_short, id, error),
             format!("{}: Failed to check: {}", dep_short, error),
         )
         .await;
@@ -1808,32 +1737,6 @@ fn dependencies_from_refs(dependencies: &[rtq::ResourceRef]) -> Vec<ids::Resourc
         .collect()
 }
 
-async fn log_deployment_event(
-    publisher: &ldb::Publisher,
-    deployment_qid: &str,
-    severity: Severity,
-    message: String,
-) {
-    let namespace_publisher = match publisher.namespace(deployment_qid.to_string()).await {
-        Ok(namespace_publisher) => namespace_publisher,
-        Err(error) => {
-            tracing::warn!(
-                deployment_qid,
-                error = %error,
-                "failed to prepare deployment log publisher",
-            );
-            return;
-        }
-    };
-    if let Err(error) = namespace_publisher.log(severity, message).await {
-        tracing::warn!(
-            deployment_qid,
-            error = %error,
-            "failed to publish deployment log event",
-        );
-    }
-}
-
 async fn log_resource_event(
     publisher: &ldb::Publisher,
     resource_qid: &str,
@@ -1858,18 +1761,6 @@ async fn log_resource_event(
             "failed to publish resource log event",
         );
     }
-}
-
-async fn log_event(
-    publisher: &ldb::Publisher,
-    deployment_qid: &str,
-    resource_qid: &str,
-    severity: Severity,
-    deployment_message: String,
-    resource_message: String,
-) {
-    log_deployment_event(publisher, deployment_qid, severity, deployment_message).await;
-    log_resource_event(publisher, resource_qid, severity, resource_message).await;
 }
 
 /// Publish a [`rq::Report`] for a processed resource transition.
