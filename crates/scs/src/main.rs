@@ -28,19 +28,6 @@ enum Program {
         #[clap(short = 'k', long = "key", default_value = "host.pem")]
         key: PathBuf,
 
-        #[clap(long = "cdb-hostname", default_value = "localhost")]
-        cdb_hostname: String,
-
-        #[clap(long = "gddb-hostname", default_value = "localhost")]
-        gddb_hostname: String,
-
-        #[clap(long = "udb-hostname", default_value = "localhost")]
-        udb_hostname: String,
-
-        /// RDB hostname for resource lookups (port-forward).
-        #[clap(long = "rdb-hostname", default_value = "localhost")]
-        rdb_hostname: String,
-
         /// Node registry hostname (Redis) for SCOC address lookups (port-forward).
         #[clap(long = "node-registry-hostname", default_value = "localhost")]
         node_registry_hostname: String,
@@ -50,6 +37,12 @@ enum Program {
         /// when servicing port-forward lookups.
         #[clap(long = "region")]
         region: String,
+
+        /// DNS suffix used to construct region-scoped Skyr peer service
+        /// addresses. Combined with `--region`, peers are resolved as
+        /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
+        #[clap(long = "domain")]
+        domain: String,
     },
 }
 
@@ -66,31 +59,31 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             address,
             key,
-            cdb_hostname,
-            gddb_hostname,
-            udb_hostname,
-            rdb_hostname,
             node_registry_hostname,
             region,
+            domain,
         } => {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+            let domain: ids::Domain = domain
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
 
             let client = cdb::ClientBuilder::new()
-                .known_node(cdb_hostname)
+                .known_node(ids::service_address("cdb", &region, &domain))
                 .build()
                 .await?;
             let gddb_client = gddb::ClientBuilder::new()
-                .known_node(gddb_hostname)
+                .known_node(ids::service_address("gddb", &region, &domain))
                 .build()
                 .await?;
             let udb_client = udb::ClientBuilder::new()
-                .known_node(udb_hostname)
+                .known_node(ids::service_address("udb", &region, &domain))
                 .build()
                 .await?;
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(rdb_hostname)
+                .known_node(ids::service_address("rdb", &region, &domain))
                 .region(region.clone())
                 .build()
                 .await?;
