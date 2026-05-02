@@ -4,7 +4,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::json_scalar::JsonValue;
-use crate::{Context, field_error, internal_error, resolve_repo_home};
+use crate::{Context, field_error, internal_error};
 
 pub(crate) struct AuthSuccess {
     pub(crate) user: SignedInUser,
@@ -76,8 +76,10 @@ impl SignedInUser {
 
     #[graphql(name = "publicKeys")]
     async fn public_keys(&self, context: &Context) -> FieldResult<Vec<String>> {
+        let region = context.home_region_for_user(&self.user.username).await?;
         context
-            .udb_client
+            .udb_for_region(&region)
+            .await?
             .user(&self.user.username)
             .pubkeys()
             .list()
@@ -107,8 +109,9 @@ impl Organization {
     }
 
     async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
-        let usernames = context
-            .udb_client
+        let org_region = context.home_region_for_org(&self.name).await?;
+        let org_udb = context.udb_for_region(&org_region).await?;
+        let usernames = org_udb
             .org(self.name.as_str())
             .members()
             .list()
@@ -120,7 +123,17 @@ impl Organization {
 
         let mut users = Vec::with_capacity(usernames.len());
         for username in usernames {
-            match context.udb_client.user(&username).get().await {
+            // Each member's user record may live in a different region
+            // (members of an org need not share its home region).
+            let user_region = match context.home_region_for_user(&username).await {
+                Ok(r) => r,
+                Err(_) => {
+                    tracing::warn!("Org member {} not registered in GDDB", username);
+                    continue;
+                }
+            };
+            let user_udb = context.udb_for_region(&user_region).await?;
+            match user_udb.user(&username).get().await {
                 Ok(user) => users.push(User { user }),
                 Err(udb::UserQueryError::NotFound) => {
                     tracing::warn!("Org member {} not found in UDB", username);
@@ -140,9 +153,10 @@ impl Organization {
             .parse()
             .map_err(|_| field_error("Invalid repository name"))?;
         let repo_qid = ids::RepoQid::new(self.name.clone(), repo);
-        resolve_repo_home(context, &repo_qid).await?;
+        let region = context.home_region_for_repo(&repo_qid).await?;
         let repository = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repository(&repo_qid)
             .await
             .map_err(|e| {
@@ -153,8 +167,15 @@ impl Organization {
     }
 
     async fn repositories(&self, context: &Context) -> FieldResult<Vec<Repository>> {
+        // Repositories under an org are listed from the org's home CDB.
+        // (Repos in other regions still get listed because the org's CDB
+        // owns the membership index even when the repo is region-pinned
+        // elsewhere — see the Cross-Region Data Flow section of the
+        // architecture doc.)
+        let org_region = context.home_region_for_org(&self.name).await?;
         context
-            .cdb_client
+            .cdb_for_region(&org_region)
+            .await?
             .repositories_by_organization(self.name.to_string())
             .await
             .map_err(|e| {
@@ -199,8 +220,10 @@ impl Repository {
             .parse()
             .map_err(|_| field_error("Invalid environment name"))?;
         let qid = self.repository.name.environment(env);
+        let region = context.home_region_for_repo(&self.repository.name).await?;
         let deployments = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(self.repository.name.clone())
             .deployments()
             .await
@@ -227,7 +250,11 @@ impl Repository {
         let commit_hash: ids::ObjId = hash
             .parse()
             .map_err(|_| field_error("Invalid commit hash"))?;
-        let repo_client = context.cdb_client.repo(self.repository.name.clone());
+        let region = context.home_region_for_repo(&self.repository.name).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.repository.name.clone());
         let commit = repo_client.read_commit(commit_hash).await.map_err(|e| {
             tracing::error!("Failed to read commit {commit_hash}: {e}");
             internal_error()
@@ -240,8 +267,10 @@ impl Repository {
     }
 
     async fn environments(&self, context: &Context) -> FieldResult<Vec<Environment>> {
+        let region = context.home_region_for_repo(&self.repository.name).await?;
         let deployments = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(self.repository.name.clone())
             .deployments()
             .await
@@ -306,7 +335,11 @@ impl Environment {
         context: &Context,
         id: Option<String>,
     ) -> FieldResult<Option<Deployment>> {
-        let repo_client = context.cdb_client.repo(self.qid.repo.clone());
+        let region = context.home_region_for_repo(&self.qid.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.qid.repo.clone());
 
         let Some(id) = id else {
             return repo_client
@@ -430,9 +463,11 @@ impl Environment {
 
     /// Every incident in this environment, newest first.
     async fn incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
+        let region = context.home_region_for_repo(&self.qid.repo).await?;
         let env_qid = self.qid.to_string();
         let incidents = context
-            .sdb_client
+            .sdb_for_region(&region)
+            .await?
             .incidents_in_env(&env_qid)
             .await
             .map_err(|e| {
@@ -451,9 +486,11 @@ impl Environment {
         let incident_id: sdb::IncidentId = (*id)
             .parse()
             .map_err(|_| field_error("Invalid incident id"))?;
+        let region = context.home_region_for_repo(&self.qid.repo).await?;
         let env_qid = self.qid.to_string();
         let incident = context
-            .sdb_client
+            .sdb_for_region(&region)
+            .await?
             .incident_in_env(&env_qid, incident_id)
             .await
             .map_err(|e| {
@@ -481,7 +518,11 @@ impl Commit {
     }
 
     async fn parents(&self, context: &Context) -> FieldResult<Vec<Commit>> {
-        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let region = context.home_region_for_repo(&self.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.repo.clone());
         let mut parents = Vec::with_capacity(self.commit.parents.len());
         for parent_oid in self.commit.parents.iter().copied() {
             let parent_id: ids::ObjId = parent_oid.into();
@@ -499,7 +540,11 @@ impl Commit {
     }
 
     async fn tree(&self, context: &Context) -> FieldResult<Tree> {
-        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let region = context.home_region_for_repo(&self.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.repo.clone());
         let tree_id: ids::ObjId = self.commit.tree.into();
         let tree = repo_client.read_tree(tree_id).await.map_err(|e| {
             tracing::error!("Failed to read tree {tree_id}: {e}");
@@ -515,7 +560,11 @@ impl Commit {
 
     #[graphql(name = "treeEntry")]
     async fn tree_entry(&self, context: &Context, path: String) -> FieldResult<Option<TreeEntry>> {
-        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let region = context.home_region_for_repo(&self.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.repo.clone());
         let root_tree_id: ids::ObjId = self.commit.tree.into();
         let root_tree = repo_client.read_tree(root_tree_id).await.map_err(|e| {
             tracing::error!("Failed to read root tree {root_tree_id}: {e}");
@@ -606,7 +655,11 @@ impl Tree {
     }
 
     async fn entries(&self, context: &Context) -> FieldResult<Vec<TreeEntry>> {
-        let repo_client = context.cdb_client.repo(self.repo.clone());
+        let region = context.home_region_for_repo(&self.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.repo.clone());
         let mut entries = Vec::with_capacity(self.tree.entries.len());
 
         for entry in &self.tree.entries {
@@ -706,8 +759,10 @@ impl Deployment {
     /// constructed from the deployments currently in CDB.
     async fn environment(&self, context: &Context) -> FieldResult<Environment> {
         let env_qid = self.deployment.environment_qid();
+        let region = context.home_region_for_repo(&env_qid.repo).await?;
         let deployments = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(env_qid.repo.clone())
             .deployments()
             .await
@@ -732,7 +787,11 @@ impl Deployment {
     }
 
     async fn commit(&self, context: &Context) -> FieldResult<Commit> {
-        let repo_client = context.cdb_client.repo(self.deployment.repo.clone());
+        let region = context.home_region_for_repo(&self.deployment.repo).await?;
+        let repo_client = context
+            .cdb_for_region(&region)
+            .await?
+            .repo(self.deployment.repo.clone());
         let hash = self.deployment.deployment.commit;
         let commit = repo_client.read_commit(hash).await.map_err(|e| {
             tracing::error!("Failed to read commit {hash}: {e}");
@@ -762,18 +821,23 @@ impl Deployment {
     /// resource health. Resource statuses are reached via
     /// `Deployment.resources -> Resource.status`.
     async fn status(&self, context: &Context) -> FieldResult<StatusSummary> {
+        let region = context.home_region_for_repo(&self.deployment.repo).await?;
         let entity_qid = self.deployment.deployment_qid().to_string();
-        load_status_summary(context, &entity_qid).await
+        load_status_summary(context, &region, &entity_qid).await
     }
 
     /// Currently-open incidents about this deployment.
     #[graphql(name = "openIncidents")]
     async fn open_incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
         let deployment_qid = self.deployment.deployment_qid();
+        let region = context
+            .home_region_for_repo(&deployment_qid.environment.repo)
+            .await?;
         let entity_qid = deployment_qid.to_string();
         let env_qid = deployment_qid.environment.to_string();
         let incidents = context
-            .sdb_client
+            .sdb_for_region(&region)
+            .await?
             .open_incidents_for_entity(&entity_qid, &env_qid)
             .await
             .map_err(|e| {
@@ -959,9 +1023,11 @@ impl Resource {
         };
 
         let repo_qid = deployment_qid.repo_qid().clone();
+        let region = context.home_region_for_repo(&repo_qid).await?;
 
         let deployments = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(repo_qid.clone())
             .deployments()
             .await
@@ -1044,18 +1110,26 @@ impl Resource {
 
     /// Per-resource health rollup.
     async fn status(&self, context: &Context) -> FieldResult<StatusSummary> {
-        let entity_qid = self.resource_qid()?.to_string();
-        load_status_summary(context, &entity_qid).await
+        let resource_qid = self.resource_qid()?;
+        let region = context
+            .home_region_for_repo(&resource_qid.environment.repo)
+            .await?;
+        let entity_qid = resource_qid.to_string();
+        load_status_summary(context, &region, &entity_qid).await
     }
 
     /// Currently-open incidents about this resource.
     #[graphql(name = "openIncidents")]
     async fn open_incidents(&self, context: &Context) -> FieldResult<Vec<Incident>> {
         let resource_qid = self.resource_qid()?;
+        let region = context
+            .home_region_for_repo(&resource_qid.environment.repo)
+            .await?;
         let entity_qid = resource_qid.to_string();
         let env_qid = resource_qid.environment.to_string();
         let incidents = context
-            .sdb_client
+            .sdb_for_region(&region)
+            .await?
             .open_incidents_for_entity(&entity_qid, &env_qid)
             .await
             .map_err(|e| {
@@ -1312,8 +1386,10 @@ impl Incident {
             );
             internal_error()
         })?;
+        let region = context.home_region_for_repo(&repo_qid).await?;
         let repository = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repository(&repo_qid)
             .await
             .map_err(|e| {
@@ -1337,8 +1413,10 @@ impl Incident {
             internal_error()
         })?;
 
+        let region = context.home_region_for_repo(&env_qid.repo).await?;
         let deployments = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(env_qid.repo.clone())
             .deployments()
             .await
@@ -1368,7 +1446,13 @@ impl Incident {
     /// underlying entity has since been destroyed.
     async fn entity(&self, context: &Context) -> FieldResult<Option<IncidentEntityValue>> {
         if let Ok(deployment_qid) = self.inner.entity_qid.parse::<ids::DeploymentQid>() {
-            let repo_client = context.cdb_client.repo(deployment_qid.repo_qid().clone());
+            let region = context
+                .home_region_for_repo(deployment_qid.repo_qid())
+                .await?;
+            let repo_client = context
+                .cdb_for_region(&region)
+                .await?
+                .repo(deployment_qid.repo_qid().clone());
             let mut stream = repo_client.deployments().await.map_err(|e| {
                 tracing::error!(
                     "Failed to list deployments for incident entity {deployment_qid}: {e}"
@@ -1437,9 +1521,14 @@ pub(crate) trait IncidentEntity {
 // Status / incident helpers
 // ---------------------------------------------------------------------------
 
-async fn load_status_summary(context: &Context, entity_qid: &str) -> FieldResult<StatusSummary> {
+async fn load_status_summary(
+    context: &Context,
+    region: &ids::RegionId,
+    entity_qid: &str,
+) -> FieldResult<StatusSummary> {
     let summary = context
-        .sdb_client
+        .sdb_for_region(region)
+        .await?
         .status_summary(entity_qid)
         .await
         .map_err(|e| {

@@ -6,7 +6,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::schema::{Log, Severity};
-use crate::{Context, field_error, internal_error, resolve_repo_home};
+use crate::{Context, field_error, internal_error};
 
 pub(crate) type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
 
@@ -24,12 +24,17 @@ impl Subscription {
         let deployment_qid: ids::DeploymentQid = deployment_id
             .parse()
             .map_err(|_| field_error("invalid deployment id"))?;
-        resolve_repo_home(context, deployment_qid.repo_qid()).await?;
-        let organization = deployment_qid.repo_qid().org.to_string();
+        let _ = context
+            .home_region_for_repo(deployment_qid.repo_qid())
+            .await?;
+        let org_id = deployment_qid.repo_qid().org.clone();
+        let organization = org_id.to_string();
+        let org_region = context.home_region_for_org(&org_id).await?;
 
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
@@ -99,12 +104,14 @@ impl Subscription {
             .parse()
             .map_err(|_| field_error("invalid environment QID"))?;
 
-        resolve_repo_home(context, &env_qid.repo).await?;
+        let repo_region = context.home_region_for_repo(&env_qid.repo).await?;
+        let org_region = context.home_region_for_org(&env_qid.repo.org).await?;
 
         let organization = env_qid.repo.org.to_string();
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
@@ -126,7 +133,7 @@ impl Subscription {
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
         let consumer = context.ldb_consumer.clone();
-        let cdb_client = context.cdb_client.clone();
+        let cdb_client = context.cdb_for_region(&repo_region).await?;
 
         Ok(Box::pin(async_stream::stream! {
             let mut merged = futures_util::stream::SelectAll::new();
@@ -223,12 +230,17 @@ impl Subscription {
         let parsed_qid: ids::ResourceQid = resource_qid
             .parse()
             .map_err(|_| field_error("invalid resource QID"))?;
-        resolve_repo_home(context, &parsed_qid.environment_qid().repo).await?;
-        let organization = parsed_qid.environment_qid().repo.org.to_string();
+        let _ = context
+            .home_region_for_repo(&parsed_qid.environment_qid().repo)
+            .await?;
+        let org_id = parsed_qid.environment_qid().repo.org.clone();
+        let organization = org_id.to_string();
+        let org_region = context.home_region_for_org(&org_id).await?;
 
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
