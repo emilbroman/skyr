@@ -12,16 +12,23 @@ use tokio::task::JoinSet;
 enum Program {
     /// Run the Notification Engine daemon: consume NQ and dispatch e-mails.
     Daemon {
-        // ---- queue ---------------------------------------------------------
-        /// Hostname of the AMQP broker carrying the NQ queue. The full URI is
-        /// constructed as `amqp://{nq-hostname}:5672/%2f`. Use [`--nq-uri`]
-        /// for non-default ports / vhosts / credentials.
-        #[clap(long = "nq-hostname", default_value = "localhost")]
-        nq_hostname: String,
+        // ---- region & domain ----------------------------------------------
+        /// Skyr region this NE serves (e.g. `stockholm`). Validated as
+        /// `[a-z]+`. Used to resolve peer service addresses (NQ, UDB).
+        #[clap(long = "region")]
+        region: String,
 
-        /// Override the full AMQP URI instead of constructing it from
-        /// `--nq-hostname`. Mutually exclusive with the hostname-based form.
-        #[clap(long = "nq-uri", conflicts_with = "nq_hostname")]
+        /// DNS suffix used to construct region-scoped Skyr peer service
+        /// addresses. Combined with `--region`, peers are resolved as
+        /// `<service>.<region>.int.<domain>` (e.g. `nq.stockholm.int.skyr.cloud`).
+        #[clap(long = "domain")]
+        domain: String,
+
+        // ---- queue ---------------------------------------------------------
+        /// Override the full AMQP URI instead of resolving the NQ broker
+        /// from `--region` and `--domain`. Useful for managed RabbitMQ
+        /// deployments with TLS, custom vhosts, or credentials.
+        #[clap(long = "nq-uri")]
         nq_uri: Option<String>,
 
         /// AMQP basic.qos prefetch count for each NE worker.
@@ -41,12 +48,6 @@ enum Program {
         /// queue under competing-consumer semantics. Defaults to 1.
         #[clap(long = "worker-count", default_value_t = 1)]
         worker_count: u16,
-
-        // ---- udb -----------------------------------------------------------
-        /// Hostname of the Redis used by UDB for org membership / user
-        /// lookups. Recipients are resolved here at send time.
-        #[clap(long = "udb-hostname", default_value = "localhost")]
-        udb_hostname: String,
 
         // ---- dedup ---------------------------------------------------------
         /// Hostname of the Redis used to keep idempotency-key claims so
@@ -108,13 +109,13 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            nq_hostname,
+            region,
+            domain,
             nq_uri,
             prefetch,
             nq_dlx,
             nq_dlx_routing_key,
             worker_count,
-            udb_hostname,
             dedup_hostname,
             dedup_ttl_seconds,
             smtp_host,
@@ -129,10 +130,23 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--worker-count must be at least 1");
             }
 
-            let uri = nq_uri.unwrap_or_else(|| format!("amqp://{nq_hostname}:5672/%2f"));
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+            let domain: ids::Domain = domain
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+
+            let uri = nq_uri.unwrap_or_else(|| {
+                format!(
+                    "amqp://{}:5672/%2f",
+                    ids::service_address("nq", &region, &domain)
+                )
+            });
 
             tracing::info!(
                 worker_count,
+                %region,
                 smtp_host = %smtp_host,
                 smtp_port,
                 tls = ?smtp_tls,
@@ -146,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
 
             let udb_client = udb::ClientBuilder::new()
-                .known_node(udb_hostname)
+                .known_node(ids::service_address("udb", &region, &domain))
                 .build()
                 .await?;
 
