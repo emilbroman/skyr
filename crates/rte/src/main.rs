@@ -17,18 +17,6 @@ const MAX_OUTPUT_SIZE_BYTES: usize = 1_048_576; // 1 MiB
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "rdb-hostname", default_value = "localhost")]
-        rdb_hostname: String,
-
-        #[clap(long = "rtq-hostname", default_value = "localhost")]
-        rtq_hostname: String,
-
-        #[clap(long = "rq-hostname", default_value = "localhost")]
-        rq_hostname: String,
-
-        #[clap(long = "ldb-hostname", default_value = "localhost")]
-        ldb_hostname: String,
-
         #[clap(long = "worker-index", default_value_t = 0)]
         worker_index: u16,
 
@@ -46,6 +34,12 @@ enum Program {
         /// and status reports.
         #[clap(long = "region")]
         region: String,
+
+        /// DNS suffix used to construct region-scoped Skyr peer service
+        /// addresses. Combined with `--region`, peers are resolved as
+        /// `<service>.<region>.int.<domain>` (e.g. `rdb.stockholm.int.skyr.cloud`).
+        #[clap(long = "domain")]
+        domain: String,
     },
 }
 
@@ -86,19 +80,19 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            rdb_hostname,
-            rtq_hostname,
-            rq_hostname,
-            ldb_hostname,
             worker_index,
             worker_count,
             local_workers,
             plugin,
             region,
+            domain,
         } => {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+            let domain: ids::Domain = domain
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
 
             tracing::info!(%region, "starting resource transition engine daemon");
 
@@ -115,15 +109,24 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--worker-index + --local-workers must be <= --worker-count");
             }
 
-            let uri = format!("amqp://{}:5672/%2f", rtq_hostname);
-            let rq_uri = format!("amqp://{}:5672/%2f", rq_hostname);
+            let uri = format!(
+                "amqp://{}:5672/%2f",
+                ids::service_address("rtq", &region, &domain)
+            );
+            let rq_uri = format!(
+                "amqp://{}:5672/%2f",
+                ids::service_address("rq", &region, &domain)
+            );
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(&rdb_hostname)
+                .known_node(ids::service_address("rdb", &region, &domain))
                 .region(region.clone())
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
-                .brokers(format!("{}:9092", ldb_hostname))
+                .brokers(format!(
+                    "{}:9092",
+                    ids::service_address("ldb", &region, &domain)
+                ))
                 .build_publisher()
                 .await?;
             let rq_publisher = rq::ClientBuilder::new()
