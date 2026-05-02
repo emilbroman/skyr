@@ -30,6 +30,7 @@ use schema::{AuthChallenge, AuthSuccess, Deployment, Organization, Repository, S
 pub(crate) struct Context {
     pub(crate) udb_client: udb::Client,
     pub(crate) cdb_client: cdb::Client,
+    pub(crate) gddb_client: gddb::Client,
     pub(crate) rdb_client: rdb::Client,
     pub(crate) adb_client: adb::Client,
     pub(crate) sdb_client: sdb::Client,
@@ -96,6 +97,40 @@ fn resolve_region(context: &Context, requested: Option<String>) -> FieldResult<i
         )));
     }
     Ok(parsed)
+}
+
+/// Look up an org's home region in GDDB and verify it is served by this
+/// API server. Returns `Err("Organization not found")` if the org is
+/// unreserved, and the same "not served by this Skyr deployment" error as
+/// `resolve_region` if its home is a different region.
+async fn resolve_org_home(context: &Context, org: &ids::OrgId) -> FieldResult<()> {
+    let home = context.gddb_client.lookup_org(org).await.map_err(|e| {
+        tracing::error!("Failed to look up org in GDDB: {}", e);
+        internal_error()
+    })?;
+    match home {
+        None => Err(field_error("Organization not found")),
+        Some(home) if home != context.region => Err(field_error(&format!(
+            "region {home:?} is not served by this Skyr deployment",
+        ))),
+        Some(_) => Ok(()),
+    }
+}
+
+/// Look up a repo's home region in GDDB and verify it is served by this
+/// API server.
+async fn resolve_repo_home(context: &Context, qid: &ids::RepoQid) -> FieldResult<()> {
+    let home = context.gddb_client.lookup_repo(qid).await.map_err(|e| {
+        tracing::error!("Failed to look up repo in GDDB: {}", e);
+        internal_error()
+    })?;
+    match home {
+        None => Err(field_error("Repository not found")),
+        Some(home) if home != context.region => Err(field_error(&format!(
+            "region {home:?} is not served by this Skyr deployment",
+        ))),
+        Some(_) => Ok(()),
+    }
 }
 
 /// Basic email validation: requires exactly one `@`, non-empty local and domain
@@ -291,6 +326,8 @@ impl Query {
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
+        resolve_org_home(context, &org).await?;
+
         if org.as_str() != user.username {
             let is_member = context
                 .udb_client
@@ -323,7 +360,7 @@ impl Mutation {
     ) -> FieldResult<Repository> {
         let (_, user) = context.check_auth().await?;
 
-        let _region = resolve_region(context, region)?;
+        let region = resolve_region(context, region)?;
 
         if organization != user.username {
             let is_member = context
@@ -352,6 +389,20 @@ impl Mutation {
             .parse()
             .map_err(|_| field_error("Invalid repository name"))?;
         let name = ids::RepoQid { org, repo };
+
+        resolve_org_home(context, &name.org).await?;
+
+        context
+            .gddb_client
+            .reserve_repo(&name, &region)
+            .await
+            .map_err(|e| match e {
+                gddb::ReserveError::NameTaken => field_error("Repository already exists"),
+                _ => {
+                    tracing::error!("Failed to reserve repo name in GDDB: {}", e);
+                    internal_error()
+                }
+            })?;
 
         let repository = context
             .cdb_client
@@ -387,10 +438,25 @@ impl Mutation {
             return Err(field_error("Invalid email"));
         }
 
-        // Validate against this server's --region. The region is
-        // implicit from which UDB the user row lands in; the argument exists
-        // so the API surface is forward-compatible with future routing.
-        let _region = resolve_region(context, Some(region))?;
+        let region = resolve_region(context, Some(region))?;
+
+        // The username is also the user's personal-org name, so reserve it
+        // in GDDB as an org name. This is the source of truth for global
+        // name uniqueness (case-insensitive) and for routing.
+        let user_org_id: ids::OrgId = username
+            .parse()
+            .map_err(|_| field_error("Invalid username"))?;
+        context
+            .gddb_client
+            .reserve_org(&user_org_id, &region)
+            .await
+            .map_err(|e| match e {
+                gddb::ReserveError::NameTaken => field_error("Username already taken"),
+                _ => {
+                    tracing::error!("Failed to reserve username in GDDB: {}", e);
+                    internal_error()
+                }
+            })?;
 
         let fullname = fullname.filter(|s| !s.is_empty());
 
@@ -565,11 +631,23 @@ impl Mutation {
             return Err(field_error("Invalid organization name"));
         }
 
-        let _region = resolve_region(context, region)?;
+        let region = resolve_region(context, region)?;
 
         let org_id: ids::OrgId = name
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
+
+        context
+            .gddb_client
+            .reserve_org(&org_id, &region)
+            .await
+            .map_err(|e| match e {
+                gddb::ReserveError::NameTaken => field_error("Name already taken"),
+                _ => {
+                    tracing::error!("Failed to reserve org name in GDDB: {}", e);
+                    internal_error()
+                }
+            })?;
 
         let org_client = context.udb_client.org(org_id.as_str());
         org_client
@@ -601,6 +679,8 @@ impl Mutation {
         let org_id: ids::OrgId = organization
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
+
+        resolve_org_home(context, &org_id).await?;
 
         let org_client = context.udb_client.org(org_id.as_str());
 
@@ -646,6 +726,8 @@ impl Mutation {
         if org_id.as_str() == user.username {
             return Err(field_error("Cannot leave your own personal organization"));
         }
+
+        resolve_org_home(context, &org_id).await?;
 
         let org_client = context.udb_client.org(org_id.as_str());
 
@@ -722,6 +804,8 @@ impl Mutation {
             .map_err(|_| field_error("Invalid commit hash"))?;
         let repo_qid = ids::RepoQid { org, repo };
 
+        resolve_repo_home(context, &repo_qid).await?;
+
         // Each deployment gets a fresh nonce so that re-deploying the same
         // commit creates a distinct deployment identity.
         let nonce = ids::DeploymentNonce::random();
@@ -784,6 +868,8 @@ impl Mutation {
             .parse()
             .map_err(|_| field_error("Invalid environment name"))?;
         let repo_qid = ids::RepoQid { org, repo };
+
+        resolve_repo_home(context, &repo_qid).await?;
 
         let repo_client = context.cdb_client.repo(repo_qid);
         let mut stream = repo_client.active_deployments().await.map_err(|e| {
@@ -860,7 +946,10 @@ impl Mutation {
             .parse()
             .map_err(|_| field_error("Invalid resource ID"))?;
 
-        let env_qid = ids::EnvironmentQid::new(ids::RepoQid { org, repo }, env);
+        let repo_qid = ids::RepoQid { org, repo };
+        resolve_repo_home(context, &repo_qid).await?;
+
+        let env_qid = ids::EnvironmentQid::new(repo_qid, env);
         let namespace = env_qid.to_string();
 
         let row = context
@@ -959,6 +1048,8 @@ struct Cli {
     #[arg(long, default_value = "localhost")]
     cdb_hostname: String,
     #[arg(long, default_value = "localhost")]
+    gddb_hostname: String,
+    #[arg(long, default_value = "localhost")]
     rdb_hostname: String,
     #[arg(long, default_value = "localhost")]
     sdb_hostname: String,
@@ -1032,6 +1123,10 @@ async fn main() -> anyhow::Result<()> {
         .known_node(cli.cdb_hostname)
         .build()
         .await?;
+    let gddb_client = gddb::ClientBuilder::new()
+        .known_node(cli.gddb_hostname)
+        .build()
+        .await?;
     let rdb_client = rdb::ClientBuilder::new()
         .known_node(cli.rdb_hostname)
         .region(region.clone())
@@ -1085,6 +1180,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(rp_id))
         .layer(Extension(rp_name))
         .layer(Extension(cdb_client))
+        .layer(Extension(gddb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
         .layer(Extension(sdb_client))
@@ -1114,6 +1210,7 @@ async fn graphql_handler(
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_client): Extension<cdb::Client>,
+    Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(sdb_client): Extension<sdb::Client>,
@@ -1147,6 +1244,7 @@ async fn graphql_handler(
                 let ctx = Context {
                     udb_client,
                     cdb_client,
+                    gddb_client,
                     rdb_client,
                     adb_client,
                     sdb_client,
@@ -1167,6 +1265,7 @@ async fn graphql_handler(
     let ctx = Context {
         udb_client,
         cdb_client,
+        gddb_client,
         rdb_client,
         adb_client,
         sdb_client,
@@ -1198,6 +1297,7 @@ async fn graphql_ws_handler(
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_client): Extension<cdb::Client>,
+    Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(sdb_client): Extension<sdb::Client>,
@@ -1230,6 +1330,7 @@ async fn graphql_ws_handler(
     let context = Context {
         udb_client,
         cdb_client,
+        gddb_client,
         rdb_client,
         adb_client,
         sdb_client,
