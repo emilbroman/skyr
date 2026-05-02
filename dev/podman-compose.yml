@@ -57,6 +57,10 @@ services:
       default:
         aliases:
           - udb.local.int.test
+          # SCOC node-registry shares this redis in dev. SCS edges resolve
+          # the registry per-region as `node-registry.<region>.int.<domain>`
+          # and there's only one region here.
+          - node-registry.local.int.test
 
   ias:
     image: skyr:latest
@@ -199,12 +203,10 @@ services:
         "0.0.0.0:2222",
         "--key",
         "/host.pem",
-        "--region",
-        "local",
         "--domain",
         "test",
-        "--node-registry-hostname",
-        "redis",
+        "--gddb-bootstrap-region",
+        "local",
       ]
     restart: always
     ports:
