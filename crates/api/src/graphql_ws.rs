@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use crate::json_scalar::{graphql_value_to_json, serialize_execution_errors};
+use crate::pools::UdbPool;
 use crate::region_keys::RegionKeyCache;
 use crate::{AuthOutcome, Context, Schema, authenticate_token};
 
@@ -14,7 +15,8 @@ pub(crate) async fn graphql_ws_connection(
     socket: WebSocket,
     schema: Arc<Schema>,
     mut context: Context,
-    udb_client: udb::Client,
+    udb_pool: UdbPool,
+    region: ids::RegionId,
     region_keys: RegionKeyCache,
 ) {
     use std::collections::HashMap;
@@ -94,7 +96,8 @@ pub(crate) async fn graphql_ws_connection(
                                 .and_then(|v| v.as_str())
                                 .and_then(|v| v.strip_prefix("Bearer "))
                         {
-                            match authenticate_token(token, &udb_client, &region_keys).await {
+                            match authenticate_token(token, &udb_pool, &region, &region_keys).await
+                            {
                                 AuthOutcome::Authenticated(user) => {
                                     context.user = Some(user);
                                 }

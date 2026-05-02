@@ -4,6 +4,7 @@ mod auth;
 mod challenge;
 mod graphql_ws;
 mod json_scalar;
+mod pools;
 mod region_keys;
 mod schema;
 mod subscriptions;
@@ -29,12 +30,12 @@ use schema::{AuthChallenge, AuthSuccess, Deployment, Organization, Repository, S
 
 #[derive(Clone)]
 pub(crate) struct Context {
-    pub(crate) udb_client: udb::Client,
-    pub(crate) cdb_client: cdb::Client,
+    pub(crate) udb_pool: pools::UdbPool,
+    pub(crate) cdb_pool: pools::CdbPool,
+    pub(crate) sdb_pool: pools::SdbPool,
     pub(crate) gddb_client: gddb::Client,
     pub(crate) rdb_client: rdb::Client,
     pub(crate) adb_client: adb::Client,
-    pub(crate) sdb_client: sdb::Client,
     pub(crate) ldb_consumer: ldb::Consumer,
     pub(crate) ldb_publisher: ldb::Publisher,
     pub(crate) rtq_publisher: rtq::Publisher,
@@ -45,9 +46,10 @@ pub(crate) struct Context {
     /// Skyr region this API server serves. Used as the source of truth for
     /// the `region` GraphQL field on `Repository`/`Organization`/`User`
     /// reads, and as the validation target for `region` arguments on
-    /// signup/createOrg/createRepo mutations. In step 1 every binary is its
-    /// own region's only entry point, so any explicit `region` argument
-    /// must equal this value.
+    /// signup/createOrg/createRepo mutations. In stage 4 every binary is
+    /// still its own region's only entry point, so any explicit `region`
+    /// argument or GDDB-resolved home region must equal this value. Stage 5
+    /// drops that rejection.
     pub(crate) region: ids::RegionId,
 }
 
@@ -65,6 +67,75 @@ impl Context {
         })?;
 
         Ok((client, user))
+    }
+
+    /// Resolve `org`'s home region via GDDB.
+    ///
+    /// In stage 4 we still reject orgs whose home is a different region —
+    /// the API is not yet a true edge. Stage 5 removes that rejection and
+    /// just returns whatever GDDB says.
+    pub(crate) async fn home_region_for_org(&self, org: &ids::OrgId) -> FieldResult<ids::RegionId> {
+        let home = self.gddb_client.lookup_org(org).await.map_err(|e| {
+            tracing::error!("Failed to look up org in GDDB: {}", e);
+            internal_error()
+        })?;
+        match home {
+            None => Err(field_error("Organization not found")),
+            Some(home) if home != self.region => Err(field_error(&format!(
+                "region {home:?} is not served by this Skyr deployment",
+            ))),
+            Some(home) => Ok(home),
+        }
+    }
+
+    /// Resolve `qid`'s home region via GDDB. Same stage-4 rejection rule
+    /// as [`Self::home_region_for_org`].
+    pub(crate) async fn home_region_for_repo(
+        &self,
+        qid: &ids::RepoQid,
+    ) -> FieldResult<ids::RegionId> {
+        let home = self.gddb_client.lookup_repo(qid).await.map_err(|e| {
+            tracing::error!("Failed to look up repo in GDDB: {}", e);
+            internal_error()
+        })?;
+        match home {
+            None => Err(field_error("Repository not found")),
+            Some(home) if home != self.region => Err(field_error(&format!(
+                "region {home:?} is not served by this Skyr deployment",
+            ))),
+            Some(home) => Ok(home),
+        }
+    }
+
+    /// Resolve a user's home region. Users are personal orgs of the same
+    /// name, so this is just `home_region_for_org` with the username
+    /// parsed as an `OrgId`.
+    pub(crate) async fn home_region_for_user(&self, username: &str) -> FieldResult<ids::RegionId> {
+        let org_id: ids::OrgId = username
+            .parse()
+            .map_err(|_| field_error("Invalid username"))?;
+        self.home_region_for_org(&org_id).await
+    }
+
+    pub(crate) async fn udb_for_region(&self, region: &ids::RegionId) -> FieldResult<udb::Client> {
+        self.udb_pool.for_region(region).await.map_err(|e| {
+            tracing::error!("Failed to connect to UDB in {}: {}", region, e);
+            internal_error()
+        })
+    }
+
+    pub(crate) async fn cdb_for_region(&self, region: &ids::RegionId) -> FieldResult<cdb::Client> {
+        self.cdb_pool.for_region(region).await.map_err(|e| {
+            tracing::error!("Failed to connect to CDB in {}: {}", region, e);
+            internal_error()
+        })
+    }
+
+    pub(crate) async fn sdb_for_region(&self, region: &ids::RegionId) -> FieldResult<sdb::Client> {
+        self.sdb_pool.for_region(region).await.map_err(|e| {
+            tracing::error!("Failed to connect to SDB in {}: {}", region, e);
+            internal_error()
+        })
     }
 }
 
@@ -100,39 +171,10 @@ fn resolve_region(context: &Context, requested: Option<String>) -> FieldResult<i
     Ok(parsed)
 }
 
-/// Look up an org's home region in GDDB and verify it is served by this
-/// API server. Returns `Err("Organization not found")` if the org is
-/// unreserved, and the same "not served by this Skyr deployment" error as
-/// `resolve_region` if its home is a different region.
-async fn resolve_org_home(context: &Context, org: &ids::OrgId) -> FieldResult<()> {
-    let home = context.gddb_client.lookup_org(org).await.map_err(|e| {
-        tracing::error!("Failed to look up org in GDDB: {}", e);
-        internal_error()
-    })?;
-    match home {
-        None => Err(field_error("Organization not found")),
-        Some(home) if home != context.region => Err(field_error(&format!(
-            "region {home:?} is not served by this Skyr deployment",
-        ))),
-        Some(_) => Ok(()),
-    }
-}
-
-/// Look up a repo's home region in GDDB and verify it is served by this
-/// API server.
-async fn resolve_repo_home(context: &Context, qid: &ids::RepoQid) -> FieldResult<()> {
-    let home = context.gddb_client.lookup_repo(qid).await.map_err(|e| {
-        tracing::error!("Failed to look up repo in GDDB: {}", e);
-        internal_error()
-    })?;
-    match home {
-        None => Err(field_error("Repository not found")),
-        Some(home) if home != context.region => Err(field_error(&format!(
-            "region {home:?} is not served by this Skyr deployment",
-        ))),
-        Some(_) => Ok(()),
-    }
-}
+// `resolve_org_home` / `resolve_repo_home` were folded into
+// `Context::home_region_for_org` / `Context::home_region_for_repo`, which
+// return the resolved region instead of just `()` so callers can route
+// downstream calls through `udb_for_region` / `cdb_for_region` / etc.
 
 /// Basic email validation: requires exactly one `@`, non-empty local and domain
 /// parts, a dot in the domain, and no whitespace.
@@ -168,11 +210,7 @@ static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
 #[juniper::graphql_object(Context = Context)]
 impl Query {
     async fn health(context: &Context) -> bool {
-        let _ = (
-            &context.cdb_client,
-            &context.rdb_client,
-            &context.adb_client,
-        );
+        let _ = (&context.cdb_pool, &context.rdb_client, &context.adb_client);
         tokio::task::yield_now().await;
         true
     }
@@ -195,18 +233,32 @@ impl Query {
         let user_id_hash = sha2::Sha256::digest(username.as_bytes());
         let user_id_b64 = b64url.encode(user_id_hash);
 
-        // Look up existing WebAuthn credentials for excludeCredentials / allowCredentials
-        let user_client = context.udb_client.user(&username);
-        let (taken, credentials) = match user_client.get().await {
-            Ok(_) => (
-                true,
-                user_client
-                    .pubkeys()
-                    .list_credentials()
-                    .await
-                    .unwrap_or_default(),
-            ),
-            Err(_) => (false, Vec::new()),
+        // Look up existing WebAuthn credentials for excludeCredentials /
+        // allowCredentials. The user may not be registered yet (signup
+        // flow), in which case GDDB returns None and we treat them as
+        // having no credentials.
+        let user_client = match username.parse::<ids::OrgId>() {
+            Ok(parsed) => match context.gddb_client.lookup_org(&parsed).await {
+                Ok(Some(home)) if home == context.region => {
+                    Some(context.udb_for_region(&home).await?.user(&username))
+                }
+                Ok(Some(_)) | Ok(None) => None,
+                Err(e) => {
+                    tracing::error!("Failed to look up user in GDDB: {}", e);
+                    return Err(internal_error());
+                }
+            },
+            Err(_) => None,
+        };
+        let (taken, credentials) = match &user_client {
+            Some(c) => match c.get().await {
+                Ok(_) => (
+                    true,
+                    c.pubkeys().list_credentials().await.unwrap_or_default(),
+                ),
+                Err(_) => (false, Vec::new()),
+            },
+            None => (false, Vec::new()),
         };
 
         let webauthn_creds: Vec<_> = credentials
@@ -293,7 +345,11 @@ impl Query {
 
     async fn organizations(context: &Context) -> FieldResult<Vec<Organization>> {
         let (_, user) = context.check_auth().await?;
-        let user_client = context.udb_client.user(&user.username);
+        let user_region = context.home_region_for_user(&user.username).await?;
+        let user_client = context
+            .udb_for_region(&user_region)
+            .await?
+            .user(&user.username);
 
         let org_names = user_client.list_orgs().await.map_err(|e| {
             tracing::error!("Failed to list organizations: {}", e);
@@ -327,11 +383,12 @@ impl Query {
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
-        resolve_org_home(context, &org).await?;
+        let org_region = context.home_region_for_org(&org).await?;
 
         if org.as_str() != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(org.as_str())
                 .members()
                 .contains(&user.username)
@@ -363,9 +420,20 @@ impl Mutation {
 
         let region = resolve_region(context, region)?;
 
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let name = ids::RepoQid { org, repo };
+
+        let org_region = context.home_region_for_org(&name.org).await?;
+
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
@@ -383,16 +451,6 @@ impl Mutation {
             return Err(field_error("Invalid repository name"));
         }
 
-        let org: ids::OrgId = organization
-            .parse()
-            .map_err(|_| field_error("Invalid organization name"))?;
-        let repo: ids::RepoId = repository
-            .parse()
-            .map_err(|_| field_error("Invalid repository name"))?;
-        let name = ids::RepoQid { org, repo };
-
-        resolve_org_home(context, &name.org).await?;
-
         context
             .gddb_client
             .reserve_repo(&name, &region)
@@ -406,7 +464,8 @@ impl Mutation {
             })?;
 
         let repository = context
-            .cdb_client
+            .cdb_for_region(&region)
+            .await?
             .repo(name)
             .create()
             .await
@@ -466,7 +525,7 @@ impl Mutation {
         let (openssh_key, credential_id, sign_count) =
             auth::verify_registration_proof(context, &proof, &username, now)?;
 
-        let user_client = context.udb_client.user(&username);
+        let user_client = context.udb_for_region(&region).await?.user(&username);
         let user = match user_client.register(email, fullname).await {
             Err(udb::RegisterUserError::UsernameTaken) => {
                 return Err(field_error("Username already taken"));
@@ -581,7 +640,11 @@ impl Mutation {
 
         let now = Utc::now();
 
-        let user_client = context.udb_client.user(&username);
+        let user_region = context.home_region_for_user(&username).await.map_err(|_| {
+            // Don't leak whether the user exists vs. exists-elsewhere.
+            field_error("Invalid credentials")
+        })?;
+        let user_client = context.udb_for_region(&user_region).await?.user(&username);
         let user = match user_client.get().await {
             Ok(user) => user,
             Err(udb::UserQueryError::NotFound) => {
@@ -650,7 +713,7 @@ impl Mutation {
                 }
             })?;
 
-        let org_client = context.udb_client.org(org_id.as_str());
+        let org_client = context.udb_for_region(&region).await?.org(org_id.as_str());
         org_client
             .create(&user.username)
             .await
@@ -681,9 +744,12 @@ impl Mutation {
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
-        resolve_org_home(context, &org_id).await?;
+        let org_region = context.home_region_for_org(&org_id).await?;
 
-        let org_client = context.udb_client.org(org_id.as_str());
+        let org_client = context
+            .udb_for_region(&org_region)
+            .await?
+            .org(org_id.as_str());
 
         // Verify the caller is a member of this org
         let is_member = org_client
@@ -728,9 +794,12 @@ impl Mutation {
             return Err(field_error("Cannot leave your own personal organization"));
         }
 
-        resolve_org_home(context, &org_id).await?;
+        let org_region = context.home_region_for_org(&org_id).await?;
 
-        let org_client = context.udb_client.org(org_id.as_str());
+        let org_client = context
+            .udb_for_region(&org_region)
+            .await?
+            .org(org_id.as_str());
 
         // Verify the caller is actually a member
         let is_member = org_client
@@ -773,11 +842,34 @@ impl Mutation {
     ) -> FieldResult<Deployment> {
         let (_, user) = context.check_auth().await?;
 
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let commit: ids::ObjId = commit_hash
+            .parse()
+            .map_err(|_| field_error("Invalid commit hash"))?;
+        let repo_qid = ids::RepoQid {
+            org: org.clone(),
+            repo,
+        };
+
+        let repo_region = context.home_region_for_repo(&repo_qid).await?;
+        // Org membership check uses the org's home (== repo's home for
+        // personal orgs; in general the org's CDB record may be elsewhere).
+        let org_region = context.home_region_for_org(&org).await?;
+
         // Access check: caller must be a member of the owning org (or it
         // must be their own personal org).
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
@@ -791,28 +883,13 @@ impl Mutation {
             }
         }
 
-        let org: ids::OrgId = organization
-            .parse()
-            .map_err(|_| field_error("Invalid organization name"))?;
-        let repo: ids::RepoId = repository
-            .parse()
-            .map_err(|_| field_error("Invalid repository name"))?;
-        let env: ids::EnvironmentId = environment
-            .parse()
-            .map_err(|_| field_error("Invalid environment name"))?;
-        let commit: ids::ObjId = commit_hash
-            .parse()
-            .map_err(|_| field_error("Invalid commit hash"))?;
-        let repo_qid = ids::RepoQid { org, repo };
-
-        resolve_repo_home(context, &repo_qid).await?;
-
         // Each deployment gets a fresh nonce so that re-deploying the same
         // commit creates a distinct deployment identity.
         let nonce = ids::DeploymentNonce::random();
         let deployment_id = ids::DeploymentId::new(commit, nonce);
         let client = context
-            .cdb_client
+            .cdb_for_region(&repo_region)
+            .await?
             .repo(repo_qid)
             .deployment(env, deployment_id);
 
@@ -843,9 +920,27 @@ impl Mutation {
     ) -> FieldResult<bool> {
         let (_, user) = context.check_auth().await?;
 
+        let org: ids::OrgId = organization
+            .parse()
+            .map_err(|_| field_error("Invalid organization name"))?;
+        let repo: ids::RepoId = repository
+            .parse()
+            .map_err(|_| field_error("Invalid repository name"))?;
+        let env: ids::EnvironmentId = environment
+            .parse()
+            .map_err(|_| field_error("Invalid environment name"))?;
+        let repo_qid = ids::RepoQid {
+            org: org.clone(),
+            repo,
+        };
+
+        let repo_region = context.home_region_for_repo(&repo_qid).await?;
+        let org_region = context.home_region_for_org(&org).await?;
+
         if organization != user.username {
             let is_member = context
-                .udb_client
+                .udb_for_region(&org_region)
+                .await?
                 .org(&organization)
                 .members()
                 .contains(&user.username)
@@ -859,20 +954,7 @@ impl Mutation {
             }
         }
 
-        let org: ids::OrgId = organization
-            .parse()
-            .map_err(|_| field_error("Invalid organization name"))?;
-        let repo: ids::RepoId = repository
-            .parse()
-            .map_err(|_| field_error("Invalid repository name"))?;
-        let env: ids::EnvironmentId = environment
-            .parse()
-            .map_err(|_| field_error("Invalid environment name"))?;
-        let repo_qid = ids::RepoQid { org, repo };
-
-        resolve_repo_home(context, &repo_qid).await?;
-
-        let repo_client = context.cdb_client.repo(repo_qid);
+        let repo_client = context.cdb_for_region(&repo_region).await?.repo(repo_qid);
         let mut stream = repo_client.active_deployments().await.map_err(|e| {
             tracing::error!("Failed to list active deployments: {}", e);
             internal_error()
@@ -918,22 +1000,6 @@ impl Mutation {
     ) -> FieldResult<bool> {
         let (_, user) = context.check_auth().await?;
 
-        if organization != user.username {
-            let is_member = context
-                .udb_client
-                .org(&organization)
-                .members()
-                .contains(&user.username)
-                .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
-            if !is_member {
-                return Err(field_error("Permission denied"));
-            }
-        }
-
         let org: ids::OrgId = organization
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
@@ -947,8 +1013,29 @@ impl Mutation {
             .parse()
             .map_err(|_| field_error("Invalid resource ID"))?;
 
-        let repo_qid = ids::RepoQid { org, repo };
-        resolve_repo_home(context, &repo_qid).await?;
+        let repo_qid = ids::RepoQid {
+            org: org.clone(),
+            repo,
+        };
+        let _ = context.home_region_for_repo(&repo_qid).await?;
+        let org_region = context.home_region_for_org(&org).await?;
+
+        if organization != user.username {
+            let is_member = context
+                .udb_for_region(&org_region)
+                .await?
+                .org(&organization)
+                .members()
+                .contains(&user.username)
+                .await
+                .map_err(|e| {
+                    tracing::error!("Failed to check org membership: {}", e);
+                    internal_error()
+                })?;
+            if !is_member {
+                return Err(field_error("Permission denied"));
+            }
+        }
 
         let env_qid = ids::EnvironmentQid::new(repo_qid, env);
         let namespace = env_qid.to_string();
@@ -1050,7 +1137,7 @@ fn extract_bearer_token(headers: &http::header::HeaderMap) -> Option<String> {
 /// this once and pulls out the pieces it needs.
 #[derive(Clone)]
 struct AuthState {
-    udb_client: udb::Client,
+    udb_pool: pools::UdbPool,
     region_keys: region_keys::RegionKeyCache,
     region: ids::RegionId,
 }
@@ -1073,7 +1160,8 @@ pub(crate) enum AuthOutcome {
 /// legacy path so existing tokens continue to work during the rollout.
 pub(crate) async fn authenticate_token(
     token: &str,
-    udb_client: &udb::Client,
+    udb_pool: &pools::UdbPool,
+    region: &ids::RegionId,
     region_keys: &region_keys::RegionKeyCache,
 ) -> AuthOutcome {
     if let Ok(unverified) = auth_token::parse(token) {
@@ -1086,8 +1174,8 @@ pub(crate) async fn authenticate_token(
                 return AuthOutcome::Internal;
             }
         };
-        match unverified.verify(&key) {
-            Ok(claims) => return AuthOutcome::Authenticated(udb_client.user(claims.username)),
+        let claims = match unverified.verify(&key) {
+            Ok(claims) => claims,
             Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
             Err(auth_token::VerifyError::BadSignature) => {
                 // Possibly stale cache. Drop the entry, refetch, and retry
@@ -1102,17 +1190,38 @@ pub(crate) async fn authenticate_token(
                     }
                 };
                 let reparsed = auth_token::parse(token).expect("parsed once already");
-                return match reparsed.verify(&fresh_key) {
-                    Ok(claims) => AuthOutcome::Authenticated(udb_client.user(claims.username)),
-                    Err(auth_token::VerifyError::Expired) => AuthOutcome::Expired,
-                    Err(_) => AuthOutcome::Invalid,
-                };
+                match reparsed.verify(&fresh_key) {
+                    Ok(claims) => claims,
+                    Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
+                    Err(_) => return AuthOutcome::Invalid,
+                }
             }
             Err(_) => return AuthOutcome::Invalid,
-        }
+        };
+        // The UserClient must read the user record from the user's home
+        // region UDB. In stage 4 the API still rejects non-local home
+        // regions elsewhere, so this is effectively the local UDB; in
+        // stage 5 it routes per-user.
+        let user_home = match udb_pool.for_region(&claims.issuer_region).await {
+            Ok(client) => client,
+            Err(e) => {
+                tracing::error!("Failed to connect to UDB in {}: {e}", claims.issuer_region);
+                return AuthOutcome::Internal;
+            }
+        };
+        return AuthOutcome::Authenticated(user_home.user(claims.username));
     }
 
-    match udb_client.lookup_token(token).await {
+    // Legacy opaque-token path: tokens live in the local region's UDB
+    // Redis. Identity tokens supersede this in stage 6.
+    let local_udb = match udb_pool.for_region(region).await {
+        Ok(client) => client,
+        Err(e) => {
+            tracing::error!("Failed to connect to local UDB: {e}");
+            return AuthOutcome::Internal;
+        }
+    };
+    match local_udb.lookup_token(token).await {
         Ok(user) => AuthOutcome::Authenticated(user),
         Err(udb::LookupTokenError::InvalidToken) => AuthOutcome::Invalid,
         Err(udb::LookupTokenError::Expired) => AuthOutcome::Expired,
@@ -1207,15 +1316,10 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("failed to load --udb-signing-key: {e}"))?;
     let signing_public_key = signing_identity.signing_key.verifying_key().to_bytes();
 
-    let udb_client = udb::ClientBuilder::new()
-        .known_node(ids::service_address("udb", &region, &domain))
-        .signing_identity(signing_identity)
-        .build()
-        .await?;
-    let cdb_client = cdb::ClientBuilder::new()
-        .known_node(ids::service_address("cdb", &region, &domain))
-        .build()
-        .await?;
+    let udb_pool = pools::UdbPool::new(domain.clone(), Some(signing_identity));
+    let cdb_pool = pools::CdbPool::new(domain.clone());
+    let sdb_pool = pools::SdbPool::new(domain.clone());
+
     let gddb_client = gddb::ClientBuilder::new()
         .known_node(ids::service_address("gddb", &region, &domain))
         .build()
@@ -1229,13 +1333,10 @@ async fn main() -> anyhow::Result<()> {
         .upsert_region_key(&region, &signing_public_key, 1)
         .await
         .map_err(|e| anyhow::anyhow!("failed to register UDB public key in GDDB: {e}"))?;
+
     let rdb_client = rdb::ClientBuilder::new()
         .known_node(ids::service_address("rdb", &region, &domain))
         .region(region.clone())
-        .build()
-        .await?;
-    let sdb_client = sdb::ClientBuilder::new()
-        .known_node(ids::service_address("sdb", &region, &domain))
         .build()
         .await?;
     let mut adb_builder = adb::ClientBuilder::new()
@@ -1279,16 +1380,16 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(challenger))
         .layer(Extension(rp_id))
         .layer(Extension(rp_name))
-        .layer(Extension(cdb_client))
+        .layer(Extension(cdb_pool))
+        .layer(Extension(sdb_pool))
         .layer(Extension(gddb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
-        .layer(Extension(sdb_client))
         .layer(Extension(ldb_consumer))
         .layer(Extension(ldb_publisher))
         .layer(Extension(rtq_publisher))
         .layer(Extension(AuthState {
-            udb_client,
+            udb_pool,
             region_keys: region_key_cache,
             region,
         }));
@@ -1312,11 +1413,11 @@ async fn graphql_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
-    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(cdb_pool): Extension<pools::CdbPool>,
+    Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(sdb_client): Extension<sdb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
@@ -1325,12 +1426,12 @@ async fn graphql_handler(
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
     let AuthState {
-        udb_client,
+        udb_pool,
         region_keys,
         region,
     } = auth;
     let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_client, &region_keys).await {
+        match authenticate_token(&token, &udb_pool, &region, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
@@ -1351,12 +1452,12 @@ async fn graphql_handler(
     };
 
     let ctx = Context {
-        udb_client,
-        cdb_client,
+        udb_pool,
+        cdb_pool,
+        sdb_pool,
         gddb_client,
         rdb_client,
         adb_client,
-        sdb_client,
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,
@@ -1384,11 +1485,11 @@ async fn graphql_ws_handler(
     Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
-    Extension(cdb_client): Extension<cdb::Client>,
+    Extension(cdb_pool): Extension<pools::CdbPool>,
+    Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(sdb_client): Extension<sdb::Client>,
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
@@ -1396,12 +1497,12 @@ async fn graphql_ws_handler(
     headers: http::header::HeaderMap,
 ) -> Response {
     let AuthState {
-        udb_client,
+        udb_pool,
         region_keys,
         region,
     } = auth;
     let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_client, &region_keys).await {
+        match authenticate_token(&token, &udb_pool, &region, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
@@ -1415,15 +1516,16 @@ async fn graphql_ws_handler(
         None
     };
 
-    let udb_for_ws = udb_client.clone();
+    let udb_pool_for_ws = udb_pool.clone();
+    let region_for_ws = region.clone();
     let region_keys_for_ws = region_keys.clone();
     let context = Context {
-        udb_client,
-        cdb_client,
+        udb_pool,
+        cdb_pool,
+        sdb_pool,
         gddb_client,
         rdb_client,
         adb_client,
-        sdb_client,
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,
@@ -1440,7 +1542,8 @@ async fn graphql_ws_handler(
                 socket,
                 schema,
                 context,
-                udb_for_ws,
+                udb_pool_for_ws,
+                region_for_ws,
                 region_keys_for_ws,
             )
         })
