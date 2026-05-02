@@ -1,13 +1,14 @@
 # Skyr User Database (UDB)
 
-UDB is a library that wraps a Redis client and exposes a typed API for user management, authentication, and SSH key storage.
+UDB is an internal library that wraps a Redis client and exposes a typed API for user management, credential storage, and identity-token signing.
 
 ## Role in the Architecture
 
-UDB provides the user identity layer for Skyr. It is used by [SCS](../scs/) for SSH authentication and by [API](../api/) for account management and bearer token validation.
+UDB is wrapped exclusively by [IAS](../ias/) — it is no longer a direct dependency of any other Skyr binary. The API edge talks to IAS over gRPC; IAS talks to UDB in-process. Long-term, UDB is expected to be merged into IAS.
 
 ```
-SCS → UDB ← API
+API edge ──gRPC──▶ IAS ──▶ UDB (Redis)
+                       └─▶ Ed25519 signing
 ```
 
 ## Capabilities
@@ -16,8 +17,9 @@ SCS → UDB ← API
 |-----------|-------------|
 | Register/fetch users | Create and look up user accounts |
 | Set full name | Update optional user display name |
-| Issue/revoke bearer tokens | Short-lived tokens (15-minute TTL) for API authentication |
-| Add/check/remove SSH pubkeys | Per-user SSH public key fingerprint management |
+| Issue identity tokens | Sign Ed25519 identity tokens (see [`auth_token`](../auth_token/)) |
+| Add/check/remove credentials | Per-user public key + WebAuthn credential management |
+| Org membership | Create orgs, list/add/remove members |
 
 ## Key Prefixes
 
@@ -25,15 +27,21 @@ UDB uses the following Redis key prefixes:
 
 | Prefix | Purpose |
 |--------|---------|
-| `u:` | User hashes |
-| `p:` | Per-user public key sets |
-| `t:` | Bearer tokens |
+| `u:`  | User hashes |
+| `p:`  | Per-user public key fingerprint sets |
+| `c:`  | Per-user credential records (public_key, credential_id, sign_count) |
+| `o:`  | Organization records |
+| `m:`  | Per-org member sets |
+| `om:` | Per-user org sets |
+| `ns:` | Namespace reservation (org or user) |
 
 ## Client Construction
 
-Clients are created via `ClientBuilder` and scoped per-user: `Client` → `.user(username)` → `UserClient` → `.tokens()` / `.pubkeys()` for token and key operations.
+Clients are created via `ClientBuilder` and scoped per-user/per-org: `Client` → `.user(username)` → `UserClient` → `.pubkeys()` for credential operations; `Client` → `.org(name)` → `OrgClient` → `.members()` for membership operations.
+
+A `SigningIdentity` (Ed25519 secret + region label) can be attached to the client builder to enable `issue_identity_token`.
 
 ## Related Crates
 
-- [SCS](../scs/) — validates SSH connections against stored pubkeys
-- [API](../api/) — issues tokens on signup, validates tokens on requests
+- [IAS](../ias/) — only caller; serves the gRPC surface that the API edge consumes.
+- [auth_token](../auth_token/) — wire format and Ed25519 primitives used by `issue_identity_token`.
