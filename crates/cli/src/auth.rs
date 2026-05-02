@@ -72,7 +72,7 @@ pub(crate) async fn signin_with_key(
     username: &str,
     key_path: &Path,
 ) -> anyhow::Result<String> {
-    let proof = build_auth_proof(client, endpoint, username, key_path).await?;
+    let proof = build_auth_proof(client, endpoint, username, key_path, None).await?;
     let data = graphql_query_unauth::<Signin>(
         client,
         endpoint,
@@ -86,11 +86,14 @@ pub(crate) async fn signin_with_key(
     Ok(data.signin.token)
 }
 
+/// Sign an auth challenge for `username`. `region` is required for users
+/// that aren't yet registered in GDDB (signup flow); ignored otherwise.
 pub(crate) async fn build_auth_proof(
     client: &reqwest::Client,
     endpoint: &str,
     username: &str,
     key_path: &Path,
+    region: Option<&str>,
 ) -> anyhow::Result<String> {
     let key = Zeroizing::new(
         tokio::fs::read_to_string(key_path)
@@ -100,7 +103,7 @@ pub(crate) async fn build_auth_proof(
     let private_key = russh::keys::ssh_key::PrivateKey::from_openssh(key.as_str())
         .context("failed to parse private key")?;
 
-    let challenge = query_auth_challenge(client, endpoint, username).await?;
+    let challenge = query_auth_challenge(client, endpoint, username, region).await?;
     let signature = private_key
         .sign(
             SIGNATURE_NAMESPACE,
@@ -117,12 +120,14 @@ async fn query_auth_challenge(
     client: &reqwest::Client,
     endpoint: &str,
     username: &str,
+    region: Option<&str>,
 ) -> anyhow::Result<String> {
     let data = graphql_query_unauth::<AuthChallenge>(
         client,
         endpoint,
         auth_challenge::Variables {
             username: username.to_owned(),
+            region: region.map(str::to_owned),
         },
         "auth challenge",
     )
@@ -509,7 +514,7 @@ async fn run_signup(
     let endpoint = graphql_endpoint(ctx.api_url());
     let key_path = expand_tilde(key)?;
 
-    let proof = build_auth_proof(&client, &endpoint, username, &key_path).await?;
+    let proof = build_auth_proof(&client, &endpoint, username, &key_path, Some(region)).await?;
 
     let data = graphql_query_unauth::<Signup>(
         &client,
