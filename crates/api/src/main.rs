@@ -39,11 +39,11 @@ pub(crate) struct Context {
     pub(crate) ias_pool: pools::IasPool,
     pub(crate) cdb_pool: pools::CdbPool,
     pub(crate) sdb_pool: pools::SdbPool,
+    pub(crate) ldb_consumer_pool: pools::LdbConsumerPool,
+    pub(crate) ldb_publisher_pool: pools::LdbPublisherPool,
     pub(crate) gddb_client: gddb::Client,
     pub(crate) rdb_client: rdb::Client,
     pub(crate) adb_client: adb::Client,
-    pub(crate) ldb_consumer: ldb::Consumer,
-    pub(crate) ldb_publisher: ldb::Publisher,
     pub(crate) rtq_publisher: rtq::Publisher,
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
@@ -110,6 +110,32 @@ impl Context {
             tracing::error!("Failed to connect to SDB in {}: {}", region, e);
             internal_error()
         })
+    }
+
+    pub(crate) async fn ldb_consumer_for_region(
+        &self,
+        region: &ids::RegionId,
+    ) -> FieldResult<ldb::Consumer> {
+        self.ldb_consumer_pool
+            .for_region(region)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to LDB consumer in {}: {}", region, e);
+                internal_error()
+            })
+    }
+
+    pub(crate) async fn ldb_publisher_for_region(
+        &self,
+        region: &ids::RegionId,
+    ) -> FieldResult<ldb::Publisher> {
+        self.ldb_publisher_pool
+            .for_region(region)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to connect to LDB publisher in {}: {}", region, e);
+                internal_error()
+            })
     }
 }
 
@@ -1011,27 +1037,15 @@ impl Mutation {
             resource_id,
         };
 
-        if let Ok(publisher) = context
-            .ldb_publisher
-            .namespace(resource_qid.to_string())
-            .await
+        let target_region = resource_ref.resource_id.region().clone();
+        if let Ok(publisher) = context.ldb_publisher_for_region(&target_region).await
+            && let Ok(namespace) = publisher.namespace(resource_qid.to_string()).await
         {
-            publisher
+            namespace
                 .info(format!("Manual deletion requested by {}", auth.username))
                 .await;
         }
-        if let Ok(publisher) = context.ldb_publisher.namespace(owner_qid.to_string()).await {
-            publisher
-                .info(format!(
-                    "Manual deletion of {}:{} requested by {}",
-                    resource_ref.resource_type(),
-                    resource_ref.resource_name(),
-                    auth.username,
-                ))
-                .await;
-        }
 
-        let target_region = resource_ref.resource_id.region().clone();
         let message = rtq::Message::Destroy(rtq::DestroyMessage {
             resource: resource_ref,
             deployment_id: owner_qid.deployment,
@@ -1237,18 +1251,8 @@ async fn main() -> anyhow::Result<()> {
         adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb_client = adb_builder.build().await?;
-    let ldb_brokers = format!(
-        "{}:9092",
-        ids::service_address("ldb", &gddb_bootstrap_region, &domain)
-    );
-    let ldb_consumer = ldb::ClientBuilder::new()
-        .brokers(ldb_brokers.clone())
-        .build_consumer()
-        .await?;
-    let ldb_publisher = ldb::ClientBuilder::new()
-        .brokers(ldb_brokers)
-        .build_publisher()
-        .await?;
+    let ldb_consumer_pool = pools::LdbConsumerPool::new(domain.clone());
+    let ldb_publisher_pool = pools::LdbPublisherPool::new(domain.clone());
     let rtq_publisher = rtq::Publisher::new(domain.clone());
     let region_key_cache = region_keys::RegionKeyCache::new(ias_pool.clone());
     let rp_id = Arc::new(cli.rp_id);
@@ -1273,8 +1277,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(gddb_client))
         .layer(Extension(rdb_client))
         .layer(Extension(adb_client))
-        .layer(Extension(ldb_consumer))
-        .layer(Extension(ldb_publisher))
+        .layer(Extension(ldb_consumer_pool))
+        .layer(Extension(ldb_publisher_pool))
         .layer(Extension(rtq_publisher))
         .layer(Extension(AuthState {
             ias_pool,
@@ -1304,8 +1308,8 @@ async fn graphql_handler(
     Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(ldb_consumer): Extension<ldb::Consumer>,
-    Extension(ldb_publisher): Extension<ldb::Publisher>,
+    Extension(ldb_consumer_pool): Extension<pools::LdbConsumerPool>,
+    Extension(ldb_publisher_pool): Extension<pools::LdbPublisherPool>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(auth): Extension<AuthState>,
     headers: http::header::HeaderMap,
@@ -1340,11 +1344,11 @@ async fn graphql_handler(
         ias_pool,
         cdb_pool,
         sdb_pool,
+        ldb_consumer_pool,
+        ldb_publisher_pool,
         gddb_client,
         rdb_client,
         adb_client,
-        ldb_consumer,
-        ldb_publisher,
         rtq_publisher,
         rp_id,
         rp_name,
@@ -1372,8 +1376,8 @@ async fn graphql_ws_handler(
     Extension(gddb_client): Extension<gddb::Client>,
     Extension(rdb_client): Extension<rdb::Client>,
     Extension(adb_client): Extension<adb::Client>,
-    Extension(ldb_consumer): Extension<ldb::Consumer>,
-    Extension(ldb_publisher): Extension<ldb::Publisher>,
+    Extension(ldb_consumer_pool): Extension<pools::LdbConsumerPool>,
+    Extension(ldb_publisher_pool): Extension<pools::LdbPublisherPool>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
     Extension(auth): Extension<AuthState>,
     headers: http::header::HeaderMap,
@@ -1402,11 +1406,11 @@ async fn graphql_ws_handler(
         ias_pool,
         cdb_pool,
         sdb_pool,
+        ldb_consumer_pool,
+        ldb_publisher_pool,
         gddb_client,
         rdb_client,
         adb_client,
-        ldb_consumer,
-        ldb_publisher,
         rtq_publisher,
         rp_id,
         rp_name,

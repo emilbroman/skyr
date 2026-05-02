@@ -24,7 +24,7 @@ impl Subscription {
         let deployment_qid: ids::DeploymentQid = deployment_id
             .parse()
             .map_err(|_| field_error("invalid deployment id"))?;
-        let _ = context
+        let repo_region = context
             .home_region_for_repo(deployment_qid.repo_qid())
             .await?;
         let org_id = deployment_qid.repo_qid().org.clone();
@@ -57,14 +57,11 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let namespace = context
-            .ldb_consumer
-            .namespace(deployment_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
-                field_error("failed to tail logs")
-            })?;
+        let consumer = context.ldb_consumer_for_region(&repo_region).await?;
+        let namespace = consumer.namespace(deployment_id).await.map_err(|e| {
+            tracing::error!("Failed to prepare deployment logs subscription consumer: {e}");
+            field_error("failed to tail logs")
+        })?;
         let mut inner = namespace
             .tail(ldb::TailConfig {
                 follow: true,
@@ -136,7 +133,7 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let consumer = context.ldb_consumer.clone();
+        let consumer = context.ldb_consumer_for_region(&repo_region).await?;
         let cdb_client = context.cdb_for_region(&repo_region).await?;
 
         Ok(Box::pin(async_stream::stream! {
@@ -234,9 +231,7 @@ impl Subscription {
         let parsed_qid: ids::ResourceQid = resource_qid
             .parse()
             .map_err(|_| field_error("invalid resource QID"))?;
-        let _ = context
-            .home_region_for_repo(&parsed_qid.environment_qid().repo)
-            .await?;
+        let resource_region = parsed_qid.resource().region().clone();
         let org_id = parsed_qid.environment_qid().repo.org.clone();
         let organization = org_id.to_string();
         let org_region = context.home_region_for_org(&org_id).await?;
@@ -267,8 +262,8 @@ impl Subscription {
 
         let initial_amount = initial_amount.unwrap_or(1000).max(0) as u64;
 
-        let namespace = context
-            .ldb_consumer
+        let consumer = context.ldb_consumer_for_region(&resource_region).await?;
+        let namespace = consumer
             .namespace(resource_qid.clone())
             .await
             .map_err(|e| {
@@ -312,10 +307,12 @@ impl Subscription {
 
 pub(crate) async fn load_logs(
     context: &Context,
+    region: &ids::RegionId,
     namespace: String,
     amount: u64,
 ) -> anyhow::Result<Vec<Log>> {
-    let namespace = context.ldb_consumer.namespace(namespace).await?;
+    let consumer = context.ldb_consumer_pool.for_region(region).await?;
+    let namespace = consumer.namespace(namespace).await?;
     let mut stream = namespace
         .tail(ldb::TailConfig {
             follow: false,
