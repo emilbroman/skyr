@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use zeroize::Zeroizing;
 
+use auth_token::parse as parse_identity_token;
+
 use crate::context::Context as CliContext;
 use crate::output::OutputFormat;
 
@@ -15,8 +17,12 @@ pub(crate) type JSON = serde_json::Value;
 
 const SIGNATURE_NAMESPACE: &str = "skyr-auth-challenge";
 
-/// Expected minimum length for a valid token (8 hex chars + separator + payload).
-const MIN_TOKEN_LENGTH: usize = 10;
+/// Expected minimum length for a valid token. The current `auth_token` wire
+/// format is two URL-safe base64 segments separated by `.` (payload at least
+/// 36 bytes when encoded, signature 86 bytes), so any plausible token is far
+/// longer than this — the bound is just a sanity check before we hand bytes
+/// to the parser or the HTTP header layer.
+const MIN_TOKEN_LENGTH: usize = 16;
 
 /// Maximum token length to prevent abuse when constructing HTTP headers.
 const MAX_TOKEN_LENGTH: usize = 4096;
@@ -332,37 +338,23 @@ pub(crate) async fn read_user_config() -> anyhow::Result<UserConfig> {
 /// Parse the expiry prefix from a token.
 ///
 /// Token format: `<8 hex digits for expiry>.<payload>`
-struct TokenExpiry {
-    expiry_epoch: u32,
-}
-
-impl TokenExpiry {
-    fn parse(token: &str) -> anyhow::Result<Self> {
-        if token.len() < MIN_TOKEN_LENGTH {
-            return Err(anyhow!("token is too short to contain expiry prefix"));
-        }
-        let (expiry_hex, rest) = token.split_at(8);
-        if !rest.starts_with('.') {
-            return Err(anyhow!(
-                "token has invalid separator (expected '.' at position 8)"
-            ));
-        }
-        let expiry_epoch =
-            u32::from_str_radix(expiry_hex, 16).context("token expiry is not valid hex")?;
-        Ok(Self { expiry_epoch })
-    }
-
-    fn is_expired(&self) -> anyhow::Result<bool> {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("system clock before unix epoch")?
-            .as_secs();
-        Ok(now >= u64::from(self.expiry_epoch))
-    }
-}
-
+/// Decide whether a cached token has expired. We only inspect the `expires_at`
+/// claim — the signature is verified by the API on every request, so the CLI
+/// has no public key to verify against and must trust the unverified claims
+/// for this check. A lying token gets rejected by the server anyway, so the
+/// worst case from trusting a forged `expires_at` is one stale request before
+/// the CLI re-signs in.
 fn is_expired_token(token: &str) -> anyhow::Result<bool> {
-    TokenExpiry::parse(token)?.is_expired()
+    if token.len() < MIN_TOKEN_LENGTH {
+        return Err(anyhow!("token is too short to be valid"));
+    }
+    let parsed = parse_identity_token(token).map_err(|e| anyhow!("failed to parse token: {e}"))?;
+    let expires_at = parsed.unverified_claims().expires_at;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock before unix epoch")?
+        .as_secs() as i64;
+    Ok(now >= expires_at)
 }
 
 fn token_cache_path(api_url: &str) -> anyhow::Result<PathBuf> {
