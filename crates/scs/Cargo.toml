@@ -15,6 +15,7 @@ tokio = { version = "1.49.0", features = ["full"] }
 tokio-stream = "0.1"
 ids = { path = "../ids", features = ["rand"] }
 cdb = { path = "../cdb" }
+gddb = { path = "../gddb" }
 rdb = { path = "../rdb" }
 scop = { path = "../scop" }
 sclc = { path = "../sclc" }

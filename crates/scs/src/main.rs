@@ -15,7 +15,7 @@ use russh::{
 use tokio::{sync::mpsc, task};
 use tracing::Instrument;
 
-use auth::{ensure_repo_access, ensure_repo_exists};
+use auth::{ensure_repo_access, ensure_repo_exists, ensure_repo_in_region};
 use git::CommandHandler;
 use port_forward::handle_port_forward;
 
@@ -30,6 +30,9 @@ enum Program {
 
         #[clap(long = "cdb-hostname", default_value = "localhost")]
         cdb_hostname: String,
+
+        #[clap(long = "gddb-hostname", default_value = "localhost")]
+        gddb_hostname: String,
 
         #[clap(long = "udb-hostname", default_value = "localhost")]
         udb_hostname: String,
@@ -64,6 +67,7 @@ async fn main() -> anyhow::Result<()> {
             address,
             key,
             cdb_hostname,
+            gddb_hostname,
             udb_hostname,
             rdb_hostname,
             node_registry_hostname,
@@ -75,6 +79,10 @@ async fn main() -> anyhow::Result<()> {
 
             let client = cdb::ClientBuilder::new()
                 .known_node(cdb_hostname)
+                .build()
+                .await?;
+            let gddb_client = gddb::ClientBuilder::new()
+                .known_node(gddb_hostname)
                 .build()
                 .await?;
             let udb_client = udb::ClientBuilder::new()
@@ -94,9 +102,11 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!("listening on {address}");
             ConfigServer {
                 client,
+                gddb_client,
                 udb_client,
                 rdb_client,
                 node_registry_redis,
+                region,
             }
             .run_on_address(
                 Arc::new(Config {
@@ -136,9 +146,11 @@ impl std::error::Error for UserFacingError {}
 
 struct ConfigServer {
     client: cdb::Client,
+    gddb_client: gddb::Client,
     udb_client: udb::Client,
     rdb_client: rdb::Client,
     node_registry_redis: redis::aio::MultiplexedConnection,
+    region: ids::RegionId,
 }
 
 impl Server for ConfigServer {
@@ -151,9 +163,11 @@ impl Server for ConfigServer {
             channels: Default::default(),
             user: None,
             client: self.client.clone(),
+            gddb_client: self.gddb_client.clone(),
             udb_client: self.udb_client.clone(),
             rdb_client: self.rdb_client.clone(),
             node_registry_redis: self.node_registry_redis.clone(),
+            region: self.region.clone(),
         }
     }
 }
@@ -192,9 +206,11 @@ struct ConfigHandler {
     channels: BTreeMap<ChannelId, mpsc::Sender<ChannelMessage>>,
     user: Option<udb::User>,
     client: cdb::Client,
+    gddb_client: gddb::Client,
     udb_client: udb::Client,
     rdb_client: rdb::Client,
     node_registry_redis: redis::aio::MultiplexedConnection,
+    region: ids::RegionId,
 }
 
 impl Handler for ConfigHandler {
@@ -256,9 +272,11 @@ impl Handler for ConfigHandler {
         let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
         let user = self.user.clone();
         let client = self.client.clone();
+        let gddb_client = self.gddb_client.clone();
         let udb_client = self.udb_client.clone();
         let rdb_client = self.rdb_client.clone();
         let node_registry_redis = self.node_registry_redis.clone();
+        let region = self.region.clone();
         task::spawn(
             async move {
                 // Wait for the command message
@@ -276,7 +294,13 @@ impl Handler for ConfigHandler {
                             // 32-message buffer fills, which otherwise deadlocks any
                             // push or fetch larger than ~32 SSH data packets.
                             drop(rx);
-                            if let Err(err) = ensure_repo_access(user, repo, &udb_client).await {
+                            if let Err(err) =
+                                ensure_repo_in_region(&gddb_client, &region, repo).await
+                            {
+                                Err(err)
+                            } else if let Err(err) =
+                                ensure_repo_access(user, repo, &udb_client).await
+                            {
                                 Err(err)
                             } else if let Err(err) = ensure_repo_exists(&client, repo).await {
                                 Err(err)
