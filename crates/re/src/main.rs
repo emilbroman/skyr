@@ -31,15 +31,6 @@ use crate::thresholds::ThresholdTracker;
 #[derive(Parser)]
 enum Program {
     Daemon {
-        #[clap(long = "rq-hostname", default_value = "localhost")]
-        rq_hostname: String,
-
-        #[clap(long = "sdb-hostname", default_value = "localhost")]
-        sdb_hostname: String,
-
-        #[clap(long = "nq-hostname", default_value = "localhost")]
-        nq_hostname: String,
-
         #[clap(long = "worker-index", default_value_t = 0)]
         worker_index: u16,
 
@@ -48,6 +39,17 @@ enum Program {
 
         #[clap(long = "local-workers", default_value_t = 1)]
         local_workers: u16,
+
+        /// Skyr region this RE serves (e.g. `stockholm`). Validated as
+        /// `[a-z]+`. Used to resolve peer service addresses.
+        #[clap(long = "region")]
+        region: String,
+
+        /// DNS suffix used to construct region-scoped Skyr peer service
+        /// addresses. Combined with `--region`, peers are resolved as
+        /// `<service>.<region>.int.<domain>` (e.g. `rq.stockholm.int.skyr.cloud`).
+        #[clap(long = "domain")]
+        domain: String,
     },
 }
 
@@ -62,14 +64,20 @@ async fn main() -> anyhow::Result<()> {
 
     match Program::parse() {
         Program::Daemon {
-            rq_hostname,
-            sdb_hostname,
-            nq_hostname,
             worker_index,
             worker_count,
             local_workers,
+            region,
+            domain,
         } => {
-            tracing::info!("starting reporting engine daemon");
+            let region: ids::RegionId = region
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
+            let domain: ids::Domain = domain
+                .parse()
+                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+
+            tracing::info!(%region, "starting reporting engine daemon");
 
             if local_workers == 0 {
                 anyhow::bail!("--local-workers must be at least 1");
@@ -86,11 +94,17 @@ async fn main() -> anyhow::Result<()> {
 
             let cfg = Arc::new(WorkerConfig::from_env());
 
-            let rq_uri = format!("amqp://{}:5672/%2f", rq_hostname);
-            let nq_uri = format!("amqp://{}:5672/%2f", nq_hostname);
+            let rq_uri = format!(
+                "amqp://{}:5672/%2f",
+                ids::service_address("rq", &region, &domain)
+            );
+            let nq_uri = format!(
+                "amqp://{}:5672/%2f",
+                ids::service_address("nq", &region, &domain)
+            );
 
             let sdb_client = sdb::ClientBuilder::new()
-                .known_node(&sdb_hostname)
+                .known_node(ids::service_address("sdb", &region, &domain))
                 .build()
                 .await?;
             let nq_publisher = nq::ClientBuilder::new()
