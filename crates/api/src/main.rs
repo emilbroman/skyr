@@ -1084,6 +1084,12 @@ struct Cli {
     /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
     #[arg(long)]
     domain: String,
+    /// Path to the 32-byte raw Ed25519 secret key used by this region's UDB
+    /// to sign identity tokens. Generate with e.g.
+    /// `head -c 32 /dev/urandom > udb-signing.key`. The corresponding
+    /// public key is upserted into GDDB's `region_keys` table on startup.
+    #[arg(long)]
+    udb_signing_key: std::path::PathBuf,
 }
 
 #[tokio::main]
@@ -1118,8 +1124,13 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
 
+    let signing_identity = udb::SigningIdentity::load(region.clone(), &cli.udb_signing_key)
+        .map_err(|e| anyhow::anyhow!("failed to load --udb-signing-key: {e}"))?;
+    let signing_public_key = signing_identity.signing_key.verifying_key().to_bytes();
+
     let udb_client = udb::ClientBuilder::new()
         .known_node(ids::service_address("udb", &region, &domain))
+        .signing_identity(signing_identity)
         .build()
         .await?;
     let cdb_client = cdb::ClientBuilder::new()
@@ -1130,6 +1141,15 @@ async fn main() -> anyhow::Result<()> {
         .known_node(ids::service_address("gddb", &region, &domain))
         .build()
         .await?;
+
+    // Publish this region's identity-token public key into GDDB so other
+    // regions' API edges can verify tokens we issue. Idempotent — safe to
+    // re-run on every startup. `generation = 1` until rotation is
+    // implemented.
+    gddb_client
+        .upsert_region_key(&region, &signing_public_key, 1)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to register UDB public key in GDDB: {e}"))?;
     let rdb_client = rdb::ClientBuilder::new()
         .known_node(ids::service_address("rdb", &region, &domain))
         .region(region.clone())

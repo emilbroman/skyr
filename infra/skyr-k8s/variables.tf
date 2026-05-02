@@ -258,6 +258,13 @@ variable "api_challenge_salt" {
   sensitive   = true
 }
 
+variable "udb_signing_key" {
+  type        = string
+  description = "Base64-encoded 32-byte Ed25519 secret key this region's UDB uses to sign identity tokens. When null, a random key is generated. The corresponding public key is upserted into GDDB's region_keys table on every API startup."
+  default     = null
+  sensitive   = true
+}
+
 # --- Networking ---
 
 variable "cluster_cidr" {
