@@ -17,7 +17,7 @@ deps:
 	@while [ "$$(podman inspect -f '{{.State.Health.Status}}' skyr_rabbitmq_1 2>/dev/null)" != "healthy" ]; do sleep 2; done
 
 up: image scoc-image web-image deps
-	podman compose -f dev/podman-compose.yml up -d --force-recreate web api scs de-0 de-1 rte-0 rte-1 rte-2 re-0 re-1 ne plugin-std-random plugin-std-time plugin-std-artifact plugin-std-crypto plugin-std-dns plugin-std-http plugin-std-container scoc-1 scoc-2 scoc-3
+	podman compose -f dev/podman-compose.yml up -d --force-recreate web ias api scs de-0 de-1 rte-0 rte-1 rte-2 re-0 re-1 ne plugin-std-random plugin-std-time plugin-std-artifact plugin-std-crypto plugin-std-dns plugin-std-http plugin-std-container scoc-1 scoc-2 scoc-3
 
 down:
 	podman compose -f dev/podman-compose.yml down
@@ -48,10 +48,10 @@ deps-multi-region:
 
 up-multi-region: image deps-multi-region
 	podman compose -f dev/podman-compose.multi-region.yml up -d --force-recreate \
-		api-loca scs-loca de-loca re-loca rte-loca ne-loca \
+		ias-loca api-loca scs-loca de-loca re-loca rte-loca ne-loca \
 		plugin-std-random-loca plugin-std-artifact-loca plugin-std-crypto-loca \
 		plugin-std-time-loca plugin-std-http-loca \
-		api-locb scs-locb de-locb re-locb rte-locb ne-locb \
+		ias-locb api-locb scs-locb de-locb re-locb rte-locb ne-locb \
 		plugin-std-random-locb plugin-std-artifact-locb plugin-std-crypto-locb \
 		plugin-std-time-locb plugin-std-http-locb
 

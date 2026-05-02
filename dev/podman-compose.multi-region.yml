@@ -119,6 +119,42 @@ services:
         aliases:
           - udb.loca.int.test
 
+  ias-loca:
+    image: skyr:latest
+    entrypoint: ["/ias"]
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "50100",
+        "--region",
+        "loca",
+        "--udb-host",
+        "redis-loca",
+        "--signing-key",
+        "/udb-signing.key",
+      ]
+    environment:
+      # Per-region challenge salt — distinct from `locb`'s salt so an
+      # `loca`-issued challenge won't accidentally validate against
+      # `locb`'s frame derivation, which is exactly the cross-region
+      # property the harness exists to exercise.
+      SKYR_CHALLENGE_SALT: loca-dev-challenge-salt
+    restart: always
+    volumes:
+      # Per-region signing keys: each region must own a distinct Ed25519
+      # secret so cross-region token verification actually exercises the
+      # IAS-side `GetVerifyingKey` lookup instead of any cached self-region
+      # key.
+      - ./udb-signing.loca.key:/udb-signing.key:ro
+    networks:
+      default:
+        aliases:
+          - ias.loca.int.test
+    depends_on:
+      - redis-loca
+
   redpanda-loca:
     image: redpandadata/redpanda:v25.3.7
     command:
@@ -155,10 +191,10 @@ services:
         "0.0.0.0",
         "--port",
         "8080",
-        "--region",
-        "loca",
         "--domain",
         "test",
+        "--gddb-bootstrap-region",
+        "loca",
         "--adb-endpoint-url",
         "http://minio:9000",
         "--adb-external-url",
@@ -169,19 +205,13 @@ services:
         "minioadmin",
         "--adb-secret-access-key",
         "minioadmin",
-        "--challenge-salt",
-        "local-dev-challenge-salt",
-        "--udb-signing-key",
-        "/udb-signing.key",
       ]
     restart: always
     ports:
       - 8080:8080
-    volumes:
-      # Per-region signing keys: each region must own a distinct Ed25519
-      # secret so the cross-region verify path actually exercises
-      # `region_keys[issuer]` instead of any cached self-region key.
-      - ./udb-signing.loca.key:/udb-signing.key:ro
+    depends_on:
+      - ias-loca
+      - ias-locb
 
   scs-loca:
     image: skyr:latest
@@ -381,6 +411,34 @@ services:
         aliases:
           - udb.locb.int.test
 
+  ias-locb:
+    image: skyr:latest
+    entrypoint: ["/ias"]
+    command:
+      [
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "50100",
+        "--region",
+        "locb",
+        "--udb-host",
+        "redis-locb",
+        "--signing-key",
+        "/udb-signing.key",
+      ]
+    environment:
+      SKYR_CHALLENGE_SALT: locb-dev-challenge-salt
+    restart: always
+    volumes:
+      - ./udb-signing.locb.key:/udb-signing.key:ro
+    networks:
+      default:
+        aliases:
+          - ias.locb.int.test
+    depends_on:
+      - redis-locb
+
   redpanda-locb:
     image: redpandadata/redpanda:v25.3.7
     command:
@@ -417,10 +475,10 @@ services:
         "0.0.0.0",
         "--port",
         "8081",
-        "--region",
-        "locb",
         "--domain",
         "test",
+        "--gddb-bootstrap-region",
+        "locb",
         "--adb-endpoint-url",
         "http://minio:9000",
         "--adb-external-url",
@@ -431,16 +489,13 @@ services:
         "minioadmin",
         "--adb-secret-access-key",
         "minioadmin",
-        "--challenge-salt",
-        "local-dev-challenge-salt",
-        "--udb-signing-key",
-        "/udb-signing.key",
       ]
     restart: always
     ports:
       - 8081:8081
-    volumes:
-      - ./udb-signing.locb.key:/udb-signing.key:ro
+    depends_on:
+      - ias-loca
+      - ias-locb
 
   scs-locb:
     image: skyr:latest
