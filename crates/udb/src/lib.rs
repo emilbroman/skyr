@@ -1,9 +1,11 @@
 use base64::Engine;
-use rand::{Rng, SeedableRng};
+use ed25519_dalek::SigningKey;
+use rand::{Rng, RngCore, SeedableRng};
 use redis::{AsyncCommands, Client as RedisClient};
 use sha2::Digest;
 use ssh_key::PublicKey;
-use std::time::SystemTime;
+use std::path::Path;
+use std::time::{Duration, SystemTime};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -15,9 +17,61 @@ pub enum ConnectError {
     RedisConnection(#[source] redis::RedisError),
 }
 
+/// Per-region identity used to mint signed identity tokens.
+///
+/// The `region` is the issuer claim stamped onto every token this UDB
+/// produces; `signing_key` is the corresponding Ed25519 private key whose
+/// public counterpart is published into GDDB's `region_keys` table.
+#[derive(Clone)]
+pub struct SigningIdentity {
+    pub region: ids::RegionId,
+    pub signing_key: SigningKey,
+}
+
+impl SigningIdentity {
+    /// Load a signing identity from a 32-byte raw secret-key file.
+    ///
+    /// The file format is intentionally minimal: 32 bytes of Ed25519 secret
+    /// scalar with no encoding wrapper. Operators generate one with e.g.
+    /// `head -c 32 /dev/urandom > udb-signing.key`.
+    pub fn load(
+        region: ids::RegionId,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, LoadSigningIdentityError> {
+        let bytes = std::fs::read(path.as_ref()).map_err(LoadSigningIdentityError::Read)?;
+        if bytes.len() != 32 {
+            return Err(LoadSigningIdentityError::InvalidKeyLength(bytes.len()));
+        }
+        let key_bytes: [u8; 32] = bytes.try_into().expect("length checked above");
+        Ok(Self {
+            region,
+            signing_key: SigningKey::from_bytes(&key_bytes),
+        })
+    }
+}
+
+#[derive(Error, Debug)]
+pub enum LoadSigningIdentityError {
+    #[error("failed to read signing key file: {0}")]
+    Read(#[source] std::io::Error),
+
+    #[error("signing key file must be exactly 32 bytes (got {0})")]
+    InvalidKeyLength(usize),
+}
+
+#[derive(Error, Debug)]
+pub enum IssueIdentityTokenError {
+    #[error("UDB has no signing identity configured")]
+    NoSigningIdentity,
+
+    #[error("system clock error: {0}")]
+    Clock(#[from] std::time::SystemTimeError),
+}
+
 #[derive(Default)]
 pub struct ClientBuilder {
     known_nodes: Vec<String>,
+    signing_identity: Option<SigningIdentity>,
 }
 
 impl ClientBuilder {
@@ -27,6 +81,14 @@ impl ClientBuilder {
 
     pub fn known_node(mut self, hostname: impl AsRef<str>) -> Self {
         self.known_nodes.push(hostname.as_ref().to_owned());
+        self
+    }
+
+    /// Attach a [`SigningIdentity`] so this UDB can issue identity tokens
+    /// (see [`Client::issue_identity_token`]). Without one, identity-token
+    /// issuance returns [`IssueIdentityTokenError::NoSigningIdentity`].
+    pub fn signing_identity(mut self, identity: SigningIdentity) -> Self {
+        self.signing_identity = Some(identity);
         self
     }
 
@@ -47,6 +109,7 @@ impl ClientBuilder {
         Ok(Client {
             conn,
             rng: rand::rngs::StdRng::from_os_rng(),
+            signing_identity: self.signing_identity.clone(),
         })
     }
 }
@@ -172,6 +235,7 @@ pub struct Org {
 pub struct Client {
     conn: redis::aio::MultiplexedConnection,
     rng: rand::rngs::StdRng,
+    signing_identity: Option<SigningIdentity>,
 }
 
 const TOKEN_TTL_SECONDS: u64 = 86400;
@@ -259,6 +323,47 @@ impl Client {
             client: self.clone(),
             name: name.into(),
         }
+    }
+
+    /// Public-key bytes of the configured signing identity, if any.
+    ///
+    /// Used by the binary that owns this UDB to publish the key into GDDB's
+    /// `region_keys` table on startup, so other regions can verify tokens
+    /// this UDB issues.
+    pub fn signing_public_key(&self) -> Option<[u8; 32]> {
+        self.signing_identity
+            .as_ref()
+            .map(|id| id.signing_key.verifying_key().to_bytes())
+    }
+
+    /// Mint a signed identity token for `username` valid for `ttl`.
+    ///
+    /// The issuer region is taken from the configured [`SigningIdentity`].
+    /// The nonce is freshly drawn from the OS CSPRNG on every call.
+    pub fn issue_identity_token(
+        &self,
+        username: &str,
+        ttl: Duration,
+    ) -> Result<String, IssueIdentityTokenError> {
+        let identity = self
+            .signing_identity
+            .as_ref()
+            .ok_or(IssueIdentityTokenError::NoSigningIdentity)?;
+
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs() as i64;
+        let mut nonce = [0u8; auth_token::NONCE_LEN];
+        rand::rngs::StdRng::from_os_rng().fill_bytes(&mut nonce);
+
+        let claims = auth_token::Claims {
+            username: username.to_owned(),
+            issuer_region: identity.region.clone(),
+            issued_at: now,
+            expires_at: now + ttl.as_secs() as i64,
+            nonce,
+        };
+        Ok(auth_token::issue(&identity.signing_key, &claims))
     }
 
     pub async fn lookup_token(
