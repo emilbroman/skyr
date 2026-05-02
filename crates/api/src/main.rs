@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 mod auth;
 mod challenge;
@@ -27,6 +28,12 @@ use tower_http::cors::{Any, CorsLayer};
 
 use json_scalar::JsonValue;
 use schema::{AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser};
+
+/// How long a freshly-minted identity token is valid. Matches the legacy
+/// opaque-token TTL (24h); shortening this requires shipping a refresh
+/// flow that doesn't depend on the user being able to reach their home
+/// region edge on every refresh.
+const IDENTITY_TOKEN_TTL: Duration = Duration::from_secs(86400);
 
 #[derive(Clone)]
 pub(crate) struct Context {
@@ -295,12 +302,26 @@ impl Query {
     }
 
     async fn refresh_token(context: &Context) -> FieldResult<AuthSuccess> {
-        let (user_client, user) = context.check_auth().await?;
+        let (_, user) = context.check_auth().await?;
 
-        let token = user_client.tokens().issue().await.map_err(|e| {
-            tracing::error!("Failed to issue token: {}", e);
-            internal_error()
-        })?;
+        // Issuance lives on the user's home region UDB (it holds the
+        // signing key for tokens claiming that issuer). Until UDB becomes
+        // its own service that any API edge can RPC into, we can only
+        // refresh tokens for users whose home matches our signing region.
+        let user_region = context.home_region_for_user(&user.username).await?;
+        if user_region != context.region {
+            return Err(field_error("refresh from your home region's API edge"));
+        }
+        let user_client = context
+            .udb_for_region(&user_region)
+            .await?
+            .user(&user.username);
+        let token = user_client
+            .issue_identity_token(IDENTITY_TOKEN_TTL)
+            .map_err(|e| {
+                tracing::error!("Failed to issue identity token: {}", e);
+                internal_error()
+            })?;
 
         Ok(AuthSuccess {
             user: SignedInUser { user },
@@ -535,10 +556,12 @@ impl Mutation {
                 internal_error()
             })?;
 
-        let token = user_client.tokens().issue().await.map_err(|e| {
-            tracing::error!("Failed to issue token: {}", e);
-            internal_error()
-        })?;
+        let token = user_client
+            .issue_identity_token(IDENTITY_TOKEN_TTL)
+            .map_err(|e| {
+                tracing::error!("Failed to issue identity token: {}", e);
+                internal_error()
+            })?;
 
         Ok(AuthSuccess {
             user: SignedInUser { user },
@@ -627,6 +650,12 @@ impl Mutation {
             // Don't leak whether the user exists vs. exists-elsewhere.
             field_error("Invalid credentials")
         })?;
+        // Identity-token issuance only works for users in our signing
+        // region; cross-region signin needs UDB-as-service (future work)
+        // or anycast that routes to the user's home edge.
+        if user_region != context.region {
+            return Err(field_error("sign in from your home region's API edge"));
+        }
         let user_client = context.udb_for_region(&user_region).await?.user(&username);
         let user = match user_client.get().await {
             Ok(user) => user,
@@ -655,10 +684,12 @@ impl Mutation {
             }
         }
 
-        let token = user_client.tokens().issue().await.map_err(|e| {
-            tracing::error!("Failed to issue token: {}", e);
-            internal_error()
-        })?;
+        let token = user_client
+            .issue_identity_token(IDENTITY_TOKEN_TTL)
+            .map_err(|e| {
+                tracing::error!("Failed to issue identity token: {}", e);
+                internal_error()
+            })?;
 
         Ok(AuthSuccess {
             user: SignedInUser { user },
