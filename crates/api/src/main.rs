@@ -4,6 +4,7 @@ mod auth;
 mod challenge;
 mod graphql_ws;
 mod json_scalar;
+mod region_keys;
 mod schema;
 mod subscriptions;
 mod webauthn;
@@ -1044,6 +1045,84 @@ fn extract_bearer_token(headers: &http::header::HeaderMap) -> Option<String> {
         .and_then(|v| String::from_utf8(v.to_vec()).ok())
 }
 
+/// Bundle of auth-related extensions, kept together so the GraphQL HTTP
+/// handlers stay under axum's 16-extractor limit. Each handler extracts
+/// this once and pulls out the pieces it needs.
+#[derive(Clone)]
+struct AuthState {
+    udb_client: udb::Client,
+    region_keys: region_keys::RegionKeyCache,
+    region: ids::RegionId,
+}
+
+/// Outcome of authenticating a bearer token. Distinguishes legitimate
+/// rejection (`Invalid` / `Expired`) from infrastructure trouble
+/// (`Internal`) so callers can render the right HTTP status.
+pub(crate) enum AuthOutcome {
+    Authenticated(udb::UserClient),
+    Invalid,
+    Expired,
+    Internal,
+}
+
+/// Authenticate a bearer token, accepting either a signed identity token
+/// (preferred) or a legacy opaque token stored in UDB Redis.
+///
+/// Identity tokens are tried first because they are self-validating and
+/// cheaper (no Redis round-trip). On parse failure we fall back to the
+/// legacy path so existing tokens continue to work during the rollout.
+pub(crate) async fn authenticate_token(
+    token: &str,
+    udb_client: &udb::Client,
+    region_keys: &region_keys::RegionKeyCache,
+) -> AuthOutcome {
+    if let Ok(unverified) = auth_token::parse(token) {
+        let issuer = unverified.issuer_region().clone();
+        let key = match region_keys.get(&issuer).await {
+            Ok(key) => key,
+            Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
+            Err(e) => {
+                tracing::error!("Failed to fetch region key for {issuer}: {e}");
+                return AuthOutcome::Internal;
+            }
+        };
+        match unverified.verify(&key) {
+            Ok(claims) => return AuthOutcome::Authenticated(udb_client.user(claims.username)),
+            Err(auth_token::VerifyError::Expired) => return AuthOutcome::Expired,
+            Err(auth_token::VerifyError::BadSignature) => {
+                // Possibly stale cache. Drop the entry, refetch, and retry
+                // once. Any failure on the retry is a real bad signature.
+                region_keys.invalidate(&issuer).await;
+                let fresh_key = match region_keys.get(&issuer).await {
+                    Ok(key) => key,
+                    Err(region_keys::FetchError::Unknown(_)) => return AuthOutcome::Invalid,
+                    Err(e) => {
+                        tracing::error!("Failed to refetch region key for {issuer}: {e}");
+                        return AuthOutcome::Internal;
+                    }
+                };
+                let reparsed = auth_token::parse(token).expect("parsed once already");
+                return match reparsed.verify(&fresh_key) {
+                    Ok(claims) => AuthOutcome::Authenticated(udb_client.user(claims.username)),
+                    Err(auth_token::VerifyError::Expired) => AuthOutcome::Expired,
+                    Err(_) => AuthOutcome::Invalid,
+                };
+            }
+            Err(_) => return AuthOutcome::Invalid,
+        }
+    }
+
+    match udb_client.lookup_token(token).await {
+        Ok(user) => AuthOutcome::Authenticated(user),
+        Err(udb::LookupTokenError::InvalidToken) => AuthOutcome::Invalid,
+        Err(udb::LookupTokenError::Expired) => AuthOutcome::Expired,
+        Err(e) => {
+            tracing::error!("Failed to lookup opaque token: {e}");
+            AuthOutcome::Internal
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "api", about = "Skyr GraphQL API")]
 struct Cli {
@@ -1180,6 +1259,7 @@ async fn main() -> anyhow::Result<()> {
         .build_publisher()
         .await?;
     let rtq_publisher = rtq::Publisher::new(domain.clone());
+    let region_key_cache = region_keys::RegionKeyCache::new(gddb_client.clone());
     let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
     let rp_id = Arc::new(cli.rp_id);
     let rp_name = Arc::new(cli.rp_name);
@@ -1207,8 +1287,11 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(ldb_consumer))
         .layer(Extension(ldb_publisher))
         .layer(Extension(rtq_publisher))
-        .layer(Extension(udb_client))
-        .layer(Extension(region));
+        .layer(Extension(AuthState {
+            udb_client,
+            region_keys: region_key_cache,
+            region,
+        }));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
     let addr = tokio::net::lookup_host(&bind_target)
@@ -1237,16 +1320,19 @@ async fn graphql_handler(
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
-    Extension(udb_client): Extension<udb::Client>,
-    Extension(region): Extension<ids::RegionId>,
+    Extension(auth): Extension<AuthState>,
     headers: http::header::HeaderMap,
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
-    let auth_header = extract_bearer_token(&headers);
-
-    if let Some(token) = auth_header {
-        match udb_client.lookup_token(token).await {
-            Err(udb::LookupTokenError::InvalidToken | udb::LookupTokenError::Expired) => {
+    let AuthState {
+        udb_client,
+        region_keys,
+        region,
+    } = auth;
+    let user = if let Some(token) = extract_bearer_token(&headers) {
+        match authenticate_token(&token, &udb_client, &region_keys).await {
+            AuthOutcome::Authenticated(user) => Some(user),
+            AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
                     juniper::FieldError::new(
                         "Invalid token",
@@ -1254,33 +1340,15 @@ async fn graphql_handler(
                     ),
                 ));
             }
-            Err(e) => {
-                tracing::error!("Failed to lookup token: {}", e);
+            AuthOutcome::Internal => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
                     "Internal server error".into(),
                 ));
             }
-            Ok(user) => {
-                let ctx = Context {
-                    udb_client,
-                    cdb_client,
-                    gddb_client,
-                    rdb_client,
-                    adb_client,
-                    sdb_client,
-                    ldb_consumer,
-                    ldb_publisher,
-                    rtq_publisher,
-                    challenger,
-                    rp_id,
-                    rp_name,
-                    user: Some(user),
-                    region,
-                };
-                return AxumJson(request.execute(&schema, &ctx).await);
-            }
         }
-    }
+    } else {
+        None
+    };
 
     let ctx = Context {
         udb_client,
@@ -1295,7 +1363,7 @@ async fn graphql_handler(
         challenger,
         rp_id,
         rp_name,
-        user: None,
+        user,
         region,
     };
     AxumJson(request.execute(&schema, &ctx).await)
@@ -1324,29 +1392,31 @@ async fn graphql_ws_handler(
     Extension(ldb_consumer): Extension<ldb::Consumer>,
     Extension(ldb_publisher): Extension<ldb::Publisher>,
     Extension(rtq_publisher): Extension<rtq::Publisher>,
-    Extension(udb_client): Extension<udb::Client>,
-    Extension(region): Extension<ids::RegionId>,
+    Extension(auth): Extension<AuthState>,
     headers: http::header::HeaderMap,
 ) -> Response {
-    let auth_header = extract_bearer_token(&headers);
-
-    let user = if let Some(token) = auth_header {
-        match udb_client.lookup_token(token).await {
-            Err(udb::LookupTokenError::InvalidToken | udb::LookupTokenError::Expired) => {
+    let AuthState {
+        udb_client,
+        region_keys,
+        region,
+    } = auth;
+    let user = if let Some(token) = extract_bearer_token(&headers) {
+        match authenticate_token(&token, &udb_client, &region_keys).await {
+            AuthOutcome::Authenticated(user) => Some(user),
+            AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
             }
-            Err(e) => {
-                tracing::error!("Failed to lookup token for websocket: {}", e);
+            AuthOutcome::Internal => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
                     .into_response();
             }
-            Ok(user) => Some(user),
         }
     } else {
         None
     };
 
     let udb_for_ws = udb_client.clone();
+    let region_keys_for_ws = region_keys.clone();
     let context = Context {
         udb_client,
         cdb_client,
@@ -1366,6 +1436,12 @@ async fn graphql_ws_handler(
 
     ws.protocols(["graphql-transport-ws"])
         .on_upgrade(move |socket| {
-            graphql_ws::graphql_ws_connection(socket, schema, context, udb_for_ws)
+            graphql_ws::graphql_ws_connection(
+                socket,
+                schema,
+                context,
+                udb_for_ws,
+                region_keys_for_ws,
+            )
         })
 }
