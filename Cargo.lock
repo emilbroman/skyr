@@ -5791,6 +5791,7 @@ dependencies = [
  "gix-pack",
  "gix-packetline",
  "gix-ref",
+ "ias",
  "ids",
  "rdb",
  "redis",
@@ -5798,12 +5799,13 @@ dependencies = [
  "sclc",
  "scop",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tokio-util",
+ "tonic 0.12.3",
  "tracing",
  "tracing-subscriber",
- "udb",
 ]
 
 [[package]]

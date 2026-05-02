@@ -1,5 +1,6 @@
 mod auth;
 mod git;
+mod pools;
 mod port_forward;
 
 use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf, sync::Arc};
@@ -15,8 +16,9 @@ use russh::{
 use tokio::{sync::mpsc, task};
 use tracing::Instrument;
 
-use auth::{ensure_repo_access, ensure_repo_exists, ensure_repo_in_region};
+use auth::{ensure_repo_access, ensure_repo_exists};
 use git::CommandHandler;
+use pools::{CdbPool, IasPool, NodeRegistryPool, RdbPool};
 use port_forward::handle_port_forward;
 
 #[derive(Parser)]
@@ -28,21 +30,24 @@ enum Program {
         #[clap(short = 'k', long = "key", default_value = "host.pem")]
         key: PathBuf,
 
-        /// Node registry hostname (Redis) for SCOC address lookups (port-forward).
-        #[clap(long = "node-registry-hostname", default_value = "localhost")]
-        node_registry_hostname: String,
-
-        /// Skyr region this SCS serves (e.g. `stockholm`). Validated as
-        /// `[a-z]+`. Used by the RDB client for resource-id construction
-        /// when servicing port-forward lookups.
-        #[clap(long = "region")]
-        region: String,
-
         /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with `--region`, peers are resolved as
-        /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
+        /// addresses. Combined with the per-channel region resolution,
+        /// peers are reached at `<service>.<region>.int.<domain>`.
+        ///
+        /// SCS does not have its own region — it routes per-channel using
+        /// token-equivalent SSH pubkey checks against the user's home
+        /// region IAS, GDDB lookups for repos, and the resource's region
+        /// (encoded structurally in `ResourceQid`) for port-forward.
         #[clap(long = "domain")]
         domain: String,
+
+        /// Region to bootstrap the GDDB ScyllaDB session against. Used
+        /// only as the DNS suffix of the initial known-node address —
+        /// `gddb.<bootstrap-region>.int.<domain>`. GDDB is logically
+        /// global; the Scylla session discovers the rest of the cluster
+        /// from there.
+        #[clap(long = "gddb-bootstrap-region")]
+        gddb_bootstrap_region: String,
     },
 }
 
@@ -59,47 +64,39 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             address,
             key,
-            node_registry_hostname,
-            region,
             domain,
+            gddb_bootstrap_region,
         } => {
-            let region: ids::RegionId = region
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
             let domain: ids::Domain = domain
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let gddb_bootstrap_region: ids::RegionId =
+                gddb_bootstrap_region
+                    .parse()
+                    .map_err(|e: ids::ParseIdError| {
+                        anyhow::anyhow!("invalid --gddb-bootstrap-region: {e}")
+                    })?;
 
-            let client = cdb::ClientBuilder::new()
-                .known_node(ids::service_address("cdb", &region, &domain))
-                .build()
-                .await?;
             let gddb_client = gddb::ClientBuilder::new()
-                .known_node(ids::service_address("gddb", &region, &domain))
+                .known_node(ids::service_address(
+                    "gddb",
+                    &gddb_bootstrap_region,
+                    &domain,
+                ))
                 .build()
                 .await?;
-            let udb_client = udb::ClientBuilder::new()
-                .known_node(ids::service_address("udb", &region, &domain))
-                .build()
-                .await?;
-            let rdb_client = rdb::ClientBuilder::new()
-                .known_node(ids::service_address("rdb", &region, &domain))
-                .region(region.clone())
-                .build()
-                .await?;
-            let node_registry_url = format!("redis://{node_registry_hostname}/");
-            let node_registry_redis = redis::Client::open(node_registry_url)?
-                .get_multiplexed_async_connection()
-                .await?;
+            let ias_pool = IasPool::new(domain.clone());
+            let cdb_pool = CdbPool::new(domain.clone());
+            let rdb_pool = RdbPool::new(domain.clone());
+            let node_registry_pool = NodeRegistryPool::new(domain.clone());
 
             tracing::info!("listening on {address}");
             ConfigServer {
-                client,
                 gddb_client,
-                udb_client,
-                rdb_client,
-                node_registry_redis,
-                region,
+                ias_pool,
+                cdb_pool,
+                rdb_pool,
+                node_registry_pool,
             }
             .run_on_address(
                 Arc::new(Config {
@@ -138,12 +135,11 @@ impl std::fmt::Display for UserFacingError {
 impl std::error::Error for UserFacingError {}
 
 struct ConfigServer {
-    client: cdb::Client,
     gddb_client: gddb::Client,
-    udb_client: udb::Client,
-    rdb_client: rdb::Client,
-    node_registry_redis: redis::aio::MultiplexedConnection,
-    region: ids::RegionId,
+    ias_pool: IasPool,
+    cdb_pool: CdbPool,
+    rdb_pool: RdbPool,
+    node_registry_pool: NodeRegistryPool,
 }
 
 impl Server for ConfigServer {
@@ -154,13 +150,12 @@ impl Server for ConfigServer {
         ConfigHandler {
             span,
             channels: Default::default(),
-            user: None,
-            client: self.client.clone(),
+            username: None,
             gddb_client: self.gddb_client.clone(),
-            udb_client: self.udb_client.clone(),
-            rdb_client: self.rdb_client.clone(),
-            node_registry_redis: self.node_registry_redis.clone(),
-            region: self.region.clone(),
+            ias_pool: self.ias_pool.clone(),
+            cdb_pool: self.cdb_pool.clone(),
+            rdb_pool: self.rdb_pool.clone(),
+            node_registry_pool: self.node_registry_pool.clone(),
         }
     }
 }
@@ -197,13 +192,14 @@ enum ChannelMessage {
 struct ConfigHandler {
     span: tracing::Span,
     channels: BTreeMap<ChannelId, mpsc::Sender<ChannelMessage>>,
-    user: Option<udb::User>,
-    client: cdb::Client,
+    /// Set when SSH pubkey auth succeeds; the verified Skyr username
+    /// presented by the SSH client.
+    username: Option<String>,
     gddb_client: gddb::Client,
-    udb_client: udb::Client,
-    rdb_client: rdb::Client,
-    node_registry_redis: redis::aio::MultiplexedConnection,
-    region: ids::RegionId,
+    ias_pool: IasPool,
+    cdb_pool: CdbPool,
+    rdb_pool: RdbPool,
+    node_registry_pool: NodeRegistryPool,
 }
 
 impl Handler for ConfigHandler {
@@ -216,33 +212,63 @@ impl Handler for ConfigHandler {
     ) -> Result<Auth, Self::Error> {
         let _guard = self.span.enter();
         let fingerprint = public_key.fingerprint(Default::default()).to_string();
-        let user_client = self.udb_client.user(username);
-        let user = match user_client.get().await {
-            Ok(user) => Some(user),
-            Err(udb::UserQueryError::NotFound) => None,
-            Err(err) => {
-                return Err(anyhow!(
-                    "failed to check existence for user {username}: {err}"
-                ));
-            }
-        };
 
-        let Some(user) = user else {
-            tracing::info!(username, fingerprint, "rejecting auth for unknown user",);
+        // Resolve the user's home region: usernames are personal-org names
+        // in GDDB, so the user's UDB record lives wherever GDDB says the
+        // org is homed. An unknown user (no GDDB entry) is rejected the
+        // same way an unknown fingerprint is — without leaking which is
+        // which.
+        let Ok(user_org_id) = username.parse::<ids::OrgId>() else {
+            tracing::info!(username, fingerprint, "rejecting auth for invalid username");
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
                 partial_success: false,
             });
         };
 
-        let pubkeys = user_client.pubkeys();
-        let fingerprint_allowed = pubkeys
-            .contains(&fingerprint)
-            .await
-            .map_err(|err| anyhow!("failed to check pubkey for user {username}: {err}"))?;
+        let home = match self.gddb_client.lookup_org(&user_org_id).await {
+            Ok(Some(region)) => region,
+            Ok(None) => {
+                tracing::info!(username, fingerprint, "rejecting auth for unknown user");
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+            Err(err) => {
+                return Err(anyhow!("failed to look up user {username} in GDDB: {err}"));
+            }
+        };
 
-        if !fingerprint_allowed {
-            tracing::info!(username, fingerprint, "rejecting auth for unknown pubkey",);
+        let mut ias = self
+            .ias_pool
+            .for_region(&home)
+            .await
+            .map_err(|e| anyhow!("failed to connect to IAS in {home}: {e}"))?;
+
+        let credentials = match ias
+            .list_credentials(ias::proto::ListCredentialsRequest {
+                username: username.to_string(),
+            })
+            .await
+        {
+            Ok(resp) => resp.into_inner().credentials,
+            Err(status) if status.code() == tonic::Code::NotFound => {
+                tracing::info!(username, fingerprint, "rejecting auth for unknown user");
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+            Err(status) => {
+                return Err(anyhow!(
+                    "IAS ListCredentials failed for {username}: {status}"
+                ));
+            }
+        };
+
+        if !credentials.iter().any(|c| c.fingerprint == fingerprint) {
+            tracing::info!(username, fingerprint, "rejecting auth for unknown pubkey");
             return Ok(Auth::Reject {
                 proceed_with_methods: None,
                 partial_success: false,
@@ -250,7 +276,7 @@ impl Handler for ConfigHandler {
         }
 
         tracing::info!(username, fingerprint, "accepted auth");
-        self.user = Some(user);
+        self.username = Some(username.to_string());
         Ok(Auth::Accept)
     }
 
@@ -263,22 +289,20 @@ impl Handler for ConfigHandler {
         let channel_id = channel.id();
         self.channels.insert(channel_id, tx);
         let span = tracing::info_span!(parent: &self.span, "channel", ch = %u32::from(channel_id));
-        let user = self.user.clone();
-        let client = self.client.clone();
+        let username = self.username.clone();
         let gddb_client = self.gddb_client.clone();
-        let udb_client = self.udb_client.clone();
-        let rdb_client = self.rdb_client.clone();
-        let node_registry_redis = self.node_registry_redis.clone();
-        let region = self.region.clone();
+        let ias_pool = self.ias_pool.clone();
+        let cdb_pool = self.cdb_pool.clone();
+        let rdb_pool = self.rdb_pool.clone();
+        let node_registry_pool = self.node_registry_pool.clone();
         task::spawn(
             async move {
                 // Wait for the command message
                 let cmd_msg = rx.recv().await;
-                let result: anyhow::Result<()> = match (&user, cmd_msg) {
+                let result: anyhow::Result<()> = match (&username, cmd_msg) {
                     (None, _) => Err(UserFacingError("not authenticated".to_string()).into()),
-                    (Some(user), Some(ChannelMessage::Command(Ok(cmd)))) => match cmd {
-                        ChannelCommand::ReceivePack { ref repo }
-                        | ChannelCommand::UploadPack { ref repo } => {
+                    (Some(username), Some(ChannelMessage::Command(Ok(cmd)))) => match cmd {
+                        ChannelCommand::ReceivePack { repo } => {
                             // Git commands read SSH channel data directly via
                             // `channel.make_reader()`; the per-channel mpsc is only
                             // used by port-forward. Drop `rx` so `data()` callbacks'
@@ -287,42 +311,40 @@ impl Handler for ConfigHandler {
                             // 32-message buffer fills, which otherwise deadlocks any
                             // push or fetch larger than ~32 SSH data packets.
                             drop(rx);
-                            if let Err(err) =
-                                ensure_repo_in_region(&gddb_client, &region, repo).await
-                            {
-                                Err(err)
-                            } else if let Err(err) =
-                                ensure_repo_access(user, repo, &udb_client).await
-                            {
-                                Err(err)
-                            } else if let Err(err) = ensure_repo_exists(&client, repo).await {
-                                Err(err)
-                            } else {
-                                let handler = CommandHandler {
-                                    _user: user,
-                                    channel: &mut channel,
-                                    client: client.repo(repo.clone()),
-                                };
-                                match cmd {
-                                    ChannelCommand::ReceivePack { .. } => {
-                                        handler.receive_pack().await
-                                    }
-                                    ChannelCommand::UploadPack { .. } => {
-                                        handler.upload_pack().await
-                                    }
-                                    _ => unreachable!(),
-                                }
-                            }
+                            handle_repo_command(
+                                username,
+                                RepoCommandKind::ReceivePack,
+                                &repo,
+                                &mut channel,
+                                &gddb_client,
+                                &ias_pool,
+                                &cdb_pool,
+                            )
+                            .await
+                        }
+                        ChannelCommand::UploadPack { repo } => {
+                            drop(rx);
+                            handle_repo_command(
+                                username,
+                                RepoCommandKind::UploadPack,
+                                &repo,
+                                &mut channel,
+                                &gddb_client,
+                                &ias_pool,
+                                &cdb_pool,
+                            )
+                            .await
                         }
                         ChannelCommand::PortForward { resource_qid } => {
                             handle_port_forward(
-                                user,
+                                username,
                                 &resource_qid,
                                 &mut channel,
                                 &mut rx,
-                                &rdb_client,
-                                &udb_client,
-                                node_registry_redis,
+                                &rdb_pool,
+                                &gddb_client,
+                                &ias_pool,
+                                &node_registry_pool,
                             )
                             .await
                         }
@@ -412,5 +434,50 @@ impl Handler for ConfigHandler {
             let _ = tx.send(ChannelMessage::Command(result)).await;
         }
         Ok(())
+    }
+}
+
+enum RepoCommandKind {
+    ReceivePack,
+    UploadPack,
+}
+
+/// Resolve a git repo command to its home region's CDB and dispatch.
+///
+/// Repos pin to a single region at creation; GDDB tells us which one.
+/// The CDB pool then either reuses an existing connection to that
+/// region or opens one lazily.
+async fn handle_repo_command(
+    username: &str,
+    kind: RepoCommandKind,
+    repo: &RepoQid,
+    channel: &mut russh::Channel<server::Msg>,
+    gddb_client: &gddb::Client,
+    ias_pool: &IasPool,
+    cdb_pool: &CdbPool,
+) -> anyhow::Result<()> {
+    let home = gddb_client
+        .lookup_repo(repo)
+        .await
+        .map_err(|e| anyhow!("failed to look up repository '{repo}' in GDDB: {e}"))?
+        .ok_or_else(|| UserFacingError(format!("repository '{repo}' does not exist")))?;
+
+    ensure_repo_access(username, repo, gddb_client, ias_pool).await?;
+
+    let cdb_client = cdb_pool
+        .for_region(&home)
+        .await
+        .map_err(|e| anyhow!("failed to connect to CDB in {home}: {e}"))?;
+
+    ensure_repo_exists(&cdb_client, repo).await?;
+
+    let handler = CommandHandler {
+        _username: username,
+        channel,
+        client: cdb_client.repo(repo.clone()),
+    };
+    match kind {
+        RepoCommandKind::ReceivePack => handler.receive_pack().await,
+        RepoCommandKind::UploadPack => handler.upload_pack().await,
     }
 }
