@@ -1,8 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
 
-mod auth;
-mod challenge;
 mod graphql_ws;
 mod json_scalar;
 mod pools;
@@ -18,7 +15,6 @@ use axum::{
     routing::get,
 };
 use base64::Engine;
-use chrono::Utc;
 use clap::Parser;
 use futures_util::StreamExt;
 use http::StatusCode;
@@ -27,17 +23,20 @@ use sha2::Digest;
 use tower_http::cors::{Any, CorsLayer};
 
 use json_scalar::JsonValue;
-use schema::{AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser};
+use schema::{
+    AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser, UserData,
+};
+use webauthn::{ProofKind, proof_from_json};
 
-/// How long a freshly-minted identity token is valid. Matches the legacy
-/// opaque-token TTL (24h); shortening this requires shipping a refresh
-/// flow that doesn't depend on the user being able to reach their home
-/// region edge on every refresh.
-const IDENTITY_TOKEN_TTL: Duration = Duration::from_secs(86400);
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedUser {
+    pub(crate) username: String,
+    pub(crate) home_region: ids::RegionId,
+}
 
 #[derive(Clone)]
 pub(crate) struct Context {
-    pub(crate) udb_pool: pools::UdbPool,
+    pub(crate) ias_pool: pools::IasPool,
     pub(crate) cdb_pool: pools::CdbPool,
     pub(crate) sdb_pool: pools::SdbPool,
     pub(crate) gddb_client: gddb::Client,
@@ -46,39 +45,19 @@ pub(crate) struct Context {
     pub(crate) ldb_consumer: ldb::Consumer,
     pub(crate) ldb_publisher: ldb::Publisher,
     pub(crate) rtq_publisher: rtq::Publisher,
-    pub(crate) challenger: Arc<challenge::Challenger>,
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
-    pub(crate) user: Option<udb::UserClient>,
-    /// The region this API binary can sign identity tokens for. The
-    /// signing keypair attached to its UDB pool is valid only for users
-    /// whose home region matches this value, so signup is constrained to
-    /// it (the freshly-issued token would otherwise be unverifiable
-    /// elsewhere). Routing-side decisions are no longer pinned to this
-    /// region — see `home_region_for_*` for cross-region GDDB-driven
-    /// routing. Goes away when UDB becomes its own service.
-    pub(crate) region: ids::RegionId,
+    pub(crate) authenticated_user: Option<AuthenticatedUser>,
 }
 
 impl Context {
-    pub(crate) async fn check_auth(&self) -> FieldResult<(udb::UserClient, udb::User)> {
-        let err = field_error("Not authenticated");
-
-        let Some(client) = self.user.clone() else {
-            return Err(err);
-        };
-
-        let user = client.get().await.map_err(|e| {
-            tracing::error!("Failed to fetch user: {}", e);
-            err
-        })?;
-
-        Ok((client, user))
+    pub(crate) async fn check_auth(&self) -> FieldResult<AuthenticatedUser> {
+        self.authenticated_user
+            .clone()
+            .ok_or_else(|| field_error("Not authenticated"))
     }
 
-    /// Resolve `org`'s home region via GDDB. Returns whatever region GDDB
-    /// has on file — the API is now a true edge and routes per-data-piece
-    /// (cross-region) instead of pinning everything to its own region.
+    /// Resolve `org`'s home region via GDDB.
     pub(crate) async fn home_region_for_org(&self, org: &ids::OrgId) -> FieldResult<ids::RegionId> {
         let home = self.gddb_client.lookup_org(org).await.map_err(|e| {
             tracing::error!("Failed to look up org in GDDB: {}", e);
@@ -109,9 +88,12 @@ impl Context {
         self.home_region_for_org(&org_id).await
     }
 
-    pub(crate) async fn udb_for_region(&self, region: &ids::RegionId) -> FieldResult<udb::Client> {
-        self.udb_pool.for_region(region).await.map_err(|e| {
-            tracing::error!("Failed to connect to UDB in {}: {}", region, e);
+    pub(crate) async fn ias_for_region(
+        &self,
+        region: &ids::RegionId,
+    ) -> FieldResult<ias::IdentityAndAccessClient> {
+        self.ias_pool.for_region(region).await.map_err(|e| {
+            tracing::error!("Failed to connect to IAS in {}: {}", region, e);
             internal_error()
         })
     }
@@ -141,11 +123,24 @@ pub(crate) fn internal_error() -> juniper::FieldError {
     field_error("Internal server error")
 }
 
-/// Parse an explicit `region` mutation argument. Any operator-known
-/// region is accepted — the API no longer pins requests to its own
-/// signing region. Callers that omit the argument supply their own
-/// default (typically the caller's home region for create-org and
-/// create-repository, or required outright for signup).
+/// Convert a `tonic::Status` from an IAS RPC into a GraphQL field error.
+/// User-facing IAS error codes (Unauthenticated, NotFound, AlreadyExists,
+/// InvalidArgument, FailedPrecondition) pass their message through;
+/// anything else logs and surfaces as a generic internal error.
+pub(crate) fn map_ias_status(status: tonic::Status) -> juniper::FieldError {
+    match status.code() {
+        tonic::Code::Unauthenticated
+        | tonic::Code::NotFound
+        | tonic::Code::AlreadyExists
+        | tonic::Code::InvalidArgument
+        | tonic::Code::FailedPrecondition => field_error(status.message()),
+        _ => {
+            tracing::error!("IAS RPC failed: {status}");
+            internal_error()
+        }
+    }
+}
+
 fn parse_region_arg(requested: &str) -> FieldResult<ids::RegionId> {
     requested.parse().map_err(|_| field_error("Invalid region"))
 }
@@ -162,14 +157,12 @@ fn is_valid_email(email: &str) -> bool {
     if email.contains(char::is_whitespace) {
         return false;
     }
-    // Domain must contain at least one dot with non-empty parts on each side
     let Some((domain_name, tld)) = domain.rsplit_once('.') else {
         return false;
     };
     if domain_name.is_empty() || tld.is_empty() {
         return false;
     }
-    // Reject multiple @ signs
     if domain.contains('@') {
         return false;
     }
@@ -190,53 +183,77 @@ impl Query {
     }
 
     async fn me(context: &Context) -> FieldResult<SignedInUser> {
-        let (_, user) = context.check_auth().await?;
-
-        Ok(SignedInUser { user })
+        let auth = context.check_auth().await?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        let user = ias
+            .get_user(ias::proto::GetUserRequest {
+                username: auth.username.clone(),
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner();
+        Ok(SignedInUser {
+            user: UserData::from(user),
+        })
     }
 
-    async fn auth_challenge(context: &Context, username: String) -> FieldResult<AuthChallenge> {
+    /// Issue an authentication challenge for `username`.
+    ///
+    /// The challenge is owned by the user's home-region IAS (which holds
+    /// the salt). This edge resolves the home region in GDDB; for
+    /// already-registered users the GDDB entry tells us where to ask. For
+    /// brand-new signups (no GDDB entry yet), the caller must pass the
+    /// target signup region in `region`.
+    async fn auth_challenge(
+        context: &Context,
+        username: String,
+        region: Option<String>,
+    ) -> FieldResult<AuthChallenge> {
         if !USERNAME_REGEX.is_match(&username) {
             return Err(field_error("Invalid username"));
         }
 
+        let user_org_id: ids::OrgId = username
+            .parse()
+            .map_err(|_| field_error("Invalid username"))?;
+
+        let home = context
+            .gddb_client
+            .lookup_org(&user_org_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("Failed to look up user in GDDB: {e}");
+                internal_error()
+            })?;
+
+        let target_region = match home {
+            Some(h) => h,
+            None => match region {
+                Some(s) => parse_region_arg(&s)?,
+                None => {
+                    return Err(field_error("Region is required when signing up a new user"));
+                }
+            },
+        };
+
+        let mut ias_client = context.ias_for_region(&target_region).await?;
+        let resp = ias_client
+            .issue_challenge(ias::proto::IssueChallengeRequest {
+                username: username.clone(),
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner();
+
+        let challenge_string = resp.challenge;
+        let taken = resp.user_taken;
+        let webauthn_creds = resp.webauthn_credential_ids;
+
         let b64url = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-        let challenge_string = context.challenger.challenge(Utc::now(), &username);
         let challenge_b64 = b64url.encode(challenge_string.as_bytes());
 
         let user_id_hash = sha2::Sha256::digest(username.as_bytes());
         let user_id_b64 = b64url.encode(user_id_hash);
-
-        // Look up existing WebAuthn credentials for excludeCredentials /
-        // allowCredentials. The user may not be registered yet (signup
-        // flow), in which case GDDB returns None and we treat them as
-        // having no credentials.
-        let user_client = match username.parse::<ids::OrgId>() {
-            Ok(parsed) => match context.gddb_client.lookup_org(&parsed).await {
-                Ok(Some(home)) => Some(context.udb_for_region(&home).await?.user(&username)),
-                Ok(None) => None,
-                Err(e) => {
-                    tracing::error!("Failed to look up user in GDDB: {}", e);
-                    return Err(internal_error());
-                }
-            },
-            Err(_) => None,
-        };
-        let (taken, credentials) = match &user_client {
-            Some(c) => match c.get().await {
-                Ok(_) => (
-                    true,
-                    c.pubkeys().list_credentials().await.unwrap_or_default(),
-                ),
-                Err(_) => (false, Vec::new()),
-            },
-            None => (false, Vec::new()),
-        };
-
-        let webauthn_creds: Vec<_> = credentials
-            .iter()
-            .filter_map(|c| c.credential_id.as_ref())
-            .collect();
 
         let exclude_credentials: Vec<serde_json::Value> = webauthn_creds
             .iter()
@@ -302,45 +319,39 @@ impl Query {
     }
 
     async fn refresh_token(context: &Context) -> FieldResult<AuthSuccess> {
-        let (_, user) = context.check_auth().await?;
-
-        // Issuance lives on the user's home region UDB (it holds the
-        // signing key for tokens claiming that issuer). Until UDB becomes
-        // its own service that any API edge can RPC into, we can only
-        // refresh tokens for users whose home matches our signing region.
-        let user_region = context.home_region_for_user(&user.username).await?;
-        if user_region != context.region {
-            return Err(field_error("refresh from your home region's API edge"));
-        }
-        let user_client = context
-            .udb_for_region(&user_region)
-            .await?
-            .user(&user.username);
-        let token = user_client
-            .issue_identity_token(IDENTITY_TOKEN_TTL)
-            .map_err(|e| {
-                tracing::error!("Failed to issue identity token: {}", e);
-                internal_error()
-            })?;
+        let auth = context.check_auth().await?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        let response = ias
+            .refresh_token(ias::proto::RefreshTokenRequest {
+                username: auth.username.clone(),
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner();
+        let user = response.user.ok_or_else(|| {
+            tracing::error!("IAS RefreshToken returned no user record");
+            internal_error()
+        })?;
 
         Ok(AuthSuccess {
-            user: SignedInUser { user },
-            token,
+            user: SignedInUser {
+                user: UserData::from(user),
+            },
+            token: response.token,
         })
     }
 
     async fn organizations(context: &Context) -> FieldResult<Vec<Organization>> {
-        let (_, user) = context.check_auth().await?;
-        let user_region = context.home_region_for_user(&user.username).await?;
-        let user_client = context
-            .udb_for_region(&user_region)
-            .await?
-            .user(&user.username);
-
-        let org_names = user_client.list_orgs().await.map_err(|e| {
-            tracing::error!("Failed to list organizations: {}", e);
-            internal_error()
-        })?;
+        let auth = context.check_auth().await?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        let org_names = ias
+            .list_user_orgs(ias::proto::ListUserOrgsRequest {
+                username: auth.username.clone(),
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner()
+            .org_names;
 
         let mut orgs: Vec<Organization> = org_names
             .into_iter()
@@ -352,7 +363,7 @@ impl Query {
             .collect();
 
         // Always include the user's own "personal org" (username)
-        let personal_org = user
+        let personal_org = auth
             .username
             .parse::<ids::OrgId>()
             .map_err(|_| field_error("Invalid organization name"))?;
@@ -364,25 +375,24 @@ impl Query {
     }
 
     async fn organization(context: &Context, name: String) -> FieldResult<Organization> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
         let org: ids::OrgId = name
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
         let org_region = context.home_region_for_org(&org).await?;
 
-        if org.as_str() != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(org.as_str())
-                .members()
-                .contains(&user.username)
+        if org.as_str() != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: org.to_string(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
+                .map_err(map_ias_status)?
+                .into_inner()
+                .value;
             if !is_member {
                 return Err(field_error("Permission denied"));
             }
@@ -402,7 +412,7 @@ impl Mutation {
         repository: String,
         #[graphql(name = "region")] region: Option<String>,
     ) -> FieldResult<Repository> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org: ids::OrgId = organization
             .parse()
@@ -414,25 +424,22 @@ impl Mutation {
 
         let org_region = context.home_region_for_org(&name.org).await?;
 
-        // Default a new repo to its org's home region. Operators / users can
-        // override per-repo by passing `region:`.
         let region = match region {
             Some(s) => parse_region_arg(&s)?,
             None => org_region.clone(),
         };
 
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
+                .map_err(map_ias_status)?
+                .into_inner()
+                .value;
             if !is_member {
                 return Err(field_error("Permission denied"));
             }
@@ -491,19 +498,6 @@ impl Mutation {
 
         let region = parse_region_arg(&region)?;
 
-        // Stage-5 caveat: an API edge can only mint identity tokens for
-        // its own signing region. If a user signs up for a different home
-        // region, the local UDB write would still succeed but the freshly
-        // issued token couldn't be validated by other edges until they
-        // refetched this region's GDDB pubkey. Until UDB becomes a service
-        // (and any edge can RPC into the chosen region's UDB to sign), we
-        // require the signup region to match this API's signing region.
-        if region != context.region {
-            return Err(field_error(
-                "signup region must match this API's signing region",
-            ));
-        }
-
         // The username is also the user's personal-org name, so reserve it
         // in GDDB as an org name. This is the source of truth for global
         // name uniqueness (case-insensitive) and for routing.
@@ -522,93 +516,74 @@ impl Mutation {
                 }
             })?;
 
-        let fullname = fullname.filter(|s| !s.is_empty());
+        let proof_proto = proof_from_json(&proof, ProofKind::Registration)?;
 
-        let now = Utc::now();
-
-        let (openssh_key, credential_id, sign_count) =
-            auth::verify_registration_proof(context, &proof, &username, now)?;
-
-        let user_client = context.udb_for_region(&region).await?.user(&username);
-        let user = match user_client.register(email, fullname).await {
-            Err(udb::RegisterUserError::UsernameTaken) => {
-                return Err(field_error("Username already taken"));
-            }
-            Err(udb::RegisterUserError::InvalidUsername(msg)) => {
-                return Err(field_error(&format!("Invalid username: {msg}")));
-            }
-            Err(udb::RegisterUserError::InvalidEmail(msg)) => {
-                return Err(field_error(&format!("Invalid email: {msg}")));
-            }
-            Err(e) => {
-                tracing::error!("Failed to register user: {}", e);
-                return Err(internal_error());
-            }
-            Ok(user) => user,
-        };
-
-        user_client
-            .pubkeys()
-            .add_credential(&openssh_key, credential_id.as_deref(), sign_count)
+        let mut ias = context.ias_for_region(&region).await?;
+        let response = ias
+            .signup(ias::proto::SignupRequest {
+                username,
+                email,
+                fullname: fullname.filter(|s| !s.is_empty()),
+                proof: Some(proof_proto),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to add credential: {}", e);
-                internal_error()
-            })?;
+            .map_err(map_ias_status)?
+            .into_inner();
 
-        let token = user_client
-            .issue_identity_token(IDENTITY_TOKEN_TTL)
-            .map_err(|e| {
-                tracing::error!("Failed to issue identity token: {}", e);
-                internal_error()
-            })?;
+        let user = response.user.ok_or_else(|| {
+            tracing::error!("IAS Signup returned no user record");
+            internal_error()
+        })?;
 
         Ok(AuthSuccess {
-            user: SignedInUser { user },
-            token,
+            user: SignedInUser {
+                user: UserData::from(user),
+            },
+            token: response.token,
         })
     }
 
     #[graphql(name = "updateFullname")]
     async fn update_fullname(context: &Context, fullname: String) -> FieldResult<SignedInUser> {
-        let (user_client, _) = context.check_auth().await?;
-
-        user_client.set_fullname(&fullname).await.map_err(|e| {
-            tracing::error!("Failed to update fullname: {}", e);
-            internal_error()
-        })?;
-
-        let user = user_client.get().await.map_err(|e| {
-            tracing::error!("Failed to fetch user after fullname update: {}", e);
-            internal_error()
-        })?;
-
-        Ok(SignedInUser { user })
+        let auth = context.check_auth().await?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        let user = ias
+            .update_fullname(ias::proto::UpdateFullnameRequest {
+                username: auth.username.clone(),
+                fullname,
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner();
+        Ok(SignedInUser {
+            user: UserData::from(user),
+        })
     }
 
     #[graphql(name = "addPublicKey")]
     async fn add_public_key(context: &Context, proof: JsonValue) -> FieldResult<SignedInUser> {
-        let (user_client, user) = context.check_auth().await?;
-        let now = Utc::now();
+        let auth = context.check_auth().await?;
+        let proof_proto = proof_from_json(&proof, ProofKind::Registration)?;
 
-        let (openssh_key, credential_id, sign_count) =
-            auth::verify_registration_proof(context, &proof, &user.username, now)?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        ias.add_credential(ias::proto::AddCredentialRequest {
+            username: auth.username.clone(),
+            proof: Some(proof_proto),
+        })
+        .await
+        .map_err(map_ias_status)?;
 
-        user_client
-            .pubkeys()
-            .add_credential(&openssh_key, credential_id.as_deref(), sign_count)
+        let user = ias
+            .get_user(ias::proto::GetUserRequest {
+                username: auth.username.clone(),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to add credential: {}", e);
-                internal_error()
-            })?;
+            .map_err(map_ias_status)?
+            .into_inner();
 
-        let user = user_client.get().await.map_err(|e| {
-            tracing::error!("Failed to fetch user after adding public key: {}", e);
-            internal_error()
-        })?;
-
-        Ok(SignedInUser { user })
+        Ok(SignedInUser {
+            user: UserData::from(user),
+        })
     }
 
     #[graphql(name = "removePublicKey")]
@@ -616,23 +591,26 @@ impl Mutation {
         context: &Context,
         fingerprint: String,
     ) -> FieldResult<SignedInUser> {
-        let (user_client, _) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
+        let mut ias = context.ias_for_region(&auth.home_region).await?;
+        ias.remove_credential(ias::proto::RemoveCredentialRequest {
+            username: auth.username.clone(),
+            fingerprint,
+        })
+        .await
+        .map_err(map_ias_status)?;
 
-        user_client
-            .pubkeys()
-            .remove(&fingerprint)
+        let user = ias
+            .get_user(ias::proto::GetUserRequest {
+                username: auth.username.clone(),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to remove public key: {}", e);
-                internal_error()
-            })?;
+            .map_err(map_ias_status)?
+            .into_inner();
 
-        let user = user_client.get().await.map_err(|e| {
-            tracing::error!("Failed to fetch user after removing public key: {}", e);
-            internal_error()
-        })?;
-
-        Ok(SignedInUser { user })
+        Ok(SignedInUser {
+            user: UserData::from(user),
+        })
     }
 
     async fn signin(
@@ -644,56 +622,32 @@ impl Mutation {
             return Err(field_error("Invalid username"));
         }
 
-        let now = Utc::now();
-
         let user_region = context.home_region_for_user(&username).await.map_err(|_| {
             // Don't leak whether the user exists vs. exists-elsewhere.
             field_error("Invalid credentials")
         })?;
-        // Identity-token issuance only works for users in our signing
-        // region; cross-region signin needs UDB-as-service (future work)
-        // or anycast that routes to the user's home edge.
-        if user_region != context.region {
-            return Err(field_error("sign in from your home region's API edge"));
-        }
-        let user_client = context.udb_for_region(&user_region).await?.user(&username);
-        let user = match user_client.get().await {
-            Ok(user) => user,
-            Err(udb::UserQueryError::NotFound) => {
-                return Err(field_error("Invalid credentials"));
-            }
-            Err(e) => {
-                tracing::error!("Failed to lookup user: {}", e);
-                return Err(internal_error());
-            }
-        };
 
-        match &proof.0 {
-            serde_json::Value::String(sig_pem) => {
-                // SSH signature flow
-                auth::signin_ssh(context, &user_client, sig_pem, &username, now).await?;
-            }
-            serde_json::Value::Object(_) => {
-                // WebAuthn assertion flow
-                auth::signin_webauthn(context, &user_client, &proof.0, &username, now).await?;
-            }
-            _ => {
-                return Err(field_error(
-                    "Invalid proof: expected a string (SSH signature) or object (WebAuthn assertion)",
-                ));
-            }
-        }
+        let proof_proto = proof_from_json(&proof, ProofKind::Assertion)?;
+        let mut ias = context.ias_for_region(&user_region).await?;
+        let response = ias
+            .signin(ias::proto::SigninRequest {
+                username,
+                proof: Some(proof_proto),
+            })
+            .await
+            .map_err(map_ias_status)?
+            .into_inner();
 
-        let token = user_client
-            .issue_identity_token(IDENTITY_TOKEN_TTL)
-            .map_err(|e| {
-                tracing::error!("Failed to issue identity token: {}", e);
-                internal_error()
-            })?;
+        let user = response.user.ok_or_else(|| {
+            tracing::error!("IAS Signin returned no user record");
+            internal_error()
+        })?;
 
         Ok(AuthSuccess {
-            user: SignedInUser { user },
-            token,
+            user: SignedInUser {
+                user: UserData::from(user),
+            },
+            token: response.token,
         })
     }
 
@@ -703,7 +657,7 @@ impl Mutation {
         name: String,
         #[graphql(name = "region")] region: Option<String>,
     ) -> FieldResult<Organization> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         if !USERNAME_REGEX.is_match(&name) {
             return Err(field_error("Invalid organization name"));
@@ -712,10 +666,9 @@ impl Mutation {
         // Default a new org to the caller's home region (where their UDB
         // record already lives). Operators can override per-org by passing
         // `region:`.
-        let user_region = context.home_region_for_user(&user.username).await?;
         let region = match region {
             Some(s) => parse_region_arg(&s)?,
-            None => user_region,
+            None => auth.home_region.clone(),
         };
 
         let org_id: ids::OrgId = name
@@ -734,21 +687,13 @@ impl Mutation {
                 }
             })?;
 
-        let org_client = context.udb_for_region(&region).await?.org(org_id.as_str());
-        org_client
-            .create(&user.username)
-            .await
-            .map_err(|e| match e {
-                udb::CreateOrgError::NameTaken => field_error("Name already taken"),
-                udb::CreateOrgError::InvalidName(msg) => {
-                    field_error(&format!("Invalid name: {msg}"))
-                }
-                udb::CreateOrgError::CreatorNotFound => field_error("User not found"),
-                _ => {
-                    tracing::error!("Failed to create organization: {}", e);
-                    internal_error()
-                }
-            })?;
+        let mut ias = context.ias_for_region(&region).await?;
+        ias.create_org(ias::proto::CreateOrgRequest {
+            name: org_id.to_string(),
+            creator: auth.username.clone(),
+        })
+        .await
+        .map_err(map_ias_status)?;
 
         Ok(Organization { name: org_id })
     }
@@ -759,90 +704,72 @@ impl Mutation {
         organization: String,
         username: String,
     ) -> FieldResult<Organization> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org_id: ids::OrgId = organization
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
         let org_region = context.home_region_for_org(&org_id).await?;
+        let mut ias = context.ias_for_region(&org_region).await?;
 
-        let org_client = context
-            .udb_for_region(&org_region)
-            .await?
-            .org(org_id.as_str());
-
-        // Verify the caller is a member of this org
-        let is_member = org_client
-            .members()
-            .contains(&user.username)
+        let is_member = ias
+            .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                name: org_id.to_string(),
+                username: auth.username.clone(),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to check org membership: {}", e);
-                internal_error()
-            })?;
+            .map_err(map_ias_status)?
+            .into_inner()
+            .value;
         if !is_member {
             return Err(field_error("Permission denied"));
         }
 
-        org_client
-            .members()
-            .add(&username)
-            .await
-            .map_err(|e| match e {
-                udb::OrgQueryError::UserNotFound => field_error("User not found"),
-                udb::OrgQueryError::AlreadyMember => field_error("User is already a member"),
-                udb::OrgQueryError::NotFound => field_error("Organization not found"),
-                _ => {
-                    tracing::error!("Failed to add org member: {}", e);
-                    internal_error()
-                }
-            })?;
+        ias.add_org_member(ias::proto::AddOrgMemberRequest {
+            name: org_id.to_string(),
+            username,
+        })
+        .await
+        .map_err(map_ias_status)?;
 
         Ok(Organization { name: org_id })
     }
 
     #[graphql(name = "leaveOrganization")]
     async fn leave_organization(context: &Context, organization: String) -> FieldResult<bool> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org_id: ids::OrgId = organization
             .parse()
             .map_err(|_| field_error("Invalid organization name"))?;
 
-        // Cannot leave your own personal org (username)
-        if org_id.as_str() == user.username {
+        if org_id.as_str() == auth.username {
             return Err(field_error("Cannot leave your own personal organization"));
         }
 
         let org_region = context.home_region_for_org(&org_id).await?;
+        let mut ias = context.ias_for_region(&org_region).await?;
 
-        let org_client = context
-            .udb_for_region(&org_region)
-            .await?
-            .org(org_id.as_str());
-
-        // Verify the caller is actually a member
-        let is_member = org_client
-            .members()
-            .contains(&user.username)
+        let is_member = ias
+            .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                name: org_id.to_string(),
+                username: auth.username.clone(),
+            })
             .await
-            .map_err(|e| {
-                tracing::error!("Failed to check org membership: {}", e);
-                internal_error()
-            })?;
+            .map_err(map_ias_status)?
+            .into_inner()
+            .value;
         if !is_member {
             return Err(field_error("Not a member of this organization"));
         }
 
-        org_client
-            .members()
-            .remove(&user.username)
-            .await
-            .map_err(|e| {
-                tracing::error!("Failed to leave organization: {}", e);
-                internal_error()
-            })?;
+        ias.remove_org_member(ias::proto::RemoveOrgMemberRequest {
+            name: org_id.to_string(),
+            username: auth.username.clone(),
+        })
+        .await
+        .map_err(map_ias_status)?;
 
         Ok(true)
     }
@@ -861,7 +788,7 @@ impl Mutation {
         environment: String,
         commit_hash: String,
     ) -> FieldResult<Deployment> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org: ids::OrgId = organization
             .parse()
@@ -881,31 +808,24 @@ impl Mutation {
         };
 
         let repo_region = context.home_region_for_repo(&repo_qid).await?;
-        // Org membership check uses the org's home (== repo's home for
-        // personal orgs; in general the org's CDB record may be elsewhere).
         let org_region = context.home_region_for_org(&org).await?;
 
-        // Access check: caller must be a member of the owning org (or it
-        // must be their own personal org).
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
+                .map_err(map_ias_status)?
+                .into_inner()
+                .value;
             if !is_member {
                 return Err(field_error("Permission denied"));
             }
         }
 
-        // Each deployment gets a fresh nonce so that re-deploying the same
-        // commit creates a distinct deployment identity.
         let nonce = ids::DeploymentNonce::random();
         let deployment_id = ids::DeploymentId::new(commit, nonce);
         let client = context
@@ -939,7 +859,7 @@ impl Mutation {
         repository: String,
         environment: String,
     ) -> FieldResult<bool> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org: ids::OrgId = organization
             .parse()
@@ -958,18 +878,17 @@ impl Mutation {
         let repo_region = context.home_region_for_repo(&repo_qid).await?;
         let org_region = context.home_region_for_org(&org).await?;
 
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
+                .map_err(map_ias_status)?
+                .into_inner()
+                .value;
             if !is_member {
                 return Err(field_error("Permission denied"));
             }
@@ -1019,7 +938,7 @@ impl Mutation {
         environment: String,
         resource: String,
     ) -> FieldResult<bool> {
-        let (_, user) = context.check_auth().await?;
+        let auth = context.check_auth().await?;
 
         let org: ids::OrgId = organization
             .parse()
@@ -1041,18 +960,17 @@ impl Mutation {
         let repo_region = context.home_region_for_repo(&repo_qid).await?;
         let org_region = context.home_region_for_org(&org).await?;
 
-        if organization != user.username {
-            let is_member = context
-                .udb_for_region(&org_region)
-                .await?
-                .org(&organization)
-                .members()
-                .contains(&user.username)
+        if organization != auth.username {
+            let mut ias = context.ias_for_region(&org_region).await?;
+            let is_member = ias
+                .org_contains_member(ias::proto::OrgContainsMemberRequest {
+                    name: organization.clone(),
+                    username: auth.username.clone(),
+                })
                 .await
-                .map_err(|e| {
-                    tracing::error!("Failed to check org membership: {}", e);
-                    internal_error()
-                })?;
+                .map_err(map_ias_status)?
+                .into_inner()
+                .value;
             if !is_member {
                 return Err(field_error("Permission denied"));
             }
@@ -1093,20 +1011,13 @@ impl Mutation {
             resource_id,
         };
 
-        // Emit an audit log before enqueueing so the action is visible
-        // regardless of how the plugin-side delete resolves.  Published to
-        // both the resource-QID and deployment-QID log topics with the
-        // phrasing tailored to each: the resource topic already knows
-        // which resource it is, so naming it would be redundant; the
-        // deployment topic multiplexes many resources, so the line needs
-        // to name the resource explicitly.
         if let Ok(publisher) = context
             .ldb_publisher
             .namespace(resource_qid.to_string())
             .await
         {
             publisher
-                .info(format!("Manual deletion requested by {}", user.username))
+                .info(format!("Manual deletion requested by {}", auth.username))
                 .await;
         }
         if let Ok(publisher) = context.ldb_publisher.namespace(owner_qid.to_string()).await {
@@ -1115,7 +1026,7 @@ impl Mutation {
                     "Manual deletion of {}:{} requested by {}",
                     resource_ref.resource_type(),
                     resource_ref.resource_name(),
-                    user.username,
+                    auth.username,
                 ))
                 .await;
         }
@@ -1154,20 +1065,18 @@ fn extract_bearer_token(headers: &http::header::HeaderMap) -> Option<String> {
 }
 
 /// Bundle of auth-related extensions, kept together so the GraphQL HTTP
-/// handlers stay under axum's 16-extractor limit. Each handler extracts
-/// this once and pulls out the pieces it needs.
+/// handlers stay under axum's 16-extractor limit.
 #[derive(Clone)]
 struct AuthState {
-    udb_pool: pools::UdbPool,
+    ias_pool: pools::IasPool,
     region_keys: region_keys::RegionKeyCache,
-    region: ids::RegionId,
 }
 
 /// Outcome of authenticating a bearer token. Distinguishes legitimate
 /// rejection (`Invalid` / `Expired`) from infrastructure trouble
-/// (`Internal`) so callers can render the right HTTP status.
+/// (`Internal`).
 pub(crate) enum AuthOutcome {
-    Authenticated(udb::UserClient),
+    Authenticated(AuthenticatedUser),
     Invalid,
     Expired,
     Internal,
@@ -1176,12 +1085,11 @@ pub(crate) enum AuthOutcome {
 /// Authenticate a bearer token. Tokens are signed identity envelopes
 /// (see the `auth_token` crate); the verifier looks up the issuer
 /// region's public key via the [`region_keys::RegionKeyCache`] (which
-/// pulls from GDDB on cache miss), validates the signature and expiry,
-/// and constructs a [`udb::UserClient`] bound to the user's home-region
-/// UDB so subsequent reads hit the right Redis.
+/// pulls from the issuer region's IAS on cache miss), validates the
+/// signature and expiry, and returns an [`AuthenticatedUser`] carrying
+/// the username and home region claimed by the token.
 pub(crate) async fn authenticate_token(
     token: &str,
-    udb_pool: &pools::UdbPool,
     region_keys: &region_keys::RegionKeyCache,
 ) -> AuthOutcome {
     let unverified = match auth_token::parse(token) {
@@ -1221,14 +1129,10 @@ pub(crate) async fn authenticate_token(
         }
         Err(_) => return AuthOutcome::Invalid,
     };
-    let user_home = match udb_pool.for_region(&claims.issuer_region).await {
-        Ok(client) => client,
-        Err(e) => {
-            tracing::error!("Failed to connect to UDB in {}: {e}", claims.issuer_region);
-            return AuthOutcome::Internal;
-        }
-    };
-    AuthOutcome::Authenticated(user_home.user(claims.username))
+    AuthOutcome::Authenticated(AuthenticatedUser {
+        username: claims.username,
+        home_region: claims.issuer_region,
+    })
 }
 
 #[derive(Parser, Debug)]
@@ -1252,33 +1156,29 @@ struct Cli {
     /// (this is the cloud-vendor region for the S3 endpoint).
     #[arg(long, default_value = "us-east-1")]
     adb_region: String,
-    #[arg(long, env = "SKYR_CHALLENGE_SALT")]
-    challenge_salt: Option<String>,
     #[arg(long, default_value = "skyr.cloud")]
     rp_id: String,
     #[arg(long, default_value = "Skyr")]
     rp_name: String,
     #[arg(long)]
     write_schema: bool,
-    /// The region this API binary can sign identity tokens for (e.g.
-    /// `stockholm`). Validated as `[a-z]+`. Routing decisions no longer
-    /// depend on this — every API edge is region-agnostic for reads and
-    /// per-data-piece writes — but identity-token signing still requires
-    /// access to a region's private key, so signup is constrained to this
-    /// region until UDB becomes its own service.
-    #[arg(long)]
-    region: Option<String>,
     /// DNS suffix used to construct region-scoped Skyr peer service
-    /// addresses. Combined with `--region`, peers are resolved as
-    /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
+    /// addresses. Combined with the per-RPC region resolution, peers are
+    /// reached at `<service>.<region>.int.<domain>`.
+    ///
+    /// The API edge does not need its own region — it routes per-data-piece
+    /// using token claims, GDDB lookups, and region-prefixed resource IDs.
+    /// The GDDB session below is bootstrapped against an arbitrary region's
+    /// GDDB DNS name; in production every region's GDDB Scylla peer answers
+    /// the same keyspace, so the choice is just a bootstrap detail.
     #[arg(long)]
     domain: String,
-    /// Path to the 32-byte raw Ed25519 secret key used by this region's UDB
-    /// to sign identity tokens. Generate with e.g.
-    /// `head -c 32 /dev/urandom > udb-signing.key`. The corresponding
-    /// public key is upserted into GDDB's `region_keys` table on startup.
-    #[arg(long)]
-    udb_signing_key: std::path::PathBuf,
+    /// Optional region to bootstrap the GDDB Scylla session against. Used
+    /// only as the DNS suffix of the initial known-node address —
+    /// `gddb.<bootstrap-region>.int.<domain>`. GDDB is logically global;
+    /// the Scylla session discovers the rest of the cluster from there.
+    #[arg(long, default_value = "loca")]
+    gddb_bootstrap_region: String,
 }
 
 #[tokio::main]
@@ -1299,45 +1199,31 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let challenge_salt = cli
-        .challenge_salt
-        .ok_or_else(|| anyhow::anyhow!("missing --challenge-salt"))?;
-
-    let region: ids::RegionId = cli
-        .region
-        .ok_or_else(|| anyhow::anyhow!("missing --region"))?
-        .parse()
-        .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
     let domain: ids::Domain = cli
         .domain
         .parse()
         .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+    let gddb_bootstrap_region: ids::RegionId = cli
+        .gddb_bootstrap_region
+        .parse()
+        .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --gddb-bootstrap-region: {e}"))?;
 
-    let signing_identity = udb::SigningIdentity::load(region.clone(), &cli.udb_signing_key)
-        .map_err(|e| anyhow::anyhow!("failed to load --udb-signing-key: {e}"))?;
-    let signing_public_key = signing_identity.signing_key.verifying_key().to_bytes();
-
-    let udb_pool = pools::UdbPool::new(domain.clone(), Some(signing_identity));
+    let ias_pool = pools::IasPool::new(domain.clone());
     let cdb_pool = pools::CdbPool::new(domain.clone());
     let sdb_pool = pools::SdbPool::new(domain.clone());
 
     let gddb_client = gddb::ClientBuilder::new()
-        .known_node(ids::service_address("gddb", &region, &domain))
+        .known_node(ids::service_address(
+            "gddb",
+            &gddb_bootstrap_region,
+            &domain,
+        ))
         .build()
         .await?;
 
-    // Publish this region's identity-token public key into GDDB so other
-    // regions' API edges can verify tokens we issue. Idempotent — safe to
-    // re-run on every startup. `generation = 1` until rotation is
-    // implemented.
-    gddb_client
-        .upsert_region_key(&region, &signing_public_key, 1)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to register UDB public key in GDDB: {e}"))?;
-
     let rdb_client = rdb::ClientBuilder::new()
-        .known_node(ids::service_address("rdb", &region, &domain))
-        .region(region.clone())
+        .known_node(ids::service_address("rdb", &gddb_bootstrap_region, &domain))
+        .region(gddb_bootstrap_region.clone())
         .build()
         .await?;
     let mut adb_builder = adb::ClientBuilder::new()
@@ -1351,7 +1237,10 @@ async fn main() -> anyhow::Result<()> {
         adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb_client = adb_builder.build().await?;
-    let ldb_brokers = format!("{}:9092", ids::service_address("ldb", &region, &domain));
+    let ldb_brokers = format!(
+        "{}:9092",
+        ids::service_address("ldb", &gddb_bootstrap_region, &domain)
+    );
     let ldb_consumer = ldb::ClientBuilder::new()
         .brokers(ldb_brokers.clone())
         .build_consumer()
@@ -1361,8 +1250,7 @@ async fn main() -> anyhow::Result<()> {
         .build_publisher()
         .await?;
     let rtq_publisher = rtq::Publisher::new(domain.clone());
-    let region_key_cache = region_keys::RegionKeyCache::new(gddb_client.clone());
-    let challenger = Arc::new(challenge::Challenger::new(challenge_salt.into_bytes()));
+    let region_key_cache = region_keys::RegionKeyCache::new(ias_pool.clone());
     let rp_id = Arc::new(cli.rp_id);
     let rp_name = Arc::new(cli.rp_name);
 
@@ -1378,7 +1266,6 @@ async fn main() -> anyhow::Result<()> {
         .route("/graphiql", get(graphiql))
         .layer(cors)
         .layer(Extension(schema))
-        .layer(Extension(challenger))
         .layer(Extension(rp_id))
         .layer(Extension(rp_name))
         .layer(Extension(cdb_pool))
@@ -1390,9 +1277,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(ldb_publisher))
         .layer(Extension(rtq_publisher))
         .layer(Extension(AuthState {
-            udb_pool,
+            ias_pool,
             region_keys: region_key_cache,
-            region,
         }));
 
     let bind_target = format!("{}:{}", cli.host, cli.port);
@@ -1411,7 +1297,6 @@ async fn main() -> anyhow::Result<()> {
 #[allow(clippy::too_many_arguments)]
 async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
-    Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_pool): Extension<pools::CdbPool>,
@@ -1427,12 +1312,11 @@ async fn graphql_handler(
     AxumJson(request): AxumJson<juniper::http::GraphQLRequest>,
 ) -> AxumJson<juniper::http::GraphQLResponse> {
     let AuthState {
-        udb_pool,
+        ias_pool,
         region_keys,
-        region,
     } = auth;
-    let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_pool, &region_keys).await {
+    let authenticated_user = if let Some(token) = extract_bearer_token(&headers) {
+        match authenticate_token(&token, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return AxumJson(juniper::http::GraphQLResponse::error(
@@ -1453,7 +1337,7 @@ async fn graphql_handler(
     };
 
     let ctx = Context {
-        udb_pool,
+        ias_pool,
         cdb_pool,
         sdb_pool,
         gddb_client,
@@ -1462,11 +1346,9 @@ async fn graphql_handler(
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,
-        challenger,
         rp_id,
         rp_name,
-        user,
-        region,
+        authenticated_user,
     };
     AxumJson(request.execute(&schema, &ctx).await)
 }
@@ -1483,7 +1365,6 @@ async fn graphiql() -> Html<String> {
 async fn graphql_ws_handler(
     ws: WebSocketUpgrade,
     Extension(schema): Extension<Arc<Schema>>,
-    Extension(challenger): Extension<Arc<challenge::Challenger>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
     Extension(cdb_pool): Extension<pools::CdbPool>,
@@ -1498,12 +1379,11 @@ async fn graphql_ws_handler(
     headers: http::header::HeaderMap,
 ) -> Response {
     let AuthState {
-        udb_pool,
+        ias_pool,
         region_keys,
-        region,
     } = auth;
-    let user = if let Some(token) = extract_bearer_token(&headers) {
-        match authenticate_token(&token, &udb_pool, &region_keys).await {
+    let authenticated_user = if let Some(token) = extract_bearer_token(&headers) {
+        match authenticate_token(&token, &region_keys).await {
             AuthOutcome::Authenticated(user) => Some(user),
             AuthOutcome::Invalid | AuthOutcome::Expired => {
                 return (StatusCode::UNAUTHORIZED, "Invalid token").into_response();
@@ -1517,10 +1397,9 @@ async fn graphql_ws_handler(
         None
     };
 
-    let udb_pool_for_ws = udb_pool.clone();
     let region_keys_for_ws = region_keys.clone();
     let context = Context {
-        udb_pool,
+        ias_pool,
         cdb_pool,
         sdb_pool,
         gddb_client,
@@ -1529,21 +1408,13 @@ async fn graphql_ws_handler(
         ldb_consumer,
         ldb_publisher,
         rtq_publisher,
-        challenger,
         rp_id,
         rp_name,
-        user,
-        region,
+        authenticated_user,
     };
 
     ws.protocols(["graphql-transport-ws"])
         .on_upgrade(move |socket| {
-            graphql_ws::graphql_ws_connection(
-                socket,
-                schema,
-                context,
-                udb_pool_for_ws,
-                region_keys_for_ws,
-            )
+            graphql_ws::graphql_ws_connection(socket, schema, context, region_keys_for_ws)
         })
 }

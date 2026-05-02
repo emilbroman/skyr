@@ -1,11 +1,11 @@
 //! In-process cache of regions' identity-token signing public keys.
 //!
-//! The keys themselves live in GDDB's `region_keys` table (see the
-//! `gddb` crate). Every authenticated request needs at least one key
-//! lookup, so we cache them here with a short TTL. Rotations propagate
-//! by TTL expiry; a verification failure also invalidates the cached
-//! entry so the next request refetches eagerly (defense-in-depth for
-//! the moment between rotation and TTL expiry).
+//! Keys are fetched on demand from the issuing region's IAS (via gRPC
+//! `GetVerifyingKey`). Every authenticated request needs at least one
+//! key lookup, so we cache them here with a short TTL. Rotations
+//! propagate by TTL expiry; a verification failure also invalidates the
+//! cached entry so the next request refetches eagerly (defense-in-depth
+//! for the moment between rotation and TTL expiry).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,14 +16,16 @@ use ids::RegionId;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-/// How long a cached region key is trusted before re-fetching from GDDB.
+use crate::pools::{IasConnectError, IasPool};
+
+/// How long a cached region key is trusted before re-fetching from IAS.
 /// Matches the architecture doc's "rotations propagate by TTL" stance.
 const DEFAULT_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
 pub(crate) struct RegionKeyCache {
     inner: Arc<Mutex<HashMap<RegionId, CachedKey>>>,
-    gddb: gddb::Client,
+    ias_pool: IasPool,
     ttl: Duration,
 }
 
@@ -33,17 +35,17 @@ struct CachedKey {
 }
 
 impl RegionKeyCache {
-    pub(crate) fn new(gddb: gddb::Client) -> Self {
+    pub(crate) fn new(ias_pool: IasPool) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            gddb,
+            ias_pool,
             ttl: DEFAULT_TTL,
         }
     }
 
     /// Look up `region`'s identity-token signing public key. Returns the
-    /// cached value if it is still fresh, otherwise fetches from GDDB and
-    /// caches the result.
+    /// cached value if it is still fresh, otherwise fetches from the
+    /// region's IAS and caches the result.
     pub(crate) async fn get(&self, region: &RegionId) -> Result<VerifyingKey, FetchError> {
         {
             let entries = self.inner.lock().await;
@@ -54,16 +56,22 @@ impl RegionKeyCache {
             }
         }
 
-        let row = self
-            .gddb
-            .lookup_region_key(region)
-            .await?
-            .ok_or_else(|| FetchError::Unknown(region.clone()))?;
+        let mut client = self.ias_pool.for_region(region).await?;
+        let response = match client.get_verifying_key(()).await {
+            Ok(resp) => resp.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => {
+                return Err(FetchError::Unknown(region.clone()));
+            }
+            Err(status) => return Err(FetchError::Rpc(status)),
+        };
 
-        if row.public_key.len() != 32 {
-            return Err(FetchError::InvalidKeyLength(row.public_key.len()));
+        if response.public_key.len() != 32 {
+            return Err(FetchError::InvalidKeyLength(response.public_key.len()));
         }
-        let key_bytes: [u8; 32] = row.public_key.try_into().expect("length checked above");
+        let key_bytes: [u8; 32] = response
+            .public_key
+            .try_into()
+            .expect("length checked above");
         let key =
             VerifyingKey::from_bytes(&key_bytes).map_err(|_| FetchError::InvalidEd25519Key)?;
 
@@ -79,7 +87,7 @@ impl RegionKeyCache {
     }
 
     /// Drop the cached entry for `region`. Called after a verification
-    /// failure so the next attempt re-reads from GDDB; legitimate rotations
+    /// failure so the next attempt re-reads from IAS; legitimate rotations
     /// then take effect immediately for that region.
     pub(crate) async fn invalidate(&self, region: &RegionId) {
         self.inner.lock().await.remove(region);
@@ -88,15 +96,18 @@ impl RegionKeyCache {
 
 #[derive(Error, Debug)]
 pub(crate) enum FetchError {
-    #[error("failed to look up region key in GDDB: {0}")]
-    Lookup(#[from] gddb::LookupError),
+    #[error("failed to connect to IAS: {0}")]
+    Connect(#[from] IasConnectError),
+
+    #[error("IAS RPC failed: {0}")]
+    Rpc(#[source] tonic::Status),
 
     #[error("region {0} has no published signing key")]
     Unknown(RegionId),
 
-    #[error("region key in GDDB has invalid length: {0}")]
+    #[error("region key from IAS has invalid length: {0}")]
     InvalidKeyLength(usize),
 
-    #[error("region key in GDDB is not a valid Ed25519 public key")]
+    #[error("region key from IAS is not a valid Ed25519 public key")]
     InvalidEd25519Key,
 }

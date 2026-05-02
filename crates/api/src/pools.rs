@@ -1,48 +1,45 @@
-//! Per-region connection pools for UDB / CDB / SDB.
+//! Per-region connection pools for IAS / CDB / SDB.
 //!
 //! Each pool holds a `HashMap<RegionId, Client>` populated lazily on first
 //! use of a region. Construction is parameterized by the regional service
 //! address scheme (`<service>.<region>.int.<domain>`), so adding a region
 //! is operator data — no Skyr-binary change.
-//!
-//! In stage 4 of the L7-routing rollout the API still has `--region` and
-//! still rejects requests that target a different home region, so each
-//! pool effectively only ever holds the local region's client. The pools
-//! land here so stage 5 (when the rejection drops) is a one-line change
-//! per resolver rather than a fresh refactor.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use ids::{Domain, RegionId, service_address};
+use thiserror::Error;
 use tokio::sync::Mutex;
+use tonic::transport::Endpoint;
 
-#[derive(Clone)]
-pub(crate) struct UdbPool {
-    inner: Arc<Mutex<HashMap<RegionId, udb::Client>>>,
-    domain: Domain,
-    /// The local region's signing identity, attached only when this pool
-    /// hands out the local UDB client. Other regions sign with their own
-    /// keys via their own API edges; we only verify their tokens here.
-    local_signing_identity: Option<udb::SigningIdentity>,
+/// Default IAS gRPC port. Mirrored on the IAS binary's `--port` default.
+const IAS_PORT: u16 = 50100;
+
+#[derive(Error, Debug)]
+pub(crate) enum IasConnectError {
+    #[error("invalid IAS endpoint: {0}")]
+    InvalidEndpoint(#[from] tonic::transport::Error),
 }
 
-impl UdbPool {
-    pub(crate) fn new(
-        domain: Domain,
-        local_signing_identity: Option<udb::SigningIdentity>,
-    ) -> Self {
+#[derive(Clone)]
+pub(crate) struct IasPool {
+    inner: Arc<Mutex<HashMap<RegionId, ias::IdentityAndAccessClient>>>,
+    domain: Domain,
+}
+
+impl IasPool {
+    pub(crate) fn new(domain: Domain) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             domain,
-            local_signing_identity,
         }
     }
 
     pub(crate) async fn for_region(
         &self,
         region: &RegionId,
-    ) -> Result<udb::Client, udb::ConnectError> {
+    ) -> Result<ias::IdentityAndAccessClient, IasConnectError> {
         {
             let entries = self.inner.lock().await;
             if let Some(client) = entries.get(region) {
@@ -50,14 +47,12 @@ impl UdbPool {
             }
         }
 
-        let mut builder =
-            udb::ClientBuilder::new().known_node(service_address("udb", region, &self.domain));
-        if let Some(identity) = &self.local_signing_identity
-            && &identity.region == region
-        {
-            builder = builder.signing_identity(identity.clone());
-        }
-        let client = builder.build().await?;
+        let host = service_address("ias", region, &self.domain);
+        let endpoint = Endpoint::from_shared(format!("http://{host}:{IAS_PORT}"))?;
+        // Connect lazily so a transient unavailability of one region's IAS
+        // doesn't fail unrelated requests on this edge.
+        let channel = endpoint.connect_lazy();
+        let client = ias::IdentityAndAccessClient::new(channel);
 
         self.inner
             .lock()

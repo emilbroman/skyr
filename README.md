@@ -16,11 +16,12 @@ Skyr is composed of several services and libraries that work together:
 4. The **[RTE](crates/rte/)** (Resource Transition Engine) consumes transition messages and invokes **resource plugins** via the **[RTP](crates/rtp/)** protocol (gRPC).
 5. Plugins perform the actual resource operations (create/update/delete) and report outputs back. The RTE persists resource state in the **[RDB](crates/rdb/)** (Resource Database, backed by ScyllaDB/Cassandra).
 6. The DE and RTE both emit a status report after every operation onto the **[RQ](crates/rq/)** (Reporting Queue, backed by RabbitMQ). The **[RE](crates/re/)** (Reporting Engine) consumes RQ, classifies failures, and maintains the **[SDB](crates/sdb/)** (Status Database, backed by ScyllaDB) — per-entity health summaries and incident records. When incidents open or close, the RE writes a request to the **[NQ](crates/nq/)** (Notification Queue, backed by RabbitMQ); the **[NE](crates/ne/)** (Notification Engine) consumes NQ and sends email via SMTP.
-7. The **[API](crates/api/)** service exposes a GraphQL endpoint for user management, deployment status, incidents, logs, and artifacts.
+7. The **[API](crates/api/)** service exposes a GraphQL endpoint for user management, deployment status, incidents, logs, and artifacts. It is a region-agnostic edge: per-request routing follows token claims, GDDB lookups, and region-prefixed resource IDs.
+8. The **[IAS](crates/ias/)** (Identity and Access Service) is the only path to the regional UDB. It owns each region's identity-token signing key and challenge salt, performs the cryptographic half of WebAuthn / SSH proof verification, and serves the public key any other region's API edge needs to verify a token issued here. The API edge talks to the IAS in the user's home region for sign-up, sign-in, refresh, and every UDB read.
 
 Supporting infrastructure:
 
-- **[UDB](crates/udb/)** — Redis-backed user database for accounts, SSH keys, and bearer tokens.
+- **[UDB](crates/udb/)** — Redis-backed user database for accounts, SSH keys, and credentials. Wrapped exclusively by IAS.
 - **[ADB](crates/adb/)** — S3-backed artifact storage (MinIO in development).
 - **[LDB](crates/ldb/)** — Kafka-backed structured log database (Redpanda in development).
 - **[SCOC](crates/scoc/)** — Container Orchestrator Conduit, a CRI client that communicates with containerd on cluster nodes.
@@ -70,6 +71,7 @@ The RTQ carries four message types:
 | Crate | Description |
 |-------|-------------|
 | [api](crates/api/) | GraphQL API service |
+| [ias](crates/ias/) | Identity and Access Service (per-region; wraps UDB; signs identity tokens) |
 | [scs](crates/scs/) | Git-over-SSH configuration server |
 | [de](crates/de/) | Deployment engine daemon |
 | [rte](crates/rte/) | Resource transition engine daemon |
@@ -149,6 +151,7 @@ Application services:
 | Service | Port | Description |
 |---------|------|-------------|
 | api | 8080 | GraphQL API |
+| ias | 50100 | Identity and Access Service |
 | web | 5173 | Web dashboard (dev server) |
 | scs | 2222 | SSH Git server |
 | de-{0,1} | — | Deployment engine workers |
