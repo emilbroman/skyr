@@ -198,31 +198,90 @@ impl Worker {
         // on TouchResource) is scoped by effect filtering downstream and
         // does not need to filter by owner here.
         let mut has_volatile_owned_resource = false;
+
+        let absorb_resource =
+            |resource: rdb::Resource,
+             eval_ctx: &mut sclc::EvalCtx,
+             unowned_resource_owner_by_id: &mut HashMap<ids::ResourceId, String>,
+             volatile_resource_ids: &mut HashSet<ids::ResourceId>,
+             has_volatile_owned_resource: &mut bool| {
+                let resource_id = resource_id_from(&resource);
+                let is_owned = resource.owner.as_deref() == Some(owner_deployment_qid.as_str());
+                if !is_owned && let Some(owner) = resource.owner.clone() {
+                    unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
+                }
+                if resource.markers.contains(&sclc::Marker::Volatile) {
+                    volatile_resource_ids.insert(resource_id.clone());
+                    if is_owned {
+                        *has_volatile_owned_resource = true;
+                    }
+                }
+
+                eval_ctx.add_resource(
+                    resource_id,
+                    sclc::Resource {
+                        inputs: resource.inputs.unwrap_or_default(),
+                        outputs: resource.outputs.unwrap_or_default(),
+                        dependencies: resource.dependencies,
+                        markers: resource.markers,
+                    },
+                );
+            };
+
         let mut resources = self.namespace.list_resources().await?;
         while let Some(resource) = resources.try_next().await? {
-            let resource_id = resource_id_from(&resource);
-            let is_owned = resource.owner.as_deref() == Some(owner_deployment_qid.as_str());
-            if !is_owned && let Some(owner) = resource.owner.clone() {
-                unowned_resource_owner_by_id.insert(resource_id.clone(), owner);
-            }
-            if resource.markers.contains(&sclc::Marker::Volatile) {
-                volatile_resource_ids.insert(resource_id.clone());
-                if is_owned {
-                    has_volatile_owned_resource = true;
-                }
-            }
-
-            eval_ctx.add_resource(
-                resource_id,
-                sclc::Resource {
-                    inputs: resource.inputs.unwrap_or_default(),
-                    outputs: resource.outputs.unwrap_or_default(),
-                    dependencies: resource.dependencies,
-                    markers: resource.markers,
-                },
+            absorb_resource(
+                resource,
+                &mut eval_ctx,
+                &mut unowned_resource_owner_by_id,
+                &mut volatile_resource_ids,
+                &mut has_volatile_owned_resource,
             );
         }
         drop(resources);
+
+        // Cross-region dependency reads. The home-region RE maintains a
+        // routing index (`rdb.resource_regions`) recording which region
+        // hosts each resource in this environment. Read it once and fan
+        // out one `list_resources` query per remote region — O(regions
+        // touched), not O(resources). Single-region deployments find no
+        // remote regions in the index and pay zero cross-region traffic.
+        let index = self.namespace.list_resource_regions().await?;
+        let mut remote_regions: HashSet<ids::RegionId> = HashSet::new();
+        for entry in &index {
+            if entry.region != self.region {
+                remote_regions.insert(entry.region.clone());
+            }
+        }
+        if !remote_regions.is_empty() {
+            let env_namespace = self.environment_qid.to_string();
+            let region_reads = remote_regions.into_iter().map(|region| {
+                let pool = self.rdb_pool.clone();
+                let env_namespace = env_namespace.clone();
+                async move {
+                    let client = pool.for_region(&region).await?;
+                    let namespace = client.namespace(env_namespace);
+                    let mut resources = namespace.list_resources().await?;
+                    let mut out = Vec::new();
+                    while let Some(resource) = resources.try_next().await? {
+                        out.push(resource);
+                    }
+                    Ok::<Vec<rdb::Resource>, anyhow::Error>(out)
+                }
+            });
+            let per_region_results = futures_util::future::try_join_all(region_reads).await?;
+            for resources in per_region_results {
+                for resource in resources {
+                    absorb_resource(
+                        resource,
+                        &mut eval_ctx,
+                        &mut unowned_resource_owner_by_id,
+                        &mut volatile_resource_ids,
+                        &mut has_volatile_owned_resource,
+                    );
+                }
+            }
+        }
 
         // Captured before the effects task starts so we can stamp the
         // resulting `EvalOutcome` with the terminal-rule inputs without

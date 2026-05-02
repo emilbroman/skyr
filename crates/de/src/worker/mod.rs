@@ -29,6 +29,10 @@ pub(crate) struct Worker {
     pub(crate) client: DeploymentClient,
     pub(crate) cdb_client: cdb::Client,
     pub(crate) rdb_client: rdb::Client,
+    /// Per-region RDB clients used to fetch dependency state from regions
+    /// other than the home region during evaluation. The local-region
+    /// client is pre-seeded; remote regions are opened lazily on first use.
+    pub(crate) rdb_pool: crate::rdb_pool::RdbPool,
     /// The region this DE runs in. By construction this is also the home
     /// region of every repo this worker processes (DE only ever handles
     /// deployments for repos homed in its own region), so it's the value

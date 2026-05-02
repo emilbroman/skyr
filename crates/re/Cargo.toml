@@ -9,6 +9,7 @@ chrono = { version = "0.4.43", features = ["clock", "serde"] }
 clap = { version = "4.5.57", features = ["derive"] }
 ids = { path = "../ids" }
 nq = { path = "../nq" }
+rdb = { path = "../rdb" }
 rq = { path = "../rq" }
 sdb = { path = "../sdb" }
 serde_json = "1.0.149"

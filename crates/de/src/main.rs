@@ -1,5 +1,6 @@
 mod backoff;
 mod finder;
+mod rdb_pool;
 mod reporter;
 mod util;
 mod worker;
@@ -16,6 +17,7 @@ use tokio::{
 };
 use tracing::Instrument;
 
+use crate::rdb_pool::RdbPool;
 use worker::Worker;
 
 #[derive(Parser)]
@@ -108,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
                 .region(region.clone())
                 .build()
                 .await?;
+            // Pool of per-region RDB clients used for cross-region
+            // dependency reads. Pre-seeded with the local region so
+            // single-region deployments never open a second connection.
+            let rdb_pool = RdbPool::new(domain.clone(), rdb_client.clone());
 
             let rtq_publisher = rtq::Publisher::new(domain.clone());
             let rq_publisher = rq::Publisher::new(domain.clone());
@@ -127,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
                 region,
                 cdb_client,
                 rdb_client,
+                rdb_pool,
                 rtq_publisher,
                 rq_publisher,
                 sdb_client,
@@ -160,6 +167,7 @@ struct Daemon {
     region: ids::RegionId,
     cdb_client: cdb::Client,
     rdb_client: rdb::Client,
+    rdb_pool: RdbPool,
     rtq_publisher: rtq::Publisher,
     rq_publisher: rq::Publisher,
     sdb_client: sdb::Client,
@@ -262,6 +270,7 @@ impl Daemon {
                 ),
                 cdb_client: self.cdb_client.clone(),
                 rdb_client: self.rdb_client.clone(),
+                rdb_pool: self.rdb_pool.clone(),
                 region: self.region.clone(),
                 environment_qid: env_qid.clone(),
                 namespace: self.rdb_client.namespace(environment_qid),
