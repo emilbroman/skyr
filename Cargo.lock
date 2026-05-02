@@ -201,6 +201,7 @@ dependencies = [
  "clap",
  "ed25519-dalek",
  "futures-util",
+ "gddb",
  "gix-object",
  "http 1.4.0",
  "ids",
@@ -2220,6 +2221,17 @@ dependencies = [
  "memchr",
  "pin-project-lite",
  "slab",
+]
+
+[[package]]
+name = "gddb"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "ids",
+ "scylla",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5731,6 +5743,7 @@ dependencies = [
  "clap",
  "comma",
  "futures",
+ "gddb",
  "gix-features",
  "gix-hash",
  "gix-object",
