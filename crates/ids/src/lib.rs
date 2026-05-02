@@ -103,6 +103,34 @@ fn is_valid_region(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase())
 }
 
+/// Returns `true` if `s` is a valid [`Domain`] string: non-empty, ASCII
+/// alphanumeric with `-` and `.` allowed, no leading/trailing `-` or `.`,
+/// and no consecutive `..`. Permissive enough for both `skyr.cloud` and
+/// reserved-TLD test domains like `test`; strict enough to reject
+/// whitespace, `:`, `/`, control characters, and obvious typos.
+fn is_valid_domain(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let bytes = s.as_bytes();
+    let first = bytes[0];
+    let last = bytes[bytes.len() - 1];
+    if first == b'.' || first == b'-' || last == b'.' || last == b'-' {
+        return false;
+    }
+    let mut prev_dot = false;
+    for &b in bytes {
+        if !(b.is_ascii_alphanumeric() || b == b'-' || b == b'.') {
+            return false;
+        }
+        if b == b'.' && prev_dot {
+            return false;
+        }
+        prev_dot = b == b'.';
+    }
+    true
+}
+
 /// Returns `true` if `s` is a valid 40-character lowercase hexadecimal string.
 fn is_valid_oid_hex(s: &str) -> bool {
     s.len() == 40
@@ -164,6 +192,11 @@ pub enum ParseIdError {
 
     #[error("invalid region ID: {0:?} (must be one or more lowercase ASCII letters)")]
     InvalidRegionId(String),
+
+    #[error(
+        "invalid domain: {0:?} (must be non-empty, ASCII alphanumeric with `-` or `.`, no leading/trailing `.` or `-`, no `..`)"
+    )]
+    InvalidDomain(String),
 
     #[error("invalid resource ID: {0:?} (expected format: Region:ResourceType:ResourceName)")]
     InvalidResourceId(String),
@@ -393,6 +426,127 @@ impl TryFrom<String> for RegionId {
         }
         Ok(Self(s))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Domain / service addressing
+// ---------------------------------------------------------------------------
+
+/// Format string documenting how Skyr peer service DNS names are composed
+/// from a service short name, a [`RegionId`], and a [`Domain`]. The literal
+/// substitutions are performed by [`service_address`]; this constant exists
+/// for documentation and cross-referencing.
+///
+/// ```
+/// # use ids::SERVICE_ADDRESS_TEMPLATE;
+/// assert_eq!(SERVICE_ADDRESS_TEMPLATE, "{service}.{region}.int.{domain}");
+/// ```
+pub const SERVICE_ADDRESS_TEMPLATE: &str = "{service}.{region}.int.{domain}";
+
+/// DNS suffix used to construct region-scoped Skyr service addresses.
+///
+/// Combined with a [`RegionId`] and a service short name (e.g. `"cdb"`,
+/// `"rq"`), the [`service_address`] function produces a fully-qualified
+/// peer hostname of the form `<service>.<region>.int.<domain>`. This is
+/// the only sanctioned way for a Skyr binary to address a peer service:
+/// no binary contains a list of regions or per-service hostnames.
+///
+/// Validation is permissive but rejects whitespace, path separators,
+/// embedded ports, and obvious typos.
+///
+/// # Examples
+///
+/// ```
+/// use ids::Domain;
+/// let d: Domain = "skyr.cloud".parse().unwrap();
+/// assert_eq!(d.as_str(), "skyr.cloud");
+///
+/// // Reserved-TLD test domain for local dev.
+/// assert!("test".parse::<Domain>().is_ok());
+///
+/// assert!("".parse::<Domain>().is_err());
+/// assert!("has spaces".parse::<Domain>().is_err());
+/// assert!("with:port".parse::<Domain>().is_err());
+/// assert!(".leading".parse::<Domain>().is_err());
+/// ```
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Domain(String);
+
+impl Domain {
+    /// Creates a new `Domain` without validation. Use `FromStr` for validated construction.
+    pub fn new_unchecked(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Returns the domain as a string slice.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl fmt::Debug for Domain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Domain({self})")
+    }
+}
+
+impl FromStr for Domain {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if !is_valid_domain(s) {
+            return Err(ParseIdError::InvalidDomain(s.to_string()));
+        }
+        Ok(Self(s.to_string()))
+    }
+}
+
+impl From<Domain> for String {
+    fn from(d: Domain) -> Self {
+        d.0
+    }
+}
+
+impl TryFrom<String> for Domain {
+    type Error = ParseIdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        if !is_valid_domain(&s) {
+            return Err(ParseIdError::InvalidDomain(s));
+        }
+        Ok(Self(s))
+    }
+}
+
+/// Construct a region-scoped Skyr peer service hostname.
+///
+/// Composes `service`, `region`, and `domain` into the form
+/// `<service>.<region>.int.<domain>` — see [`SERVICE_ADDRESS_TEMPLATE`].
+/// This is the only sanctioned way for a Skyr binary to construct an
+/// address for a peer service in any region (including its own).
+///
+/// `service` is a short, lowercase name like `"cdb"`, `"rq"`, `"rtq"`,
+/// `"gddb"`. The protocol-specific port (if any) is concatenated by the
+/// caller — this function returns just the hostname.
+///
+/// # Examples
+///
+/// ```
+/// use ids::{Domain, RegionId, service_address};
+/// let region: RegionId = "stockholm".parse().unwrap();
+/// let domain: Domain = "skyr.cloud".parse().unwrap();
+/// assert_eq!(
+///     service_address("rq", &region, &domain),
+///     "rq.stockholm.int.skyr.cloud"
+/// );
+/// ```
+pub fn service_address(service: &str, region: &RegionId, domain: &Domain) -> String {
+    format!("{service}.{region}.int.{domain}")
 }
 
 // ---------------------------------------------------------------------------
@@ -1686,6 +1840,56 @@ mod tests {
         assert_eq!(
             resource_qid.to_string(),
             "MyOrg/MyRepo::main::stockholm:Std/Random.Int:seed"
+        );
+    }
+
+    #[test]
+    fn domain_valid() {
+        assert!("skyr.cloud".parse::<Domain>().is_ok());
+        assert!("test".parse::<Domain>().is_ok());
+        assert!("sub.example.com".parse::<Domain>().is_ok());
+        assert!("a-b.c-d.example".parse::<Domain>().is_ok());
+        assert!("123abc.io".parse::<Domain>().is_ok());
+    }
+
+    #[test]
+    fn domain_invalid() {
+        assert!("".parse::<Domain>().is_err());
+        assert!("has spaces".parse::<Domain>().is_err());
+        assert!("with:port".parse::<Domain>().is_err());
+        assert!("a/b".parse::<Domain>().is_err());
+        assert!(".leading".parse::<Domain>().is_err());
+        assert!("trailing.".parse::<Domain>().is_err());
+        assert!("-leading".parse::<Domain>().is_err());
+        assert!("trailing-".parse::<Domain>().is_err());
+        assert!("double..dot".parse::<Domain>().is_err());
+    }
+
+    #[test]
+    fn domain_roundtrip() {
+        let d: Domain = "skyr.cloud".parse().unwrap();
+        assert_eq!(d.to_string(), "skyr.cloud");
+        assert_eq!(d.as_str(), "skyr.cloud");
+    }
+
+    #[test]
+    fn service_address_format() {
+        let region: RegionId = "stockholm".parse().unwrap();
+        let domain: Domain = "skyr.cloud".parse().unwrap();
+        assert_eq!(
+            service_address("rq", &region, &domain),
+            "rq.stockholm.int.skyr.cloud"
+        );
+        assert_eq!(
+            service_address("cdb", &region, &domain),
+            "cdb.stockholm.int.skyr.cloud"
+        );
+
+        let local: RegionId = "local".parse().unwrap();
+        let test_domain: Domain = "test".parse().unwrap();
+        assert_eq!(
+            service_address("rtq", &local, &test_domain),
+            "rtq.local.int.test"
         );
     }
 }
