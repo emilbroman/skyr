@@ -175,6 +175,37 @@ This requires building the `skyr:latest` image first.
 
 For individual services, use `cargo run -p <crate> -- daemon` with appropriate flags.
 
+### Two-region harness
+
+A second compose stack at `dev/podman-compose.multi-region.yml` brings up
+two regions (`loca` and `locb`) end-to-end so cross-region machinery —
+identity tokens issued by one region and verified at another, GDDB
+lookups across regions, queue routing across regions, DE cross-region
+dependency reads — can be exercised before any cloud deployment.
+
+```sh
+make up-multi-region   # builds images and starts the two-region stack
+make down-multi-region # tears it down
+```
+
+| Region | API | SCS (SSH) | ScyllaDB | RabbitMQ mgmt | Redis | Redpanda |
+|--------|-----|-----------|----------|---------------|-------|----------|
+| loca   | 8080 | 2222 | 9042 | 15672 | 6379 | 9092 |
+| locb   | 8081 | 2223 | 9043 | 15673 | 6380 | 9093 |
+
+GDDB is logically global; both regions' GDDB clients alias to the `loca`
+ScyllaDB. CDB / RDB / SDB / RTQ / RQ / NQ / UDB / LDB are split per
+region. Shared infra (MinIO, OCI registry, BuildKit, MailHog) runs as
+single instances. SCOC and the container plugin are intentionally
+omitted from this stack; add them when exercising container deployments.
+
+Point the CLI at either edge to land at that region first:
+
+```sh
+SKYR_API_URL=http://localhost:8080 skyr ...   # land at loca
+SKYR_API_URL=http://localhost:8081 skyr ...   # land at locb
+```
+
 ## Development
 
 The project uses Nix for development dependencies. Enter the dev shell:
