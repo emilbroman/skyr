@@ -6,7 +6,7 @@ use futures_util::{Stream, StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::schema::{Log, Severity};
-use crate::{Context, field_error, internal_error};
+use crate::{Context, field_error, internal_error, resolve_repo_home};
 
 pub(crate) type LogStream = Pin<Box<dyn Stream<Item = Log> + Send>>;
 
@@ -24,6 +24,7 @@ impl Subscription {
         let deployment_qid: ids::DeploymentQid = deployment_id
             .parse()
             .map_err(|_| field_error("invalid deployment id"))?;
+        resolve_repo_home(context, deployment_qid.repo_qid()).await?;
         let organization = deployment_qid.repo_qid().org.to_string();
 
         if organization != user.username {
@@ -97,6 +98,8 @@ impl Subscription {
         let env_qid: ids::EnvironmentQid = environment_qid
             .parse()
             .map_err(|_| field_error("invalid environment QID"))?;
+
+        resolve_repo_home(context, &env_qid.repo).await?;
 
         let organization = env_qid.repo.org.to_string();
         if organization != user.username {
@@ -220,6 +223,7 @@ impl Subscription {
         let parsed_qid: ids::ResourceQid = resource_qid
             .parse()
             .map_err(|_| field_error("invalid resource QID"))?;
+        resolve_repo_home(context, &parsed_qid.environment_qid().repo).await?;
         let organization = parsed_qid.environment_qid().repo.org.to_string();
 
         if organization != user.username {

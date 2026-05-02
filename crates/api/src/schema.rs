@@ -4,7 +4,7 @@ use futures_util::{StreamExt, TryStreamExt};
 use juniper::FieldResult;
 
 use crate::json_scalar::JsonValue;
-use crate::{Context, field_error, internal_error};
+use crate::{Context, field_error, internal_error, resolve_repo_home};
 
 pub(crate) struct AuthSuccess {
     pub(crate) user: SignedInUser,
@@ -140,6 +140,7 @@ impl Organization {
             .parse()
             .map_err(|_| field_error("Invalid repository name"))?;
         let repo_qid = ids::RepoQid::new(self.name.clone(), repo);
+        resolve_repo_home(context, &repo_qid).await?;
         let repository = context
             .cdb_client
             .repository(&repo_qid)

@@ -27,6 +27,7 @@ tower-http = { version = "0.6", features = ["cors"] }
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 ids = { path = "../ids", features = ["rand"] }
 cdb = { path = "../cdb" }
+gddb = { path = "../gddb" }
 rdb = { path = "../rdb" }
 sclc = { path = "../sclc" }
 sdb = { path = "../sdb" }
