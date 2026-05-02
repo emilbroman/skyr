@@ -7,13 +7,15 @@ use tokio::sync::mpsc;
 use tokio::task::AbortHandle;
 
 use crate::json_scalar::{graphql_value_to_json, serialize_execution_errors};
-use crate::{Context, Schema};
+use crate::region_keys::RegionKeyCache;
+use crate::{AuthOutcome, Context, Schema, authenticate_token};
 
 pub(crate) async fn graphql_ws_connection(
     socket: WebSocket,
     schema: Arc<Schema>,
     mut context: Context,
     udb_client: udb::Client,
+    region_keys: RegionKeyCache,
 ) {
     use std::collections::HashMap;
 
@@ -92,20 +94,16 @@ pub(crate) async fn graphql_ws_connection(
                                 .and_then(|v| v.as_str())
                                 .and_then(|v| v.strip_prefix("Bearer "))
                         {
-                            match udb_client.lookup_token(token.to_owned()).await {
-                                Ok(user) => {
+                            match authenticate_token(token, &udb_client, &region_keys).await {
+                                AuthOutcome::Authenticated(user) => {
                                     context.user = Some(user);
                                 }
-                                Err(
-                                    udb::LookupTokenError::InvalidToken
-                                    | udb::LookupTokenError::Expired,
-                                ) => {
+                                AuthOutcome::Invalid | AuthOutcome::Expired => {
                                     tracing::debug!("Invalid token in connection_init payload");
                                 }
-                                Err(e) => {
+                                AuthOutcome::Internal => {
                                     tracing::error!(
-                                        "Failed to lookup token from connection_init: {}",
-                                        e
+                                        "Internal error verifying token from connection_init"
                                     );
                                 }
                             }

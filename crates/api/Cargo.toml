@@ -21,11 +21,13 @@ p256 = { version = "0.13", features = ["ecdsa"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
 ssh-key = { version = "0.6", features = ["std", "ecdsa", "ed25519"] }
+thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["macros", "rt-multi-thread"] }
 tracing = "0.1.41"
 tower-http = { version = "0.6", features = ["cors"] }
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 ids = { path = "../ids", features = ["rand"] }
+auth_token = { path = "../auth_token" }
 cdb = { path = "../cdb" }
 gddb = { path = "../gddb" }
 rdb = { path = "../rdb" }
