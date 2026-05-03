@@ -19,7 +19,9 @@ This mode is rare. When you reach for it:
 
 ### 2. First-Class Handoff Points
 
-Storage is used to coordinate or communicate between services. CDB, SDB, UDB, RDB, LDB, ADB are all examples. This is the common case.
+Storage is used to coordinate or communicate between services. CDB, SDB, UDB, RDB, LDB, ADB, GDDB are all examples. This is the common case.
+
+Note that a first-class handoff store can be **regional** (every region has its own RDB, CDB, etc., and lookups are routed by home region) or **global** (one logical store shared by every region — GDDB is the canonical example, used for case-insensitive name reservation and home-region lookup). The choice affects how race-free writes are enforced: regional stores can rely on a single Scylla DC's LWT, whereas global stores need cross-region replication and `IF NOT EXISTS` semantics that hold under multi-DC writes.
 
 For this mode, the rules are strict:
 
