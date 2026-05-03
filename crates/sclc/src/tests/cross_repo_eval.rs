@@ -12,7 +12,7 @@ use ids::{DeploymentQid, ResourceId};
 use crate::{Effect, EvalCtx, PackageId, Record, Resource, Value, placeholder_deployment_qid};
 
 fn foreign_qid(suffix: char) -> DeploymentQid {
-    let hash: String = std::iter::repeat(suffix).take(40).collect();
+    let hash: String = std::iter::repeat_n(suffix, 40).collect();
     format!("foreign/repo::main@{hash}.0000000000000000")
         .parse()
         .unwrap()

@@ -226,12 +226,11 @@ fn load_fixture(dir_name: &str) -> Fixture {
                 collect_fixture_files(&path, base, files, false);
             } else {
                 // Skip known expectation files at the fixture root
-                if is_root {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if EXPECTATION_FILES.contains(&name) {
-                            continue;
-                        }
-                    }
+                if is_root
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && EXPECTATION_FILES.contains(&name)
+                {
+                    continue;
                 }
                 let relative = path.strip_prefix(base).unwrap();
                 let key = relative.to_string_lossy().replace('\\', "/");
