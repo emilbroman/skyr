@@ -4,7 +4,7 @@ IDs is a shared crate that defines the standard vocabulary and typed identifiers
 
 ## Role in the Architecture
 
-Every crate that references organizations, repositories, environments, or deployments depends on this crate. It provides a single source of truth for the four-level namespace hierarchy and ensures consistent parsing, validation, and formatting throughout the system.
+Every crate that references organizations, repositories, environments, deployments, regions, or resources depends on this crate. It is the single source of truth for the deployment namespace hierarchy, the region-scoped resource ID, and the operator-supplied `ServiceAddressTemplate` for region-scoped peer addressing — and it ensures consistent parsing, validation, and formatting throughout the system.
 
 ```
 IDs ← CDB, SCS, DE, RTE, API, Plugin
@@ -12,16 +12,18 @@ IDs ← CDB, SCS, DE, RTE, API, Plugin
 
 ## Namespace Hierarchy
 
-Skyr organizes infrastructure into four levels:
+Skyr's identity types fall into two groups: a four-level **deployment hierarchy** (Org → Repo → Env → Deployment), and a **region-scoped resource ID** that lives below an environment.
 
-| Level | Type | Validation | Example |
-|-------|------|------------|---------|
-| **Organization** | `OrgId` | SCL symbol | `MyOrg` |
-| **Repository** | `RepoId` | SCL symbol | `MyRepo` |
-| **Region** | `RegionId` | `[a-z]+` | `stockholm`, `paris` |
-| **Environment** | `EnvironmentId` | Git ref (stripped) | `main`, `tag:v1.0` |
-| **Deployment** | `DeploymentId` | `ObjId.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
-| **Resource** | `ResourceId` | `Region:Type:Name` | `stockholm:Std/Random.Int:seed` |
+| Type | Role | Validation | Example |
+|------|------|------------|---------|
+| `OrgId` | Organization | SCL symbol | `MyOrg` |
+| `RepoId` | Repository (under an org) | SCL symbol | `MyRepo` |
+| `EnvironmentId` | Environment (under a repo) | Git ref (stripped) | `main`, `tag:v1.0` |
+| `DeploymentId` | Deployment revision | `ObjId.Nonce` | `a10fb43f....a1b2c3d4e5f60718` |
+| `RegionId` | Skyr region (metro) | `[a-z]+` | `stockholm`, `paris` |
+| `ResourceId` | Region-scoped resource ID | `Region:Type:Name` | `stockholm:Std/Random.Int:seed` |
+
+`RegionId` is **not** a level of the namespace hierarchy — orgs, repos, and environments are not partitioned by region. Region appears in the path of an individual resource because a resource's physical placement is part of its identity. Org and repo names resolve to a home region via [GDDB](../gddb/) at lookup time.
 
 A `DeploymentId` is the pair `(commit, nonce)`: an `ObjId` (40-char lowercase hex SHA-1 of a git object — here, the commit) and a `DeploymentNonce` (16-char lowercase hex `u64`). The nonce distinguishes multiple deployments of the same commit.
 
@@ -65,6 +67,16 @@ Some infrastructure (RDB, LDB, ADB) accepts any QID level as its partition key. 
 - **RDB** uses environment QIDs as namespaces (resources are grouped per environment).
 - **LDB** uses deployment QIDs as namespaces (logs are grouped per deployment).
 - **ADB** uses deployment QIDs as namespaces (artifacts belong to a deployment).
+
+## Service Address Template
+
+Region-scoped peer service addresses (e.g. `rq.stockholm.int.skyr.cloud`) are produced by substituting `{service}` and `{region}` into a template that the operator passes to every service binary as `--service-address-template` (default: `{service}.{region}.int.skyr.cloud`).
+
+- `ServiceAddressTemplate` — a validated template string. Validation rejects unknown placeholders (typos like `{regin}` fail at startup, not at first cross-region call).
+- `ServiceAddressTemplate::default_template()` — returns the default `{service}.{region}.int.skyr.cloud`.
+- `ServiceAddressTemplate::format(service, &RegionId)` — substitutes the placeholders and returns the resulting hostname (the protocol-specific port is concatenated by the caller).
+
+The template is opaque to the rest of Skyr: no binary contains a list of regions or a hard-coded peer-DNS scheme. Single-region deployments can omit the `{region}` placeholder entirely (`{service}.skyr.svc.cluster.local`).
 
 ## Type Features
 
@@ -123,3 +135,5 @@ Every crate in the workspace that works with namespace identifiers depends on th
 - [RTE](../rte/) — uses deployment QIDs for log namespaces
 - [API](../api/) — parses deployment QIDs from resource owner strings
 - [RTQ](../rtq/) — messages reference deployment QIDs as owner identifiers
+- [GDDB](../gddb/) — uses `name_hash` (SHA-1 of the lowercased name) to key its case-insensitive name reservations
+- Every region-aware service binary (`api`, `scs`, `de`, `rte`, `re`, `ne`) — accepts `--service-address-template` to resolve peer hostnames

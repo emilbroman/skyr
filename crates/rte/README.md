@@ -30,6 +30,8 @@ RTE connects to RTQ as a consumer with configurable worker shards and dials RTP 
 
 Create messages persist state to RDB in multiple steps: inputs and dependencies first, then outputs after the plugin responds. This ensures partial state is visible during long-running plugin operations.
 
+Every resource carries a region as part of its `ResourceId` (`Region:Type:Name`). The RTE persists the resource record into the home region's RDB and writes a corresponding row into the home-region environment's `resource_regions` routing index — the index the [DE](../de/) reads to discover which region holds each dependency.
+
 ### Error Handling
 
 If a plugin call or RDB operation fails, the message is nack'd (not acknowledged), allowing RabbitMQ to redeliver it. This provides at-least-once delivery semantics for all transition operations.

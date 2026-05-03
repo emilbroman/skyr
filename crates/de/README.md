@@ -44,7 +44,7 @@ The first 16 hex characters of each deployment's commit hash are interpreted as 
 When a deployment is in the **Desired** state, DE performs a full reconciliation:
 
 1. **Compile**: Runs `sclc::compile()` on `Main.scl` from the deployment's commit. Diagnostics (warnings and errors) are logged to LDB.
-2. **Load current state**: Fetches all resources from the RDB namespace (environment QID) and feeds them into the evaluator for comparison.
+2. **Load current state**: Reads the home-region RDB's `resource_regions` routing index for the environment, then fans per-resource lookups out to a per-region RDB pool — so dependencies that live in another region are read once from that region's RDB rather than from the home region. The routing index keeps the home-region DE the only orchestrator that ever reads cross-region.
 3. **Evaluate**: Runs the compiled program against the current state, producing effects for any differences.
 4. **Emit transitions**: Converts effects into RTQ messages:
 

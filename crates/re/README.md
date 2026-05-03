@@ -122,15 +122,17 @@ The pipeline is safe under at-least-once redelivery:
 ```sh
 cargo run -p re -- daemon \
   --region stockholm \
-  --domain skyr.cloud \
+  --service-address-template '{service}.{region}.int.skyr.cloud' \
   --worker-index 0 \
   --worker-count 4 \
   --local-workers 1
 ```
 
-Peer service addresses (`rq`, `sdb`, `nq`) are resolved from `--region` and
-`--domain` via the canonical `<service>.<region>.int.<domain>` template
-(see `ids::service_address`).
+Peer service addresses (`rq`, `sdb`, `nq`) are resolved by substituting
+the service name and the local region into `--service-address-template`
+(see `ids::ServiceAddressTemplate`). The default template
+(`{service}.{region}.int.skyr.cloud`) yields names like
+`rq.stockholm.int.skyr.cloud`.
 
 Multiple RE workers can run in parallel with disjoint shard ranges. Use
 `--worker-index` and `--local-workers` to assign one or more shard ranges to

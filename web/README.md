@@ -7,8 +7,10 @@ The web dashboard provides a browser-based UI for browsing organizations, reposi
 The web app is the graphical frontend for Skyr. It communicates exclusively with the [API](../crates/api/) service over GraphQL (HTTP for queries/mutations, WebSocket for subscriptions).
 
 ```
-Browser → Web (SvelteKit SPA) → /graphql → API → UDB, CDB, RDB, ADB, LDB
+Browser → Web (SvelteKit SPA) → /graphql → API edge → IAS, CDB, RDB, ADB, LDB, SDB
 ```
+
+The API edge is region-agnostic: it routes per-request to the user's home region via [GDDB](../crates/gddb/), and all auth flows go through [IAS](../crates/ias/) (which owns UDB internally). The browser never talks to IAS or UDB directly.
 
 In development, Vite proxies `/graphql` requests to `http://localhost:8080` (the API service). In production the app is deployed as static files behind a reverse proxy that routes `/graphql` to the API.
 
@@ -73,7 +75,8 @@ web/
 
 | Route                                | Description                                                                  |
 | ------------------------------------ | ---------------------------------------------------------------------------- |
-| `~signin`                            | SSH challenge-response sign-in                                               |
+| `~signup`                            | New-account sign-up (username, email, region, plus SSH or WebAuthn proof)    |
+| `~signin`                            | SSH or WebAuthn challenge-response sign-in                                   |
 | `/`                                  | Organizations dashboard                                                      |
 | `[org]`                              | Repositories for an organization                                             |
 | `[org]/~i`                           | Incidents view: all incidents in the org, filterable by category and status  |
@@ -85,13 +88,12 @@ web/
 
 ## Authentication
 
-The web app uses the same SSH challenge-response flow as the [CLI](../crates/cli/):
+The web app uses the same challenge-response flow as the [CLI](../crates/cli/), supporting both SSH signatures and WebAuthn passkeys:
 
-1. User provides their username.
-2. The app requests a challenge from `authChallenge`.
-3. User signs the challenge with their SSH private key (pasted into the browser).
-4. The app calls `signin` and stores the bearer token in `localStorage`.
-5. Tokens auto-refresh 2 minutes before expiry.
+1. **Sign-up** — user provides username, email, **region** (the metro their account will live in), and either pastes an SSH signature over the displayed challenge or completes a WebAuthn passkey registration. The selected region determines which [IAS](../crates/ias/) owns their identity and signs their tokens.
+2. **Sign-in** — user provides their username; the app requests a challenge from `authChallenge` and the user proves possession of their key (SSH or passkey).
+3. The app calls `signup` / `signin` and stores the bearer identity token in `localStorage`.
+4. Tokens auto-refresh ~2 minutes before expiry. Cross-region API calls are transparent to the browser: any edge can verify a token using the issuer region's IAS-published public key.
 
 ## GraphQL Integration
 
