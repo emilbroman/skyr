@@ -23,12 +23,28 @@ function loadSignedInUser(): SignedInUser | null {
     }
 }
 
+// Token wire format: base64url(payload).base64url(signature)
+// Payload: u8 version=1, u8 username_len, username, u8 region_len, region,
+// i64 issued_at (BE), i64 expires_at (BE), 16 bytes nonce. See crates/auth_token.
 function parseTokenExpiry(token: string): number | null {
-    if (token.length < 9 || token[8] !== ".") return null;
-    const hex = token.substring(0, 8);
-    const expiry = parseInt(hex, 16);
-    if (Number.isNaN(expiry)) return null;
-    return expiry;
+    const dot = token.indexOf(".");
+    if (dot < 0) return null;
+    let payload: Uint8Array;
+    try {
+        payload = Uint8Array.fromBase64(token.substring(0, dot), { alphabet: "base64url" });
+    } catch {
+        return null;
+    }
+    let cur = 0;
+    if (cur >= payload.length || payload[cur++] !== 1) return null;
+    if (cur >= payload.length) return null;
+    cur += 1 + payload[cur];
+    if (cur >= payload.length) return null;
+    cur += 1 + payload[cur];
+    cur += 8;
+    if (cur + 8 > payload.length) return null;
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    return Number(view.getBigInt64(cur, false));
 }
 
 export const token = writable<string | null>(loadToken());
