@@ -1,11 +1,11 @@
 name: skyr
 
 # Region-scoped DNS aliases for Skyr peer services. Skyr binaries resolve
-# peers via `<service>.<region>.int.<domain>` (see ids::service_address);
-# in this compose stack the region is `local` and the domain is `test`,
-# so e.g. `cdb.local.int.test` resolves to the scylla container. The
-# original short names (scylla, rabbitmq, redis, redpanda) remain valid for
-# tooling that connects directly.
+# peers by formatting their `--service-address-template` with the relevant
+# region; this stack uses the template `{service}.{region}.int.test` and
+# region `local`, so e.g. `cdb.local.int.test` resolves to the scylla
+# container. The original short names (scylla, rabbitmq, redis, redpanda)
+# remain valid for tooling that connects directly.
 networks:
   default:
 
@@ -58,8 +58,8 @@ services:
         aliases:
           - udb.local.int.test
           # SCOC node-registry shares this redis in dev. SCS edges resolve
-          # the registry per-region as `node-registry.<region>.int.<domain>`
-          # and there's only one region here.
+          # the registry via the service-address template
+          # (`node-registry.<region>.int.test`) and there's only one region here.
           - node-registry.local.int.test
 
   ias:
@@ -164,8 +164,8 @@ services:
         "0.0.0.0",
         "--port",
         "8080",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--gddb-bootstrap-region",
         "local",
         "--adb-endpoint-url",
@@ -203,8 +203,8 @@ services:
         "0.0.0.0:2222",
         "--key",
         "/host.pem",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--gddb-bootstrap-region",
         "local",
       ]
@@ -222,8 +222,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--worker-index",
         "0",
         "--worker-count",
@@ -239,8 +239,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--worker-index",
         "1",
         "--worker-count",
@@ -341,8 +341,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
@@ -372,8 +372,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
@@ -403,8 +403,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--plugin",
         "Std/Random@tcp://plugin-std-random:50051",
         "--plugin",
@@ -434,8 +434,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--worker-index",
         "0",
         "--worker-count",
@@ -451,8 +451,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--worker-index",
         "1",
         "--worker-count",
@@ -468,8 +468,8 @@ services:
         "daemon",
         "--region",
         "local",
-        "--domain",
-        "test",
+        "--service-address-template",
+        "{service}.{region}.int.test",
         "--dedup-hostname",
         "redis",
         "--smtp-host",
