@@ -29,18 +29,20 @@ Supporting infrastructure:
 
 ### Namespace Hierarchy
 
-Skyr uses a four-level namespace hierarchy to identify infrastructure:
+Skyr uses a four-level deployment hierarchy to identify infrastructure:
 
 | Level | Description | Example |
 |-------|-------------|---------|
 | **Organization** | Top-level namespace (user's username) | `alice` |
 | **Repository** | Codebase name | `my-app` |
 | **Environment** | Instance of the resource DAG (Git branch or tag) | `main`, `tag:v1.0` |
-| **Deployment** | Revision of an environment (Git commit hash) | `a10fb43f...` |
+| **Deployment** | Revision of an environment (Git commit hash + nonce) | `a10fb43f....a1b2c3d4e5f60718` |
 
-Qualified identifiers (QIDs) combine these levels: `alice/my_app::main@a10fb43f...`
+Qualified identifiers (QIDs) combine these levels: `alice/my_app::main@a10fb43f....a1b2c3d4e5f60718`.
 
-Separators: `/` (org/repo), `::` (repo::env), `@` (env@deploy). See [IDs](crates/ids/) for the full type system.
+Resources within a deployment additionally carry a **region** (the metro the resource lives in, e.g. `stockholm`) as a structural part of their ID, giving a resource QID shape of `org/repo::env::Region:Type:Name` — for example `alice/my_app::main::stockholm:Std/Random.Int:seed`. Org and repo names also resolve to a home region via [GDDB](crates/gddb/) at lookup time.
+
+Separators: `/` (org/repo), `::` (repo::env, env::resource), `@` (env@deploy), `.` (commit.nonce), `:` (region:type:name). See [IDs](crates/ids/) for the full type system.
 
 ### Deployment Lifecycle
 
@@ -85,11 +87,12 @@ The RTQ carries four message types:
 | Crate | Backing Store | Description |
 |-------|---------------|-------------|
 | [cdb](crates/cdb/) | ScyllaDB | Configuration database (Git objects, deployments) |
-| [udb](crates/udb/) | Redis | User database (accounts, SSH keys, tokens) |
-| [rdb](crates/rdb/) | ScyllaDB | Resource database (inputs, outputs, dependencies) |
+| [udb](crates/udb/) | Redis | User database (accounts, SSH keys, credentials); IAS-internal |
+| [rdb](crates/rdb/) | ScyllaDB | Resource database (inputs, outputs, dependencies, region routing index) |
 | [sdb](crates/sdb/) | ScyllaDB | Status database (per-entity health summaries, incidents) |
 | [adb](crates/adb/) | S3 / MinIO | Artifact storage |
 | [ldb](crates/ldb/) | Kafka / Redpanda | Structured log database |
+| [gddb](crates/gddb/) | ScyllaDB (global) | Global directory: case-insensitive name reservation and home-region lookup for orgs/repos |
 
 ### Protocol Layer
 
@@ -111,7 +114,8 @@ The RTQ carries four message types:
 
 | Crate | Description |
 |-------|-------------|
-| [ids](crates/ids/) | Typed identifiers for the namespace hierarchy (OrgId, RepoQid, EnvironmentQid, DeploymentQid) |
+| [ids](crates/ids/) | Typed identifiers for the namespace hierarchy (`OrgId`, `RepoQid`, `EnvironmentQid`, `DeploymentQid`, `RegionId`, `ResourceId`, `ResourceQid`) and the operator-supplied `ServiceAddressTemplate` for region-scoped peer addressing |
+| [auth_token](crates/auth_token/) | Wire format and Ed25519 primitives for signed identity tokens (issued by IAS, verified at any edge) |
 
 ### Plugins
 
