@@ -121,6 +121,29 @@ impl HeartbeatCache {
     }
 }
 
+/// Constructs the [`HeartbeatEntry`] written into the cache after we just
+/// processed a report for an entity.
+///
+/// `now` MUST be the consumer wall-clock (`Utc::now()` at processing time),
+/// not the producer-supplied `report.timestamp`. The watchdog compares this
+/// timestamp against `Utc::now()` at sweep time; using a producer stamp
+/// conflates two different clocks and makes the watchdog fire on healthy
+/// entities under RQ backlog, redelivery, or producer/consumer clock skew.
+/// `watchdog_open` is reset to `false` because a real report clears any
+/// prior watchdog suppression.
+pub fn fresh_heartbeat_entry(
+    now: chrono::DateTime<Utc>,
+    operational_state: Option<String>,
+    volatile: bool,
+) -> HeartbeatEntry {
+    HeartbeatEntry {
+        last_report_at: now,
+        operational_state,
+        volatile,
+        watchdog_open: false,
+    }
+}
+
 /// Process one report end-to-end. Returns when SDB and NQ have both been
 /// updated; the caller then acks the RQ delivery.
 pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<(), PipelineError> {
@@ -185,6 +208,12 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
     ctx.sdb.upsert_status_summary(&summary).await?;
 
     // ---- Maintain the watchdog cache ------------------------------------
+    //
+    // The cache entry is constructed via [`fresh_heartbeat_entry`], which
+    // pins the `last_report_at = now` invariant: the watchdog compares
+    // against the consumer wall-clock at sweep time, so the cache must hold
+    // the consumer wall-clock at processing time, not the producer-supplied
+    // `report.timestamp`. See that function's doc comment for details.
 
     {
         let mut hb = ctx.heartbeats.lock().await;
@@ -193,14 +222,11 @@ pub async fn process_report(ctx: &PipelineContext, report: &Report) -> Result<()
         } else {
             hb.upsert(
                 &entity_qid_string,
-                HeartbeatEntry {
-                    last_report_at: report.timestamp,
-                    operational_state: Some(op_state.to_string()),
-                    volatile: report.extension.is_volatile(),
-                    // A real report clears any prior watchdog suppression so
-                    // the next missed heartbeat can fire fresh.
-                    watchdog_open: false,
-                },
+                fresh_heartbeat_entry(
+                    now,
+                    Some(op_state.to_string()),
+                    report.extension.is_volatile(),
+                ),
             );
         }
     }
@@ -485,5 +511,23 @@ mod tests {
         cache.mark_watchdog_open("Org/Repo::env@dep.0000000000000001");
         let entry = &cache.snapshot()[0].1;
         assert!(entry.watchdog_open);
+    }
+
+    #[test]
+    fn fresh_heartbeat_entry_uses_provided_now_and_resets_watchdog_open() {
+        // Reproducer guard for the watchdog flap incident: callers must pass
+        // the consumer wall-clock for `now`, not the producer-supplied
+        // `report.timestamp`. If a producer stamp were threaded in here, an
+        // RQ backlog or redelivery would write entries that look immediately
+        // stale to the watchdog, causing open/close incident loops and the
+        // associated email floods. The unconditional reset of `watchdog_open`
+        // is also load-bearing — without it, once the watchdog fires once the
+        // suppression sticks even after the producer recovers.
+        let consumer_now = Utc::now();
+        let entry = fresh_heartbeat_entry(consumer_now, Some("DESIRED".to_string()), false);
+        assert_eq!(entry.last_report_at, consumer_now);
+        assert!(!entry.watchdog_open);
+        assert_eq!(entry.operational_state.as_deref(), Some("DESIRED"));
+        assert!(!entry.volatile);
     }
 }
