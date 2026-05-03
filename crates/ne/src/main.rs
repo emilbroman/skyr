@@ -1,11 +1,15 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
 use ne::{
+    batcher::{Batcher, BatcherConfig},
     dedup::{DedupConfig, DedupStore},
     process_delivery,
     sender::{SmtpConfig, SmtpSender, SmtpTls},
 };
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::Notify;
 use tokio::task::JoinSet;
 
 #[derive(Parser)]
@@ -177,13 +181,25 @@ async fn main() -> anyhow::Result<()> {
                 from: smtp_from,
                 timeout: Duration::from_secs(smtp_timeout_seconds),
             };
-            let sender = std::sync::Arc::new(SmtpSender::build(&smtp_config)?);
+            let sender = Arc::new(SmtpSender::build(&smtp_config)?);
+
+            // Per-recipient batcher: coalesces notification e-mails so a
+            // sustained surge for one recipient produces at most one
+            // e-mail per batch window. The owning `Batcher` lives on the
+            // main task; workers receive cheap `BatcherHandle` clones.
+            let batcher = Batcher::start(BatcherConfig::default(), sender);
+
+            // Shutdown signalling: workers listen on this; the OS signal
+            // task fires it on SIGTERM / SIGINT.
+            let shutdown = Arc::new(Notify::new());
+            spawn_signal_listener(shutdown.clone());
 
             let mut tasks: JoinSet<anyhow::Result<()>> = JoinSet::new();
             for worker_index in 0..worker_count {
                 let dedup = dedup.clone();
                 let udb_client = udb_client.clone();
-                let sender = sender.clone();
+                let batcher_handle = batcher.handle();
+                let shutdown = shutdown.clone();
                 let uri = uri.clone();
                 let dlx = nq_dlx.clone();
                 let dlx_rk = nq_dlx_routing_key.clone();
@@ -200,39 +216,117 @@ async fn main() -> anyhow::Result<()> {
 
                     tracing::info!(worker_index, "ne worker ready");
                     loop {
-                        match consumer.next().await {
-                            Ok(Some(delivery)) => {
-                                let outcome =
-                                    process_delivery(delivery, &dedup, &udb_client, &sender).await;
-                                match outcome {
-                                    Ok(o) => tracing::debug!(?o, "processed delivery"),
-                                    Err(error) => {
-                                        tracing::warn!(error = %error, "ack/nack failed");
+                        tokio::select! {
+                            next = consumer.next() => match next {
+                                Ok(Some(delivery)) => {
+                                    let outcome = process_delivery(
+                                        delivery,
+                                        &dedup,
+                                        &udb_client,
+                                        &batcher_handle,
+                                    )
+                                    .await;
+                                    match outcome {
+                                        Ok(o) => tracing::debug!(?o, "processed delivery"),
+                                        Err(error) => {
+                                            tracing::warn!(error = %error, "ack/nack failed");
+                                        }
                                     }
                                 }
-                            }
-                            Ok(None) => {
-                                tracing::warn!(worker_index, "nq consumer stream closed");
+                                Ok(None) => {
+                                    tracing::warn!(worker_index, "nq consumer stream closed");
+                                    return Ok(());
+                                }
+                                Err(error) => {
+                                    tracing::error!(
+                                        worker_index,
+                                        error = %error,
+                                        "nq consumer error",
+                                    );
+                                    return Err(error.into());
+                                }
+                            },
+                            _ = shutdown.notified() => {
+                                tracing::info!(worker_index, "ne worker shutting down");
                                 return Ok(());
-                            }
-                            Err(error) => {
-                                tracing::error!(worker_index, error = %error, "nq consumer error");
-                                return Err(error.into());
                             }
                         }
                     }
                 });
             }
 
-            while let Some(result) = tasks.join_next().await {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => return Err(error),
-                    Err(error) => return Err(anyhow::anyhow!("worker task panicked: {error}")),
+            // Wait for either an OS signal (which the listener task
+            // converts into a `shutdown.notify_waiters()`) or any worker
+            // exiting on its own. In the latter case we treat the exit
+            // as a shutdown trigger and tear the rest of the workers
+            // down gracefully so the batcher can flush.
+            tokio::select! {
+                _ = shutdown.notified() => {
+                    tracing::info!("shutdown notified; draining workers");
+                }
+                Some(result) = tasks.join_next() => {
+                    match result {
+                        Ok(Ok(())) => tracing::warn!("a worker exited; draining the rest"),
+                        Ok(Err(error)) => tracing::error!(error = %error, "worker error; draining the rest"),
+                        Err(error) => tracing::error!(error = %error, "worker panicked; draining the rest"),
+                    }
                 }
             }
 
-            Ok(())
+            // Tell every worker still running that it's time to stop.
+            // Workers acknowledge by exiting their `select!` loop and
+            // dropping their `BatcherHandle` clones; that lets the
+            // subsequent `batcher.shutdown()` complete cleanly.
+            shutdown.notify_waiters();
+
+            let mut first_error: Option<anyhow::Error> = None;
+            while let Some(result) = tasks.join_next().await {
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "worker task panic during shutdown");
+                    }
+                }
+            }
+
+            // All BatcherHandle clones are dropped now (the workers held
+            // them and have exited). Drain every in-flight batch and
+            // wait for the flusher task to finish its SMTP work.
+            tracing::info!("draining notification batcher before exit");
+            batcher.shutdown().await;
+
+            match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            }
         }
     }
+}
+
+/// Spawns a task that listens for SIGTERM and SIGINT and notifies all
+/// waiters on `shutdown` when either fires. SIGTERM is what
+/// orchestrators (systemd, Kubernetes) use for graceful termination;
+/// SIGINT is the developer-facing Ctrl+C.
+fn spawn_signal_listener(shutdown: Arc<Notify>) {
+    tokio::spawn(async move {
+        let term = signal(SignalKind::terminate());
+        let int = signal(SignalKind::interrupt());
+        let (mut term, mut int) = match (term, int) {
+            (Ok(t), Ok(i)) => (t, i),
+            (Err(error), _) | (_, Err(error)) => {
+                tracing::error!(error = %error, "failed to install OS signal handlers");
+                return;
+            }
+        };
+        tokio::select! {
+            _ = term.recv() => tracing::info!("received SIGTERM"),
+            _ = int.recv() => tracing::info!("received SIGINT"),
+        }
+        shutdown.notify_waiters();
+    });
 }
