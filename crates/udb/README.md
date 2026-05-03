@@ -4,7 +4,7 @@ UDB is an internal library that wraps a Redis client and exposes a typed API for
 
 ## Role in the Architecture
 
-UDB is wrapped exclusively by [IAS](../ias/) — it is no longer a direct dependency of any other Skyr binary. The API edge talks to IAS over gRPC; IAS talks to UDB in-process. Long-term, UDB is expected to be merged into IAS.
+UDB is wrapped by [IAS](../ias/) — every API-edge auth call (sign-up, sign-in, refresh, credential management, every user/org read) goes through IAS over gRPC, and IAS talks to UDB in-process. The one remaining direct UDB consumer is [NE](../ne/), whose recipient-resolution path predates IAS and is expected to migrate to an IAS RPC. Long-term, UDB is expected to be merged into IAS.
 
 ```
 API edge ──gRPC──▶ IAS ──▶ UDB (Redis)

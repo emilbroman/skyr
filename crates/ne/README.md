@@ -47,8 +47,8 @@ variables:
 | Flag | Env var | Description |
 |------|---------|-------------|
 | `--region` |  | Skyr region this NE serves (e.g. `stockholm`); `[a-z]+` |
-| `--domain` |  | DNS suffix for region-scoped peer service addressing (e.g. `skyr.cloud`) |
-| `--nq-uri` |  | Override the full AMQP URI for NQ (otherwise resolved as `amqp://nq.<region>.int.<domain>:5672/%2f`) |
+| `--service-address-template` |  | Substitution template for region-scoped peer addressing (default: `{service}.{region}.int.skyr.cloud`); placeholders are `{service}` and `{region}` |
+| `--nq-uri` |  | Override the full AMQP URI for NQ (otherwise resolved by substituting `service=nq` and the local region into `--service-address-template` and prefixing `amqp://` / suffixing `:5672/%2f`) |
 | `--nq-dlx` |  | Optional DLX to attach to the NQ queue declaration |
 | `--nq-dlx-routing-key` |  | Routing key for the DLX |
 | `--prefetch` |  | AMQP basic.qos prefetch (default 4) |
@@ -63,10 +63,12 @@ variables:
 | `--smtp-from` |  | Sender mailbox, e.g. `Skyr <skyr@example.com>` (required) |
 | `--smtp-timeout-seconds` |  | Connection timeout (default 30) |
 
-UDB is resolved from `--region` and `--domain` (`udb.<region>.int.<domain>`)
-via the canonical `ids::service_address` template. The `--dedup-hostname`
-flag remains a direct Redis hostname, since the dedup store is a backing
-service rather than a Skyr peer.
+UDB is resolved by substituting `service=udb` and the local region into
+`--service-address-template` (`ids::ServiceAddressTemplate::format`). NE is
+the last non-IAS holdout still talking to UDB directly — the recipient
+resolution path predates IAS and is expected to migrate to an IAS RPC
+later. The `--dedup-hostname` flag remains a direct Redis hostname, since
+the dedup store is a backing service rather than a Skyr peer.
 
 ## Why Redis for Dedup
 

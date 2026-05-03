@@ -28,6 +28,7 @@ RTE → RDB ← DE
 |-----------|-------------|
 | `list_resources` | List all resources in a namespace |
 | `list_resources_by_owner` | List resources owned by a specific deployment |
+| `list_resource_regions` | Read the namespace's `resource_regions` routing index — returns each resource ID with its home `RegionId`, used by the DE to fan dependency reads out to per-region RDB pools |
 
 ## Data Model
 
@@ -37,7 +38,11 @@ Each resource has:
 - **Dependencies** — list of other resource IDs this resource depends on (stored as JSON)
 - **Owner** — the deployment QID (`org/repo::env@deploy`) that owns this resource
 
-Resources are grouped by **namespace**, which is the environment QID (`org/repo::env`). All deployments within the same environment share a resource namespace, enabling seamless resource adoption during rollouts.
+Resources are grouped by **namespace**, which is the environment QID (`org/repo::env`). All deployments within the same environment share a resource namespace, enabling seamless resource adoption during rollouts. The resource record's primary key includes the resource's region (encoded structurally in the `ResourceId`), so two resources of the same `Type:Name` placed in different regions are distinct rows that never collide.
+
+### Cross-Region Routing Index
+
+Each environment also has a `resource_regions` table — a flat index of every resource ID that has ever existed in the namespace, paired with its current home `RegionId`. The owning RTE writes the index with an LWT on every create, every change of region, and every delete. The home-region DE reads the index at the start of every reconciliation pass and uses it to fan dependency lookups out to the right per-region RDB pool, so a deployment in `stockholm` reading a dependency that lives in `paris` pays one cross-region call instead of probing every region. The index is a routing aid, not a replica: the canonical resource record always lives in its home region.
 
 ## Client Hierarchy
 

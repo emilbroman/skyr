@@ -14,7 +14,7 @@ User (Git/SSH) → SCS edge ──► IAS (auth, region-pooled)
 
 SCS edges are **region-agnostic**. Anycast lands the user at the nearest edge; the edge then routes per-channel using token-equivalent SSH pubkey checks at the user's home-region IAS, GDDB lookups for the repo's home region, and the resource's region (encoded structurally in `ResourceQid`) for port-forward. There is no SSH-to-SSH proxy to a "home" SCS — every edge talks directly to whichever region's databases the request needs.
 
-The edge takes `--domain` (DNS suffix, e.g. `skyr.cloud`) and `--gddb-bootstrap-region` (the region whose `gddb.<region>.int.<domain>` peer to bootstrap the GDDB ScyllaDB session against). It does **not** take a `--region` flag.
+The edge takes `--service-address-template` (the operator-supplied substitution template for region-scoped peer addressing — defaults to `{service}.{region}.int.skyr.cloud`) and `--gddb-bootstrap-region` (the region whose `gddb` peer to bootstrap the GDDB ScyllaDB session against). It does **not** take a `--region` flag.
 
 ## How It Works
 
