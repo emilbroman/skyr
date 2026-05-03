@@ -18,6 +18,17 @@ variable "region" {
   }
 }
 
+variable "available_regions" {
+  type        = list(string)
+  description = "Skyr regions the API exposes for new accounts and orgs/repos. Used both to validate region inputs and to populate the public `availableRegions` query so the web UI can render a region picker. Defaults to a single-region list containing `var.region`. For multi-region deployments, set this to the union of every region the operator runs."
+  default     = null
+
+  validation {
+    condition     = var.available_regions == null || alltrue([for r in coalesce(var.available_regions, []) : can(regex("^[a-z]+$", r))])
+    error_message = "every entry in available_regions must be one or more lowercase ASCII letters."
+  }
+}
+
 # --- Image ---
 
 variable "image_pull_policy" {

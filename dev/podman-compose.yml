@@ -179,6 +179,8 @@ services:
         "--adb-secret-access-key",
         "minioadmin",
       ]
+    environment:
+      AVAILABLE_REGIONS: local
     restart: always
     ports:
       - 8080:8080

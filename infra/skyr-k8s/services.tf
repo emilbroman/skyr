@@ -210,6 +210,11 @@ resource "kubernetes_deployment_v1" "api" {
           ]
 
           env {
+            name  = "AVAILABLE_REGIONS"
+            value = join(",", local.available_regions)
+          }
+
+          env {
             name = "MINIO_ACCESS_KEY"
             value_from {
               secret_key_ref {

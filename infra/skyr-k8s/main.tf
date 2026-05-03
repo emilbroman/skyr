@@ -40,6 +40,12 @@ locals {
     "{service}.${local.namespace}.svc.cluster.local",
   )
 
+  # Region list the API exposes via `availableRegions` and accepts on
+  # signup / org / repo creation. Defaults to a single-region list
+  # containing this stack's own region; multi-region operators set the
+  # variable explicitly to the union across regions.
+  available_regions = coalesce(var.available_regions, [var.region])
+
   # MinIO credentials: use provided or generated
   minio_access_key = coalesce(var.minio_access_key_id, one(random_password.minio_access_key[*].result))
   minio_secret_key = coalesce(var.minio_secret_access_key, one(random_password.minio_secret_key[*].result))

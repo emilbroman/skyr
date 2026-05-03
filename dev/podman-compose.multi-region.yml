@@ -209,6 +209,8 @@ services:
         "--adb-secret-access-key",
         "minioadmin",
       ]
+    environment:
+      AVAILABLE_REGIONS: loca,locb
     restart: always
     ports:
       - 8080:8080
@@ -492,6 +494,8 @@ services:
         "--adb-secret-access-key",
         "minioadmin",
       ]
+    environment:
+      AVAILABLE_REGIONS: loca,locb
     restart: always
     ports:
       - 8081:8081
