@@ -13,7 +13,7 @@ let { id, value = $bindable(), disabled = false, onchange }: Props = $props();
 
 const regionsQuery = graphqlQuery(() => ({ document: AvailableRegionsDocument }));
 
-let regions = $derived(regionsQuery.data?.availableRegions ?? []);
+let regions = $derived(regionsQuery.data?.availableRegions.map((r) => r.id) ?? []);
 let loading = $derived(regionsQuery.isLoading);
 let queryError = $derived(regionsQuery.error?.message ?? null);
 

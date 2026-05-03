@@ -1,3 +1,5 @@
 query AvailableRegions {
-  availableRegions
+  availableRegions {
+    id
+  }
 }

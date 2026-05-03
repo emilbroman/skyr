@@ -27,7 +27,9 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
           }
           resources {
             type
-            region
+            region {
+              id
+            }
             name
             inputs
             outputs
@@ -51,7 +53,9 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
         }
         resources {
           type
-          region
+          region {
+            id
+          }
           name
           inputs
           outputs
@@ -60,7 +64,9 @@ query EnvironmentDetail($org: String!, $repo: String!, $env: String!) {
           }
           dependencies {
             type
-            region
+            region {
+              id
+            }
             name
           }
           markers
@@ -94,7 +100,9 @@ query ResourceDetail(
         qid
         resource(id: $resourceId) {
           type
-          region
+          region {
+            id
+          }
           name
           inputs
           outputs
@@ -112,7 +120,9 @@ query ResourceDetail(
           }
           dependencies {
             type
-            region
+            region {
+              id
+            }
             name
           }
           sourceTrace {
@@ -211,7 +221,9 @@ query DeploymentDetail(
           }
           resources {
             type
-            region
+            region {
+              id
+            }
             name
             inputs
             outputs
@@ -220,7 +232,9 @@ query DeploymentDetail(
             }
             dependencies {
               type
-              region
+              region {
+                id
+              }
               name
             }
             markers

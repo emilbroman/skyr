@@ -171,7 +171,7 @@ let pathLinkBase = $derived(
         class="inline-flex items-center px-1.5 py-0.5 rounded text-[0.65rem] font-medium border bg-purple-50 text-purple-700 border-purple-200"
         title="Skyr region"
       >
-        {resource.region}
+        {resource.region.id}
       </span>
       <span>{resource.type}</span>
     </div>
