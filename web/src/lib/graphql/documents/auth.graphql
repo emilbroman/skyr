@@ -1,5 +1,5 @@
-query AuthChallenge($username: String!) {
-  authChallenge(username: $username) {
+query AuthChallenge($username: String!, $region: String) {
+  authChallenge(username: $username, region: $region) {
     challenge
     taken
     passkeyRegistration

@@ -1,5 +1,13 @@
-mutation CreateRepository($organization: String!, $repository: String!) {
-    createRepository(organization: $organization, repository: $repository) {
+mutation CreateRepository(
+    $organization: String!
+    $repository: String!
+    $region: String
+) {
+    createRepository(
+        organization: $organization
+        repository: $repository
+        region: $region
+    ) {
         name
     }
 }

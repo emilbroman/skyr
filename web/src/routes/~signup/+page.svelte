@@ -7,6 +7,7 @@ import type { AuthChallengeQuery } from "$lib/graphql/generated";
 import { graphqlMutation } from "$lib/graphql/query";
 import { setAuth } from "$lib/stores/auth";
 import { createPasskeyRegistration } from "$lib/webauthn";
+import RegionSelect from "$lib/components/RegionSelect.svelte";
 import SshSignatureInput from "$lib/components/SshSignatureInput.svelte";
 import SkyrLogo from "$lib/components/SkyrLogo.svelte";
 
@@ -39,13 +40,14 @@ const signup = graphqlMutation(SignupDocument, {
 });
 
 async function fetchChallenge() {
-    if (!username.trim() || !email.trim()) return;
+    if (!username.trim() || !email.trim() || !region.trim()) return;
     error = null;
     usernameError = null;
     loading = true;
     try {
         const data = await query(AuthChallengeDocument, {
             username: username.trim(),
+            region: region.trim(),
         });
         if (data.authChallenge.taken) {
             usernameError = "This username is already taken.";
@@ -63,10 +65,11 @@ async function fetchChallenge() {
 }
 
 async function refreshChallenge() {
-    if (!username.trim()) return;
+    if (!username.trim() || !region.trim()) return;
     try {
         const data = await query(AuthChallengeDocument, {
             username: username.trim(),
+            region: region.trim(),
         });
         authChallenge = data.authChallenge;
     } catch {
@@ -175,16 +178,9 @@ async function submitPasskeySignup() {
           <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="region">
             Region
           </label>
-          <input
-            id="region"
-            type="text"
-            bind:value={region}
-            placeholder="stockholm"
-            class="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded text-gray-900 placeholder-gray-400 focus:outline-none focus:border-blue-500"
-            disabled={loading}
-          />
+          <RegionSelect id="region" bind:value={region} disabled={loading} />
           <p class="mt-1 text-[0.65rem] text-gray-500">
-            Skyr region your account belongs to. Lowercase ASCII letters.
+            Skyr region your account belongs to.
           </p>
 
           <label class="block mt-3 mb-1 text-xs font-medium text-gray-500" for="fullname">

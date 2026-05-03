@@ -1,6 +1,7 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
 import { page } from "$app/stores";
+import RegionSelect from "$lib/components/RegionSelect.svelte";
 import { CreateRepositoryDocument } from "$lib/graphql/generated";
 import { graphqlMutation } from "$lib/graphql/query";
 import { repoHref } from "$lib/paths";
@@ -8,6 +9,7 @@ import { repoHref } from "$lib/paths";
 let orgName = $derived($page.params.org ?? "");
 
 let repoName = $state("");
+let region = $state("");
 let error = $state<string | null>(null);
 
 const createRepository = graphqlMutation(CreateRepositoryDocument, {
@@ -21,9 +23,9 @@ const createRepository = graphqlMutation(CreateRepositoryDocument, {
 
 function submit() {
     const name = repoName.trim();
-    if (!name) return;
+    if (!name || !region) return;
     error = null;
-    createRepository.mutate({ organization: orgName, repository: name });
+    createRepository.mutate({ organization: orgName, repository: name, region });
 }
 </script>
 
@@ -57,6 +59,14 @@ function submit() {
             Must start with a letter or underscore, followed by letters, numbers, or underscores.
         </p>
 
+        <label class="block mt-3 text-xs font-medium text-gray-500 mb-1" for="repo-region">
+            Region
+        </label>
+        <RegionSelect id="repo-region" bind:value={region} />
+        <p class="mt-1 text-xs text-gray-400">
+            Skyr region the repository is hosted in.
+        </p>
+
         {#if error}
             <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
                 {error}
@@ -65,7 +75,7 @@ function submit() {
 
         <button
             type="submit"
-            disabled={createRepository.isPending || !repoName.trim()}
+            disabled={createRepository.isPending || !repoName.trim() || !region}
             class="mt-4 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
             {createRepository.isPending ? "Creating..." : "Create repository"}

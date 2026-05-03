@@ -1,6 +1,7 @@
 target/
 test-repo/
 .claude/
+.playwright-mcp/
 .terraform/
 .terragrunt-cache/
 *.tfstate

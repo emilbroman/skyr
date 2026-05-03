@@ -1,10 +1,12 @@
 <script lang="ts">
 import { goto } from "$app/navigation";
+import RegionSelect from "$lib/components/RegionSelect.svelte";
 import { CreateOrganizationDocument } from "$lib/graphql/generated";
 import { graphqlMutation } from "$lib/graphql/query";
 import { orgHref } from "$lib/paths";
 
 let orgName = $state("");
+let region = $state("");
 let error = $state<string | null>(null);
 
 const createOrganization = graphqlMutation(CreateOrganizationDocument, {
@@ -18,9 +20,9 @@ const createOrganization = graphqlMutation(CreateOrganizationDocument, {
 
 function submit() {
     const name = orgName.trim();
-    if (!name) return;
+    if (!name || !region) return;
     error = null;
-    createOrganization.mutate({ name });
+    createOrganization.mutate({ name, region });
 }
 </script>
 
@@ -54,6 +56,14 @@ function submit() {
             Must start with a letter or underscore, followed by letters, numbers, or underscores.
         </p>
 
+        <label class="block mt-3 text-xs font-medium text-gray-500 mb-1" for="org-region">
+            Region
+        </label>
+        <RegionSelect id="org-region" bind:value={region} />
+        <p class="mt-1 text-xs text-gray-400">
+            Skyr region the organization is hosted in.
+        </p>
+
         {#if error}
             <div class="mt-3 p-2 bg-red-50 border border-red-200 rounded text-xs text-red-600">
                 {error}
@@ -62,7 +72,7 @@ function submit() {
 
         <button
             type="submit"
-            disabled={createOrganization.isPending || !orgName.trim()}
+            disabled={createOrganization.isPending || !orgName.trim() || !region}
             class="mt-4 px-3 py-1.5 text-xs font-medium text-white bg-gray-900 rounded hover:bg-gray-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
             {createOrganization.isPending ? "Creating..." : "Create organization"}

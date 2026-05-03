@@ -52,8 +52,8 @@ query OrganizationDetail($org: String!) {
   }
 }
 
-mutation CreateOrganization($name: String!) {
-  createOrganization(name: $name) {
+mutation CreateOrganization($name: String!, $region: String) {
+  createOrganization(name: $name, region: $region) {
     name
   }
 }
