@@ -17,7 +17,11 @@ locals {
   deploy_buildkit     = var.buildkit_addr == null
   deploy_smtp_relay   = var.ne_smtp == null
 
-  # Resolved hostnames/URLs — internal services use K8s DNS
+  # Resolved hostnames/URLs — internal services use K8s DNS. The
+  # `*_hostname` values are consumed both by the peer-service alias
+  # Services (peer-services.tf) and by plugins that take a flat hostname
+  # (plugins.tf). Skyr binaries themselves resolve peer services via
+  # `local.service_address_template`.
   scylladb_hostname  = coalesce(var.scylladb_hostname, "scylladb.${local.namespace}.svc.cluster.local")
   redis_hostname     = coalesce(var.redis_hostname, "redis.${local.namespace}.svc.cluster.local")
   rabbitmq_hostname  = coalesce(var.rabbitmq_hostname, "rabbitmq.${local.namespace}.svc.cluster.local")
@@ -26,6 +30,15 @@ locals {
   minio_external_url = coalesce(var.minio_external_url, local.minio_endpoint)
   oci_registry_url   = coalesce(var.oci_registry_url, "http://oci-registry.${local.namespace}.svc.cluster.local:5000")
   buildkit_addr      = coalesce(var.buildkit_addr, "tcp://buildkit.${local.namespace}.svc.cluster.local:1234")
+
+  # Peer-service DNS template passed to every Skyr binary. The default
+  # resolves through K8s service DNS in the stack's namespace; the
+  # peer-service alias Services (peer-services.tf) provide the names this
+  # template resolves to.
+  service_address_template = coalesce(
+    var.service_address_template,
+    "{service}.${local.namespace}.svc.cluster.local",
+  )
 
   # MinIO credentials: use provided or generated
   minio_access_key = coalesce(var.minio_access_key_id, one(random_password.minio_access_key[*].result))
