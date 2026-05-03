@@ -64,7 +64,7 @@ The `web/` directory uses [Biome](https://biomejs.dev/) for formatting and linti
 - When writing new RTP plugins, follow the pattern in `plugin_std_random` or `plugin_std_artifact`.
 - For ADB operations, configure endpoint/bucket via CLI args or environment variables.
 - For LDB logging, use `NamespacePublisher` with deployment QID as namespace.
-- The `ids` crate defines the four-level namespace hierarchy (Org → Repo → Environment → Deployment). Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces. (See [Rust Style: Newtypes and Typed Wrappers](dev/guidelines/rust-style.md#newtypes-and-typed-wrappers) on using typed IDs/QIDs rather than raw strings.)
+- The `ids` crate defines the deployment namespace hierarchy (Org → Repo → Environment → Deployment) and the region-scoped resource ID (`Region:Type:Name`, e.g. `stockholm:Std/Random.Int:seed`). Namespace strings (for RDB, LDB, ADB) are QID `.to_string()` values — use environment QIDs for RDB namespaces and deployment QIDs for LDB/ADB namespaces. (See [Rust Style: Newtypes and Typed Wrappers](dev/guidelines/rust-style.md#newtypes-and-typed-wrappers) on using typed IDs/QIDs rather than raw strings.)
 - Note: spelling is consistently `supersede/supersession` in schema/API names.
 - READMEs and crate-level docs are **internal documentation** aimed at developers working on the codebase. The `docs/` directory contains **external documentation** aimed at end users. When making changes, update the relevant docs to reflect them — but internal-only changes (refactors, internal API changes, implementation details) should **not** be added to external docs.
 - When adding new SCL language features (syntax, types, standard library modules/functions, etc.), update the corresponding end-user documentation in `docs/scl/`:
@@ -164,7 +164,7 @@ For manual testing:
 - Run `make up`
 - Use the local `test-repo/` (gitignored) for Git server tests; it is configured with an `origin` remote pointing to `localhost:2222` for the repo `test/test`.
 - Run `git push`
-- The server will be protected by key auth, so if the server rejects the SSH connection, run `skyr auth signup --username test --email test@test.com` (`skyr` will be at `target/debug/skyr`)
+- The server will be protected by key auth, so if the server rejects the SSH connection, run `skyr auth signup --username test --email test@test.com --region local` (`skyr` will be at `target/debug/skyr`). For the two-region harness, use `--region loca` or `--region locb` matching the edge you're pointing at.
 - The server also requires creating the repo before making the first push. From inside `test-repo/` run `skyr repo create test`; the org comes from the `origin` remote. (Outside a git repo, pass `--org test`.)
 - Make any changes you want to the `.scl` files in `test-repo` (they aren't checked into Git)
 - Make any commits and pushes you want in `test-repo` too
