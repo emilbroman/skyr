@@ -147,6 +147,21 @@ variable "dns_zone" {
   default     = "skyr.local"
 }
 
+variable "service_address_template" {
+  type        = string
+  description = <<-EOT
+    Template used by Skyr binaries to resolve region-scoped peer service
+    addresses. Substitutes `{service}` (required) and `{region}`
+    (optional). When `null`, defaults to
+    `{service}.<namespace>.svc.cluster.local` so peers resolve through
+    the namespace's K8s service DNS via the alias Services in
+    peer-services.tf. Override per stack — e.g. multi-region operators
+    pass `{service}.{region}.int.skyr.cloud` so the same template format
+    works across regions.
+  EOT
+  default     = null
+}
+
 # --- DE Scaling ---
 
 variable "de_worker_count" {

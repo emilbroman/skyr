@@ -66,6 +66,107 @@ resource "kubernetes_service_v1" "web" {
 }
 
 # =============================================================================
+# IAS — Identity and Access Service (port 50100 gRPC)
+#
+# Region-local. Issues identity tokens for users whose home region this is
+# and answers `GetVerifyingKey` for tokens issued elsewhere. Reachable from
+# API/SCS via the `ias` peer-service alias (see peer-services.tf).
+# =============================================================================
+
+resource "kubernetes_deployment_v1" "ias" {
+  metadata {
+    name      = "ias"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "ias" })
+  }
+
+  spec {
+    replicas = 2
+
+    selector {
+      match_labels = { "app.kubernetes.io/name" = "ias" }
+    }
+
+    template {
+      metadata {
+        labels = merge(local.labels, { "app.kubernetes.io/name" = "ias" })
+      }
+
+      spec {
+        volume {
+          name = "udb-signing-key"
+          secret {
+            secret_name = kubernetes_secret_v1.skyr.metadata[0].name
+            items {
+              key  = "udb-signing.key"
+              path = "udb-signing.key"
+            }
+          }
+        }
+
+        container {
+          name              = "ias"
+          image             = "ghcr.io/emilbroman/skyr-ias:latest"
+          image_pull_policy = var.image_pull_policy
+
+          command = ["/ias"]
+          args = [
+            "--host", "0.0.0.0",
+            "--port", "50100",
+            "--region", var.region,
+            "--udb-host", local.redis_hostname,
+            "--signing-key", "/secrets/udb-signing.key",
+          ]
+
+          env {
+            name = "SKYR_CHALLENGE_SALT"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.skyr.metadata[0].name
+                key  = "challenge-salt"
+              }
+            }
+          }
+
+          volume_mount {
+            name       = "udb-signing-key"
+            mount_path = "/secrets"
+            read_only  = true
+          }
+
+          port {
+            container_port = 50100
+            protocol       = "TCP"
+          }
+        }
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [spec[0].template[0].spec[0].container[0].image]
+  }
+}
+
+resource "kubernetes_service_v1" "ias" {
+  metadata {
+    name      = "ias"
+    namespace = local.namespace
+    labels    = merge(local.labels, { "app.kubernetes.io/name" = "ias" })
+  }
+
+  spec {
+    selector = { "app.kubernetes.io/name" = "ias" }
+
+    port {
+      port        = 50100
+      target_port = 50100
+      protocol    = "TCP"
+    }
+  }
+}
+
+# =============================================================================
 # API — GraphQL endpoint (port 8080)
 # =============================================================================
 
@@ -89,17 +190,6 @@ resource "kubernetes_deployment_v1" "api" {
       }
 
       spec {
-        volume {
-          name = "udb-signing-key"
-          secret {
-            secret_name = kubernetes_secret_v1.skyr.metadata[0].name
-            items {
-              key  = "udb-signing.key"
-              path = "udb-signing.key"
-            }
-          }
-        }
-
         container {
           name              = "api"
           image             = "ghcr.io/emilbroman/skyr-api:latest"
@@ -109,22 +199,14 @@ resource "kubernetes_deployment_v1" "api" {
           args = [
             "--host", "0.0.0.0",
             "--port", "8080",
-            "--region", var.region,
-            "--cdb-hostname", local.scylladb_hostname,
-            "--gddb-hostname", local.scylladb_hostname,
-            "--rdb-hostname", local.scylladb_hostname,
-            "--sdb-hostname", local.scylladb_hostname,
-            "--udb-hostname", local.redis_hostname,
-            "--ldb-hostname", local.redpanda_hostname,
-            "--rtq-hostname", local.rabbitmq_hostname,
+            "--service-address-template", local.service_address_template,
+            "--gddb-bootstrap-region", var.region,
             "--adb-endpoint-url", local.minio_endpoint,
             "--adb-external-url", local.minio_external_url,
             "--adb-bucket", var.minio_bucket,
             "--adb-access-key-id", "$(MINIO_ACCESS_KEY)",
             "--adb-secret-access-key", "$(MINIO_SECRET_KEY)",
             "--adb-region", var.minio_region,
-            "--challenge-salt", "$(CHALLENGE_SALT)",
-            "--udb-signing-key", "/secrets/udb-signing.key",
           ]
 
           env {
@@ -145,22 +227,6 @@ resource "kubernetes_deployment_v1" "api" {
                 key  = "minio-secret-key"
               }
             }
-          }
-
-          env {
-            name = "CHALLENGE_SALT"
-            value_from {
-              secret_key_ref {
-                name = kubernetes_secret_v1.skyr.metadata[0].name
-                key  = "challenge-salt"
-              }
-            }
-          }
-
-          volume_mount {
-            name       = "udb-signing-key"
-            mount_path = "/secrets"
-            read_only  = true
           }
 
           port {
@@ -241,12 +307,8 @@ resource "kubernetes_deployment_v1" "scs" {
             "daemon",
             "--address", "0.0.0.0:2222",
             "--key", "/secrets/host.pem",
-            "--region", var.region,
-            "--cdb-hostname", local.scylladb_hostname,
-            "--gddb-hostname", local.scylladb_hostname,
-            "--udb-hostname", local.redis_hostname,
-            "--rdb-hostname", local.scylladb_hostname,
-            "--node-registry-hostname", local.redis_hostname,
+            "--service-address-template", local.service_address_template,
+            "--gddb-bootstrap-region", var.region,
           ]
 
           volume_mount {
@@ -323,12 +385,7 @@ resource "kubernetes_deployment_v1" "de" {
           args = [
             "daemon",
             "--region", var.region,
-            "--cdb-hostname", local.scylladb_hostname,
-            "--rdb-hostname", local.scylladb_hostname,
-            "--rtq-hostname", local.rabbitmq_hostname,
-            "--rq-hostname", local.rabbitmq_hostname,
-            "--sdb-hostname", local.scylladb_hostname,
-            "--ldb-hostname", local.redpanda_hostname,
+            "--service-address-template", local.service_address_template,
             "--worker-index", tostring(count.index),
             "--worker-count", tostring(var.de_worker_count),
           ]
@@ -383,10 +440,7 @@ resource "kubernetes_deployment_v1" "rte" {
           args = [
             "daemon",
             "--region", var.region,
-            "--rdb-hostname", local.scylladb_hostname,
-            "--rtq-hostname", local.rabbitmq_hostname,
-            "--rq-hostname", local.rabbitmq_hostname,
-            "--ldb-hostname", local.redpanda_hostname,
+            "--service-address-template", local.service_address_template,
             "--plugin", "Std/Random@unix://_/var/run/plugins/random.sock",
             "--plugin", "Std/Artifact@unix://_/var/run/plugins/artifact.sock",
             "--plugin", "Std/Crypto@unix://_/var/run/plugins/crypto.sock",
@@ -549,9 +603,8 @@ resource "kubernetes_deployment_v1" "re" {
           command = ["/re"]
           args = [
             "daemon",
-            "--rq-hostname", local.rabbitmq_hostname,
-            "--sdb-hostname", local.scylladb_hostname,
-            "--nq-hostname", local.rabbitmq_hostname,
+            "--region", var.region,
+            "--service-address-template", local.service_address_template,
             "--worker-index", tostring(count.index),
             "--worker-count", tostring(var.re_worker_count),
             "--local-workers", tostring(var.re_local_workers),
@@ -598,8 +651,8 @@ resource "kubernetes_deployment_v1" "ne" {
           command = ["/ne"]
           args = [
             "daemon",
-            "--nq-hostname", local.rabbitmq_hostname,
-            "--udb-hostname", local.redis_hostname,
+            "--region", var.region,
+            "--service-address-template", local.service_address_template,
             "--dedup-hostname", local.redis_hostname,
             "--smtp-host", local.ne_smtp_host,
             "--smtp-port", tostring(local.ne_smtp_port),
