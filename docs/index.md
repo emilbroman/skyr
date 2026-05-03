@@ -125,7 +125,7 @@ skyr run --root ./app                       # Evaluate Main.scl in a specific di
 skyr fmt Main.scl                           # Format an SCL file
 
 # Auth
-skyr auth signup --username alice --email alice@example.com
+skyr auth signup --username alice --email alice@example.com --region stockholm
 skyr auth signin --username alice
 skyr auth whoami
 skyr auth signout

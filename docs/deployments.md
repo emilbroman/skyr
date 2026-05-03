@@ -4,7 +4,7 @@ Deployments are the core unit of infrastructure in Skyr. When you push code to a
 
 ## Environments and Deployments
 
-Skyr organizes infrastructure using a four-level hierarchy: **Organization** → **Repository** → **Environment** → **Deployment**.
+Skyr organizes infrastructure using a four-level deployment hierarchy: **Organization** → **Repository** → **Environment** → **Deployment**. Each resource within a deployment additionally carries a **region** (the metro it lives in) as part of its identity.
 
 An **environment** corresponds to a Git branch or tag in your repository. Each environment can have one active deployment at a time. A **deployment** is a specific revision (commit) of an environment.
 

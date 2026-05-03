@@ -86,6 +86,12 @@ skyr deps rm MyOrg/Repo          # remove a dep
 
 Manifest writes regenerate the file in a canonical form, so any comments in the original will be lost. If you prefer to edit manually, just open `Package.scle` in your editor — it has full Skyr LSP support (syntax diagnostics, formatting).
 
+## Cross-region imports
+
+Cross-region imports work transparently: an importer in `stockholm` can depend on a foreign repo whose home region is `paris`. SCS, the API edge, and the DE all resolve foreign repos through GDDB at compile time and read their CDB/RDB rows from the right region. The compiled module shape is what gets consumed — there is no runtime call across the region boundary just because two repos live apart.
+
+Resources *created* by foreign-module calls obey the usual region rules: a region passed in the inputs (or inherited from the importer's repository) decides where the new resource is placed, regardless of where the foreign repo's home region is.
+
 ## v1 limitations
 
 - **Cross-organisation imports are not supported.** Both the importer and dependency must be in the same organisation.
