@@ -187,6 +187,7 @@ jobs:
           - re
           - ne
           - api
+          - ias
           - plugin_std_random
           - plugin_std_time
           - plugin_std_artifact
@@ -417,6 +418,7 @@ jobs:
             ghcr.io/emilbroman/skyr-re:${{ github.sha }}
             ghcr.io/emilbroman/skyr-ne:${{ github.sha }}
             ghcr.io/emilbroman/skyr-api:${{ github.sha }}
+            ghcr.io/emilbroman/skyr-ias:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_random:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_time:${{ github.sha }}
             ghcr.io/emilbroman/skyr-plugin_std_artifact:${{ github.sha }}
