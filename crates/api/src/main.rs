@@ -24,7 +24,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use json_scalar::JsonValue;
 use schema::{
-    AuthChallenge, AuthSuccess, Deployment, Organization, Repository, SignedInUser, UserData,
+    AuthChallenge, AuthSuccess, Deployment, Organization, Region, Repository, SignedInUser,
+    UserData,
 };
 use webauthn::{ProofKind, proof_from_json};
 
@@ -226,11 +227,12 @@ impl Query {
     /// orgs/repos. Configured by the operator via `--available-regions` /
     /// `AVAILABLE_REGIONS`. Public so the web UI can render a region picker
     /// before sign-in.
-    fn available_regions(context: &Context) -> Vec<String> {
+    fn available_regions(context: &Context) -> Vec<Region> {
         context
             .available_regions
             .iter()
-            .map(|r| r.to_string())
+            .cloned()
+            .map(Region::new)
             .collect()
     }
 

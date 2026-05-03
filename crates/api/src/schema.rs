@@ -87,6 +87,27 @@ async fn load_resources_across_regions(
     Ok(out)
 }
 
+/// Skyr region as exposed by the GraphQL surface. Object-typed (rather
+/// than a bare string) so that fields like health, capacity, or display
+/// metadata can be added without touching every consumer that already
+/// reads `region { id }`.
+pub(crate) struct Region {
+    pub(crate) id: ids::RegionId,
+}
+
+impl Region {
+    pub(crate) fn new(id: ids::RegionId) -> Self {
+        Self { id }
+    }
+}
+
+#[juniper::graphql_object(Context = Context)]
+impl Region {
+    fn id(&self) -> String {
+        self.id.to_string()
+    }
+}
+
 pub(crate) struct AuthSuccess {
     pub(crate) user: SignedInUser,
     pub(crate) token: String,
@@ -143,11 +164,10 @@ impl User {
 
     /// The Skyr region this user belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    async fn region(&self, context: &Context) -> FieldResult<String> {
-        Ok(context
-            .home_region_for_user(&self.user.username)
-            .await?
-            .to_string())
+    async fn region(&self, context: &Context) -> FieldResult<Region> {
+        Ok(Region::new(
+            context.home_region_for_user(&self.user.username).await?,
+        ))
     }
 }
 
@@ -171,11 +191,10 @@ impl SignedInUser {
 
     /// The Skyr region this user belongs to. See [`User::region`].
     #[graphql(name = "region")]
-    async fn region(&self, context: &Context) -> FieldResult<String> {
-        Ok(context
-            .home_region_for_user(&self.user.username)
-            .await?
-            .to_string())
+    async fn region(&self, context: &Context) -> FieldResult<Region> {
+        Ok(Region::new(
+            context.home_region_for_user(&self.user.username).await?,
+        ))
     }
 
     #[graphql(name = "publicKeys")]
@@ -212,8 +231,8 @@ impl Organization {
 
     /// The Skyr region this organization belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    async fn region(&self, context: &Context) -> FieldResult<String> {
-        Ok(context.home_region_for_org(&self.name).await?.to_string())
+    async fn region(&self, context: &Context) -> FieldResult<Region> {
+        Ok(Region::new(context.home_region_for_org(&self.name).await?))
     }
 
     async fn members(&self, context: &Context) -> FieldResult<Vec<User>> {
@@ -327,11 +346,10 @@ impl Repository {
 
     /// The Skyr region this repository belongs to — looked up in GDDB.
     #[graphql(name = "region")]
-    async fn region(&self, context: &Context) -> FieldResult<String> {
-        Ok(context
-            .home_region_for_repo(&self.repository.name)
-            .await?
-            .to_string())
+    async fn region(&self, context: &Context) -> FieldResult<Region> {
+        Ok(Region::new(
+            context.home_region_for_repo(&self.repository.name).await?,
+        ))
     }
 
     async fn environment(&self, context: &Context, name: String) -> FieldResult<Environment> {
@@ -1074,8 +1092,8 @@ impl Resource {
 
     /// The Skyr region this resource lives in. Region is part of the
     /// resource's structural identity (`<region>:<type>:<name>`).
-    fn region(&self) -> &str {
-        self.resource.region.as_str()
+    fn region(&self) -> Region {
+        Region::new(self.resource.region.clone())
     }
 
     fn inputs(&self) -> FieldResult<Option<JsonValue>> {

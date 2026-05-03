@@ -234,7 +234,7 @@ type Mutation {
 type Organization {
   name: String!
   "The Skyr region this organization belongs to — looked up in GDDB."
-  region: String!
+  region: Region!
   members: [User!]!
   repository(name: String!): Repository!
   repositories: [Repository!]!
@@ -248,7 +248,7 @@ type Query {
     `AVAILABLE_REGIONS`. Public so the web UI can render a region picker
     before sign-in.
   """
-  availableRegions: [String!]!
+  availableRegions: [Region!]!
   me: SignedInUser!
   """
     Issue an authentication challenge for `username`.
@@ -265,11 +265,15 @@ type Query {
   organization(name: String!): Organization!
 }
 
+type Region {
+  id: String!
+}
+
 type Repository {
   organization: Organization!
   name: String!
   "The Skyr region this repository belongs to — looked up in GDDB."
-  region: String!
+  region: Region!
   environment(name: String!): Environment!
   commit(hash: String!): Commit!
   environments: [Environment!]!
@@ -287,7 +291,7 @@ type Resource implements IncidentEntity {
     The Skyr region this resource lives in. Region is part of the
     resource's structural identity (`<region>:<type>:<name>`).
   """
-  region: String!
+  region: Region!
   inputs: JSON
   outputs: JSON
   owner: Deployment
@@ -306,7 +310,7 @@ type SignedInUser {
   email: String!
   fullname: String
   "The Skyr region this user belongs to. See [`User::region`]."
-  region: String!
+  region: Region!
   publicKeys: [String!]!
 }
 
@@ -342,7 +346,7 @@ type User {
   email: String!
   fullname: String
   "The Skyr region this user belongs to — looked up in GDDB."
-  region: String!
+  region: Region!
 }
 
 union TreeEntry = Blob | Tree
