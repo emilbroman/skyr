@@ -7,9 +7,11 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates/adb/Cargo.toml crates/adb/Cargo.toml
 COPY crates/api/Cargo.toml crates/api/Cargo.toml
+COPY crates/auth_token/Cargo.toml crates/auth_token/Cargo.toml
 COPY crates/cdb/Cargo.toml crates/cdb/Cargo.toml
 COPY crates/gddb/Cargo.toml crates/gddb/Cargo.toml
 COPY crates/de/Cargo.toml crates/de/Cargo.toml
+COPY crates/ias/Cargo.toml crates/ias/Cargo.toml
 COPY crates/ids/Cargo.toml crates/ids/Cargo.toml
 COPY crates/ldb/Cargo.toml crates/ldb/Cargo.toml
 COPY crates/lsp/Cargo.toml crates/lsp/Cargo.toml
@@ -40,8 +42,8 @@ COPY crates/udb/Cargo.toml crates/udb/Cargo.toml
 
 # Create stubs for all workspace crates to cache dependency downloads
 RUN set -eu; \
-    mkdir -p crates/adb/src crates/api/src crates/cdb/src crates/gddb/src crates/de/src \
-      crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src \
+    mkdir -p crates/adb/src crates/api/src crates/auth_token/src crates/cdb/src crates/gddb/src crates/de/src \
+      crates/ias/src crates/ids/src crates/ldb/src crates/lsp/src crates/ne/src crates/nq/src \
       crates/plugin_std_artifact/src crates/plugin_std_container/src \
       crates/plugin_std_crypto/src crates/plugin_std_dns/src \
       crates/plugin_std_http/src \
@@ -51,9 +53,12 @@ RUN set -eu; \
       crates/scs/src crates/scop/src crates/scoc/src crates/udb/src; \
     printf 'pub fn _stub() {}\n' > crates/adb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/api/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/auth_token/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/cdb/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/gddb/src/lib.rs; \
     printf 'fn main() {}\n' > crates/de/src/main.rs; \
+    printf 'pub fn _stub() {}\n' > crates/ias/src/lib.rs; \
+    printf 'fn main() {}\n' > crates/ias/src/main.rs; \
     printf 'pub fn _stub() {}\n' > crates/ids/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/ldb/src/lib.rs; \
     printf 'pub fn _stub() {}\n' > crates/lsp/src/lib.rs; \
