@@ -2,13 +2,13 @@
 //!
 //! Each pool holds a `HashMap<RegionId, Client>` populated lazily on first
 //! use of a region. Construction is parameterized by the regional service
-//! address scheme (`<service>.<region>.int.<domain>`), so adding a region
-//! is operator data — no Skyr-binary change.
+//! address template (e.g. `{service}.{region}.int.skyr.cloud`), so adding a
+//! region is operator data — no Skyr-binary change.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ids::{Domain, RegionId, service_address};
+use ids::{RegionId, ServiceAddressTemplate};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tonic::transport::Endpoint;
@@ -25,14 +25,14 @@ pub(crate) enum IasConnectError {
 #[derive(Clone)]
 pub(crate) struct IasPool {
     inner: Arc<Mutex<HashMap<RegionId, ias::IdentityAndAccessClient>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl IasPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -47,7 +47,7 @@ impl IasPool {
             }
         }
 
-        let host = service_address("ias", region, &self.domain);
+        let host = self.template.format("ias", region);
         let endpoint = Endpoint::from_shared(format!("http://{host}:{IAS_PORT}"))?;
         // Connect lazily so a transient unavailability of one region's IAS
         // doesn't fail unrelated requests on this edge.
@@ -65,14 +65,14 @@ impl IasPool {
 #[derive(Clone)]
 pub(crate) struct CdbPool {
     inner: Arc<Mutex<HashMap<RegionId, cdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl CdbPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -88,7 +88,7 @@ impl CdbPool {
         }
 
         let client = cdb::ClientBuilder::new()
-            .known_node(service_address("cdb", region, &self.domain))
+            .known_node(self.template.format("cdb", region))
             .build()
             .await?;
 
@@ -103,14 +103,14 @@ impl CdbPool {
 #[derive(Clone)]
 pub(crate) struct SdbPool {
     inner: Arc<Mutex<HashMap<RegionId, sdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl SdbPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -126,7 +126,7 @@ impl SdbPool {
         }
 
         let client = sdb::ClientBuilder::new()
-            .known_node(service_address("sdb", region, &self.domain))
+            .known_node(self.template.format("sdb", region))
             .build()
             .await?;
 
@@ -141,14 +141,14 @@ impl SdbPool {
 #[derive(Clone)]
 pub(crate) struct RdbPool {
     inner: Arc<Mutex<HashMap<RegionId, rdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl RdbPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -164,7 +164,7 @@ impl RdbPool {
         }
 
         let client = rdb::ClientBuilder::new()
-            .known_node(service_address("rdb", region, &self.domain))
+            .known_node(self.template.format("rdb", region))
             .region(region.clone())
             .build()
             .await?;
@@ -183,14 +183,14 @@ const LDB_PORT: u16 = 9092;
 #[derive(Clone)]
 pub(crate) struct LdbConsumerPool {
     inner: Arc<Mutex<HashMap<RegionId, ldb::Consumer>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl LdbConsumerPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -205,10 +205,7 @@ impl LdbConsumerPool {
             }
         }
 
-        let brokers = format!(
-            "{}:{LDB_PORT}",
-            service_address("ldb", region, &self.domain)
-        );
+        let brokers = format!("{}:{LDB_PORT}", self.template.format("ldb", region));
         let client = ldb::ClientBuilder::new()
             .brokers(brokers)
             .build_consumer()
@@ -225,14 +222,14 @@ impl LdbConsumerPool {
 #[derive(Clone)]
 pub(crate) struct LdbPublisherPool {
     inner: Arc<Mutex<HashMap<RegionId, ldb::Publisher>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl LdbPublisherPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -247,10 +244,7 @@ impl LdbPublisherPool {
             }
         }
 
-        let brokers = format!(
-            "{}:{LDB_PORT}",
-            service_address("ldb", region, &self.domain)
-        );
+        let brokers = format!("{}:{LDB_PORT}", self.template.format("ldb", region));
         let client = ldb::ClientBuilder::new()
             .brokers(brokers)
             .build_publisher()

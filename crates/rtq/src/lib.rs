@@ -414,14 +414,14 @@ impl ClientBuilder {
 /// A single [`Publisher`] addresses every region's RTQ. AMQP connections are
 /// established lazily on first publish to a given region and reused
 /// thereafter; the per-region URI is derived from the configured
-/// [`ids::Domain`] via [`ids::service_address`].
+/// [`ids::ServiceAddressTemplate`].
 ///
 /// In a single-region deployment exactly one connection is ever opened (to
 /// the local region's broker), giving the same operational profile as a
 /// pre-multi-region single-broker publisher.
 #[derive(Clone)]
 pub struct Publisher {
-    domain: ids::Domain,
+    template: ids::ServiceAddressTemplate,
     shard_count: u16,
     connections: Arc<Mutex<HashMap<ids::RegionId, RegionalConnection>>>,
 }
@@ -434,16 +434,16 @@ struct RegionalConnection {
 }
 
 impl Publisher {
-    /// Construct a publisher addressing every region under `domain`. The
+    /// Construct a publisher addressing every region via `template`. The
     /// shard count must match every consumer's shard count — defaults to
     /// [`DEFAULT_SHARD_COUNT`].
-    pub fn new(domain: ids::Domain) -> Self {
-        Self::with_shard_count(domain, DEFAULT_SHARD_COUNT)
+    pub fn new(template: ids::ServiceAddressTemplate) -> Self {
+        Self::with_shard_count(template, DEFAULT_SHARD_COUNT)
     }
 
-    pub fn with_shard_count(domain: ids::Domain, shard_count: u16) -> Self {
+    pub fn with_shard_count(template: ids::ServiceAddressTemplate, shard_count: u16) -> Self {
         Self {
-            domain,
+            template,
             shard_count,
             connections: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -480,10 +480,7 @@ impl Publisher {
         if let Some(rc) = connections.get(region) {
             return Ok(rc.channel.clone());
         }
-        let uri = format!(
-            "amqp://{}:5672/%2f",
-            ids::service_address("rtq", region, &self.domain)
-        );
+        let uri = format!("amqp://{}:5672/%2f", self.template.format("rtq", region));
         let connection = Connection::connect(&uri, ConnectionProperties::default()).await?;
         let channel = connection.create_channel().await?;
         declare_exchange(&channel).await?;

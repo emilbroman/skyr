@@ -45,11 +45,13 @@ enum Program {
         #[clap(long = "region")]
         region: String,
 
-        /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with `--region`, peers are resolved as
-        /// `<service>.<region>.int.<domain>` (e.g. `rq.stockholm.int.skyr.cloud`).
-        #[clap(long = "domain")]
-        domain: String,
+        /// Template used to construct region-scoped Skyr peer service
+        /// addresses. Substitutes `{service}` (required) and `{region}`
+        /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+        /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+        /// for a single-region Kubernetes deployment).
+        #[clap(long = "service-address-template", default_value_t = ids::ServiceAddressTemplate::default_template())]
+        service_address_template: ids::ServiceAddressTemplate,
     },
 }
 
@@ -68,14 +70,12 @@ async fn main() -> anyhow::Result<()> {
             worker_count,
             local_workers,
             region,
-            domain,
+            service_address_template,
         } => {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
-            let domain: ids::Domain = domain
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let template = service_address_template;
 
             tracing::info!(%region, "starting reporting engine daemon");
 
@@ -94,23 +94,17 @@ async fn main() -> anyhow::Result<()> {
 
             let cfg = Arc::new(WorkerConfig::from_env());
 
-            let rq_uri = format!(
-                "amqp://{}:5672/%2f",
-                ids::service_address("rq", &region, &domain)
-            );
-            let nq_uri = format!(
-                "amqp://{}:5672/%2f",
-                ids::service_address("nq", &region, &domain)
-            );
+            let rq_uri = format!("amqp://{}:5672/%2f", template.format("rq", &region));
+            let nq_uri = format!("amqp://{}:5672/%2f", template.format("nq", &region));
 
             let sdb_client = sdb::ClientBuilder::new()
-                .known_node(ids::service_address("sdb", &region, &domain))
+                .known_node(template.format("sdb", &region))
                 .build()
                 .await?;
             // Home-region RDB. RE writes the `resource_regions` routing
             // index here; it never reads or writes resource state itself.
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(ids::service_address("rdb", &region, &domain))
+                .known_node(template.format("rdb", &region))
                 .region(region.clone())
                 .build()
                 .await?;

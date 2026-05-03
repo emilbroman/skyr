@@ -35,11 +35,13 @@ enum Program {
         #[clap(long = "region")]
         region: String,
 
-        /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with `--region`, peers are resolved as
-        /// `<service>.<region>.int.<domain>` (e.g. `cdb.stockholm.int.skyr.cloud`).
-        #[clap(long = "domain")]
-        domain: String,
+        /// Template used to construct region-scoped Skyr peer service
+        /// addresses. Substitutes `{service}` (required) and `{region}`
+        /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+        /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+        /// for a single-region Kubernetes deployment).
+        #[clap(long = "service-address-template", default_value_t = ids::ServiceAddressTemplate::default_template())]
+        service_address_template: ids::ServiceAddressTemplate,
     },
 }
 
@@ -77,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
             worker_index,
             worker_count,
             region,
-            domain,
+            service_address_template,
         } => {
             if worker_count == 0 {
                 anyhow::bail!("--worker-count must be at least 1");
@@ -89,9 +91,7 @@ async fn main() -> anyhow::Result<()> {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
-            let domain: ids::Domain = domain
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let template = service_address_template;
 
             tracing::info!(
                 worker_index,
@@ -101,31 +101,28 @@ async fn main() -> anyhow::Result<()> {
             );
 
             let cdb_client = cdb::ClientBuilder::new()
-                .known_node(ids::service_address("cdb", &region, &domain))
+                .known_node(template.format("cdb", &region))
                 .build()
                 .await?;
 
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(ids::service_address("rdb", &region, &domain))
+                .known_node(template.format("rdb", &region))
                 .region(region.clone())
                 .build()
                 .await?;
             // Pool of per-region RDB clients used for cross-region
             // dependency reads. Pre-seeded with the local region so
             // single-region deployments never open a second connection.
-            let rdb_pool = RdbPool::new(domain.clone(), rdb_client.clone());
+            let rdb_pool = RdbPool::new(template.clone(), rdb_client.clone());
 
-            let rtq_publisher = rtq::Publisher::new(domain.clone());
-            let rq_publisher = rq::Publisher::new(domain.clone());
+            let rtq_publisher = rtq::Publisher::new(template.clone());
+            let rq_publisher = rq::Publisher::new(template.clone());
             let sdb_client = sdb::ClientBuilder::new()
-                .known_node(ids::service_address("sdb", &region, &domain))
+                .known_node(template.format("sdb", &region))
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
-                .brokers(format!(
-                    "{}:9092",
-                    ids::service_address("ldb", &region, &domain)
-                ))
+                .brokers(format!("{}:9092", template.format("ldb", &region)))
                 .build_publisher()
                 .await?;
 

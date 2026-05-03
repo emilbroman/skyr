@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ids::{Domain, RegionId, service_address};
+use ids::{RegionId, ServiceAddressTemplate};
 use thiserror::Error;
 use tokio::sync::Mutex;
 use tonic::transport::Endpoint;
@@ -28,14 +28,14 @@ pub(crate) enum IasConnectError {
 #[derive(Clone)]
 pub(crate) struct IasPool {
     inner: Arc<Mutex<HashMap<RegionId, ias::IdentityAndAccessClient>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl IasPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -50,7 +50,7 @@ impl IasPool {
             }
         }
 
-        let host = service_address("ias", region, &self.domain);
+        let host = self.template.format("ias", region);
         let endpoint = Endpoint::from_shared(format!("http://{host}:{IAS_PORT}"))?;
         // Lazy connect: a transient unavailability of one region's IAS
         // shouldn't fail unrelated SSH sessions on this edge.
@@ -68,14 +68,14 @@ impl IasPool {
 #[derive(Clone)]
 pub(crate) struct CdbPool {
     inner: Arc<Mutex<HashMap<RegionId, cdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl CdbPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -91,7 +91,7 @@ impl CdbPool {
         }
 
         let client = cdb::ClientBuilder::new()
-            .known_node(service_address("cdb", region, &self.domain))
+            .known_node(self.template.format("cdb", region))
             .build()
             .await?;
 
@@ -106,14 +106,14 @@ impl CdbPool {
 #[derive(Clone)]
 pub(crate) struct RdbPool {
     inner: Arc<Mutex<HashMap<RegionId, rdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl RdbPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -129,7 +129,7 @@ impl RdbPool {
         }
 
         let client = rdb::ClientBuilder::new()
-            .known_node(service_address("rdb", region, &self.domain))
+            .known_node(self.template.format("rdb", region))
             .region(region.clone())
             .build()
             .await?;
@@ -151,14 +151,14 @@ impl RdbPool {
 #[derive(Clone)]
 pub(crate) struct NodeRegistryPool {
     inner: Arc<Mutex<HashMap<RegionId, redis::aio::MultiplexedConnection>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl NodeRegistryPool {
-    pub(crate) fn new(domain: Domain) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate) -> Self {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
-            domain,
+            template,
         }
     }
 
@@ -173,7 +173,7 @@ impl NodeRegistryPool {
             }
         }
 
-        let host = service_address("node-registry", region, &self.domain);
+        let host = self.template.format("node-registry", region);
         let url = format!("redis://{host}/");
         let conn = redis::Client::open(url)?
             .get_multiplexed_async_connection()

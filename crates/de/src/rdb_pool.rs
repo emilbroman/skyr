@@ -11,25 +11,25 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ids::{Domain, RegionId, service_address};
+use ids::{RegionId, ServiceAddressTemplate};
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub(crate) struct RdbPool {
     inner: Arc<Mutex<HashMap<RegionId, rdb::Client>>>,
-    domain: Domain,
+    template: ServiceAddressTemplate,
 }
 
 impl RdbPool {
     /// Builds a pool pre-seeded with the local region's client. `local_region`
     /// must match the region the client was built for; the client's
     /// `region()` accessor is the source of truth.
-    pub(crate) fn new(domain: Domain, local: rdb::Client) -> Self {
+    pub(crate) fn new(template: ServiceAddressTemplate, local: rdb::Client) -> Self {
         let mut entries = HashMap::new();
         entries.insert(local.region().clone(), local);
         Self {
             inner: Arc::new(Mutex::new(entries)),
-            domain,
+            template,
         }
     }
 
@@ -45,7 +45,7 @@ impl RdbPool {
         }
 
         let client = rdb::ClientBuilder::new()
-            .known_node(service_address("rdb", region, &self.domain))
+            .known_node(self.template.format("rdb", region))
             .region(region.clone())
             .build()
             .await?;

@@ -12,22 +12,25 @@ use tokio::task::JoinSet;
 enum Program {
     /// Run the Notification Engine daemon: consume NQ and dispatch e-mails.
     Daemon {
-        // ---- region & domain ----------------------------------------------
+        // ---- region & service-address template ---------------------------
         /// Skyr region this NE serves (e.g. `stockholm`). Validated as
         /// `[a-z]+`. Used to resolve peer service addresses (NQ, UDB).
         #[clap(long = "region")]
         region: String,
 
-        /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with `--region`, peers are resolved as
-        /// `<service>.<region>.int.<domain>` (e.g. `nq.stockholm.int.skyr.cloud`).
-        #[clap(long = "domain")]
-        domain: String,
+        /// Template used to construct region-scoped Skyr peer service
+        /// addresses. Substitutes `{service}` (required) and `{region}`
+        /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+        /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+        /// for a single-region Kubernetes deployment).
+        #[clap(long = "service-address-template", default_value_t = ids::ServiceAddressTemplate::default_template())]
+        service_address_template: ids::ServiceAddressTemplate,
 
         // ---- queue ---------------------------------------------------------
         /// Override the full AMQP URI instead of resolving the NQ broker
-        /// from `--region` and `--domain`. Useful for managed RabbitMQ
-        /// deployments with TLS, custom vhosts, or credentials.
+        /// from `--region` and `--service-address-template`. Useful for
+        /// managed RabbitMQ deployments with TLS, custom vhosts, or
+        /// credentials.
         #[clap(long = "nq-uri")]
         nq_uri: Option<String>,
 
@@ -110,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
     match Program::parse() {
         Program::Daemon {
             region,
-            domain,
+            service_address_template,
             nq_uri,
             prefetch,
             nq_dlx,
@@ -133,16 +136,10 @@ async fn main() -> anyhow::Result<()> {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
-            let domain: ids::Domain = domain
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let template = service_address_template;
 
-            let uri = nq_uri.unwrap_or_else(|| {
-                format!(
-                    "amqp://{}:5672/%2f",
-                    ids::service_address("nq", &region, &domain)
-                )
-            });
+            let uri = nq_uri
+                .unwrap_or_else(|| format!("amqp://{}:5672/%2f", template.format("nq", &region)));
 
             tracing::info!(
                 worker_count,
@@ -160,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
             .await?;
 
             let udb_client = udb::ClientBuilder::new()
-                .known_node(ids::service_address("udb", &region, &domain))
+                .known_node(template.format("udb", &region))
                 .build()
                 .await?;
 

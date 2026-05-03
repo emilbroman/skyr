@@ -30,22 +30,23 @@ enum Program {
         #[clap(short = 'k', long = "key", default_value = "host.pem")]
         key: PathBuf,
 
-        /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with the per-channel region resolution,
-        /// peers are reached at `<service>.<region>.int.<domain>`.
+        /// Template used to construct region-scoped Skyr peer service
+        /// addresses. Substitutes `{service}` (required) and `{region}`
+        /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+        /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+        /// for a single-region Kubernetes deployment).
         ///
         /// SCS does not have its own region — it routes per-channel using
         /// token-equivalent SSH pubkey checks against the user's home
         /// region IAS, GDDB lookups for repos, and the resource's region
         /// (encoded structurally in `ResourceQid`) for port-forward.
-        #[clap(long = "domain")]
-        domain: String,
+        #[clap(long = "service-address-template", default_value_t = ids::ServiceAddressTemplate::default_template())]
+        service_address_template: ids::ServiceAddressTemplate,
 
         /// Region to bootstrap the GDDB ScyllaDB session against. Used
-        /// only as the DNS suffix of the initial known-node address —
-        /// `gddb.<bootstrap-region>.int.<domain>`. GDDB is logically
-        /// global; the Scylla session discovers the rest of the cluster
-        /// from there.
+        /// only as the region substituted into `--service-address-template`
+        /// for the initial known-node address. GDDB is logically global;
+        /// the Scylla session discovers the rest of the cluster from there.
         #[clap(long = "gddb-bootstrap-region")]
         gddb_bootstrap_region: String,
     },
@@ -64,12 +65,10 @@ async fn main() -> anyhow::Result<()> {
         Program::Daemon {
             address,
             key,
-            domain,
+            service_address_template,
             gddb_bootstrap_region,
         } => {
-            let domain: ids::Domain = domain
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let template = service_address_template;
             let gddb_bootstrap_region: ids::RegionId =
                 gddb_bootstrap_region
                     .parse()
@@ -78,17 +77,13 @@ async fn main() -> anyhow::Result<()> {
                     })?;
 
             let gddb_client = gddb::ClientBuilder::new()
-                .known_node(ids::service_address(
-                    "gddb",
-                    &gddb_bootstrap_region,
-                    &domain,
-                ))
+                .known_node(template.format("gddb", &gddb_bootstrap_region))
                 .build()
                 .await?;
-            let ias_pool = IasPool::new(domain.clone());
-            let cdb_pool = CdbPool::new(domain.clone());
-            let rdb_pool = RdbPool::new(domain.clone());
-            let node_registry_pool = NodeRegistryPool::new(domain.clone());
+            let ias_pool = IasPool::new(template.clone());
+            let cdb_pool = CdbPool::new(template.clone());
+            let rdb_pool = RdbPool::new(template.clone());
+            let node_registry_pool = NodeRegistryPool::new(template.clone());
 
             tracing::info!("listening on {address}");
             ConfigServer {
