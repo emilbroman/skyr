@@ -242,6 +242,13 @@ type Organization {
 
 type Query {
   health: Boolean!
+  """
+    Skyr regions this deployment makes available for new accounts and
+    orgs/repos. Configured by the operator via `--available-regions` /
+    `AVAILABLE_REGIONS`. Public so the web UI can render a region picker
+    before sign-in.
+  """
+  availableRegions: [String!]!
   me: SignedInUser!
   """
     Issue an authentication challenge for `username`.

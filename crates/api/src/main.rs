@@ -47,6 +47,7 @@ pub(crate) struct Context {
     pub(crate) rtq_publisher: rtq::Publisher,
     pub(crate) rp_id: Arc<String>,
     pub(crate) rp_name: Arc<String>,
+    pub(crate) available_regions: Arc<Vec<ids::RegionId>>,
     pub(crate) authenticated_user: Option<AuthenticatedUser>,
 }
 
@@ -174,8 +175,14 @@ pub(crate) fn map_ias_status(status: tonic::Status) -> juniper::FieldError {
     }
 }
 
-fn parse_region_arg(requested: &str) -> FieldResult<ids::RegionId> {
-    requested.parse().map_err(|_| field_error("Invalid region"))
+fn parse_region_arg(context: &Context, requested: &str) -> FieldResult<ids::RegionId> {
+    let region: ids::RegionId = requested
+        .parse()
+        .map_err(|_| field_error("Invalid region"))?;
+    if !context.available_regions.contains(&region) {
+        return Err(field_error("Invalid region"));
+    }
+    Ok(region)
 }
 
 /// Basic email validation: requires exactly one `@`, non-empty local and domain
@@ -213,6 +220,18 @@ impl Query {
         let _ = (&context.cdb_pool, &context.rdb_pool, &context.adb_client);
         tokio::task::yield_now().await;
         true
+    }
+
+    /// Skyr regions this deployment makes available for new accounts and
+    /// orgs/repos. Configured by the operator via `--available-regions` /
+    /// `AVAILABLE_REGIONS`. Public so the web UI can render a region picker
+    /// before sign-in.
+    fn available_regions(context: &Context) -> Vec<String> {
+        context
+            .available_regions
+            .iter()
+            .map(|r| r.to_string())
+            .collect()
     }
 
     async fn me(context: &Context) -> FieldResult<SignedInUser> {
@@ -262,7 +281,7 @@ impl Query {
         let target_region = match home {
             Some(h) => h,
             None => match region {
-                Some(s) => parse_region_arg(&s)?,
+                Some(s) => parse_region_arg(context, &s)?,
                 None => {
                     return Err(field_error("Region is required when signing up a new user"));
                 }
@@ -458,7 +477,7 @@ impl Mutation {
         let org_region = context.home_region_for_org(&name.org).await?;
 
         let region = match region {
-            Some(s) => parse_region_arg(&s)?,
+            Some(s) => parse_region_arg(context, &s)?,
             None => org_region.clone(),
         };
 
@@ -529,7 +548,7 @@ impl Mutation {
             return Err(field_error("Invalid email"));
         }
 
-        let region = parse_region_arg(&region)?;
+        let region = parse_region_arg(context, &region)?;
 
         // The username is also the user's personal-org name, so reserve it
         // in GDDB as an org name. This is the source of truth for global
@@ -700,7 +719,7 @@ impl Mutation {
         // record already lives). Operators can override per-org by passing
         // `region:`.
         let region = match region {
-            Some(s) => parse_region_arg(&s)?,
+            Some(s) => parse_region_arg(context, &s)?,
             None => auth.home_region.clone(),
         };
 
@@ -1203,6 +1222,12 @@ struct Cli {
     /// session discovers the rest of the cluster from there.
     #[arg(long, default_value = "loca")]
     gddb_bootstrap_region: String,
+    /// Comma-separated list of Skyr regions this deployment serves. Used to
+    /// validate region inputs (signup, org/repo creation) and to populate the
+    /// public `availableRegions` query so the web UI can render a region
+    /// picker. Lowercase ASCII names; must contain at least one region.
+    #[arg(long, env = "AVAILABLE_REGIONS", value_delimiter = ',')]
+    available_regions: Vec<String>,
 }
 
 #[tokio::main]
@@ -1228,6 +1253,22 @@ async fn main() -> anyhow::Result<()> {
         .gddb_bootstrap_region
         .parse()
         .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --gddb-bootstrap-region: {e}"))?;
+
+    if cli.available_regions.is_empty() {
+        anyhow::bail!(
+            "--available-regions / AVAILABLE_REGIONS must list at least one region (comma-separated)"
+        );
+    }
+    let available_regions: Vec<ids::RegionId> = cli
+        .available_regions
+        .iter()
+        .map(|s| {
+            s.parse().map_err(|e: ids::ParseIdError| {
+                anyhow::anyhow!("invalid region {s:?} in --available-regions: {e}")
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let available_regions = Arc::new(available_regions);
 
     let ias_pool = pools::IasPool::new(template.clone());
     let cdb_pool = pools::CdbPool::new(template.clone());
@@ -1271,6 +1312,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(schema))
         .layer(Extension(rp_id))
         .layer(Extension(rp_name))
+        .layer(Extension(available_regions))
         .layer(Extension(cdb_pool))
         .layer(Extension(sdb_pool))
         .layer(Extension(gddb_client))
@@ -1302,6 +1344,7 @@ async fn graphql_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
+    Extension(available_regions): Extension<Arc<Vec<ids::RegionId>>>,
     Extension(cdb_pool): Extension<pools::CdbPool>,
     Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
@@ -1351,6 +1394,7 @@ async fn graphql_handler(
         rtq_publisher,
         rp_id,
         rp_name,
+        available_regions,
         authenticated_user,
     };
     AxumJson(request.execute(&schema, &ctx).await)
@@ -1370,6 +1414,7 @@ async fn graphql_ws_handler(
     Extension(schema): Extension<Arc<Schema>>,
     Extension(rp_id): Extension<Arc<String>>,
     Extension(rp_name): Extension<Arc<String>>,
+    Extension(available_regions): Extension<Arc<Vec<ids::RegionId>>>,
     Extension(cdb_pool): Extension<pools::CdbPool>,
     Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
@@ -1413,6 +1458,7 @@ async fn graphql_ws_handler(
         rtq_publisher,
         rp_id,
         rp_name,
+        available_regions,
         authenticated_user,
     };
 

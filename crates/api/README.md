@@ -38,8 +38,9 @@ Challenges are frame-based (60-second windows) with ±1 frame tolerance for cloc
 | Operation | Description |
 |-----------|-------------|
 | `health` | Service health check |
+| `availableRegions` | Lists Skyr regions this deployment serves; used by the web UI to populate the region picker on signup / org / repo creation. Public (no auth). |
 | `me` | Returns the authenticated user (requires bearer token) |
-| `authChallenge(username)` | Returns a challenge string for signing |
+| `authChallenge(username, region)` | Returns a challenge string for signing; `region` is required for brand-new users (no GDDB entry) and ignored for existing ones |
 | `repositories` | Lists repositories owned by the authenticated user's organization |
 | `Organization.incident(id)` | Single-incident lookup, scoped to the organization. Globally-unique incident IDs are not exposed at the top-level `Query` so that authorization stays visible in the query shape. |
 | `Organization.incidents(...)` / `Repository.incidents(...)` / `Environment.incidents(...)` / `Deployment.incidents(...)` / `Resource.incidents(...)` | Scoped incident listings. Common filter args: `entityQid`, `category`, `openOnly`, `since`, `until`, plus `limit` / `offset` pagination. |
