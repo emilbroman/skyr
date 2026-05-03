@@ -35,11 +35,13 @@ enum Program {
         #[clap(long = "region")]
         region: String,
 
-        /// DNS suffix used to construct region-scoped Skyr peer service
-        /// addresses. Combined with `--region`, peers are resolved as
-        /// `<service>.<region>.int.<domain>` (e.g. `rdb.stockholm.int.skyr.cloud`).
-        #[clap(long = "domain")]
-        domain: String,
+        /// Template used to construct region-scoped Skyr peer service
+        /// addresses. Substitutes `{service}` (required) and `{region}`
+        /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+        /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+        /// for a single-region Kubernetes deployment).
+        #[clap(long = "service-address-template", default_value_t = ids::ServiceAddressTemplate::default_template())]
+        service_address_template: ids::ServiceAddressTemplate,
     },
 }
 
@@ -85,14 +87,12 @@ async fn main() -> anyhow::Result<()> {
             local_workers,
             plugin,
             region,
-            domain,
+            service_address_template,
         } => {
             let region: ids::RegionId = region
                 .parse()
                 .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --region: {e}"))?;
-            let domain: ids::Domain = domain
-                .parse()
-                .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+            let template = service_address_template;
 
             tracing::info!(%region, "starting resource transition engine daemon");
 
@@ -109,23 +109,17 @@ async fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--worker-index + --local-workers must be <= --worker-count");
             }
 
-            let uri = format!(
-                "amqp://{}:5672/%2f",
-                ids::service_address("rtq", &region, &domain)
-            );
+            let uri = format!("amqp://{}:5672/%2f", template.format("rtq", &region));
             let rdb_client = rdb::ClientBuilder::new()
-                .known_node(ids::service_address("rdb", &region, &domain))
+                .known_node(template.format("rdb", &region))
                 .region(region.clone())
                 .build()
                 .await?;
             let ldb_publisher = ldb::ClientBuilder::new()
-                .brokers(format!(
-                    "{}:9092",
-                    ids::service_address("ldb", &region, &domain)
-                ))
+                .brokers(format!("{}:9092", template.format("ldb", &region)))
                 .build_publisher()
                 .await?;
-            let rq_publisher = rq::Publisher::new(domain.clone());
+            let rq_publisher = rq::Publisher::new(template.clone());
             let plugins = dial_plugins(&plugin).await?;
             let mut handles = Vec::new();
 

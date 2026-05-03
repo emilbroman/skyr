@@ -1184,21 +1184,23 @@ struct Cli {
     rp_name: String,
     #[arg(long)]
     write_schema: bool,
-    /// DNS suffix used to construct region-scoped Skyr peer service
-    /// addresses. Combined with the per-RPC region resolution, peers are
-    /// reached at `<service>.<region>.int.<domain>`.
+    /// Template used to construct region-scoped Skyr peer service
+    /// addresses. Substitutes `{service}` (required) and `{region}`
+    /// (optional). Defaults to `{service}.{region}.int.skyr.cloud` —
+    /// override per stack (e.g. `{service}.<namespace>.svc.cluster.local`
+    /// for a single-region Kubernetes deployment).
     ///
     /// The API edge does not need its own region — it routes per-data-piece
     /// using token claims, GDDB lookups, and region-prefixed resource IDs.
     /// The GDDB session below is bootstrapped against an arbitrary region's
     /// GDDB DNS name; in production every region's GDDB Scylla peer answers
     /// the same keyspace, so the choice is just a bootstrap detail.
-    #[arg(long)]
-    domain: String,
+    #[arg(long, default_value_t = ids::ServiceAddressTemplate::default_template())]
+    service_address_template: ids::ServiceAddressTemplate,
     /// Optional region to bootstrap the GDDB Scylla session against. Used
-    /// only as the DNS suffix of the initial known-node address —
-    /// `gddb.<bootstrap-region>.int.<domain>`. GDDB is logically global;
-    /// the Scylla session discovers the rest of the cluster from there.
+    /// only as the region substituted into `--service-address-template` for
+    /// the initial known-node address. GDDB is logically global; the Scylla
+    /// session discovers the rest of the cluster from there.
     #[arg(long, default_value = "loca")]
     gddb_bootstrap_region: String,
 }
@@ -1221,29 +1223,22 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let domain: ids::Domain = cli
-        .domain
-        .parse()
-        .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --domain: {e}"))?;
+    let template = cli.service_address_template;
     let gddb_bootstrap_region: ids::RegionId = cli
         .gddb_bootstrap_region
         .parse()
         .map_err(|e: ids::ParseIdError| anyhow::anyhow!("invalid --gddb-bootstrap-region: {e}"))?;
 
-    let ias_pool = pools::IasPool::new(domain.clone());
-    let cdb_pool = pools::CdbPool::new(domain.clone());
-    let sdb_pool = pools::SdbPool::new(domain.clone());
+    let ias_pool = pools::IasPool::new(template.clone());
+    let cdb_pool = pools::CdbPool::new(template.clone());
+    let sdb_pool = pools::SdbPool::new(template.clone());
 
     let gddb_client = gddb::ClientBuilder::new()
-        .known_node(ids::service_address(
-            "gddb",
-            &gddb_bootstrap_region,
-            &domain,
-        ))
+        .known_node(template.format("gddb", &gddb_bootstrap_region))
         .build()
         .await?;
 
-    let rdb_pool = pools::RdbPool::new(domain.clone());
+    let rdb_pool = pools::RdbPool::new(template.clone());
     let mut adb_builder = adb::ClientBuilder::new()
         .bucket(cli.adb_bucket)
         .endpoint_url(cli.adb_endpoint_url)
@@ -1255,9 +1250,9 @@ async fn main() -> anyhow::Result<()> {
         adb_builder = adb_builder.external_url(adb_external_url);
     }
     let adb_client = adb_builder.build().await?;
-    let ldb_consumer_pool = pools::LdbConsumerPool::new(domain.clone());
-    let ldb_publisher_pool = pools::LdbPublisherPool::new(domain.clone());
-    let rtq_publisher = rtq::Publisher::new(domain.clone());
+    let ldb_consumer_pool = pools::LdbConsumerPool::new(template.clone());
+    let ldb_publisher_pool = pools::LdbPublisherPool::new(template.clone());
+    let rtq_publisher = rtq::Publisher::new(template.clone());
     let region_key_cache = region_keys::RegionKeyCache::new(ias_pool.clone());
     let rp_id = Arc::new(cli.rp_id);
     let rp_name = Arc::new(cli.rp_name);
