@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use futures_util::{StreamExt, TryStreamExt};
@@ -5,6 +6,86 @@ use juniper::FieldResult;
 
 use crate::json_scalar::JsonValue;
 use crate::{Context, field_error, internal_error};
+
+/// Selects which slice of resources to read from each per-region RDB.
+enum ResourceListMode {
+    /// Every resource in the namespace (for `Environment.resources`).
+    AllInNamespace,
+    /// Only resources whose `owner` field equals the given deployment QID
+    /// (for `Deployment.resources`).
+    ByOwner(String),
+}
+
+/// Read the home region's `rdb.resource_regions` index and return the set of
+/// regions that hold any resource for `env_qid`. Always includes the home
+/// region itself, since the index is populated by the home-region RE on
+/// every successful create.
+async fn list_resource_regions_in_env(
+    context: &Context,
+    env_qid: &ids::EnvironmentQid,
+) -> FieldResult<HashSet<ids::RegionId>> {
+    let home = context.home_region_for_repo(&env_qid.repo).await?;
+    let home_client = context.rdb_for_region(&home).await?;
+    let namespace = env_qid.to_string();
+    let entries = home_client
+        .namespace(namespace.clone())
+        .list_resource_regions()
+        .await
+        .map_err(|e| {
+            tracing::error!("Failed to read resource_regions index for {namespace} in {home}: {e}");
+            internal_error()
+        })?;
+    let mut regions: HashSet<ids::RegionId> = entries.into_iter().map(|e| e.region).collect();
+    // The home region's own RDB is always a candidate even when no entries
+    // have been written yet (e.g. before any resource has gone Live).
+    regions.insert(home);
+    Ok(regions)
+}
+
+/// Fan out per-region RDB reads — one query per region — and concatenate
+/// the results. Mirrors the DE's cross-region dependency-read pattern (one
+/// query per remote region, O(regions touched), not O(resources)).
+async fn load_resources_across_regions(
+    context: &Context,
+    namespace: &str,
+    regions: HashSet<ids::RegionId>,
+    mode: ResourceListMode,
+) -> FieldResult<Vec<Resource>> {
+    let mut out = Vec::new();
+    for region in regions {
+        let client = context.rdb_for_region(&region).await?;
+        let ns = client.namespace(namespace.to_string());
+        match &mode {
+            ResourceListMode::AllInNamespace => {
+                let mut stream = ns.list_resources().await.map_err(|e| {
+                    tracing::error!("Failed to list resources in {namespace} ({region}): {e}");
+                    internal_error()
+                })?;
+                while let Some(resource) = stream.try_next().await.map_err(|e| {
+                    tracing::error!("Failed to read resource row in {namespace} ({region}): {e}");
+                    internal_error()
+                })? {
+                    out.push(Resource { resource });
+                }
+            }
+            ResourceListMode::ByOwner(owner) => {
+                let mut stream = ns.list_resources_by_owner(owner).await.map_err(|e| {
+                    tracing::error!(
+                        "Failed to list resources by owner {owner} in {namespace} ({region}): {e}"
+                    );
+                    internal_error()
+                })?;
+                while let Some(resource) = stream.try_next().await.map_err(|e| {
+                    tracing::error!("Failed to read resource row in {namespace} ({region}): {e}");
+                    internal_error()
+                })? {
+                    out.push(Resource { resource });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
 
 pub(crate) struct AuthSuccess {
     pub(crate) user: SignedInUser,
@@ -424,7 +505,8 @@ impl Environment {
         let namespace = self.qid.to_string();
 
         context
-            .rdb_client
+            .rdb_for_region(resource_id.region())
+            .await?
             .namespace(namespace.clone())
             .resource(
                 resource_id.resource_type().to_string(),
@@ -443,27 +525,14 @@ impl Environment {
 
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
         let namespace = self.qid.to_string();
-
-        context
-            .rdb_client
-            .namespace(namespace.clone())
-            .list_resources()
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to list resources for environment namespace {namespace}: {e}"
-                );
-                internal_error()
-            })?
-            .map(|resource| resource.map(|resource| Resource { resource }))
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to load resources for environment namespace {namespace}: {e}"
-                );
-                internal_error()
-            })
+        let regions = list_resource_regions_in_env(context, &self.qid).await?;
+        load_resources_across_regions(
+            context,
+            &namespace,
+            regions,
+            ResourceListMode::AllInNamespace,
+        )
+        .await
     }
 
     #[graphql(name = "lastLogs")]
@@ -892,29 +961,17 @@ impl Deployment {
     }
 
     async fn resources(&self, context: &Context) -> FieldResult<Vec<Resource>> {
-        let namespace = self.deployment.environment_qid().to_string();
+        let env_qid = self.deployment.environment_qid();
+        let namespace = env_qid.to_string();
         let owner = self.deployment.deployment_qid().to_string();
-
-        context
-            .rdb_client
-            .namespace(namespace.clone())
-            .list_resources_by_owner(&owner)
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to list resources for deployment namespace {namespace} and owner {owner}: {e}"
-                );
-                internal_error()
-            })?
-            .map(|resource| resource.map(|resource| Resource { resource }))
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(|e| {
-                tracing::error!(
-                    "Failed to load resources for deployment namespace {namespace} and owner {owner}: {e}"
-                );
-                internal_error()
-            })
+        let regions = list_resource_regions_in_env(context, &env_qid).await?;
+        load_resources_across_regions(
+            context,
+            &namespace,
+            regions,
+            ResourceListMode::ByOwner(owner),
+        )
+        .await
     }
 
     #[graphql(name = "lastLogs")]
@@ -1095,7 +1152,8 @@ impl Resource {
 
         for dependency in &self.resource.dependencies {
             let resource = context
-                .rdb_client
+                .rdb_for_region(&dependency.region)
+                .await?
                 .namespace(self.resource.namespace.clone())
                 .resource(dependency.typ.clone(), dependency.name.clone())
                 .get()
@@ -1519,7 +1577,8 @@ impl Incident {
         if let Ok(resource_qid) = self.inner.entity_qid.parse::<ids::ResourceQid>() {
             let namespace = resource_qid.environment.to_string();
             let resource = context
-                .rdb_client
+                .rdb_for_region(resource_qid.resource.region())
+                .await?
                 .namespace(namespace.clone())
                 .resource(
                     resource_qid.resource.resource_type().to_string(),
