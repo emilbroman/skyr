@@ -42,7 +42,7 @@ pub(crate) struct Context {
     pub(crate) ldb_consumer_pool: pools::LdbConsumerPool,
     pub(crate) ldb_publisher_pool: pools::LdbPublisherPool,
     pub(crate) gddb_client: gddb::Client,
-    pub(crate) rdb_client: rdb::Client,
+    pub(crate) rdb_pool: pools::RdbPool,
     pub(crate) adb_client: adb::Client,
     pub(crate) rtq_publisher: rtq::Publisher,
     pub(crate) rp_id: Arc<String>,
@@ -101,6 +101,13 @@ impl Context {
     pub(crate) async fn cdb_for_region(&self, region: &ids::RegionId) -> FieldResult<cdb::Client> {
         self.cdb_pool.for_region(region).await.map_err(|e| {
             tracing::error!("Failed to connect to CDB in {}: {}", region, e);
+            internal_error()
+        })
+    }
+
+    pub(crate) async fn rdb_for_region(&self, region: &ids::RegionId) -> FieldResult<rdb::Client> {
+        self.rdb_pool.for_region(region).await.map_err(|e| {
+            tracing::error!("Failed to connect to RDB in {}: {}", region, e);
             internal_error()
         })
     }
@@ -203,7 +210,7 @@ static USERNAME_REGEX: std::sync::LazyLock<regex::Regex> =
 #[juniper::graphql_object(Context = Context)]
 impl Query {
     async fn health(context: &Context) -> bool {
-        let _ = (&context.cdb_pool, &context.rdb_client, &context.adb_client);
+        let _ = (&context.cdb_pool, &context.rdb_pool, &context.adb_client);
         tokio::task::yield_now().await;
         true
     }
@@ -1006,7 +1013,8 @@ impl Mutation {
         let namespace = env_qid.to_string();
 
         let row = context
-            .rdb_client
+            .rdb_for_region(resource_id.region())
+            .await?
             .namespace(namespace.clone())
             .resource(
                 resource_id.resource_type().to_string(),
@@ -1235,11 +1243,7 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    let rdb_client = rdb::ClientBuilder::new()
-        .known_node(ids::service_address("rdb", &gddb_bootstrap_region, &domain))
-        .region(gddb_bootstrap_region.clone())
-        .build()
-        .await?;
+    let rdb_pool = pools::RdbPool::new(domain.clone());
     let mut adb_builder = adb::ClientBuilder::new()
         .bucket(cli.adb_bucket)
         .endpoint_url(cli.adb_endpoint_url)
@@ -1275,7 +1279,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(cdb_pool))
         .layer(Extension(sdb_pool))
         .layer(Extension(gddb_client))
-        .layer(Extension(rdb_client))
+        .layer(Extension(rdb_pool))
         .layer(Extension(adb_client))
         .layer(Extension(ldb_consumer_pool))
         .layer(Extension(ldb_publisher_pool))
@@ -1306,7 +1310,7 @@ async fn graphql_handler(
     Extension(cdb_pool): Extension<pools::CdbPool>,
     Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
-    Extension(rdb_client): Extension<rdb::Client>,
+    Extension(rdb_pool): Extension<pools::RdbPool>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer_pool): Extension<pools::LdbConsumerPool>,
     Extension(ldb_publisher_pool): Extension<pools::LdbPublisherPool>,
@@ -1347,7 +1351,7 @@ async fn graphql_handler(
         ldb_consumer_pool,
         ldb_publisher_pool,
         gddb_client,
-        rdb_client,
+        rdb_pool,
         adb_client,
         rtq_publisher,
         rp_id,
@@ -1374,7 +1378,7 @@ async fn graphql_ws_handler(
     Extension(cdb_pool): Extension<pools::CdbPool>,
     Extension(sdb_pool): Extension<pools::SdbPool>,
     Extension(gddb_client): Extension<gddb::Client>,
-    Extension(rdb_client): Extension<rdb::Client>,
+    Extension(rdb_pool): Extension<pools::RdbPool>,
     Extension(adb_client): Extension<adb::Client>,
     Extension(ldb_consumer_pool): Extension<pools::LdbConsumerPool>,
     Extension(ldb_publisher_pool): Extension<pools::LdbPublisherPool>,
@@ -1409,7 +1413,7 @@ async fn graphql_ws_handler(
         ldb_consumer_pool,
         ldb_publisher_pool,
         gddb_client,
-        rdb_client,
+        rdb_pool,
         adb_client,
         rtq_publisher,
         rp_id,

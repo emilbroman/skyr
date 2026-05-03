@@ -1,4 +1,4 @@
-//! Per-region connection pools for IAS / CDB / SDB.
+//! Per-region connection pools for IAS / CDB / SDB / RDB / LDB.
 //!
 //! Each pool holds a `HashMap<RegionId, Client>` populated lazily on first
 //! use of a region. Construction is parameterized by the regional service
@@ -127,6 +127,45 @@ impl SdbPool {
 
         let client = sdb::ClientBuilder::new()
             .known_node(service_address("sdb", region, &self.domain))
+            .build()
+            .await?;
+
+        self.inner
+            .lock()
+            .await
+            .insert(region.clone(), client.clone());
+        Ok(client)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RdbPool {
+    inner: Arc<Mutex<HashMap<RegionId, rdb::Client>>>,
+    domain: Domain,
+}
+
+impl RdbPool {
+    pub(crate) fn new(domain: Domain) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            domain,
+        }
+    }
+
+    pub(crate) async fn for_region(
+        &self,
+        region: &RegionId,
+    ) -> Result<rdb::Client, rdb::ConnectError> {
+        {
+            let entries = self.inner.lock().await;
+            if let Some(client) = entries.get(region) {
+                return Ok(client.clone());
+            }
+        }
+
+        let client = rdb::ClientBuilder::new()
+            .known_node(service_address("rdb", region, &self.domain))
+            .region(region.clone())
             .build()
             .await?;
 
