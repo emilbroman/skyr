@@ -1,0 +1,5 @@
+import Std/Num
+export let a = Num.fromHex("ff")
+export let b = Num.fromHex("0xFF")
+export let c = Num.fromHex("0X10")
+export let d = Num.fromHex("zzz")

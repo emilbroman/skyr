@@ -59,7 +59,7 @@ pub fn completion(
                 detail: member
                     .ty
                     .as_ref()
-                    .map(|ty| format!("let {}: {ty}", &member.name)),
+                    .map(|ty| format!("let {}: {ty}", member.name)),
                 documentation: member
                     .description
                     .as_ref()

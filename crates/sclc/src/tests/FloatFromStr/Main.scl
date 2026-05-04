@@ -1,0 +1,6 @@
+import Std/Float
+export let a = Float.fromStr("3.14")
+export let b = Float.fromStr("-0.5")
+export let c = Float.fromStr("abc")
+export let d = Float.fromStr("inf")
+export let e = Float.fromStr("")

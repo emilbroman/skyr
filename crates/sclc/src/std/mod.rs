@@ -141,6 +141,7 @@ std_modules! {
     dns => "DNS.scl",
     r#dyn => "Dyn.scl",
     encoding => "Encoding.scl",
+    float => "Float.scl",
     http => "HTTP.scl",
     list => "List.scl",
     num => "Num.scl",

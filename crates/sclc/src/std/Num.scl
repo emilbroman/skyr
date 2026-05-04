@@ -1,3 +1,89 @@
+/// Parse an integer from a decimal string, returning `nil` on failure.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.fromStr("42")    // 42
+/// let b = Num.fromStr("abc")   // nil
+/// ```
+export let fromStr = extern "Std/Num.fromStr": fn(Str) Int?
+
+/// Parse an integer from a hexadecimal string (optional `0x`/`0X` prefix),
+/// returning `nil` on failure.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.fromHex("ff")    // 255
+/// let b = Num.fromHex("0xFF")  // 255
+/// ```
+export let fromHex = extern "Std/Num.fromHex": fn(Str) Int?
+
+/// Convert an integer to its decimal string representation.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let s = Num.toStr(42)   // "42"
+/// ```
+export let toStr = extern "Std/Num.toStr": fn(Int) Str
+
+/// Absolute value. Raises an error on `i64::MIN` (overflow).
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.abs(-5)   // 5
+/// ```
+export let abs = extern "Std/Num.abs": fn(Int) Int
+
+/// Smaller of two integers.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.min(3, 7)   // 3
+/// ```
+export let min = extern "Std/Num.min": fn(Int, Int) Int
+
+/// Larger of two integers.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.max(3, 7)   // 7
+/// ```
+export let max = extern "Std/Num.max": fn(Int, Int) Int
+
+/// Clamp `value` to `[lo, hi]`. Raises an error if `lo > hi`.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.clamp(5, 0, 10)    // 5
+/// let b = Num.clamp(-1, 0, 10)   // 0
+/// ```
+export let clamp = extern "Std/Num.clamp": fn(Int, Int, Int) Int
+
+/// Convert an integer to a `Float`.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let f = Num.toFloat(3)   // 3
+/// ```
+export let toFloat = extern "Std/Num.toFloat": fn(Int) Float
+
+/// Raise `base` to the power of `exp`. Raises an error if `exp` is negative
+/// or the result overflows `i64`.
+///
+/// ```scl
+/// import Std/Num
+///
+/// let a = Num.pow(2, 10)   // 1024
+/// ```
+export let pow = extern "Std/Num.pow": fn(Int, Int) Int
+
 /// Convert an integer to a lowercase hexadecimal string without prefix.
 ///
 /// ```scl

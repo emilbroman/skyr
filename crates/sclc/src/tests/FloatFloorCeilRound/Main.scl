@@ -1,0 +1,6 @@
+import Std/Float
+export let a = Float.floor(1.7)
+export let b = Float.ceil(1.2)
+export let c = Float.round(1.5)
+export let d = Float.floor(-1.2)
+export let e = Float.ceil(-1.7)

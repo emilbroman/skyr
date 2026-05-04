@@ -474,6 +474,23 @@ test_case!(PathNotFound);
 
 // Std/Num
 test_case!(NumToHex);
+test_case!(NumFromStr);
+test_case!(NumFromHex);
+test_case!(NumToStr);
+test_case!(NumAbs);
+test_case!(NumMinMax);
+test_case!(NumClamp);
+test_case!(NumToFloat);
+test_case!(NumPow);
+
+// Std/Float
+test_case!(FloatFromStr);
+test_case!(FloatToStr);
+test_case!(FloatAbs);
+test_case!(FloatMinMax);
+test_case!(FloatClamp);
+test_case!(FloatFloorCeilRound);
+test_case!(FloatPow);
 
 // Std/Str
 test_case!(StrLength);
