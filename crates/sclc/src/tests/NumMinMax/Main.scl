@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.min(3, 7)
+export let b = Num.max(3, 7)
+export let c = Num.min(-1, 0)

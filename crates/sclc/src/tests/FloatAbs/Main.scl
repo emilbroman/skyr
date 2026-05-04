@@ -1,0 +1,4 @@
+import Std/Float
+export let a = Float.abs(-1.5)
+export let b = Float.abs(2.0)
+export let c = Float.abs(0.0)

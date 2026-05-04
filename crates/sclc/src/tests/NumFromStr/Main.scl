@@ -1,0 +1,5 @@
+import Std/Num
+export let a = Num.fromStr("42")
+export let b = Num.fromStr("-7")
+export let c = Num.fromStr("abc")
+export let d = Num.fromStr("")

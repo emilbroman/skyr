@@ -1,0 +1,100 @@
+/// Parse a finite float from a decimal string, returning `nil` on failure,
+/// for non-finite values (infinity, NaN), or for an empty string.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.fromStr("3.14")   // 3.14
+/// let b = Float.fromStr("inf")    // nil
+/// ```
+export let fromStr = extern "Std/Float.fromStr": fn(Str) Float?
+
+/// Convert a float to its decimal string representation.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let s = Float.toStr(3.14)   // "3.14"
+/// ```
+export let toStr = extern "Std/Float.toStr": fn(Float) Str
+
+/// Absolute value of a float.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.abs(-1.5)   // 1.5
+/// ```
+export let abs = extern "Std/Float.abs": fn(Float) Float
+
+/// Smaller of two floats.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.min(1.5, 2.5)   // 1.5
+/// ```
+export let min = extern "Std/Float.min": fn(Float, Float) Float
+
+/// Larger of two floats.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.max(1.5, 2.5)   // 2.5
+/// ```
+export let max = extern "Std/Float.max": fn(Float, Float) Float
+
+/// Clamp `value` to `[lo, hi]`. Raises an error if `lo > hi`.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.clamp(0.5, 0.0, 1.0)   // 0.5
+/// let b = Float.clamp(-1.0, 0.0, 1.0)  // 0
+/// ```
+export let clamp = extern "Std/Float.clamp": fn(Float, Float, Float) Float
+
+/// Floor (round toward negative infinity) as an `Int`.
+/// Raises an error if the result does not fit in `i64`.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.floor(1.7)    // 1
+/// let b = Float.floor(-1.2)   // -2
+/// ```
+export let floor = extern "Std/Float.floor": fn(Float) Int
+
+/// Ceiling (round toward positive infinity) as an `Int`.
+/// Raises an error if the result does not fit in `i64`.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.ceil(1.2)    // 2
+/// let b = Float.ceil(-1.7)   // -1
+/// ```
+export let ceil = extern "Std/Float.ceil": fn(Float) Int
+
+/// Round to the nearest integer (half away from zero) as an `Int`.
+/// Raises an error if the result does not fit in `i64`.
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.round(1.5)    // 2
+/// let b = Float.round(-1.5)   // -2
+/// ```
+export let round = extern "Std/Float.round": fn(Float) Int
+
+/// Raise `base` to the power of `exp`. Raises an error if the result
+/// is not finite (covers NaN and infinities).
+///
+/// ```scl
+/// import Std/Float
+///
+/// let a = Float.pow(2.0, 10.0)   // 1024
+/// let b = Float.pow(4.0, 0.5)    // 2
+/// ```
+export let pow = extern "Std/Float.pow": fn(Float, Float) Float

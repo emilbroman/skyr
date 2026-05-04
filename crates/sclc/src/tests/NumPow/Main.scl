@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.pow(2, 10)
+export let b = Num.pow(5, 0)
+export let c = Num.pow(3, 3)

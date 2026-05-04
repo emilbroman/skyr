@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.clamp(5, 0, 10)
+export let b = Num.clamp(-1, 0, 10)
+export let c = Num.clamp(99, 0, 10)

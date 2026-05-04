@@ -920,10 +920,12 @@ pub trait ValueAssertions {
     fn assert_str(self) -> Result<String, EvalError>;
     fn assert_record(self) -> Result<Record, EvalError>;
     fn assert_path(self) -> Result<PathValue, EvalError>;
+    fn assert_float(self) -> Result<ordered_float::NotNan<f64>, EvalError>;
     fn assert_int_ref(&self) -> Result<&i64, EvalError>;
     fn assert_str_ref(&self) -> Result<&str, EvalError>;
     fn assert_record_ref(&self) -> Result<&Record, EvalError>;
     fn assert_path_ref(&self) -> Result<&PathValue, EvalError>;
+    fn assert_float_ref(&self) -> Result<&ordered_float::NotNan<f64>, EvalError>;
 }
 
 macro_rules! impl_value_assertions {
@@ -978,6 +980,9 @@ impl_value_assertions! {
     (Path,
      assert_path -> PathValue { v => v },
      assert_path_ref -> &PathValue { v => v }),
+    (Float,
+     assert_float -> ordered_float::NotNan<f64> { v => v },
+     assert_float_ref -> &ordered_float::NotNan<f64> { v => v }),
 }
 
 pub(crate) fn tracked(value: Value) -> TrackedValue {

@@ -1,0 +1,3 @@
+import Std/Float
+export let a = Float.min(1.5, 2.5)
+export let b = Float.max(1.5, 2.5)

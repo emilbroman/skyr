@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.toStr(0)
+export let b = Num.toStr(42)
+export let c = Num.toStr(-7)

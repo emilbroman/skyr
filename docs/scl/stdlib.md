@@ -319,6 +319,180 @@ A manifest declares the foreign repositories this repo depends on. Each `depende
 - A tag, prefixed with `tag:`, e.g. `"tag:v1.2.0"`.
 - A 40-character hex commit hash for a deterministic pin.
 
+## Std/Num
+
+Pure helpers for the `Int` type — parsing, arithmetic, and conversion. For
+`Float`-typed helpers, see [Std/Float](#stdfloat).
+
+```scl
+import Std/Num
+```
+
+### Num.fromStr
+
+Parse a decimal integer. Returns `nil` if the input doesn't parse.
+
+```scl
+Num.fromStr("42")    // 42
+Num.fromStr("-7")    // -7
+Num.fromStr("abc")   // nil
+Num.fromStr("")      // nil
+```
+
+### Num.fromHex
+
+Parse a hexadecimal integer, with or without a `0x`/`0X` prefix. Case-insensitive. Returns `nil` if the input doesn't parse.
+
+```scl
+Num.fromHex("ff")    // 255
+Num.fromHex("0xFF")  // 255
+Num.fromHex("0X10")  // 16
+Num.fromHex("zzz")   // nil
+```
+
+### Num.toStr
+
+Canonical decimal string representation.
+
+```scl
+Num.toStr(0)    // "0"
+Num.toStr(42)   // "42"
+Num.toStr(-7)   // "-7"
+```
+
+### Num.toHex
+
+Lowercase hexadecimal string without prefix.
+
+```scl
+Num.toHex(255)  // "ff"
+Num.toHex(16)   // "10"
+```
+
+### Num.abs
+
+Absolute value. Raises an error if the input is the smallest representable `Int` (overflow).
+
+```scl
+Num.abs(-5)  // 5
+Num.abs(3)   // 3
+```
+
+### Num.min / Num.max
+
+Smaller / larger of two integers.
+
+```scl
+Num.min(3, 7)  // 3
+Num.max(3, 7)  // 7
+```
+
+### Num.clamp
+
+`Num.clamp(value, lo, hi)` — restrict `value` to the closed range `[lo, hi]`. Raises an error if `lo > hi`.
+
+```scl
+Num.clamp(5, 0, 10)    // 5
+Num.clamp(-1, 0, 10)   // 0
+Num.clamp(99, 0, 10)   // 10
+```
+
+### Num.toFloat
+
+Convert an `Int` to a `Float`. Large values may lose precision (an `f64` mantissa is 53 bits).
+
+```scl
+Num.toFloat(3)   // 3
+```
+
+### Num.pow
+
+`Num.pow(base, exp)` — integer exponentiation. Raises an error if `exp` is negative or the result overflows `i64`.
+
+```scl
+Num.pow(2, 10)  // 1024
+Num.pow(5, 0)   // 1
+Num.pow(3, 3)   // 27
+```
+
+## Std/Float
+
+Pure helpers for the `Float` type — parsing, arithmetic, and conversion to
+`Int`. For `Int`-typed helpers, see [Std/Num](#stdnum).
+
+```scl
+import Std/Float
+```
+
+### Float.fromStr
+
+Parse a finite float from a decimal string. Returns `nil` for non-finite values (infinity, NaN), unparseable inputs, and the empty string.
+
+```scl
+Float.fromStr("3.14")   // 3.14
+Float.fromStr("-0.5")   // -0.5
+Float.fromStr("inf")    // nil
+Float.fromStr("abc")    // nil
+```
+
+### Float.toStr
+
+Canonical decimal string representation.
+
+```scl
+Float.toStr(3.14)   // "3.14"
+Float.toStr(-1.5)   // "-1.5"
+```
+
+### Float.abs
+
+Absolute value.
+
+```scl
+Float.abs(-1.5)  // 1.5
+```
+
+### Float.min / Float.max
+
+Smaller / larger of two floats.
+
+```scl
+Float.min(1.5, 2.5)  // 1.5
+Float.max(1.5, 2.5)  // 2.5
+```
+
+### Float.clamp
+
+`Float.clamp(value, lo, hi)` — restrict `value` to the closed range `[lo, hi]`. Raises an error if `lo > hi`.
+
+```scl
+Float.clamp(0.5, 0.0, 1.0)   // 0.5
+Float.clamp(-1.0, 0.0, 1.0)  // 0
+Float.clamp(2.0, 0.0, 1.0)   // 1
+```
+
+### Float.floor / Float.ceil / Float.round
+
+Round to an `Int`. `floor` rounds toward negative infinity, `ceil` toward positive infinity, and `round` to the nearest integer (half away from zero). Each raises an error if the result doesn't fit in `i64`.
+
+```scl
+Float.floor(1.7)    // 1
+Float.floor(-1.2)   // -2
+Float.ceil(1.2)     // 2
+Float.ceil(-1.7)    // -1
+Float.round(1.5)    // 2
+Float.round(-1.5)   // -2
+```
+
+### Float.pow
+
+`Float.pow(base, exp)` — floating-point exponentiation. Raises an error if the result is not finite (infinity or NaN).
+
+```scl
+Float.pow(2.0, 10.0)  // 1024
+Float.pow(4.0, 0.5)   // 2
+```
+
 ## Std/Str
 
 Pure string manipulation functions. All functions operate on Unicode scalar values (codepoints).

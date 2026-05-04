@@ -1,0 +1,4 @@
+import Std/Num
+export let a = Num.abs(-5)
+export let b = Num.abs(3)
+export let c = Num.abs(0)
